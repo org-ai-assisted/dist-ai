@@ -10,7 +10,7 @@
 ## Run the generic DOM / visual-regression snapshot lane for each site checkout inside the review
 ## sandbox qube: capture each site's representative pages in the sandbox's Playwright chromium,
 ## normalise, and gate against (or promote) a per-site baseline. The diff engine is
-## mediawiki-dom-snapshot's diff.py, reused verbatim.
+## domsnap-engine's diff.py, reused verbatim.
 ##
 ##   webcheck-domsnap-sandbox <site-root> [<site-root> ...]       # capture + gate vs baseline
 ##   webcheck-domsnap-sandbox --promote <site-root> [...]         # capture + promote to baseline
@@ -51,11 +51,11 @@ script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 if [ -d "${script_dir}/../share/website-tests" ]; then
    tests_dir="${script_dir}/../share/website-tests"
    core_src="${script_dir}/../lib/python3/dist-packages/dist_ai"
-   diff_src="${script_dir}/../share/mediawiki-dom-snapshot/diff.py"
+   diff_src="${script_dir}/../share/domsnap-engine/diff.py"
 else
    tests_dir='/usr/share/website-tests'
    core_src='/usr/lib/python3/dist-packages/dist_ai'
-   diff_src='/usr/share/mediawiki-dom-snapshot/diff.py'
+   diff_src='/usr/share/domsnap-engine/diff.py'
 fi
 pages_src="${tests_dir}/domsnap-pages"
 [ -d "${core_src}/webcheck" ] || die "missing webcheck core: ${core_src}/webcheck"

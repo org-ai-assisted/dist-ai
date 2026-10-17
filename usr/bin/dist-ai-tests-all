@@ -83,8 +83,9 @@ timeout_fuzz=600
 timeout_heavy=600
 
 ## Suite registries. Each name is an entrypoint in the same bin dir as this
-## script. mediawiki-dom-snapshot is a capture tool, not a pass/fail test, so
-## it is deliberately excluded.
+## script. The dom-snapshot engine (dist_ai.webcheck.domsnap + usr/share/domsnap-engine)
+## is a capture tool, not a pass/fail suite; its browser-free unit regressions run
+## under website-tests (check_domsnapshot_test.py + the engine's test_host_scrub.py).
 core_suites=(
    anon-apt-sources-list-tests
    anon-gw-anonymizer-config-tests

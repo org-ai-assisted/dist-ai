@@ -18,7 +18,7 @@
 ## deb-run-dep failed wholesale -- while the suites still 'worked' because they
 ## exit 77 (SKIP) on an absent tool, so nobody noticed the .deb could not install.
 ## playwright is pip-installed into a venv by 'sandbox provision playwright';
-## imagehash (mediawiki-dom-snapshot, opt-in) is pip-only -- neither is a
+## imagehash (domsnap wiki lane, opt-in) is pip-only -- neither is a
 ## Depends. This test keeps them (and their kind) out.
 ##
 ## Source-tree test: set DIST_AI_REPO or run from a checkout; exits 1 (FATAL)

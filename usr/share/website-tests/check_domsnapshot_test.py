@@ -12,10 +12,17 @@ logic regression. The diff engine itself (diff.py) is reused verbatim and proven
 
 Canary cases (each FAILS on a broken predicate):
   - page_slug('/')='index', nested path flattened; load_pages skips '#'/blank
-  - _scrub collapses the mount base in BOTH plain and encodeURIComponent form (the random port)
-  - _normalize_manifest drops volatile response headers (date/etag/...) + scrubs the host in keys
+  - _scrub collapses the mount base in BOTH plain and encodeURIComponent form (the random port),
+    ANCHORED (a longer port sharing our prefix is not corrupted) + case-insensitive on the encoded
+  - _normalize_manifest drops volatile response headers (date/etag/...) + scrubs the host in keys,
+    surviving header VALUES, and the error string
   - _modes: default is one deterministic mode; an unknown mode is rejected
   - normalize_dir: scrubs text artifacts, drops volatile headers, copies the screenshot byte-for-byte
+  - hardening: page_slug neutralizes '.'/'..'; _unique_slugs rejects a slug collision;
+    _safe_component rejects a traversal label; _ignore_tls is secure-by-default on an https base
+  - wiki lane: _wiki_env defaults + overrides; wiki-capture/-diff/-diff-baseline/-normalise build
+    the correct relocated-engine (snapshot.py/diff.py/normalize.py) argv; wiki-promote rejects a
+    traversal tag
 """
 import json
 import os
@@ -113,6 +120,126 @@ def run():
         ck((fmd / "screenshot.png").read_bytes() == b"\x89PNG\r\n\x1a\nFAKE",
            "normalize_dir copies the screenshot byte-for-byte")
         ck((fmd / "assets" / "abc.css").exists(), "normalize_dir copies the assets dir")
+
+    # --- hardening: anchored + case-insensitive _scrub -----------------------------------------
+    longer = "http://127.0.0.1:382719/x"   # a DIFFERENT port that merely starts with ours
+    ck(domsnap._scrub(longer, base) == longer,
+       "_scrub does not corrupt a longer port that shares our prefix (:38271 in :382719)")
+    enc_lower = enc.lower()                 # encodeURIComponent emits %3A; a page may carry %3a
+    ck(enc_lower not in domsnap._scrub("ref=" + enc_lower, base),
+       "_scrub collapses a lower-cased percent-encoded base")
+
+    # --- hardening: _normalize_manifest scrubs header VALUES + the error string ----------------
+    man2 = json.dumps({
+        base + "/r.css": {"sha256": "a",
+                          "headers": {"content-type": "text/css", "location": base + "/r.css/"}},
+        base + "/bad": {"error": "body unavailable: fetch " + base + "/bad"},
+    })
+    n2 = json.loads(domsnap._normalize_manifest(man2, base))
+    loc = n2[domsnap.HOST_PLACEHOLDER + "/r.css"]["headers"].get("location", "")
+    ck(base not in loc and domsnap.HOST_PLACEHOLDER in loc,
+       "_normalize_manifest scrubs the host in a surviving header value")
+    ck(base not in n2[domsnap.HOST_PLACEHOLDER + "/bad"]["error"],
+       "_normalize_manifest scrubs the host in the error string")
+
+    # --- hardening: page_slug neutralizes '.'/'..' (no traversal out of the site dir) ----------
+    ck(domsnap.page_slug("..") not in ("..", "."), "page_slug neutralizes '..'")
+    ck(domsnap.page_slug(".") not in ("..", "."), "page_slug neutralizes '.'")
+
+    # --- hardening: _unique_slugs rejects a collision, passes a clean list ----------------------
+    domsnap._unique_slugs(["/", "/analyze/", "/quiz/"])
+    ck(True, "_unique_slugs passes a collision-free list")
+    try:
+        domsnap._unique_slugs(["/a/b", "/a_b"])
+        ck(False, "_unique_slugs rejects a slug collision")
+    except SystemExit:
+        ck(True, "_unique_slugs rejects a slug collision")
+
+    # --- hardening: _safe_component accepts a plain label, rejects traversal --------------------
+    ck(domsnap._safe_component("secure-terminal.github.io", "x") == "secure-terminal.github.io",
+       "_safe_component accepts a plain label")
+    for bad in ("..", ".", "", "a/b", "../x"):
+        try:
+            domsnap._safe_component(bad, "x")
+            ck(False, "_safe_component rejects %r" % bad)
+        except SystemExit:
+            ck(True, "_safe_component rejects %r" % bad)
+
+    # --- hardening: _ignore_tls secure-by-default for an https base -----------------------------
+    os.environ.pop("WEBCHECK_DOMSNAP_INSECURE_TLS", None)
+    ck(domsnap._ignore_tls("http://127.0.0.1:5000") is True, "_ignore_tls True for an http mount")
+    ck(domsnap._ignore_tls("https://stage.example") is False, "_ignore_tls False for an https base")
+    os.environ["WEBCHECK_DOMSNAP_INSECURE_TLS"] = "1"
+    ck(domsnap._ignore_tls("https://stage.example") is True, "_ignore_tls honors the opt-in")
+    os.environ.pop("WEBCHECK_DOMSNAP_INSECURE_TLS", None)
+
+    # --- wiki lane: env contract + engine argv mapping (no browser, no live wiki) ---------------
+    with tempfile.TemporaryDirectory() as tmp:
+        rawd = os.path.join(tmp, "raw")
+        fixd = os.path.join(tmp, "fix")
+        basel = os.path.join(tmp, "baseline")
+        for k in ("PAGES_FILE", "BASE_URL", "TIMEOUT_MS"):
+            os.environ.pop(k, None)          # test the defaults apply
+        os.environ["RAW_DIR"] = rawd
+        os.environ["FIX_DIR"] = fixd
+        os.environ["BASELINE_DIR"] = basel
+
+        env = domsnap._wiki_env()
+        ck(env["BASE_URL"] == "https://www.kicksecure.com", "_wiki_env defaults BASE_URL to the wiki")
+        ck(env["PAGES_FILE"].endswith("/wiki-pages.conf"), "_wiki_env defaults PAGES_FILE to the engine conf")
+        ck(env["FIX_DIR"] == fixd and env["BASELINE_DIR"] == basel, "_wiki_env honors FIX/BASELINE overrides")
+
+        calls = []
+
+        class _R:
+            returncode = 0
+
+        orig_run = domsnap.subprocess.run
+
+        def rec(cmd, **kw):
+            calls.append((list(cmd), kw.get("env")))
+            return _R()
+
+        class NS:
+            pass
+
+        domsnap.subprocess.run = rec
+        try:
+            domsnap._cmd_wiki_capture(NS())
+            argv, cenv = calls[-1]
+            ck(argv == [sys.executable, domsnap.SNAPSHOT_PY], "wiki-capture invokes the engine snapshot.py")
+            ck(cenv.get("BASE_URL") == "https://www.kicksecure.com", "wiki-capture passes the wiki env")
+
+            ns = NS(); ns.a = "t1"; ns.b = "t2"; ns.brief = True
+            domsnap._cmd_wiki_diff(ns)
+            argv, _ = calls[-1]
+            ck(argv == [sys.executable, domsnap.DIFF_PY, fixd + "/t1", fixd + "/t2", "--brief"],
+               "wiki-diff builds the diff.py argv (two fixture tags + --brief)")
+
+            ns = NS(); ns.tag = "cand"; ns.brief = False
+            domsnap._cmd_wiki_diff_baseline(ns)
+            argv, _ = calls[-1]
+            ck(argv == [sys.executable, domsnap.DIFF_PY, basel, fixd + "/cand"],
+               "wiki-diff-baseline builds the diff.py argv (baseline vs tag)")
+
+            os.makedirs(os.path.join(rawd, "Homepage"))
+            calls.clear()
+            domsnap._cmd_wiki_normalise(NS())
+            ck(any(a[:2] == [sys.executable, domsnap.NORMALIZE_PY]
+                   and a[2].endswith("/Homepage") and a[3].endswith("/Homepage")
+                   for a, _ in calls),
+               "wiki-normalise invokes normalize.py per raw page dir")
+
+            ns = NS(); ns.tag = "../escape"
+            try:
+                domsnap._cmd_wiki_promote(ns)
+                ck(False, "wiki-promote rejects a traversal tag")
+            except SystemExit:
+                ck(True, "wiki-promote rejects a traversal tag")
+        finally:
+            domsnap.subprocess.run = orig_run
+            for k in ("RAW_DIR", "FIX_DIR", "BASELINE_DIR"):
+                os.environ.pop(k, None)
 
     print("check_domsnapshot_test: %d pass, %d fail, 0 skip" % (stats["pass"], stats["fail"]))
     return 1 if stats["fail"] else 0

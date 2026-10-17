@@ -630,8 +630,8 @@ def screen_matches(path, baseline, tol=0.05):
 def phash_distance(path_a, path_b):
     """Perceptual-hash (pHash) Hamming distance -- layout-shift signal.
 
-    imagehash is an opt-in/pip dependency (not apt-packaged), matching
-    mediawiki-dom-snapshot; imported lazily so this module loads without it.
+    imagehash is an opt-in/pip dependency (not apt-packaged), matching the
+    domsnap dom-snapshot lane; imported lazily so this module loads without it.
     """
     import imagehash  ## optional dependency -- see docstring
     return imagehash.phash(Image.open(path_a)) - imagehash.phash(

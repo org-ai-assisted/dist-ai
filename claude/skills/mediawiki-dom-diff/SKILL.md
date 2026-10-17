@@ -1,6 +1,6 @@
 ---
 name: mediawiki-dom-diff
-description: "Prove a MediaWiki change (extension swap, template/widget refactor, migration) is render-equivalent -- that readers see the same thing -- with the dist-ai mediawiki-dom-snapshot tool. Use when verifying a refactor/migration changed nothing observable. Enforces: faithful before/after, a SAMPLE diff before the full run, normalize cosmetic noise, and investigate every real delta."
+description: "Prove a MediaWiki change (extension swap, template/widget refactor, migration) is render-equivalent -- that readers see the same thing -- with dist-ai's domsnap wiki lane (python3 -m dist_ai.webcheck.domsnap wiki-*). Use when verifying a refactor/migration changed nothing observable. Enforces: faithful before/after, a SAMPLE diff before the full run, normalize cosmetic noise, and investigate every real delta."
 license: MIT
 ---
 
@@ -13,11 +13,13 @@ license: MIT
 
 ## The tool
 
-- `~/private-sources/dist-ai/usr/share/mediawiki-dom-snapshot/{snapshot,normalize,diff}.py`.
-- Drive it with the **playwright venv** `/home/user/.venvs/playwright/bin/python`.
-  - `usr/bin/mediawiki-dom-snapshot` wrapper hardcodes `/usr/share/...` and only works installed; from a source checkout call the scripts directly -- see the `playwright-install` skill for venv wiring.
-- Capture: `snapshot.py` (-> `RAW_DIR`) then `normalize.py` (-> `FIX_DIR`). Env: `BASE_URL`, `PAGES_FILE` (one title/line), `RAW_DIR`, `FIX_DIR`, `CONCURRENCY` (default 4; 8 is fine), `TIMEOUT_MS`.
-- Diff two normalized sets: `diff.py <fix-a> <fix-b> [--brief]`. Exit 0 = nothing observably changed; exit 1 = at least one real diff. `--brief` = per-page summary + a footer `N identical, N subpixel-only, N with-real-diffs`.
+- The capture/normalize/diff engine lives in dist-ai at `~/private-sources/dist-ai/usr/share/domsnap-engine/{snapshot,normalize,diff}.py`, driven through the single front door `dist_ai.webcheck.domsnap` -- the former standalone `mediawiki-dom-snapshot` wrapper is gone, its operations are now `domsnap wiki-*` subcommands.
+- Drive it with the **playwright venv** `/home/user/.venvs/playwright/bin/python`:
+  - Installed: `python3 -m dist_ai.webcheck.domsnap wiki-run` (and the other `wiki-*` below).
+  - From a source checkout: point the module + engine at the checkout --
+    `PYTHONPATH=<checkout>/usr/lib/python3/dist-packages WEBCHECK_DOMSNAP_ENGINE=<checkout>/usr/share/domsnap-engine <venv-python> -m dist_ai.webcheck.domsnap wiki-run`. See the `playwright-install` skill for venv wiring.
+- Capture: `wiki-capture` (-> `RAW_DIR`) then `wiki-normalise` (-> `FIX_DIR`); `wiki-run` does both. Env: `BASE_URL`, `PAGES_FILE` (one title/line; default the engine's `wiki-pages.conf`), `RAW_DIR`, `FIX_DIR`, `BASELINE_DIR`, `CONCURRENCY` (default 4; 8 is fine), `TIMEOUT_MS`, plus `CAPTURE_MODES`/`BROWSERS`/`LOCALES`/`WIKI_USER`/`ADMIN_USER`/`POSTEDIT_PAGES` (see the domsnap module docstring).
+- Diff two normalized tags: `domsnap wiki-diff <a> <b> [--brief]`; a candidate vs the promoted baseline: `domsnap wiki-diff-baseline <tag>`; promote a tag to baseline: `domsnap wiki-promote <tag>`. Exit 0 = nothing observably changed; exit 1 = at least one real diff. `--brief` = per-page summary + a footer `N identical, N subpixel-only, N with-real-diffs`.
 - **pHash distance is the strongest single signal**: `phash_dist=0` (or no pixel tag at all) = visually identical despite any source churn; `>=3` = real layout/colour shift.
 
 ## The order of operations -- do these, in this order
@@ -34,7 +36,7 @@ license: MIT
    - Pick pages that exercise the change (the ones using the refactored widgets/templates) plus a few plain ones for a baseline.
 
 3. **NORMALIZE what is sensibly cosmetic -- to avoid noise.**
-   - Extend `normalize.py` so the diff surfaces REAL changes, not formatting churn.
+   - Extend the engine's `normalize.py` (`usr/share/domsnap-engine/normalize.py`) so the diff surfaces REAL changes, not formatting churn.
    - Sensible to normalize: HTML whitespace (collapse text-node + comment whitespace, drop empty `<p></p>`), volatile fields (RequestId, nonces, build/version stamps, unix timestamps), and -- for cross-wiki only -- hostname / DB name / revision IDs.
    - Preserve whitespace inside `<pre>`/`<code>`/`<textarea>`/`<script>`/`<style>`.
    - **Never normalize away a real change** -- only cosmetic equivalence.
