@@ -61,8 +61,11 @@ def run() -> int:
 
     # wiki profile: exclude social-share hosts (default OFF = family unchanged). The ?query is
     # KEPT -- a distinct resource -- so a dead ?query citation cannot read as reachable.
-    # Assertions are HOST-anchored (urlsplit().hostname), not substring, so a host test cannot
-    # be fooled by the host appearing mid-URL (and CodeQL's substring-sanitization rule is moot).
+    # Host checks use urlsplit().hostname EQUALITY (`== host`), the CodeQL-documented secure
+    # form -- never `"host" in url` substring, which matches a host at an arbitrary position.
+    def _has_host(urls, host):
+        return any(urlsplit(u).hostname == host for u in urls)
+
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
         (root / "index.html").write_text(
@@ -71,16 +74,12 @@ def run() -> int:
             '<a href="https://web.archive.org/web/1/https://src/x">real citation</a>'
             '<a href="https://ok.test/p?v=1">q1</a>'
             '<a href="https://ok.test/p?v=2">q2</a>', encoding="utf-8")
-
-        def _host_set(urls):
-            return {(urlsplit(u).hostname or "") for u in urls}
-
         default = el.collect_external_links(str(root))
-        ck(len(default) == 5 and "www.reddit.com" in _host_set(default)
+        ck(len(default) == 5 and _has_host(default, "www.reddit.com")
            and "https://ok.test/p?v=1" in default,
            "default collect keeps share hosts + query (family unchanged): %r" % sorted(default))
         excl = el.collect_external_links(str(root), exclude_hosts=el._SHARE_HOSTS)
-        ck("www.reddit.com" not in _host_set(excl) and "web.archive.org" in _host_set(excl),
+        ck(not _has_host(excl, "www.reddit.com") and _has_host(excl, "web.archive.org"),
            "exclude_hosts drops share-permalink hosts, keeps real-citation hosts: %r" % sorted(excl))
         ck("https://ok.test/p?v=1" in excl and "https://ok.test/p?v=2" in excl,
            "exclude_hosts keeps BOTH distinct ?query citations (no false-green collapse): %r"
