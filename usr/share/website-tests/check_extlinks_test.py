@@ -13,6 +13,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 def _load():
@@ -58,7 +59,10 @@ def run() -> int:
            "collects absolute http(s) only, frag stripped, de-duped, .git/internal/mailto/anchor out: %r"
            % sorted(urls))
 
-    # wiki profile: exclude social-share hosts + collapse ?query (default OFF = family unchanged).
+    # wiki profile: exclude social-share hosts (default OFF = family unchanged). The ?query is
+    # KEPT -- a distinct resource -- so a dead ?query citation cannot read as reachable.
+    # Assertions are HOST-anchored (urlsplit().hostname), not substring, so a host test cannot
+    # be fooled by the host appearing mid-URL (and CodeQL's substring-sanitization rule is moot).
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
         (root / "index.html").write_text(
@@ -67,24 +71,20 @@ def run() -> int:
             '<a href="https://web.archive.org/web/1/https://src/x">real citation</a>'
             '<a href="https://ok.test/p?v=1">q1</a>'
             '<a href="https://ok.test/p?v=2">q2</a>', encoding="utf-8")
+
+        def _host_set(urls):
+            return {(urlsplit(u).hostname or "") for u in urls}
+
         default = el.collect_external_links(str(root))
-        ck(len(default) == 5 and any("reddit.com" in u for u in default)
+        ck(len(default) == 5 and "www.reddit.com" in _host_set(default)
            and "https://ok.test/p?v=1" in default,
-           "default collect keeps share hosts + query (family behavior unchanged): %r" % sorted(default))
+           "default collect keeps share hosts + query (family unchanged): %r" % sorted(default))
         excl = el.collect_external_links(str(root), exclude_hosts=el._SHARE_HOSTS)
-        ck(not any("reddit.com" in u for u in excl)
-           and any("web.archive.org" in u for u in excl)
-           and "https://ok.test/p?v=1" in excl,
-           "exclude_hosts drops share permalinks, keeps real citations + their query: %r" % sorted(excl))
-        collapsed = el.collect_external_links(str(root), exclude_hosts=el._SHARE_HOSTS,
-                                              collapse_query=True)
-        ck(collapsed == {"https://web.archive.org/web/1/https://src/x", "https://ok.test/p"},
-           "collapse_query folds ?v=1/?v=2 to one endpoint, share hosts still excluded: %r"
-           % sorted(collapsed))
-        onlycollapse = el.collect_external_links(str(root), collapse_query=True)
-        ck(any("reddit.com" in u for u in onlycollapse)
-           and "https://ok.test/p" in onlycollapse and "https://ok.test/p?v=1" not in onlycollapse,
-           "collapse_query alone keeps share hosts but still collapses query: %r" % sorted(onlycollapse))
+        ck("www.reddit.com" not in _host_set(excl) and "web.archive.org" in _host_set(excl),
+           "exclude_hosts drops share-permalink hosts, keeps real-citation hosts: %r" % sorted(excl))
+        ck("https://ok.test/p?v=1" in excl and "https://ok.test/p?v=2" in excl,
+           "exclude_hosts keeps BOTH distinct ?query citations (no false-green collapse): %r"
+           % sorted(excl))
     ck({"www.reddit.com", "twitter.com", "news.ycombinator.com", "t.me", "fosstodon.org",
         "facebook.com", "www.linkedin.com", "wa.me"} <= el._SHARE_HOSTS,
        "_SHARE_HOSTS covers the measured top-8 share hosts")
@@ -157,7 +157,7 @@ def run() -> int:
         return probe
 
     try:
-        _sleeps = []
+        _sleeps: list[float] = []
         el._sleep = _sleeps.append
 
         el._probe_once = _scripted(["transient", "transient", "alive"])
@@ -186,7 +186,7 @@ def run() -> int:
     # (no real wait) and a small interval. No network.
     _orig_sleep2, _orig_interval = el._sleep, el._HOST_MIN_INTERVAL
     try:
-        _hsleeps = []
+        _hsleeps: list[float] = []
         el._sleep = _hsleeps.append
         el._HOST_MIN_INTERVAL = 0.5
         el._host_next_start.clear()
@@ -213,7 +213,7 @@ def run() -> int:
     # with a stub opener (HEAD -> 403, GET -> 200) + a recording _host_gate. No network.
     _orig_gate, _orig_opener = el._host_gate, el._OPENER
     try:
-        _gated = []
+        _gated: list[str] = []
         el._host_gate = _gated.append
 
         class _Resp:

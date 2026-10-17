@@ -51,9 +51,27 @@ def load(root):
     YAML-alias-amplification and symlink-escape hardening are out of scope here."""
     path = config_path(root)
     import yaml  # type: ignore[import-untyped]
+
+    class _NoDupLoader(yaml.SafeLoader):
+        """safe_load silently keeps the LAST of duplicate mapping keys, so a duplicated
+        `policies:` would quietly mis-select the policy. Reject a duplicate key instead
+        (a ConstructorError is a YAMLError -> ConfigError below)."""
+
+    def _mapping(loader, node):
+        seen = set()
+        for key_node, _value_node in node.value:
+            key = loader.construct_object(key_node, deep=True)
+            if key in seen:
+                raise yaml.constructor.ConstructorError(
+                    'while constructing a mapping', node.start_mark,
+                    'found duplicate key %r' % (key,), key_node.start_mark)
+            seen.add(key)
+        return loader.construct_mapping(node, deep=True)
+
+    _NoDupLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _mapping)
     try:
         with open(path, encoding='utf-8') as handle:
-            data = yaml.safe_load(handle)
+            data = yaml.load(handle, Loader=_NoDupLoader)
     except FileNotFoundError:
         return None
     except (OSError, yaml.YAMLError, UnicodeDecodeError) as exc:

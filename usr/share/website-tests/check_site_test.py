@@ -1371,7 +1371,10 @@ def run():
             ('missing policies key', 'canonical_host: x\n'),
             ('empty policies list', 'policies: []\n'),
             ('unknown policy', 'policies: [bogus]\n'),
-            ('non-mapping top level', '- just\n- a\n- list\n')):
+            ('non-mapping top level', '- just\n- a\n- list\n'),
+            # duplicate `policies:` -- safe_load would silently keep the last and mis-select;
+            # the strict loader must reject it, not quietly pick one.
+            ('duplicate policies key', 'policies: [family]\npolicies: [wiki]\n')):
         with tempfile.TemporaryDirectory() as root:
             _write(root, _cfg, _bad)
             raised = False
@@ -1571,6 +1574,25 @@ def run():
         _fails = []
         check_site.check_duplicate_ids(root, _fails)
         check('check_duplicate_ids passes unique ids', not _fails, _fails)
+    # canaries: an id inside <textarea>/<title> (RCDATA = literal text in a browser) or a
+    # <template> (separate DocumentFragment tree) is NOT a document duplicate.
+    for _scope in ('textarea', 'title', 'template'):
+        with tempfile.TemporaryDirectory() as root:
+            _write(root, 'index.html',
+                   '<!doctype html><html><body><%s><span id="x">t</span></%s>'
+                   '<span id="x">real</span></body></html>' % (_scope, _scope))
+            _fails = []
+            check_site.check_duplicate_ids(root, _fails)
+            check('check_duplicate_ids ignores an id inside <%s>' % _scope, not _fails, _fails)
+    with tempfile.TemporaryDirectory() as root:
+        # but the scope element's OWN id is still counted (not over-skipped).
+        _write(root, 'index.html',
+               '<!doctype html><html><body><textarea id="x"></textarea>'
+               '<textarea id="x"></textarea></body></html>')
+        _fails = []
+        check_site.check_duplicate_ids(root, _fails)
+        check('check_duplicate_ids still flags a duplicate id ON the scope elements',
+              any('x' in f for f in _fails), _fails)
     check('check_duplicate_ids is invoked from main()',
           'check_duplicate_ids(root' in main_body)
 
