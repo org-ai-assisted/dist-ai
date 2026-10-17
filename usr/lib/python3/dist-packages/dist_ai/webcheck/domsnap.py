@@ -40,7 +40,7 @@ import sys
 import threading
 import urllib.parse
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from dist_ai.webcheck import mobile
 
@@ -313,7 +313,7 @@ def _site_dirs(site: str) -> Tuple[Path, Path, Path]:
             CACHE_ROOT / "baseline" / site)
 
 
-def _resolve_base(args) -> Tuple[str, Optional[object]]:
+def _resolve_base(args) -> Tuple[str, Optional[Callable[[], None]]]:
     """Return (base_url, shutdown-or-None). --root serves a local tree; --base uses a served URL."""
     if args.root:
         root = os.path.abspath(args.root)
