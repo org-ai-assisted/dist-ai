@@ -25,16 +25,27 @@ See `share.test.js` for the worked pattern.
 silently green -- it is simply not yet gated. To add one: write `<name>.test.js` (jsdom via
 `harness.js`, 100% of its branches), add its `roots/<site>/<rel>` path to `covered.txt`, re-run.
 
-### Covered now
-- `share.js` (family; 3 byte-identical copies) -- `share.test.js`.
+### Covered now (all 15 FAMILY first-party JS files, gated at 100%)
+- family `share.js` (3 byte-identical copies) -- `share.test.js`.
+- secure-terminal: `share.js` (host-regex variant), `copy.js`, `chat-view/mockup.js`,
+  `attacks/pastejack.js`, `hero.js` -- `st-share`/`st-copy`/`mockup`/`pastejack`/`hero.test.js`.
+- output-lies: `git-diffs-lie/copy.js`, `git-diffs-lie/all/copy.js`, `paste/copy.js`,
+  `analyze/{analyzer,sandbox,ui}.js`, `terminal/{playback,xray}.js`, `quiz/quiz.js` --
+  `ol-copy`/`analyzer`/`sandbox`/`ui`/`playback`/`xray`/`quiz.test.js`. OL-dependent lanes
+  (xray/sandbox/ui) get the real analyzer injected via `require()`.
 
-### Remaining first-party JS to cover (then add to covered.txt)
-- `secure-terminal.github.io/share.js` (a variant of the family share.js)
-- `copy.js` x4 distinct (secure-terminal; output-lies paste, git-diffs-lie, git-diffs-lie/all)
-- `secure-terminal.github.io/hero.js`, `chat-view/mockup.js`, `attacks/pastejack.js`
-- `output-lies.github.io/quiz/quiz.js`, `terminal/playback.js`, `terminal/xray.js`
-- `output-lies.github.io/analyze/{analyzer,sandbox,ui}.js`
-- wiki stage `app.js` (~1114 lines -- the large one), `search-index.js`, `page-previews.js`
+### Wiki stage JS -- tested, gating DEFERRED to mw-static-generator Phase 4
+`app.test.js` (177 cases, every feature + branch) and `generated.test.js` cover the wiki stage
+`app.js` / `search-index.js` / `page-previews.js`. They self-skip unless a wiki stage root is
+passed, and are NOT in `covered.txt`, because:
+- `app.js` has 5 genuinely-dead defensive branches jsdom cannot reach (a focus-trap helper
+  re-checks an `active` the caller already guarantees; a `p && p.closest` guard for a never-null
+  parent; a `new URL` catch valid input never throws; two redundant guards). Reaching 100%
+  needs a source-side `/* c8 ignore */`, which belongs with the app.js SOURCE in
+  mw-static-generator.
+- the stage tree lives in `~/wiki-deploy`, not in dist-ai CI.
+Phase 4 (mw-static depends on the core) is the home for wiki-JS 100% gating: there the source,
+its c8-ignores, the stage root and its CI are together. To activate then: pass a stage root, add
+the three `roots/kicksecure-stage.github.io/*.js` paths to `covered.txt`.
 
-Until every distinct first-party file is listed, this lane gates the listed subset at 100%; the
-full "all JS at 100%" goal is reached when the Remaining list is empty.
+A file not listed in `covered.txt` is NOT silently green -- it is simply not yet gated.

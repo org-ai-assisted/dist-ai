@@ -20,3 +20,7 @@ roots/output-lies.github.io/terminal/xray.js
 roots/output-lies.github.io/terminal/playback.js
 roots/output-lies.github.io/quiz/quiz.js
 roots/secure-terminal.github.io/hero.js
+# wiki stage JS (app.js / search-index.js / page-previews.js) is tested (app.test.js,
+# generated.test.js) but its 100% gating is DEFERRED to the mw-static-generator Phase 4
+# integration -- app.js has 5 jsdom-unreachable defensive branches needing a source-side
+# c8-ignore, and the stage tree is not part of dist-ai CI. See README.md.
