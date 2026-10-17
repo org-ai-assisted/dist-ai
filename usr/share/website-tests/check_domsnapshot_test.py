@@ -131,6 +131,15 @@ def run():
        "_scrub does not mask a longer hostname sharing our prefix (good.example in good.example.evil)")
     ck(domsnap._scrub("x=" + hostbase + "/a", hostbase) == "x=" + domsnap.HOST_PLACEHOLDER + "/a",
        "_scrub still collapses the exact base at a boundary")
+    ck(domsnap._scrub("x=https://good.example:8443/a", hostbase) == "x=https://good.example:8443/a",
+       "_scrub does not corrupt a same-host different-port origin (':' boundary)")
+    enc_lower = enc.lower()   # a page may carry lowercase %3a where encodeURIComponent emits %3A
+    ck(enc_lower not in domsnap._scrub("ref=" + enc_lower, base),
+       "_scrub collapses a lower-cased percent-encoded base (case-folds the %XX hex)")
+    pathbase = "https://x.test/app"          # a base WITH a path -> a path-case change must survive
+    enc_pb_upper = urllib.parse.quote(pathbase, safe="").replace("app", "APP")
+    ck(domsnap._scrub("u=" + enc_pb_upper, pathbase) == "u=" + enc_pb_upper,
+       "_scrub does not mask a real path-case change (%2Fapp vs %2FAPP) -- only the hex folds")
 
     # --- hardening: _normalize_manifest scrubs header VALUES + the error string ----------------
     man2 = json.dumps({
@@ -167,6 +176,17 @@ def run():
             ck(False, "_safe_component rejects %r" % bad)
         except SystemExit:
             ck(True, "_safe_component rejects %r" % bad)
+
+    # --- hardening: _safe_dir resolves + rejects root / shallow / relative targets --------------
+    from pathlib import Path as _Pth
+    ck(domsnap._safe_dir(_Pth("/home/user/private-cache/domsnap-wiki/baseline"), "x") is not None,
+       "_safe_dir accepts a deep absolute dir")
+    for bad in ("", ".", "/", "//", "/..", "/tmp/..", "/etc", "relative/dir"):
+        try:
+            domsnap._safe_dir(_Pth(bad), "x")
+            ck(False, "_safe_dir rejects %r" % bad)
+        except SystemExit:
+            ck(True, "_safe_dir rejects %r" % bad)
 
     # --- hardening: _ignore_tls validates TLS unless the explicit opt-in is set -----------------
     os.environ.pop("WEBCHECK_DOMSNAP_INSECURE_TLS", None)
@@ -239,6 +259,25 @@ def run():
                 ck(False, "wiki-capture rejects a traversal tag")
             except SystemExit:
                 ck(True, "wiki-capture rejects a traversal tag")
+
+            # E: an absent/empty raw tag must NOT destroy a prior good fixture (check raw first).
+            os.makedirs(os.path.join(fixd, "survivor"))
+            with open(os.path.join(fixd, "survivor", "dom.html"), "w", encoding="utf-8") as fh:
+                fh.write("prior good fixture")
+            rc_e = domsnap._cmd_wiki_normalise(argparse.Namespace(tag="survivor"))  # rawd/survivor absent
+            ck(rc_e == 1 and os.path.exists(os.path.join(fixd, "survivor", "dom.html")),
+               "wiki-normalise with absent raw returns 1 and preserves the prior fixture")
+
+            # F: RAW_DIR == FIX_DIR must be rejected (clearing fix would delete the raw input).
+            os.makedirs(os.path.join(rawd, "aliastag", "Page"))
+            os.environ["FIX_DIR"] = rawd   # alias source and destination
+            try:
+                domsnap._cmd_wiki_normalise(argparse.Namespace(tag="aliastag"))
+                ck(False, "wiki-normalise rejects RAW_DIR == FIX_DIR")
+            except SystemExit:
+                ck(True, "wiki-normalise rejects RAW_DIR == FIX_DIR")
+            finally:
+                os.environ["FIX_DIR"] = fixd
         finally:
             domsnap.subprocess.run = orig_run
             for k in ("RAW_DIR", "FIX_DIR", "BASELINE_DIR"):
