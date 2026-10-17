@@ -43,6 +43,14 @@ run_gate(){
       if [ -z "${line}" ] || [ "${line#\#}" != "${line}" ]; then
          continue
       fi
+      ## Every covered file MUST exist on disk (cwd = the synced workdir). c8 --all can only
+      ## materialize a file it actually FINDS, so a mistyped/absent entry is silently omitted
+      ## from the report; if that leaves the map empty, c8 prints 'Unknown% (0/0)' and
+      ## --check-coverage exits 0 -- a false green. Fail loud on a missing covered file instead.
+      if [ ! -f "${line}" ]; then
+         printf '%s\n' "jscov: FATAL: covered file not found: ${line} (listed in ${covered_file}) -- a missing/mistyped entry would pass the gate vacuously" >&2
+         return 1
+      fi
       includes+=( "--include" "${line}" )
    done < "${covered_file}"
 
@@ -51,7 +59,12 @@ run_gate(){
       return 1
    fi
 
-   c8 --all --check-coverage --statements 100 --branches 100 --functions 100 --lines 100 \
+   ## --config pins c8 to a committed empty config so its findUp does NOT pick up a stray
+   ## .c8rc/.nycrc in the workdir or any parent dir whose 'exclude' would drop every covered
+   ## file -> empty map -> false green (the self-check cannot catch this, as its own files live
+   ## outside roots/).
+   c8 --config jscov/c8-config.json --all --check-coverage \
+      --statements 100 --branches 100 --functions 100 --lines 100 \
       "${includes[@]}" --reporter text-summary \
       node --test "${test_dir}/"
 }
