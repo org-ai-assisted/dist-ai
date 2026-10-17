@@ -395,17 +395,46 @@ def test_dispvm_unit_skips_on_sentinel():
 
 
 def _has_nocanonicalize(cmd):
-    """True if a single mount command carries a no-canonicalize directive as a
-    proper token: the '--no-canonicalize' CLI flag OR the equivalent
-    '-o ...,X-mount.nocanonicalize' mount option. man mount documents them as
-    equivalent, and it is proven against real mount in
-    org-ai-assisted/mount-nocanonicalize-symlink-refusal and by
-    test_dispvm_mount_bind_symlink_refusal here. A whole-token match, not a bare
-    substring, so a lookalike in another word cannot satisfy it (the command is
-    already comment-stripped and separator-split by _shell_commands)."""
+    """True if a single mount command carries a no-canonicalize directive that
+    protects the mount TARGET, as a proper token: the '--no-canonicalize' CLI
+    flag, or the '-o ...,X-mount.nocanonicalize' option in its bare or '=target'
+    form. man mount: 'X-mount.nocanonicalize[=type]' with type 'source' or
+    'target'; bare disables canonicalization for BOTH. The '=source' form (and
+    the invalid '=all', silently ignored) leaves the TARGET canonicalized, so
+    mount follows a symlinked target -- those do NOT protect the home bind and
+    are REJECTED (verified against real mount in
+    org-ai-assisted/mount-nocanonicalize-symlink-refusal). A whole-token match,
+    not a bare substring (the command is already comment-stripped and
+    separator-split by _shell_commands)."""
     if re.search(r'(?<![\w.-])--no-canonicalize(?![\w.-])', cmd):
         return True
-    return bool(re.search(r'(?<![\w.-])X-mount\.nocanonicalize(?![\w.-])', cmd))
+    ## Bare or '=target' only; '=source'/'=all'/'=other' trailing '=' fails the
+    ## negative lookahead (which includes '=') so they do not match.
+    return bool(re.search(
+        r'(?<![\w.-])X-mount\.nocanonicalize(?:=target)?(?![\w.=-])', cmd))
+
+
+@pytest.mark.parametrize("cmd", [
+    'mount --no-canonicalize --bind -o nosuid,nodev -- /s /t',
+    'mount --bind -o nosuid,nodev,X-mount.nocanonicalize -- /s /t',
+    'mount --bind -o nosuid,nodev,X-mount.nocanonicalize=target -- /s /t',
+])
+def test_has_nocanonicalize_accepts_target_protecting_forms(cmd):
+    assert _has_nocanonicalize(cmd), cmd
+
+
+@pytest.mark.parametrize("cmd", [
+    ## No directive at all.
+    'mount --bind -o nosuid,nodev -- /s /t',
+    ## '=source' disables canonicalization for the SOURCE only -- target still
+    ## followed; '=all' is not a valid type and is silently ignored. Neither
+    ## protects the home-bind target, so neither may be accepted as the defense.
+    'mount --bind -o nosuid,nodev,X-mount.nocanonicalize=source -- /s /t',
+    'mount --bind -o nosuid,nodev,X-mount.nocanonicalize=all -- /s /t',
+    'mount --bind -o nosuid,nodev,X-mount.nocanonicalize=anything -- /s /t',
+])
+def test_has_nocanonicalize_rejects_non_target_forms(cmd):
+    assert not _has_nocanonicalize(cmd), cmd
 
 
 def test_home_binds_nocanonicalize_and_symlink_reject():

@@ -85,6 +85,14 @@ def test_dispvm_mount_bind_symlink_refusal():
 
     verdicts = _verdicts(proc.stdout)
 
+    ## A mode whose positive control (binding a NORMAL dir) failed cannot speak
+    ## to the symlink case -- never let that read as a refusal.
+    control_failed = [m for m, v in verdicts.items() if v == "CONTROL_FAILED"]
+    assert not control_failed, (
+        f"positive control mount failed for mode(s) {control_failed} -- the mount "
+        f"form could not bind a normal dir, so its symlink result is meaningless "
+        f"(unsupported option or broken env)\n{proc.stdout}")
+
     ## Canary / positive control: without a no-canonicalize directive the bind
     ## MUST follow the symlink, or the environment cannot exhibit the bug and the
     ## two refusals below would pass vacuously.
