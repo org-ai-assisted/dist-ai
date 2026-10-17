@@ -1,0 +1,141 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## style-ok: no-has -- standalone host/sandbox driver; does not source helper-scripts.
+
+## Run the generic DOM / visual-regression snapshot lane for each site checkout inside the review
+## sandbox qube: capture each site's representative pages in the sandbox's Playwright chromium,
+## normalise, and gate against (or promote) a per-site baseline. The diff engine is
+## mediawiki-dom-snapshot's diff.py, reused verbatim.
+##
+##   webcheck-domsnap-sandbox <site-root> [<site-root> ...]       # capture + gate vs baseline
+##   webcheck-domsnap-sandbox --promote <site-root> [...]         # capture + promote to baseline
+##
+## Baselines + corpora live under ~/private-cache/webcheck-domsnap/ INSIDE the sandbox (large,
+## regenerable, NOT committed -- a local/on-demand lane). Representative page lists are committed
+## in usr/share/website-tests/domsnap-pages/<site>.conf.
+## Exit: 0 all clean (no regression vs baseline), 1 a regression / a missing baseline.
+##
+## UNCONFINED (`sandbox exec`), like axe/lighthouse: a real chromium + a loopback mount are needed,
+## and the sites are the family's OWN trusted static trees. Playwright lives ONLY in the sandbox
+## venv; diff.py's Pillow/imagehash are installed into that venv.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+readonly SANDBOX_VENV_PY='/home/user/.venvs/web-render/bin/python'
+readonly SANDBOX_WORKDIR="/home/user/webcheck-domsnap-sandbox-run.$$"
+
+die(){
+   printf '%s\n' "webcheck-domsnap-sandbox: $1" >&2
+   exit 1
+}
+
+promote=0
+if [ "${1:-}" = '--promote' ]; then
+   promote=1
+   shift
+fi
+[ "$#" -gt 0 ] || die 'usage: webcheck-domsnap-sandbox [--promote] <site-root> [...]'
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+if [ -d "${script_dir}/../share/website-tests" ]; then
+   tests_dir="${script_dir}/../share/website-tests"
+   core_src="${script_dir}/../lib/python3/dist-packages/dist_ai"
+   diff_src="${script_dir}/../share/mediawiki-dom-snapshot/diff.py"
+else
+   tests_dir='/usr/share/website-tests'
+   core_src='/usr/lib/python3/dist-packages/dist_ai'
+   diff_src='/usr/share/mediawiki-dom-snapshot/diff.py'
+fi
+pages_src="${tests_dir}/domsnap-pages"
+[ -d "${core_src}/webcheck" ] || die "missing webcheck core: ${core_src}/webcheck"
+[ -f "${diff_src}" ] || die "missing diff engine: ${diff_src}"
+[ -d "${pages_src}" ] || die "missing page lists: ${pages_src}"
+
+command -v sandbox >/dev/null 2>&1 \
+   || die 'the review sandbox (sandbox command) is not available on this host'
+: "${QUBE_CTL_TARGET:=temp-claude}"
+export QUBE_CTL_TARGET
+
+## --- provision: Playwright venv + chromium, then Pillow/imagehash for diff.py ----------------
+if ! sandbox exec --pid-scope own -- test -x "${SANDBOX_VENV_PY}" >/dev/null 2>&1; then
+   printf '%s\n' 'webcheck-domsnap-sandbox: provisioning Playwright in the sandbox (one-time)...' >&2
+   provision --target "${QUBE_CTL_TARGET}" playwright >&2 \
+      || die "sandbox is not provisioned for Playwright (provision --target ${QUBE_CTL_TARGET} playwright)"
+fi
+if ! sandbox exec --pid-scope own -- "${SANDBOX_VENV_PY}" -c 'import imagehash, PIL' >/dev/null 2>&1; then
+   printf '%s\n' 'webcheck-domsnap-sandbox: installing Pillow + imagehash into the venv (one-time)...' >&2
+   sandbox exec --pid-scope own -- "${SANDBOX_VENV_PY}" -m pip install --quiet Pillow imagehash >&2 \
+      || die 'could not install Pillow/imagehash into the Playwright venv'
+fi
+
+## --- stage the core, the diff engine, the page lists, and each site root ----------------------
+staging="$(mktemp --directory)"
+synced=0
+cleanup(){
+   # shellcheck disable=SC2317  # invoked indirectly via the EXIT trap
+   safe-rm --recursive --force -- "${staging}" || true
+   # shellcheck disable=SC2317
+   if [ "${synced}" = '1' ]; then
+      sandbox exec --pid-scope own -- safe-rm --recursive --force -- "${SANDBOX_WORKDIR}" >/dev/null 2>&1 || true
+   fi
+   # shellcheck disable=SC2317
+   return 0
+}
+trap cleanup EXIT
+
+staged_pylib="${staging}/usr/lib/python3/dist-packages"
+mkdir --parents -- "${staged_pylib}" "${staging}/diffeng" "${staging}/pages" "${staging}/roots"
+cp --archive -- "${core_src}" "${staged_pylib}/dist_ai"
+cp --archive -- "${diff_src}" "${staging}/diffeng/diff.py"
+cp --archive -- "${pages_src}/." "${staging}/pages/"
+
+declare -a sites=()
+declare -A seen_base=()
+for root in "$@"; do
+   [ -f "${root}/index.html" ] || die "not a site root (no index.html): ${root}"
+   root="$(readlink --canonicalize -- "${root}")"
+   base="$(basename -- "${root}")"
+   [ -z "${seen_base[${base}]:-}" ] || die "duplicate site-root basename '${base}'"
+   seen_base[${base}]=1
+   [ -f "${pages_src}/${base}.conf" ] || die "no representative page list: ${pages_src}/${base}.conf"
+   rsync --archive --exclude='.git' -- "${root}/" "${staging}/roots/${base}/"
+   sites+=( "${base}" )
+done
+
+sandbox sync --delete "${staging}" "$(basename -- "${SANDBOX_WORKDIR}")" >&2 \
+   || die 'failed to sync the staging tree into the sandbox'
+synced=1
+
+run_domsnap(){
+   ## $@ = domsnap subcommand + args; run via the venv python with the staged core + diff engine.
+   sandbox exec --pid-scope own -- env \
+      "PYTHONPATH=${SANDBOX_WORKDIR}/usr/lib/python3/dist-packages" \
+      "WEBCHECK_DOMSNAP_DIFF=${SANDBOX_WORKDIR}/diffeng/diff.py" \
+      "${SANDBOX_VENV_PY}" -Bsu -m dist_ai.webcheck.domsnap "$@"
+}
+
+overall=0
+for base in "${sites[@]}"; do
+   root_remote="${SANDBOX_WORKDIR}/roots/${base}"
+   pages_remote="${SANDBOX_WORKDIR}/pages/${base}.conf"
+   run_domsnap capture --site "${base}" --root "${root_remote}" --pages "${pages_remote}" \
+      || die "capture failed for ${base}"
+   if [ "${promote}" = '1' ]; then
+      run_domsnap promote --site "${base}" || die "promote failed for ${base}"
+   else
+      run_domsnap diff-baseline --site "${base}" || overall=1
+   fi
+done
+
+exit "${overall}"
