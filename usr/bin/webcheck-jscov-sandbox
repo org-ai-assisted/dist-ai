@@ -38,6 +38,9 @@ else
    jscov_dir='/usr/share/website-tests/jscov'
 fi
 [ -f "${jscov_dir}/run.sh" ] || die "missing jscov harness: ${jscov_dir}/run.sh"
+## Sibling fail-closed self-check fixture (run.sh requires it to prove the gate is non-vacuous).
+selftest_dir="$(dirname -- "${jscov_dir}")/jscov-selftest"
+[ -f "${selftest_dir}/covered.txt" ] || die "missing jscov self-check fixture: ${selftest_dir}/covered.txt"
 
 if [ "$#" -eq 0 ]; then
    die 'usage: webcheck-jscov-sandbox <site-root> [<site-root> ...]'
@@ -67,8 +70,9 @@ cleanup(){
 }
 trap cleanup EXIT
 
-mkdir --parents -- "${staging}/jscov" "${staging}/roots"
+mkdir --parents -- "${staging}/jscov" "${staging}/jscov-selftest" "${staging}/roots"
 cp --archive -- "${jscov_dir}/." "${staging}/jscov/"
+cp --archive -- "${selftest_dir}/." "${staging}/jscov-selftest/"
 
 declare -A seen_base=()
 for root in "$@"; do
@@ -78,8 +82,10 @@ for root in "$@"; do
    [ -z "${seen_base[${base}]:-}" ] || die "duplicate site-root basename '${base}'"
    seen_base[${base}]=1
    ## Only the .js files are needed for coverage; rsync them (preserving tree), skip .git.
-   rsync --archive --prune-empty-dirs --include='*/' --include='*.js' --exclude='*' \
-      --exclude='.git' -- "${root}/" "${staging}/roots/${base}/"
+   ## --exclude='.git' MUST precede --include='*/' (first-matching-rule wins): after '*/' the
+   ## .git dir is already included for traversal, so a later .git exclude is dead.
+   rsync --archive --prune-empty-dirs --exclude='.git' --include='*/' --include='*.js' \
+      --exclude='*' -- "${root}/" "${staging}/roots/${base}/"
 done
 
 sandbox sync --delete "${staging}" "$(basename -- "${SANDBOX_WORKDIR}")" >&2 \
