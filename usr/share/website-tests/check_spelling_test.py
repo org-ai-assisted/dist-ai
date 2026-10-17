@@ -68,6 +68,12 @@ def run():
         ck(allk == {"p.html:teh", "p.html:sdwdate", "q.html:teh"}, "scan_root all_keys = every key")
         new2, _ = spelling.scan_root("/root", "cfg", set())
         ck(len(new2) == 3, "empty baseline -> every finding is new")
+        # dedup: one line per OCCURRENCE must collapse to one key (no inflated count / repeats)
+        spelling._run_cspell = lambda root, config: [("p.html", "teh"), ("p.html", "teh"),
+                                                     ("p.html", "teh")]
+        dnew, dall = spelling.scan_root("/root", "cfg", set())
+        ck(dnew == ["p.html:teh"] and dall == {"p.html:teh"},
+           "scan_root dedups repeated occurrences of the same word")
     finally:
         spelling._run_cspell = orig
 
@@ -102,6 +108,12 @@ def run():
         subprocess.run = lambda *a, **k: _P(1, "/r/a.html:1:1 - Unknown word (teh)\n", "")
         ck(spelling._run_cspell("/r", "cfg") == [("a.html", "teh")],
            "rc=1 with a parseable issue returns the finding (root-relative)")
+        subprocess.run = lambda *a, **k: _P(1, "", "Error: ENOENT project-dictionary.txt")
+        try:
+            spelling._run_cspell("/r", "cfg")
+            ck(False, "rc=1 with NO parseable issue (config/dict error) must raise")
+        except RuntimeError:
+            ck(True, "rc=1 with no issues raises (cspell error not read as clean)")
         subprocess.run = lambda *a, **k: _P(0, "", "")
         ck(spelling._run_cspell("/r", "cfg") == [], "rc=0 clean returns no findings")
     finally:

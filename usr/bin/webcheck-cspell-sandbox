@@ -30,7 +30,9 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
-readonly CSPELL_PKG='cspell@8'
+## Pinned EXACT (not a floating cspell@8): a float could serve a tampered 8.x. --ignore-scripts
+## (below) also stops npm lifecycle scripts running as root during the install.
+readonly CSPELL_PKG='cspell@8.19.4'
 readonly SANDBOX_WORKDIR="/home/user/webcheck-cspell-sandbox-run.$$"
 
 die(){
@@ -75,7 +77,7 @@ if ! sandbox exec --pid-scope own -- sh -c 'command -v cspell >/dev/null 2>&1'; 
       sandbox exec --pid-scope shared -- sudo apt-get install --yes nodejs npm >&2 \
          || die 'could not install nodejs/npm in the sandbox'
    fi
-   sandbox exec --pid-scope shared -- sudo npm install --global --no-fund --no-audit "${CSPELL_PKG}" >&2 \
+   sandbox exec --pid-scope shared -- sudo npm install --global --no-fund --no-audit --ignore-scripts "${CSPELL_PKG}" >&2 \
       || die "'npm install -g ${CSPELL_PKG}' failed in the sandbox"
    sandbox exec --pid-scope own -- sh -c 'command -v cspell >/dev/null 2>&1' \
       || die 'cspell still absent after install'

@@ -37,11 +37,16 @@ def _run_cspell(root: str, config: str) -> List[Tuple[str, str]]:
     missing binary surfaces as FileNotFoundError; a scan ERROR (any exit other than 0=clean /
     1=issues-found, or an unsupported-engine line) raises RuntimeError. main() turns either into a
     loud exit-1 FAILURE, never a skip: a scan error must NEVER read as 'clean'."""
-    glob = os.path.join(root, "**", "*.html")
+    # cwd=root + a RELATIVE glob so cspell's default --root is `root`: an ABSOLUTE glob embeds
+    # root's basename, where a glob metachar ('[' etc.) would silently match nothing, and a root
+    # OUTSIDE the process cwd is filtered out entirely -> cspell checks 0 files and exits 0 (a
+    # false clean). The config is abspath'd first (cwd changes under it); its relative dictionary
+    # paths resolve against the config file's own location, not cwd.
     proc = subprocess.run(  # nosec B603 -- fixed argv, no shell=True, paths are ours
         ["cspell", "lint", "--no-progress", "--no-color", "--no-summary",
-         "--no-must-find-files", "--config", config, "--", glob],
-        capture_output=True, text=True)
+         "--no-must-find-files", "--config", os.path.abspath(config),
+         "--", os.path.join("**", "*.html")],
+        capture_output=True, text=True, cwd=root)
     stderr = proc.stderr or ""
     # cspell: 0 = clean, 1 = issues found. Anything else is a real error (bad config, unreadable
     # tree, an unsupported-engine refusal) -> fail loud, never the false-clean this gate prevents.
@@ -53,8 +58,16 @@ def _run_cspell(root: str, config: str) -> List[Tuple[str, str]]:
         m = _ISSUE_RE.match(line.strip())
         if not m:
             continue
-        rel = os.path.relpath(m.group("file"), root)
+        fp = m.group("file")
+        rel = os.path.relpath(fp if os.path.isabs(fp) else os.path.join(root, fp), root)
         out.append((rel, m.group("word").lower()))
+    # cspell exits 1 for BOTH issues-found AND a real error (a missing/invalid config or
+    # dictionary writes the error to stderr with NO issue on stdout). rc==1 with NO parseable
+    # issue is therefore an ERROR, never clean -- fail loud (the silent pass this gate prevents),
+    # mirroring the gitleaks lane's "rc 1 with an empty report" check.
+    if proc.returncode == 1 and not out:
+        raise RuntimeError("cspell exit 1 with no parseable issues (config/dictionary error?): %s"
+                           % ((stderr or proc.stdout or "")[-300:]))
     return out
 
 
@@ -67,14 +80,14 @@ def finding_key(rel_file: str, word: str) -> str:
 def scan_root(root: str, config: str, baseline: Set[str]) -> Tuple[List[str], Set[str]]:
     """(new_findings, all_keys): new_findings are the keys NOT in `baseline` (the gate failures);
     all_keys is every finding's key (for re-seeding a baseline)."""
-    new: List[str] = []
-    all_keys: Set[str] = set()
+    new: Set[str] = set()      # dedup: cspell emits one line per OCCURRENCE; a word appearing N
+    all_keys: Set[str] = set() # times in a file is ONE key, not N (no inflated count / repeats)
     for rel, word in _run_cspell(root, config):
         key = finding_key(rel, word)
         all_keys.add(key)
         if key not in baseline:
-            new.append(key)
-    return new, all_keys
+            new.add(key)
+    return sorted(new), all_keys
 
 
 def parse_baseline(path: Path) -> Set[str]:
