@@ -1316,6 +1316,31 @@ def run():
         check('_looks_like_wiki is False when index.html is absent',
               not check_site._looks_like_wiki(root))
 
+    # false-positive canaries (ai-review grok+claude): >=2 mw- tokens that are NOT real
+    # element class attributes must NOT read as wiki -- else a non-wiki page merely SHOWING
+    # MediaWiki markup (these sites demo attacks) is skipped and its real CSP/inline-script
+    # issues pass CI silently. The parser ignores comments, text/pre/code, script/style
+    # bodies, and non-class attributes; a raw regex scan did not.
+    _mw2 = 'mw-editsection mw-parser-output'
+    for _label, _body in (
+            ('an html comment', '<!-- <span class="%s">x</span> -->' % _mw2),
+            ('a pre/code sample', '<pre>&lt;span class="%s"&gt;x&lt;/span&gt;</pre>' % _mw2),
+            ('a style body', '<style>/* class="%s" */</style>' % _mw2),
+            ('a script body', '<script>// <span class="%s"></span></script>' % _mw2),
+            ('a data-class attribute', '<div data-class="%s">x</div>' % _mw2),
+            ('visible text', '<p>classes like %s are MediaWiki</p>' % _mw2)):
+        with tempfile.TemporaryDirectory() as root:
+            _write(root, 'index.html', _page % _body)
+            check('_looks_like_wiki ignores mw- tokens in %s' % _label,
+                  not check_site._looks_like_wiki(root), _label)
+    # positive control: the SAME two tokens on REAL elements DO read as wiki.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               _page % '<span class="mw-editsection">e</span>'
+                       '<div class="mw-parser-output">p</div>')
+        check('_looks_like_wiki detects the same tokens on real elements',
+              check_site._looks_like_wiki(root))
+
     with tempfile.TemporaryDirectory() as root:
         _write(root, 'index.html', _mwpage)
         rc, _out, err = _run_main([root])
