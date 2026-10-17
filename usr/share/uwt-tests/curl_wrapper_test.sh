@@ -278,6 +278,27 @@ check "loopback v6: exec gets exactly 1 arg"     "${#rec_lines[@]}" "1"
 check "loopback v6: original arg passed through" "${rec_lines[0]:-}" "http://[::1]:8080/"
 check "loopback v6: no proxy injection"          "$(injected_socks5h)" "no"
 
+## A loopback address anywhere in 127.0.0.0/8, not just 127.0.0.1.
+drive_main 0 none 'http://127.0.0.53:53/'
+check "loopback 127/8: original arg passed through" "${rec_lines[0]:-}" "http://127.0.0.53:53/"
+check "loopback 127/8: no proxy injection"          "$(injected_socks5h)" "no"
+
+## The 'localhost' hostname is loopback too.
+drive_main 0 none 'http://localhost:8080/'
+check "loopback localhost: original arg passed through" "${rec_lines[0]:-}" "http://localhost:8080/"
+check "loopback localhost: no proxy injection"          "$(injected_socks5h)" "no"
+if [[ "${drive_err}" == *"NOTE: Detected loopback address."* ]]; then
+   localhost_note=ok
+else
+   localhost_note=bad
+fi
+check "loopback localhost: note printed" "${localhost_note}" "ok"
+
+## A non-loopback host must STILL be injected (guard against an over-broad match
+## swallowing every target): the four isolation args are prepended.
+drive_main 0 none 'http://127examplehost.com/'
+check "non-loopback host: proxy still injected" "$(injected_socks5h)" "yes"
+
 ## --- Case 6: --ipv6 / -6 -> proxy address becomes [::1]:9050. ---
 drive_main 0 none '--ipv6' 'https://example.com'
 check "--ipv6: exec gets 6 args (4 injected + 2 original)" "${#rec_lines[@]}" "6"

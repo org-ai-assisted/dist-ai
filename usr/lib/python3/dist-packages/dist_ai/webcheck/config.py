@@ -61,7 +61,14 @@ def load(root):
         seen = set()
         for key_node, _value_node in node.value:
             key = loader.construct_object(key_node, deep=True)
-            if key in seen:
+            try:
+                duplicate = key in seen
+            except TypeError:
+                # An unhashable (complex `? [..]`) key: skip dedup and let the stock
+                # construct_mapping below raise its ConstructorError ('found unhashable key')
+                # -- a YAMLError -> ConfigError -- instead of a raw TypeError escaping the wrapper.
+                continue
+            if duplicate:
                 raise yaml.constructor.ConstructorError(
                     'while constructing a mapping', node.start_mark,
                     'found duplicate key %r' % (key,), key_node.start_mark)

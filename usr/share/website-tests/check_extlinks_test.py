@@ -59,31 +59,50 @@ def run() -> int:
            "collects absolute http(s) only, frag stripped, de-duped, .git/internal/mailto/anchor out: %r"
            % sorted(urls))
 
-    # wiki profile: exclude social-share hosts (default OFF = family unchanged). The ?query is
-    # KEPT -- a distinct resource -- so a dead ?query citation cannot read as reachable.
-    # Host checks use urlsplit().hostname EQUALITY (`== host`), the CodeQL-documented secure
-    # form -- never `"host" in url` substring, which matches a host at an arbitrary position.
+    # share-BUTTON exclusion is ALWAYS on (no flag) and PRECISE: a share-platform host whose
+    # query embeds the shared page is dropped, but a REAL citation to the same host (a profile,
+    # a thread -- no share query) is KEPT. Host checks use urlsplit().hostname EQUALITY, the
+    # CodeQL-documented secure form, never a `"host" in url` substring.
     def _has_host(urls, host):
         return any(urlsplit(u).hostname == host for u in urls)
 
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
         (root / "index.html").write_text(
-            '<a href="https://www.reddit.com/submit?url=https://site/a">share a</a>'
-            '<a href="https://www.reddit.com/submit?url=https://site/b">share b</a>'
-            '<a href="https://web.archive.org/web/1/https://src/x">real citation</a>'
+            # real share buttons observed on the wiki (query embeds the shared page):
+            '<a href="https://facebook.com/sharer.php?u=https%3A%2F%2Fx%2F">share fb</a>'
+            '<a href="https://news.ycombinator.com/submitlink?u=https%3A%2F%2Fx%2F&t=T">hn</a>'
+            '<a href="https://fosstodon.org/share?text=T%20https%3A%2F%2Fx%2F">toot</a>'
+            # real citations to the SAME platforms (no share query) -- must be KEPT:
+            '<a href="https://fosstodon.org/@kicksecure">project mastodon</a>'
+            '<a href="https://www.reddit.com/r/privacy/comments/abc/thread">cited thread</a>'
+            # ordinary citation with a meaningful ?query -- kept, query preserved:
             '<a href="https://ok.test/p?v=1">q1</a>'
             '<a href="https://ok.test/p?v=2">q2</a>', encoding="utf-8")
-        default = el.collect_external_links(str(root))
-        ck(len(default) == 5 and _has_host(default, "www.reddit.com")
-           and "https://ok.test/p?v=1" in default,
-           "default collect keeps share hosts + query (family unchanged): %r" % sorted(default))
-        excl = el.collect_external_links(str(root), exclude_hosts=el._SHARE_HOSTS)
-        ck(not _has_host(excl, "www.reddit.com") and _has_host(excl, "web.archive.org"),
-           "exclude_hosts drops share-permalink hosts, keeps real-citation hosts: %r" % sorted(excl))
-        ck("https://ok.test/p?v=1" in excl and "https://ok.test/p?v=2" in excl,
-           "exclude_hosts keeps BOTH distinct ?query citations (no false-green collapse): %r"
-           % sorted(excl))
+        links = el.collect_external_links(str(root))
+        ck(not any(el._is_share_button(urlsplit(u)) for u in links),
+           "no share-button permalink survives collection: %r" % sorted(links))
+        ck(_has_host(links, "fosstodon.org") and "https://fosstodon.org/@kicksecure" in links,
+           "a REAL citation to a share platform (no share query) is KEPT: %r" % sorted(links))
+        ck("https://www.reddit.com/r/privacy/comments/abc/thread" in links,
+           "a real reddit THREAD is kept, not dropped as a share button: %r" % sorted(links))
+        ck("https://ok.test/p?v=1" in links and "https://ok.test/p?v=2" in links,
+           "distinct ?query citations both kept (no false-green collapse): %r" % sorted(links))
+    # unit: _is_share_button discriminates button (share query) from citation (no share query).
+    from urllib.parse import urlsplit as _us
+    ck(el._is_share_button(_us("https://facebook.com/sharer.php?u=https%3A%2F%2Fx")),
+       "_is_share_button: facebook sharer is a button")
+    ck(not el._is_share_button(_us("https://fosstodon.org/@kicksecure")),
+       "_is_share_button: a profile link is NOT a button")
+    ck(not el._is_share_button(_us("https://example.test/share?url=x")),
+       "_is_share_button: a non-share-host /share?url= is NOT excluded (host must be a platform)")
+    ck(not el._is_share_button(_us("https://www.reddit.com/r/x/comments/1?title=foo&utm=a")),
+       "_is_share_button: a real citation on a share host with a generic ?title= is KEPT "
+       "(only an embedded page URL marks a button)")
+    ck(el._is_share_button(_us("https://www.reddit.com/submit?url=https%3A%2F%2Fp")),
+       "_is_share_button: reddit /submit?url=https%3A IS a button (percent-encoded page URL)")
+    ck(el._is_share_button(_us("https://twitter.com/share?url=https://p/page")),
+       "_is_share_button: embedded URL with a LITERAL colon is also a button (ai-review codex)")
     ck({"www.reddit.com", "twitter.com", "news.ycombinator.com", "t.me", "fosstodon.org",
         "facebook.com", "www.linkedin.com", "wa.me"} <= el._SHARE_HOSTS,
        "_SHARE_HOSTS covers the measured top-8 share hosts")
