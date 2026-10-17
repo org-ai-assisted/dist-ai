@@ -117,7 +117,7 @@ Depends: ${misc:Depends},
 ## breaks 'genmkfile deb-run-dep', which apt-installs the whole Depends set in one
 ## all-or-nothing call. They are provided out-of-band, not by apt: playwright via
 ## 'sandbox provision playwright' (a pip venv), imagehash for the opt-in
-## mediawiki-dom-snapshot suite (pip).
+## domsnap wiki lane (pip).
 ## arm64 boot testing, and the services only the e2e suites drive. Recommends,
 ## not Depends, so an x86-only or offline install stays possible; the suites that
 ## need them are opt-in (--e2e / --integration) and fail loudly when run without.

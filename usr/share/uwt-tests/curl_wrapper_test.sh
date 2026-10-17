@@ -9,20 +9,26 @@
 ##
 ## curl cannot resolve .onion via torsocks, so the wrapper instead PREPENDS a
 ## '--proxy socks5h://...' plus a randomized '--proxy-user <torS0X>0:...' pair
-## (Tor stream isolation) before handing argv to uwtwrapper. The decisions
-## under test:
+## and a '--noproxy localhost,127.0.0.0/8,::1' (Tor stream isolation; the
+## --noproxy lets curl bypass the proxy PER-URL for a loopback destination,
+## using curl's own URL parser instead of hand-rolled host extraction) before
+## handing argv to uwtwrapper. The decisions under test:
 ##   - UWT_DEV_PASSTHROUGH=1 on entry   -> exec original argv verbatim.
 ##   - a caller-supplied --proxy / -x / --proxy-user / -U
 ##                                      -> isolation disabled, original argv.
-##   - a loopback 127.0.0.1 or [::1] target
-##                                      -> isolation disabled, original argv.
+##   - a caller-supplied --noproxy      -> STILL injected: curl keeps the proxy
+##                                         and only the last --noproxy wins, so
+##                                         the proxy is not removed (unlike above).
 ##   - --ipv6 / -6                      -> proxy address becomes [::1]:9050.
 ##   - --config / -K                    -> exit 1 (two message variants:
 ##                                         curl.anondist-orig present vs absent).
 ##   - a failing curl.anondist-orig proxy probe
 ##                                      -> isolation disabled, original argv.
-##   - otherwise                        -> PREPEND the four stream-isolation
+##   - otherwise                        -> PREPEND the six stream-isolation
 ##                                         args, then original argv.
+## Loopback classification itself is curl's (via the injected --noproxy), NOT the
+## wrapper's, so it is not re-tested here: these cases assert the wrapper injects
+## the right args and still defers to a caller who manages proxying.
 ## Plus random_alpha_numeric's length/charset contract (the proxy password),
 ## now SOURCED from strings.bsh rather than duplicated in the wrapper.
 ##
@@ -48,6 +54,14 @@ export LC_ALL=C
 ## Never inherit a passthrough flag from the caller's env; cases set it explicitly.
 if [ -v UWT_DEV_PASSTHROUGH ]; then
    unset UWT_DEV_PASSTHROUGH
+fi
+## Likewise clear an ambient no_proxy/NO_PROXY so it cannot perturb the injected
+## --noproxy value; the env-union case sets them explicitly via drive_extra_env.
+if [ -v no_proxy ]; then
+   unset no_proxy
+fi
+if [ -v NO_PROXY ]; then
+   unset NO_PROXY
 fi
 
 tool_dir="$(cd -- "$(dirname -- "$(readlink --canonicalize -- "$0")")" && pwd)"
@@ -159,6 +173,10 @@ make_bin() {
 rec_lines=()
 drive_rc=0
 drive_err=""
+## Extra 'VAR=value' env entries for the NEXT drive_main call only (e.g. a caller
+## no_proxy). Set before the call; drive_main consumes and RESETS it so it never
+## leaks into a later case.
+drive_extra_env=()
 drive_main() {
    local passthrough="$1" curl_mode="$2"
    shift 2
@@ -176,10 +194,15 @@ drive_main() {
    if [ "${passthrough}" = 1 ]; then
       env_prefix+=( "UWT_DEV_PASSTHROUGH=1" )
    fi
+   if [ "${#drive_extra_env[@]}" -gt 0 ]; then
+      env_prefix+=( "${drive_extra_env[@]}" )
+   fi
    drive_rc=0
    env "${env_prefix[@]}" "${probe}" "$@" 2> "${err}" || drive_rc=$?
    mapfile -t rec_lines < "${rec}"
    drive_err="$(cat -- "${err}")"
+   ## Consumed -- reset so the next drive_main starts with a clean env.
+   drive_extra_env=()
 }
 
 ## 'yes' iff any recorded arg is a prepended socks5h proxy URL (the injection
@@ -193,6 +216,20 @@ injected_socks5h() {
             return 0
             ;;
       esac
+   done
+   printf '%s\n' "no"
+}
+
+## 'yes' iff the injected loopback --noproxy list reached the exec seam. This is
+## the arg that makes curl bypass the proxy per-URL for loopback; its presence is
+## the wrapper's whole loopback contribution now (curl does the classification).
+injected_noproxy_loopback() {
+   local arg
+   for arg in "${rec_lines[@]}"; do
+      if [ "${arg}" = 'localhost,127.0.0.0/8,::1' ]; then
+         printf '%s\n' "yes"
+         return 0
+      fi
    done
    printf '%s\n' "no"
 }
@@ -261,120 +298,58 @@ check "-U: exec gets exactly 1 arg"     "${#rec_lines[@]}" "1"
 check "-U: original arg passed through" "${rec_lines[0]:-}" "-U"
 check "-U: no proxy injection"          "$(injected_socks5h)" "no"
 
-## A loopback target disables isolation but the wrapper STILL execs curl with the
-## original argv verbatim. Assert BOTH: no socks5h injection AND the original
-## operand reaches the exec seam unchanged (exactly one recorded arg equal to it).
-## Checking only "no injection" would also pass if a regression dropped or
-## rewrote the request (empty rec_lines), so the passthrough assertion is load-bearing.
-check_loopback_passthrough() {
+## Assert a single-operand invocation got the full 6-arg injection AND the
+## original operand survived unchanged at the tail (index 6). A bare "injected?"
+## check would also pass a broken wrapper that injected the six args but DROPPED
+## the URL (leaving curl no target), so the arg-count + operand checks are
+## load-bearing (codex).
+check_injected_with_operand() {
    local label="$1" operand="$2"
-   check "${label}: exec gets exactly 1 arg"     "${#rec_lines[@]}" "1"
-   check "${label}: original arg passed through" "${rec_lines[0]:-}" "${operand}"
-   check "${label}: no proxy injection"          "$(injected_socks5h)" "no"
+   check "${label}: proxy injected"          "$(injected_socks5h)" "yes"
+   check "${label}: --noproxy list injected" "$(injected_noproxy_loopback)" "yes"
+   check "${label}: exec gets 7 args (6 injected + 1 operand)" "${#rec_lines[@]}" "7"
+   check "${label}: operand survives at arg[6]" "${rec_lines[6]:-}" "${operand}"
 }
 
-## --- Case 5: a loopback 127.0.0.1 / [::1] target disables isolation. ---
-drive_main 0 none 'http://127.0.0.1:8080/'
-check_loopback_passthrough "loopback v4" 'http://127.0.0.1:8080/'
-if [[ "${drive_err}" == *"NOTE: Detected loopback address."* ]]; then
-   loopback_note=ok
-else
-   loopback_note=bad
-fi
-check "loopback v4: note printed" "${loopback_note}" "ok"
-
-drive_main 0 none 'http://[::1]:8080/'
-check_loopback_passthrough "loopback v6" 'http://[::1]:8080/'
-
-## A loopback address anywhere in 127.0.0.0/8, not just 127.0.0.1.
-drive_main 0 none 'http://127.0.0.53:53/'
-check_loopback_passthrough "loopback 127/8 (.53)" 'http://127.0.0.53:53/'
-drive_main 0 none 'http://127.0.1.1/'
-check_loopback_passthrough "loopback 127/8 (.0.1.1)" 'http://127.0.1.1/'
-
-## The 'localhost' hostname is loopback too.
+## --- Case 5: loopback is NO LONGER classified by the wrapper. It injects the
+## proxy PLUS '--noproxy localhost,127.0.0.0/8,::1' and lets curl bypass the
+## proxy per-URL for loopback. So a loopback operand gets the SAME injection as a
+## remote one, and the loopback list rides along to the exec seam. (The actual
+## per-URL proxy-bypass is curl's own behavior, exercised against a live curl, not
+## this argv-recording unit test.)
 drive_main 0 none 'http://localhost:8080/'
-check_loopback_passthrough "loopback localhost" 'http://localhost:8080/'
-if [[ "${drive_err}" == *"NOTE: Detected loopback address."* ]]; then
-   localhost_note=ok
-else
-   localhost_note=bad
-fi
-check "loopback localhost: note printed" "${localhost_note}" "ok"
+check_injected_with_operand "loopback localhost" 'http://localhost:8080/'
+drive_main 0 none 'http://127.0.0.1:8080/'
+check_injected_with_operand "loopback 127.0.0.1" 'http://127.0.0.1:8080/'
+drive_main 0 none 'http://[::1]:8080/'
+check_injected_with_operand "loopback [::1]" 'http://[::1]:8080/'
+## A non-loopback host is injected identically -- the wrapper does not distinguish
+## them; curl does, at connect time, from the injected --noproxy list.
+drive_main 0 none 'https://example.com/'
+check_injected_with_operand "non-loopback" 'https://example.com/'
 
-## A BARE loopback operand (no scheme) must be detected -- the common form for a
-## local service. The old ^[^-].* anchor consumed the first char and missed these.
-drive_main 0 none 'localhost:8080'
-check_loopback_passthrough "loopback bare localhost:port" 'localhost:8080'
-drive_main 0 none '127.0.0.1'
-check_loopback_passthrough "loopback bare 127.0.0.1" '127.0.0.1'
-drive_main 0 none '[::1]'
-check_loopback_passthrough "loopback bare [::1]" '[::1]'
-
-## A loopback host behind HTTP basic-auth userinfo (common for local admin APIs)
-## is still loopback -- the userinfo is skipped and the real host matched.
-drive_main 0 none 'http://admin:secret@127.0.0.1:8080/api'
-check_loopback_passthrough "loopback w/ userinfo (127.0.0.1)" 'http://admin:secret@127.0.0.1:8080/api'
-drive_main 0 none 'http://user@localhost/'
-check_loopback_passthrough "loopback w/ userinfo (localhost)" 'http://user@localhost/'
-
-## ... but a REMOTE host with a loopback literal as the USERNAME must keep its
-## isolated circuit (the host is the part after '@', not 'localhost').
-drive_main 0 none 'http://localhost:password@example.com/'
-check "remote host, 'localhost' as username: proxy injected" "$(injected_socks5h)" "yes"
-drive_main 0 none 'http://127.0.0.1@evil.com/'
-check "remote host, '127.0.0.1' as username: proxy injected" "$(injected_socks5h)" "yes"
-
-## The authority ends at the first '?' or '#', so a loopback literal in a
-## query/fragment of a remote host is NOT the host -- keep isolation.
-drive_main 0 none 'http://example.com?email=user@localhost'
-check "remote host, loopback in QUERY userinfo-lookalike: proxy injected" "$(injected_socks5h)" "yes"
-
-## An option flag whose VALUE contains '@localhost' is not a destination.
-drive_main 0 none '--user=alice@localhost' 'https://example.com/'
-check "flag --user=...@localhost + remote URL: proxy injected" "$(injected_socks5h)" "yes"
-
-## An empty port ('http://localhost:/', valid per RFC 3986, curl defaults to 80)
-## is still loopback.
-drive_main 0 none 'http://localhost:/'
-check_loopback_passthrough "loopback empty port" 'http://localhost:/'
-
-## A SCHEME-LESS remote URL carrying an embedded 'http://loopback' in its
-## query/path is still the remote host -- a buried '://' must not be read as the
-## authority delimiter. Keep isolation.
-drive_main 0 none 'example.com/?next=http://localhost'
-check "scheme-less remote, embedded loopback URL: proxy injected" "$(injected_socks5h)" "yes"
-## ... and the mirror: a scheme-less LOOPBACK URL with an embedded remote URL is
-## still loopback.
-drive_main 0 none 'localhost:8000/?next=https://example.com'
-check_loopback_passthrough "scheme-less loopback, embedded remote URL" 'localhost:8000/?next=https://example.com'
-
-## A non-loopback host must STILL be injected. Guards against over-match: a
-## loopback literal in the PATH/QUERY, a 'localhost'/'127.'-prefixed SUBDOMAIN or
-## a public IP with '127' in a non-leading octet are all REMOTE and must keep
-## their isolated circuit.
-drive_main 0 none 'http://127examplehost.com/'
-check "non-loopback host (127examplehost): proxy injected" "$(injected_socks5h)" "yes"
-drive_main 0 none 'https://example.com/localhost'
-check "remote URL, localhost in PATH: proxy injected" "$(injected_socks5h)" "yes"
-drive_main 0 none 'https://example.com/127.0.0.53'
-check "remote URL, 127.x in PATH: proxy injected" "$(injected_socks5h)" "yes"
-drive_main 0 none 'http://example.com/?x=127.2.3.4'
-check "remote URL, 127.x in QUERY: proxy injected" "$(injected_socks5h)" "yes"
-drive_main 0 none 'http://localhost.example/'
-check "remote host 'localhost.example': proxy injected" "$(injected_socks5h)" "yes"
-drive_main 0 none 'http://127.evil.example/'
-check "remote host '127.evil.example': proxy injected" "$(injected_socks5h)" "yes"
-drive_main 0 none 'http://1.127.0.0.1/'
-check "public IP with non-leading 127: proxy injected" "$(injected_socks5h)" "yes"
+## --- Case 5b: a caller-supplied --noproxy does NOT disable isolation. curl keeps
+## the injected --proxy and applies only the LAST --noproxy as the bypass list, so
+## the proxy is not removed -- the wrapper still injects. This is why --noproxy is
+## NOT in the --proxy/-U passthrough set (those REPLACE the proxy; --noproxy does
+## not). Both --noproxy args reach the seam; the caller's wins at connect time. ---
+drive_main 0 none '--noproxy' 'example.com' 'https://example.com/'
+check "caller --noproxy: proxy STILL injected"      "$(injected_socks5h)" "yes"
+check "caller --noproxy: our loopback list injected" "$(injected_noproxy_loopback)" "yes"
+check "caller --noproxy: exec gets 9 args (6 injected + 3 original)" "${#rec_lines[@]}" "9"
+check "caller --noproxy: arg[6] --noproxy (caller, original)" "${rec_lines[6]:-}" "--noproxy"
+check "caller --noproxy: arg[7] value (caller, original)"     "${rec_lines[7]:-}" "example.com"
+check "caller --noproxy: arg[8] url (original)"               "${rec_lines[8]:-}" "https://example.com/"
 
 ## --- Case 6: --ipv6 / -6 -> proxy address becomes [::1]:9050. ---
 drive_main 0 none '--ipv6' 'https://example.com'
-check "--ipv6: exec gets 6 args (4 injected + 2 original)" "${#rec_lines[@]}" "6"
+check "--ipv6: exec gets 8 args (6 injected + 2 original)" "${#rec_lines[@]}" "8"
 check "--ipv6: arg[0] --proxy"       "${rec_lines[0]:-}" "--proxy"
 check "--ipv6: arg[1] socks5h [::1]" "${rec_lines[1]:-}" "socks5h://[::1]:9050/"
-check "--ipv6: arg[4] --ipv6 (original)"       "${rec_lines[4]:-}" "--ipv6"
-check "--ipv6: arg[5] url (original)"          "${rec_lines[5]:-}" "https://example.com"
+check "--ipv6: arg[4] --noproxy"     "${rec_lines[4]:-}" "--noproxy"
+check "--ipv6: arg[5] loopback list" "${rec_lines[5]:-}" "localhost,127.0.0.0/8,::1"
+check "--ipv6: arg[6] --ipv6 (original)"       "${rec_lines[6]:-}" "--ipv6"
+check "--ipv6: arg[7] url (original)"          "${rec_lines[7]:-}" "https://example.com"
 if [[ "${drive_err}" == *"NOTICE: Detected '--ipv6' or '-6' argument"* ]]; then
    ipv6_notice=ok
 else
@@ -424,9 +399,9 @@ else
 fi
 check "curl probe fails: warning printed" "${torfail_warn}" "ok"
 
-## --- Case 9: normal argv, curl.anondist-orig absent -> four args PREPENDED. ---
+## --- Case 9: normal argv, curl.anondist-orig absent -> six args PREPENDED. ---
 drive_main 0 none 'https://example.com'
-check "injection: exec gets 5 args (4 injected + 1 original)" "${#rec_lines[@]}" "5"
+check "injection: exec gets 7 args (6 injected + 1 original)" "${#rec_lines[@]}" "7"
 check "injection: arg[0] --proxy"           "${rec_lines[0]:-}" "--proxy"
 check "injection: arg[1] socks5h 127.0.0.1" "${rec_lines[1]:-}" "socks5h://127.0.0.1:9050/"
 check "injection: arg[2] --proxy-user"      "${rec_lines[2]:-}" "--proxy-user"
@@ -448,8 +423,28 @@ else
    injection_tail_charset=bad
 fi
 check "injection: proxy-user random tail charset [A-Za-z0-9]" "${injection_tail_charset}" "ok"
-check "injection: arg[4] url (original)" "${rec_lines[4]:-}" "https://example.com"
+check "injection: arg[4] --noproxy"      "${rec_lines[4]:-}" "--noproxy"
+check "injection: arg[5] loopback list"  "${rec_lines[5]:-}" "localhost,127.0.0.0/8,::1"
+check "injection: arg[6] url (original)" "${rec_lines[6]:-}" "https://example.com"
 check "injection: probe exits 0"         "${drive_rc}" "0"
+
+## --- Case 9b: env no_proxy/NO_PROXY is UNIONED into the injected --noproxy list.
+## Setting --noproxy makes curl ignore the env var, so the wrapper must fold it in
+## or a caller's env bypass is silently lost. Assert the exact merged arg[5]. ---
+drive_extra_env=( 'no_proxy=internal.test' )
+drive_main 0 none 'https://example.com'
+check "env no_proxy: arg[5] unions env"   "${rec_lines[5]:-}" "localhost,127.0.0.0/8,::1,internal.test"
+check "env no_proxy: proxy still injected" "$(injected_socks5h)" "yes"
+
+## NO_PROXY (uppercase) is honored when lowercase no_proxy is unset.
+drive_extra_env=( 'NO_PROXY=up.test' )
+drive_main 0 none 'https://example.com'
+check "env NO_PROXY: arg[5] unions env" "${rec_lines[5]:-}" "localhost,127.0.0.0/8,::1,up.test"
+
+## lowercase no_proxy wins over NO_PROXY (curl's precedence).
+drive_extra_env=( 'no_proxy=low.test' 'NO_PROXY=up.test' )
+drive_main 0 none 'https://example.com'
+check "env no_proxy precedence over NO_PROXY" "${rec_lines[5]:-}" "localhost,127.0.0.0/8,::1,low.test"
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then

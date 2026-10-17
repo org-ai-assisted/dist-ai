@@ -1,7 +1,7 @@
-# Capture corpora are runtime data in ~/private-cache, never committed. This
-# guards against an accidental BASELINE_DIR override that regenerates the old
-# in-repo location.
-usr/share/mediawiki-dom-snapshot/baseline/
+# Capture corpora (domsnap raw/fixtures/baseline, wiki + static) are runtime data
+# in ~/private-cache, never committed. This guards against an accidental
+# in-repo baseline under the engine dir.
+usr/share/domsnap-engine/baseline/
 var/
 __pycache__/
 *.pyc

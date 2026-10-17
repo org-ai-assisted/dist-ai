@@ -498,7 +498,7 @@ def test_home_binds_nocanonicalize_and_symlink_reject():
         ## message -- independent of pat, which only matches the bare spelling.
         trailing = [lines[i] for i, cmd in _shell_commands(text)
                     if re.search(rf'--bind\b.*"\$\{{home_base_dir\}}/\$\{{user_name\}}'
-                                 rf'/{re.escape(target)}/\.?"', cmd)]
+                                 rf'/{re.escape(target)}/[./]*"', cmd)]
         assert not trailing, (
             f"the {target} home bind target has a trailing slash/dot, which defeats "
             f"the no-canonicalize backstop; pass a bare dir path: {trailing} ({DISPVM})")

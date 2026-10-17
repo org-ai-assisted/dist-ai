@@ -18,7 +18,7 @@ operator's private cache (`~/private-cache`), never in the repo or package.
 
 | Component | Status | Location |
 |---|---|---|
-| `mediawiki-dom-snapshot` | shipping | `usr/share/mediawiki-dom-snapshot/` |
+| `domsnap-engine` | shipping | `usr/share/domsnap-engine/` (driven by `dist_ai.webcheck.domsnap`) |
 | `sdwdate-gui-tests`      | shipping | `usr/share/sdwdate-gui-tests/` |
 | `sdwdate-tests`          | shipping | `usr/share/sdwdate-tests/` |
 | `sdwdate-onion-tester-tests` | shipping | `usr/share/sdwdate-onion-tester-tests/` |
@@ -100,8 +100,9 @@ failed. Category flags select what runs -- `--core` (default), `--fuzz`,
 Pass `--repo-root <derivative-maker>` to point every suite at an in-tree
 checkout (it wires each suite's `*_REPO` / `*_BIN` / `PYTHONPATH` / positional
 argument automatically) instead of the installed package; a suite whose target
-is absent exits 77 and is reported SKIP. `mediawiki-dom-snapshot` is a capture
-tool, not a pass/fail test, so it is not included.
+is absent exits 77 and is reported SKIP. The dom-snapshot engine (`domsnap`) is a
+capture tool, not a pass/fail suite, so it is not registered here; its browser-free
+unit regressions run under `website-tests`.
 
 ```
 # core suites against an in-tree checkout
@@ -111,14 +112,17 @@ dist-ai-tests-all --core --repo-root ~/derivative-maker
 dist-ai-tests-all --all --repo-root ~/derivative-maker
 ```
 
-## mediawiki-dom-snapshot
+## domsnap (dom-snapshot)
 
-Drives headless Chromium via Playwright against a running MediaWiki,
-captures a **complete regression-test corpus per page** (post-JS DOM,
-viewport screenshot, full network manifest with body sha256s, every
-asset body indexed by hash), and ships a three-axis diff (HTML text,
-asset content, screenshot pixels + perceptual hash) so a refactor
-can be proven not to have changed anything observably.
+`dist_ai.webcheck.domsnap` is the single front door for DOM / visual-regression
+snapshots. Its **wiki lane** drives headless Chromium via Playwright against a
+running MediaWiki (engine in `usr/share/domsnap-engine/{snapshot,normalize,diff}.py`),
+capturing a **complete regression-test corpus per page** (post-JS DOM, viewport
+screenshot, full network manifest with body sha256s, every asset body indexed by
+hash), and ships a three-axis diff (HTML text, asset content, screenshot pixels +
+perceptual hash) so a refactor can be proven not to have changed anything observably.
+(Its **static lane** -- `capture`/`diff-baseline`/`promote`, run via
+`webcheck-domsnap-sandbox` -- does the same for the hand-written family Pages trees.)
 
 Use case: detect HTML/CSS/JS/image regressions introduced by
 MediaWiki core or extension upgrades, or by site-CSS refactors.
@@ -129,7 +133,7 @@ anti-aliasing jitter.
 
 ### Output layout
 
-For each page in `pages.conf`:
+For each page in `wiki-pages.conf`:
 
 ```
 <RAW_DIR>/<page>/
@@ -145,18 +149,20 @@ For each page in `pages.conf`:
 
 ### Usage
 
+Run under the Playwright venv (see the `mediawiki-dom-diff` skill for venv wiring):
+
 ```
 # capture + normalise against the live wiki
-mediawiki-dom-snapshot
+python3 -m dist_ai.webcheck.domsnap wiki-run
 
 # diff a captured set against the baseline
-mediawiki-dom-snapshot diff-baseline <tag>
+python3 -m dist_ai.webcheck.domsnap wiki-diff-baseline <tag>
 
 # diff two captured sets directly
-mediawiki-dom-snapshot diff <a> <b>
+python3 -m dist_ai.webcheck.domsnap wiki-diff <a> <b>
 
 # promote a captured set to be the new baseline
-mediawiki-dom-snapshot baseline-promote <tag>
+python3 -m dist_ai.webcheck.domsnap wiki-promote <tag>
 ```
 
 Environment overrides:
@@ -164,12 +170,11 @@ Environment overrides:
 | Var | Default | Meaning |
 |---|---|---|
 | `BASE_URL`     | `https://www.kicksecure.com` | target wiki origin |
-| `PAGES_FILE`   | `/etc/mediawiki-dom-snapshot/pages.conf` | one title per line |
-| `VIEWPORT`     | `1280x800` | browser viewport |
+| `PAGES_FILE`   | `/usr/share/domsnap-engine/wiki-pages.conf` | one title per line |
 | `TIMEOUT_MS`   | `30000` | per-page timeout |
-| `RAW_DIR`      | `~/private-cache/mediawiki-dom-snapshot/raw` | raw output |
-| `FIX_DIR`      | `~/private-cache/mediawiki-dom-snapshot/fixtures` | normalised |
-| `BASELINE_DIR` | `~/private-cache/mediawiki-dom-snapshot/baseline` | baseline corpus |
+| `RAW_DIR`      | `~/private-cache/domsnap-wiki/raw` | raw output |
+| `FIX_DIR`      | `~/private-cache/domsnap-wiki/fixtures` | normalised |
+| `BASELINE_DIR` | `~/private-cache/domsnap-wiki/baseline` | baseline corpus |
 
 ## sdwdate-gui-tests
 

@@ -30,7 +30,9 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
-readonly CSPELL_PKG='cspell@8'
+## Pinned EXACT (not a floating cspell@8): a float could serve a tampered 8.x. --ignore-scripts
+## (below) also stops npm lifecycle scripts running as root during the install.
+readonly CSPELL_PKG='cspell@8.19.4'
 readonly SANDBOX_WORKDIR="/home/user/webcheck-cspell-sandbox-run.$$"
 
 die(){
@@ -68,17 +70,20 @@ sandbox exec --pid-scope own -- type sandbox-confine >/dev/null 2>&1 \
 ## --- provision cspell (idempotent, forget-proof: the safe path is the DEFAULT) ---------------
 ## node+npm come with the lighthouse/axe provisioning; ensure them, then install cspell globally.
 ## sudo + apt + a global npm install need the SHARED pid namespace (sudo is dead in a private one).
-if ! sandbox exec --pid-scope own -- sh -c 'command -v cspell >/dev/null 2>&1'; then
-   printf '%s\n' 'webcheck-cspell-sandbox: installing cspell in the sandbox (one-time)...' >&2
+## Gate on the MAJOR version, not mere presence: a non-8.x cspell already on PATH (e.g. a 10.x
+## from other provisioning) would satisfy a `command -v` check yet refuse to run on node 20, so
+## the lane must (re)install the pinned 8.x over it. `cspell --version` prints e.g. "8.19.4".
+if ! sandbox exec --pid-scope own -- sh -c 'cspell --version 2>/dev/null | grep -Eq "^8\."'; then
+   printf '%s\n' 'webcheck-cspell-sandbox: installing pinned cspell 8.x in the sandbox (one-time)...' >&2
    if ! sandbox exec --pid-scope own -- sh -c 'command -v npm >/dev/null 2>&1'; then
       printf '%s\n' 'webcheck-cspell-sandbox: installing nodejs + npm in the sandbox (signed apt)...' >&2
       sandbox exec --pid-scope shared -- sudo apt-get install --yes nodejs npm >&2 \
          || die 'could not install nodejs/npm in the sandbox'
    fi
-   sandbox exec --pid-scope shared -- sudo npm install --global --no-fund --no-audit "${CSPELL_PKG}" >&2 \
+   sandbox exec --pid-scope shared -- sudo npm install --global --no-fund --no-audit --ignore-scripts "${CSPELL_PKG}" >&2 \
       || die "'npm install -g ${CSPELL_PKG}' failed in the sandbox"
-   sandbox exec --pid-scope own -- sh -c 'command -v cspell >/dev/null 2>&1' \
-      || die 'cspell still absent after install'
+   sandbox exec --pid-scope own -- sh -c 'cspell --version 2>/dev/null | grep -Eq "^8\."' \
+      || die 'cspell 8.x still absent after install'
 fi
 
 ## --- stage the webcheck core, the assets, the baselines, and each site root, then run ---------
