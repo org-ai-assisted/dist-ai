@@ -494,11 +494,21 @@ def test_home_binds_nocanonicalize_and_symlink_reject():
         ## The target MUST be a BARE dir path. A trailing slash or '/.' makes the
         ## kernel resolve THROUGH a symlinked mountpoint at mount(2) time, defeating
         ## the no-canonicalize backstop (the [ -L ] reject still guards it, but keep
-        ## the backstop intact). Catch a trailing-separator target with a clear
-        ## message -- independent of pat, which only matches the bare spelling.
+        ## the backstop intact). A separator sneaks in two ways: INSIDE the closing
+        ## quote ("...tb/"), or CONCATENATED after it in any quoting form ("...tb"/,
+        ## "...tb"'/', "...tb"$'/', "...tb"\/ -- all one word '.../tb/' to the shell).
+        ## Catch the inside form directly; for the outside form, flag a closing quote
+        ## immediately followed by a separator-introducing char (/ ' " $ \) -- the
+        ## only ways to concatenate a separator. A word TERMINATOR (space ; & | < > ))
+        ## ends the operand and is NOT flagged, so a bare target does not false-fail.
+        ## SCOPE: a realistic source-edit backstop, not a shell parser -- a separator
+        ## hidden behind a '#' (cut as a comment by _shell_commands) or a second
+        ## differently-quoted bind to the same target are out of scope; the [ -L ]
+        ## reject + no-canonicalize remain the real guards. Independent of pat, which
+        ## only matches the bare spelling.
         trailing = [lines[i] for i, cmd in _shell_commands(text)
                     if re.search(rf'--bind\b.*"\$\{{home_base_dir\}}/\$\{{user_name\}}'
-                                 rf'/{re.escape(target)}/[./]*"', cmd)]
+                                 rf'/{re.escape(target)}(?:/[./]*"|"(?=[/\x27"$\\]))', cmd)]
         assert not trailing, (
             f"the {target} home bind target has a trailing slash/dot, which defeats "
             f"the no-canonicalize backstop; pass a bare dir path: {trailing} ({DISPVM})")
