@@ -24,6 +24,8 @@ from __future__ import annotations
 import html.parser
 import os
 import sys
+import threading
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -38,7 +40,45 @@ _URL_ATTRS = frozenset({"href", "src", "poster", "data"})
 # urlopen, whatever the caller passes -- which is what makes the nosec on that urlopen honest.
 _PROBE_SCHEMES = frozenset({"http", "https"})
 _TIMEOUT = 10
+# Pause between retries of a TRANSIENT failure (DNS / timeout / connection refused). A busy
+# host (archive.org is the chronic case) refuses a burst of concurrent probes with ECONNREFUSED
+# but serves fine once its throttle window clears; retrying with no gap re-hits the same window,
+# so a LIVE-but-rate-limited link is misjudged "newly dead" (a flaky false red + baseline bloat).
+# A short backoff lets the window clear. Only transient retries pay it; a terminal alive/dead
+# verdict returns at once, and no backoff follows the final attempt.
+_RETRY_BACKOFF = 1.5
+# Minimum seconds between request STARTS to the SAME host, across all worker threads. check_root
+# probes concurrently (8 workers) and a site cites many URLs on one host (archive.org Wayback is
+# the chronic case); 8 simultaneous opens trip that host's burst throttle and all get refused,
+# misjudging LIVE links dead. This spaces same-host starts so one host cannot be burst-hammered,
+# while DIFFERENT hosts still run fully in parallel (the gate is periodic/CI, not a fast gate, so
+# the added wall-time is acceptable). 0 disables (single-URL / test callers).
+_HOST_MIN_INTERVAL = 2.0
 _UA = "Mozilla/5.0 (webcheck external-link gate; +https://github.com/org-ai-assisted)"
+
+_host_gate_lock = threading.Lock()
+_host_next_start: Dict[str, float] = {}
+
+
+def _sleep(seconds: float) -> None:
+    """Backoff/throttle sleep. A module-level seam so a test can observe/suppress the delay."""
+    time.sleep(seconds)
+
+
+def _host_gate(host: str) -> None:
+    """Block until this host's next permitted request start, reserving the slot after it. A
+    RESERVATION (not a held lock): the short critical section only computes+claims the next
+    start time, so concurrent same-host probes queue 1-per-interval without serializing the
+    actual fetches, and other hosts are never delayed."""
+    if not host or _HOST_MIN_INTERVAL <= 0:
+        return
+    with _host_gate_lock:
+        now = time.monotonic()
+        start = max(now, _host_next_start.get(host, 0.0))
+        _host_next_start[host] = start + _HOST_MIN_INTERVAL
+        wait = start - now
+    if wait > 0:
+        _sleep(wait)
 
 
 class _SchemeRestrictedRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -113,10 +153,12 @@ def _probe_once(url: str, timeout: int) -> Tuple[str, str]:
     a 404/410, or a DNS / connection failure, means the resource is gone. A network-level error
     (DNS, timeout, refused) is 'transient' (retried by the caller) -- a one-off blip on a live
     host must not read as rot."""
-    if urlsplit(url).scheme.lower() not in _PROBE_SCHEMES:
+    parts = urlsplit(url)
+    if parts.scheme.lower() not in _PROBE_SCHEMES:
         # Defensive: the collector yields http(s) only. Refuse any other scheme here so urlopen
         # below never opens file:// or a custom scheme (see _PROBE_SCHEMES).
         return "dead", "unsupported scheme (only http/https are probed)"
+    _host_gate((parts.hostname or "").lower())   # de-burst same-host probes (archive.org)
     for method in ("HEAD", "GET"):
         req = urllib.request.Request(url, method=method, headers={"User-Agent": _UA})
         try:
@@ -140,17 +182,23 @@ def _probe_once(url: str, timeout: int) -> Tuple[str, str]:
     return "transient", "unreachable"
 
 
-def check_url(url: str, timeout: int = _TIMEOUT, retries: int = 2) -> Tuple[bool, str]:
+def check_url(url: str, timeout: int = _TIMEOUT, retries: int = 2,
+              backoff: float = _RETRY_BACKOFF) -> Tuple[bool, str]:
     """(reachable, detail). Only a 404/410 or a persistent network failure (DNS / timeout /
     refused, after `retries`) counts as dead; a live-but-blocked/erroring host is reachable.
-    Redirects are followed by urllib."""
+    Redirects are followed by urllib. A transient failure pauses `backoff` seconds before the
+    next attempt (not after a terminal verdict, not after the last attempt) so a throttled-but-
+    live host is not misjudged dead."""
     detail = "unreachable"
-    for _ in range(max(1, retries + 1)):
+    attempts = max(1, retries + 1)
+    for attempt in range(attempts):
         verdict, detail = _probe_once(url, timeout)
         if verdict == "alive":
             return True, detail
         if verdict == "dead":
             return False, detail
+        if backoff > 0 and attempt + 1 < attempts:
+            _sleep(backoff)
     return False, "transient after retries: %s" % detail
 
 

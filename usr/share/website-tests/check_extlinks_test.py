@@ -109,6 +109,73 @@ def run() -> int:
     ck(isinstance(nxt, urllib.request.Request),
        "redirect to https:// is allowed (delegates to stdlib)")
 
+    # a TRANSIENT failure (DNS/timeout/refused) retries with a backoff pause BETWEEN attempts,
+    # so a throttled-but-live host (archive.org refuses a burst, then serves) is not misjudged
+    # dead. The backoff fires only between transient retries -- never after a terminal
+    # alive/dead verdict, never after the last attempt. Drive check_url with a scripted
+    # _probe_once + a recording _sleep (no real wait). No network.
+    _orig_probe, _orig_sleep = el._probe_once, el._sleep
+
+    def _scripted(verdicts):
+        box = {"i": 0}
+
+        def probe(_url, _timeout):
+            v = verdicts[min(box["i"], len(verdicts) - 1)]
+            box["i"] += 1
+            return (v, v)
+        return probe
+
+    try:
+        _sleeps = []
+        el._sleep = _sleeps.append
+
+        el._probe_once = _scripted(["transient", "transient", "alive"])
+        _reach, _ = el.check_url("https://throttled.test/", timeout=1, retries=2, backoff=0.01)
+        ck(_reach is True and len(_sleeps) == 2,
+           "transient-then-alive reads reachable; backoff fires between the 2 retries only: %r"
+           % _sleeps)
+
+        _sleeps.clear()
+        el._probe_once = _scripted(["dead"])
+        _reach, _ = el.check_url("https://gone.test/", timeout=1, retries=2, backoff=0.01)
+        ck(_reach is False and _sleeps == [],
+           "a terminal DEAD returns at once, no backoff slept: %r" % _sleeps)
+
+        _sleeps.clear()
+        el._probe_once = _scripted(["transient"])
+        _reach, _ = el.check_url("https://down.test/", timeout=1, retries=2, backoff=0.01)
+        ck(_reach is False and len(_sleeps) == 2,
+           "all-transient fails after retries; no backoff after the LAST attempt: %r" % _sleeps)
+    finally:
+        el._probe_once, el._sleep = _orig_probe, _orig_sleep
+
+    # per-host throttle: same-host request STARTS are spaced >= _HOST_MIN_INTERVAL (de-burst a
+    # rate-limiting host like archive.org Wayback); the first hit and a DIFFERENT host never
+    # wait, so parallelism across hosts is preserved. Drive _host_gate with a recording _sleep
+    # (no real wait) and a small interval. No network.
+    _orig_sleep2, _orig_interval = el._sleep, el._HOST_MIN_INTERVAL
+    try:
+        _hsleeps = []
+        el._sleep = _hsleeps.append
+        el._HOST_MIN_INTERVAL = 0.5
+        el._host_next_start.clear()
+        el._host_gate("a.test")        # first hit: slot free -> no wait
+        el._host_gate("a.test")        # same host again -> reserve + wait ~interval
+        el._host_gate("b.test")        # different host -> free
+        ck(len(_hsleeps) == 1 and abs(_hsleeps[0] - 0.5) < 0.2,
+           "per-host throttle delays only the 2nd same-host start, other hosts free: %r"
+           % _hsleeps)
+
+        _hsleeps.clear()
+        el._HOST_MIN_INTERVAL = 0
+        el._host_next_start.clear()
+        el._host_gate("a.test")
+        el._host_gate("a.test")
+        ck(_hsleeps == [], "interval 0 disables the throttle: %r" % _hsleeps)
+    finally:
+        el._sleep, el._HOST_MIN_INTERVAL = _orig_sleep2, _orig_interval
+        el._host_next_start.clear()
+
     sys.stdout.write("check_extlinks_test: %d pass, %d fail, 0 skip\n"
                      % (stats["pass"], stats["fail"]))
     return 1 if stats["fail"] else 0

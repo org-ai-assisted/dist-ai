@@ -189,6 +189,44 @@ else
    fail "missing helper: hook proceeded"
 fi
 
+## --- REGRESSION: a planted 'boot' symlink must not redirect the copies -------
+## The persistbootx fs is unencrypted (offline-attacker-writable). A 'boot -> /etc'
+## symlink there would, on the pre-fix code, let 'mkdir --parents' succeed on the
+## link and every copy (vmlinuz/initrd/grub.cfg) resolve THROUGH it onto the live
+## root fs -- a root arbitrary-write at kernel-upgrade time. A dedicated mount stub
+## plants that symlink into the hook's mount target; the hook must refuse it, write
+## NOTHING into the evil target, and still exit 0 (best-effort, never abort dpkg).
+evil_target="${work}/evil-target"
+mkdir --parents -- "${evil_target}"
+sb_evil="${work}/bin-evil"
+mkdir --parents -- "${sb_evil}"
+cp -- "${sb}/mountpoint" "${sb_evil}/mountpoint"
+cp -- "${sb}/umount" "${sb_evil}/umount"
+## This mount records the target AND plants 'boot -> <evil_target>' in it, exactly
+## as a tampered persistbootx fs would carry it.
+printf '%s\n' '#!/bin/bash' \
+   "printf '%s\\n' \"\$3\" > \"${work}/mountdir\"" \
+   "ln --symbolic -- \"${evil_target}\" \"\$3/boot\"" \
+   'exit 0' > "${sb_evil}/mount"
+chmod +x "${sb_evil}/mount"
+HOOK_RC=0
+safe-rm --force -- "${work}/mountdir"
+PATH="${sb_evil}:${PATH}" \
+   TMPDIR="${work}" \
+   HELPER_SCRIPTS_PATH="${HELPER_SCRIPTS_PATH}" \
+   LIVE_PERSISTENCE_KERNEL_SRC="${srcboot}" \
+   PERSISTENT_BOOT_CMDLINE_FILE="${cmd_plain}" \
+   PERSISTENT_BOOT_DEVICE=/dev/fake-persistbootx \
+   bash "${hook}" 9.9.9 > /dev/null 2>&1 || HOOK_RC=$?
+assert_rc0 'planted-symlink'
+if [ ! -e "${evil_target}/vmlinuz-9.9.9" ] \
+   && [ ! -e "${evil_target}/initrd.img-9.9.9" ] \
+   && [ ! -e "${evil_target}/grub/grub.cfg" ]; then
+   pass "planted symlink: no write escaped onto the symlink target"
+else
+   fail "planted symlink: a write escaped through 'boot -> evil'"
+fi
+
 printf '%s\n' ""
 printf '%s\n' "===== persistence kernel hook: ${pass_count} pass, ${fail_count} fail ====="
 [ "${fail_count}" -eq 0 ]
