@@ -1593,6 +1593,27 @@ def run():
         check_site.check_duplicate_ids(root, _fails)
         check('check_duplicate_ids still flags a duplicate id ON the scope elements',
               any('x' in f for f in _fails), _fails)
+    with tempfile.TemporaryDirectory() as root:
+        # ai-review 1a: a stray </textarea> + markup inside <title> (RCDATA) must stay opaque,
+        # not desync a counter into reporting a PHANTOM duplicate. html.parser does not treat
+        # title as RCDATA by default -- the CDATA_CONTENT_ELEMENTS override does.
+        _write(root, 'index.html',
+               '<!doctype html><html><head><title>paste </textarea> <b id="x">z</b></title>'
+               '</head><body><div id="x">real</div></body></html>')
+        _fails = []
+        check_site.check_duplicate_ids(root, _fails)
+        check('check_duplicate_ids: RCDATA markup in <title> is opaque (no phantom dup)',
+              not _fails, _fails)
+    with tempfile.TemporaryDirectory() as root:
+        # ai-review 1b: a <template>-looking token inside <textarea> must NOT leave the scope
+        # stuck open and silently hide a REAL later duplicate.
+        _write(root, 'index.html',
+               '<!doctype html><html><body><textarea><template> x</textarea>'
+               '<div id="dup">a</div><div id="dup">b</div></body></html>')
+        _fails = []
+        check_site.check_duplicate_ids(root, _fails)
+        check('check_duplicate_ids: a real dup after an RCDATA <textarea> is still caught',
+              any('dup' in f for f in _fails), _fails)
     check('check_duplicate_ids is invoked from main()',
           'check_duplicate_ids(root' in main_body)
 

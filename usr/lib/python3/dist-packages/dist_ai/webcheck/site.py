@@ -1441,16 +1441,41 @@ def check_heading_breaks(root, failures):
 
 
 class _IdAudit(html.parser.HTMLParser):
-    """Collect every element id in document order (duplicates kept)."""
+    """Collect every document-tree element id in order (duplicates kept).
+
+    Two element kinds do not contribute document-tree ids and are handled distinctly, because
+    html.parser does NOT model either the way a browser does:
+    - <textarea>/<title> are RCDATA: their body is literal TEXT to a browser, not elements. But
+      html.parser only auto-treats <script>/<style> as opaque, so without help it would emit
+      spurious start/end events for tag-looking text inside them (reporting phantom ids, or a
+      stray </textarea> desyncing a depth counter). Extending CDATA_CONTENT_ELEMENTS makes
+      html.parser skip their bodies as opaque (close-tag matching still works) -- the correct fix.
+    - <template> contents ARE real elements, just a separate DocumentFragment tree (an id there
+      may validly repeat a document id). html.parser parses them normally, so a depth counter
+      over real template start/end events is accurate; skip ids while inside one."""
+
+    # textarea/title added to the stock ('script', 'style') so their RCDATA bodies are opaque.
+    CDATA_CONTENT_ELEMENTS = ('script', 'style', 'textarea', 'title')
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.ids: list[str] = []
+        self._template_depth = 0
 
     def handle_starttag(self, tag, attrs):
+        if self._template_depth:
+            if tag == 'template':
+                self._template_depth += 1
+            return
         for name, value in attrs:
             if name == 'id' and value:
                 self.ids.append(value)
+        if tag == 'template':
+            self._template_depth += 1
+
+    def handle_endtag(self, tag):
+        if tag == 'template' and self._template_depth:
+            self._template_depth -= 1
 
 
 def check_duplicate_ids(root, failures):
@@ -1464,10 +1489,12 @@ def check_duplicate_ids(root, failures):
         with open(page, encoding='utf-8') as handle:
             audit.feed(handle.read())
         seen: set[str] = set()
+        reported: set[str] = set()      # set membership keeps this O(n), not O(n^2)
         dupes: list[str] = []
         for ident in audit.ids:
-            if ident in seen and ident not in dupes:
+            if ident in seen and ident not in reported:
                 dupes.append(ident)
+                reported.add(ident)
             seen.add(ident)
         if dupes:
             failures.append('%s: duplicate element id(s): %s (a #fragment to a repeated '
