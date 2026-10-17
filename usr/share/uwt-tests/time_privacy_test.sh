@@ -157,6 +157,8 @@ check_err "-i above 60 rejected" "increment must be between 0 and 60." -i 61
 check_err "-i far out of range rejected" "increment must be between 0 and 60." -i 125
 check_err "-i 2^63 overflow value rejected" "increment must be between 0 and 60." -i 9223372036854775808
 check_err "-r above 60 rejected" "randomincrement must be between 1 and 60." -r 61
+## is_whole_number accepts 0, but 'random-between 1 0' crashes; reject it cleanly.
+check_err "-r 0 rejected (not a random-between crash)" "randomincrement must be between 1 and 60." -r 0
 
 ## -h prints usage and exits 0 (needs no TIMEDIR; must not be treated as error).
 help_rc=0
@@ -180,6 +182,19 @@ run_tp() {
    ## reports a clean FAIL instead of errexit aborting the suite.
    tp_out="$("${subject}" "$@")" || tp_out="__SUBJECT_CRASHED__"
 }
+
+## Zero-padded date components (forums.whonix.org/t/23643 Bug #1): 'date +%d' /
+## '+%m' yield '05', '09'; passed verbatim to faketime, not used in arithmetic,
+## so a leading zero is valid. The hardened is_whole_number rejected them -> the
+## DEFAULT date broke on days/months 01-09. A regressed subject exits 1 ("day is
+## not a digit."), so run_tp captures that as a clean FAIL (sentinel) here.
+td="$(make_timedir zeropad_day)"
+run_tp -y 2026 -m 09 -d 05 -i 1 -f "${td}"
+check "zero-padded -d 05 -m 09 accepted" "${tp_out}" "2026-09-05 0:0:1"
+
+td="$(make_timedir zeropad_single)"
+run_tp -y 2026 -m 01 -d 09 -i 1 -f "${td}"
+check "zero-padded -d 09 -m 01 accepted" "${tp_out}" "2026-01-09 0:0:1"
 
 ## A non-digit or partial-garbage counter file is treated as 0 (read_date_file's
 ## sed nodigits guard), never propagated.

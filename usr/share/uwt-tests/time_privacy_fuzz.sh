@@ -104,9 +104,15 @@ note() {
 }
 
 ## Mirror helper-scripts is_whole_number: ^(0|[1-9][0-9]*)$ (no leading zero,
-## no sign, no non-digit). The oracle classifies every generated value with it.
+## no sign, no non-digit). The oracle classifies the increment with it.
 is_whole() {
    [[ "${1}" =~ ^(0|[1-9][0-9]*)$ ]]
+}
+
+## Mirror the subject's is_digit_string: digit-only, leading zeros allowed (the
+## date components are zero-padded and passed verbatim, not used in arithmetic).
+is_digits() {
+   [[ "${1}" =~ ^[0-9]+$ ]]
 }
 
 ## A per-run fresh TIMEDIR; echoes its path.
@@ -262,11 +268,11 @@ fuzz_options() {
       expect_reject=1; expect_msg="randomincrement must be a positive number."
    elif [ "${i_present}" -eq 1 ] && ! is_whole "${iv}"; then
       expect_reject=1; expect_msg="increment is not a digit."
-   elif ! is_whole "${yv}"; then
+   elif ! is_digits "${yv}"; then
       expect_reject=1; expect_msg="year is not a digit."
-   elif ! is_whole "${mv}"; then
+   elif ! is_digits "${mv}"; then
       expect_reject=1; expect_msg="month is not a digit."
-   elif ! is_whole "${dv}"; then
+   elif ! is_digits "${dv}"; then
       expect_reject=1; expect_msg="day is not a digit."
    fi
 
