@@ -1279,6 +1279,60 @@ def run():
         check('indexable home page still in the sitemap page set',
               any(u.endswith('example.github.io/') for u in urls), repr(urls))
 
+    # applicability guard: the FAMILY-policy checker must SKIP a MediaWiki/wiki site (the
+    # kicksecure/whonix stage sites), not emit a wall of false family-rule failures on it.
+    # Positive wiki detection: a BROKEN family site (lost its footer) is NOT a wiki, so it
+    # still runs the family checks and fails loudly rather than being silently skipped.
+    import contextlib
+    import io
+
+    def _run_main(argv):
+        saved = sys.argv
+        sys.argv = ['check_site'] + argv
+        out, err = io.StringIO(), io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = check_site.main()
+        finally:
+            sys.argv = saved
+        return rc, out.getvalue(), err.getvalue()
+
+    _mwpage = ('<!doctype html><html><head><title>t</title></head><body>'
+               '<span class="mw-editsection"><span class="mw-editsection-bracket">[</span>'
+               'edit</span><div class="mw-parser-output">x</div></body></html>')
+
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _mwpage)
+        check('_looks_like_wiki detects a MediaWiki page', check_site._looks_like_wiki(root))
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _page % '<p class="kicker">hand-authored family page</p>')
+        check('_looks_like_wiki is False on a family page',
+              not check_site._looks_like_wiki(root))
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _page % '<div class="mw-foo">one mw- token only</div>')
+        check('_looks_like_wiki needs a quorum (one mw- token is not enough)',
+              not check_site._looks_like_wiki(root))
+    with tempfile.TemporaryDirectory() as root:
+        check('_looks_like_wiki is False when index.html is absent',
+              not check_site._looks_like_wiki(root))
+
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _mwpage)
+        rc, _out, err = _run_main([root])
+        check('main() skips a wiki root (rc 77)', rc == 77, repr((rc, err)))
+        check('main() names the wiki skip reason', 'MediaWiki' in err, repr(err))
+        check('main() emits no family FAIL lines for a wiki root',
+              'FAIL ' not in err, repr(err))
+    with tempfile.TemporaryDirectory() as root:
+        # a non-wiki minimal site is NOT skipped: the family checks run and it fails loudly
+        # (no footer etc.), proving the guard does not over-skip a broken family site.
+        _write(root, 'index.html', _page % '<p>minimal non-wiki page, no family footer</p>')
+        rc, _out, err = _run_main([root])
+        check('main() does NOT wiki-skip a non-wiki root (broken family still fails loudly)',
+              'MediaWiki site' not in err and rc != 77, repr((rc, err)))
+
+    check('_looks_like_wiki is invoked from main()', '_looks_like_wiki(root)' in main_body)
+
     passed = sum(1 for _n, ok, _d in results if ok)
     failed = len(results) - passed
     for name, ok, detail in results:
