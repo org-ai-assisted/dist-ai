@@ -41,7 +41,7 @@ fi
 # shellcheck disable=SC1090,SC1091
 source "${persistent_boot_sh_path}"
 
-for fn in persistent_boot_cmdline persistent_boot_write_grub_cfg; do
+for fn in persistent_boot_cmdline persistent_boot_write_grub_cfg persistent_boot_safe_boot_dir; do
    if [ ! "$(type -t "${fn}")" = 'function' ]; then
       printf '%s\n' "FATAL: sourcing '${persistent_boot_sh_path}' defined no '${fn}' function" >&2
       exit 1
@@ -158,6 +158,67 @@ if [ "${dev_out}" = '/dev/fake-persistbootx' ]; then
    pass "device: PERSISTENT_BOOT_DEVICE seam returns the forced device"
 else
    fail "device seam wrong: '${dev_out}'"
+fi
+
+## --- persistent_boot_safe_boot_dir ------------------------------------------
+## The shared chokepoint both the hook and persistence-setup use before any write:
+## '<mount>/boot' must be a real directory, never a planted symlink that would
+## redirect the kernel/initrd copies onto the live root fs.
+
+## A fresh mount (no 'boot' yet): creates it and echoes the path.
+sbd_fresh="${workdir}/sbd-fresh"
+mkdir --parents -- "${sbd_fresh}"
+sbd_rc=0
+sbd_out="$(persistent_boot_safe_boot_dir "${sbd_fresh}")" || sbd_rc=$?
+if [ "${sbd_rc}" -eq 0 ] && [ "${sbd_out}" = "${sbd_fresh}/boot" ] && [ -d "${sbd_fresh}/boot" ]; then
+   pass "safe_boot_dir: creates and echoes '<mount>/boot' on a fresh mount"
+else
+   fail "safe_boot_dir fresh wrong (rc=${sbd_rc} out='${sbd_out}')"
+fi
+
+## An existing real 'boot' directory is accepted idempotently.
+sbd_rc=0
+sbd_out="$(persistent_boot_safe_boot_dir "${sbd_fresh}")" || sbd_rc=$?
+if [ "${sbd_rc}" -eq 0 ] && [ "${sbd_out}" = "${sbd_fresh}/boot" ]; then
+   pass "safe_boot_dir: idempotent on an existing real boot dir"
+else
+   fail "safe_boot_dir idempotent wrong (rc=${sbd_rc} out='${sbd_out}')"
+fi
+
+## REGRESSION (root arbitrary-write): a planted 'boot -> <evil>' symlink is refused
+## and nothing is created in the evil target. On the pre-fix code 'mkdir --parents'
+## succeeded on the link and writes escaped through it.
+sbd_evil_mount="${workdir}/sbd-evil"
+sbd_evil_target="${workdir}/sbd-evil-target"
+mkdir --parents -- "${sbd_evil_mount}" "${sbd_evil_target}"
+ln --symbolic -- "${sbd_evil_target}" "${sbd_evil_mount}/boot"
+sbd_rc=0
+sbd_out="$(persistent_boot_safe_boot_dir "${sbd_evil_mount}")" || sbd_rc=$?
+if [ "${sbd_rc}" -eq 1 ] && [ -z "${sbd_out}" ]; then
+   pass "safe_boot_dir: refuses a planted 'boot' symlink (rc 1, no path)"
+else
+   fail "safe_boot_dir symlink not refused (rc=${sbd_rc} out='${sbd_out}')"
+fi
+
+## A non-directory 'boot' (a regular file) is refused too.
+sbd_file_mount="${workdir}/sbd-file"
+mkdir --parents -- "${sbd_file_mount}"
+touch -- "${sbd_file_mount}/boot"
+sbd_rc=0
+persistent_boot_safe_boot_dir "${sbd_file_mount}" > /dev/null 2>&1 || sbd_rc=$?
+if [ "${sbd_rc}" -eq 1 ]; then
+   pass "safe_boot_dir: refuses a non-directory 'boot'"
+else
+   fail "safe_boot_dir non-dir boot not refused (rc=${sbd_rc})"
+fi
+
+## An empty mount dir is refused (never operate on '/boot').
+sbd_rc=0
+persistent_boot_safe_boot_dir '' > /dev/null 2>&1 || sbd_rc=$?
+if [ "${sbd_rc}" -eq 1 ]; then
+   pass "safe_boot_dir: refuses an empty mount dir"
+else
+   fail "safe_boot_dir empty-mount not refused (rc=${sbd_rc})"
 fi
 
 ## --- persistent_boot_prune --------------------------------------------------
