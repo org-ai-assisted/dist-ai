@@ -322,6 +322,8 @@ check_loopback_passthrough "loopback w/ userinfo (localhost)" 'http://user@local
 ## isolated circuit (the host is the part after '@', not 'localhost').
 drive_main 0 none 'http://localhost:password@example.com/'
 check "remote host, 'localhost' as username: proxy injected" "$(injected_socks5h)" "yes"
+drive_main 0 none 'http://127.0.0.1@evil.com/'
+check "remote host, '127.0.0.1' as username: proxy injected" "$(injected_socks5h)" "yes"
 
 ## A non-loopback host must STILL be injected. Guards against over-match: a
 ## loopback literal in the PATH/QUERY, a 'localhost'/'127.'-prefixed SUBDOMAIN or
