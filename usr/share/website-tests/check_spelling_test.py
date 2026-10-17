@@ -119,6 +119,22 @@ def run():
     finally:
         subprocess.run = orig_run
 
+    # --- argv: cspell is invoked WITHOUT --no-must-find-files (0 files -> error -> fail loud) ----
+    captured = {}
+
+    def _cap(*a, **k):
+        captured["argv"] = list(a[0]) if a else []
+        return _P(0, "", "")
+
+    subprocess.run = _cap  # type: ignore[assignment]
+    try:
+        spelling._run_cspell("/r", "cfg")
+    finally:
+        subprocess.run = orig_run
+    ck(captured.get("argv", [])[:2] == ["cspell", "lint"], "_run_cspell invokes 'cspell lint'")
+    ck("--no-must-find-files" not in captured.get("argv", []),
+       "_run_cspell does NOT pass --no-must-find-files (a 0-file scan must fail loud)")
+
     print("check_spelling_test: %d pass, %d fail, 0 skip" % (stats["pass"], stats["fail"]))
     return 1 if stats["fail"] else 0
 

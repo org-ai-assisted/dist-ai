@@ -45,9 +45,12 @@ def _run_cspell(root: str, config: str) -> List[Tuple[str, str]]:
     # Accepted limitation: an in-document `cspell:disable` directive in the CHECKED HTML would
     # suppress spell-check to EOF. The input is our own curated/built Pages HTML, which carries no
     # cspell directives, so this is not a realistic bypass; revisit if that content ever does.
+    # NO --no-must-find-files on purpose: if the glob matches 0 files (an empty tree, or a site
+    # whose only index.html is a SYMLINK -- cspell's glob has followSymbolicLinks:false, so it is
+    # skipped), cspell exits non-zero and this raises below, failing LOUD rather than a false green.
     proc = subprocess.run(  # nosec B603 -- fixed argv, no shell=True, paths are ours
         ["cspell", "lint", "--no-progress", "--no-color", "--no-summary",
-         "--no-must-find-files", "--config", os.path.abspath(config),
+         "--config", os.path.abspath(config),
          "--", os.path.join("**", "*.html")],
         capture_output=True, text=True, cwd=root)
     stderr = proc.stderr or ""
@@ -69,8 +72,8 @@ def _run_cspell(root: str, config: str) -> List[Tuple[str, str]]:
     # issue is therefore an ERROR, never clean -- fail loud (the silent pass this gate prevents),
     # mirroring the gitleaks lane's "rc 1 with an empty report" check.
     if proc.returncode == 1 and not out:
-        raise RuntimeError("cspell exit 1 with no parseable issues (config/dictionary error?): %s"
-                           % ((stderr or proc.stdout or "")[-300:]))
+        raise RuntimeError("cspell exit 1 with no parseable issues (config/dictionary error, or 0 "
+                           "files matched?): %s" % ((stderr or proc.stdout or "")[-300:]))
     return out
 
 

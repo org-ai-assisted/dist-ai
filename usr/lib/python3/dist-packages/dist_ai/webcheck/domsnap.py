@@ -292,17 +292,26 @@ def _scrub(text: str, base_url: str) -> str:
     """Collapse the per-run mount base URL to HOST_PLACEHOLDER in BOTH plain and percent-encoded
     forms. share.js (and friends) write encodeURIComponent(location.href) into link hrefs, so the
     encoded `http%3A%2F%2F127.0.0.1%3A<port>` must be scrubbed too or the random port diffs.
-    Matches are ANCHORED on a host/port boundary -- a following word char, dot or hyphen could
-    EXTEND the host or port, so matching there would mask a real change: a longer port that merely
-    starts with ours (`:38271` within `:382719`), or a longer hostname (`good.example` within
-    `good.example.evil`). A legit URL continues with '/', a query, a quote, or ends. Case-SENSITIVE
-    on purpose: encodeURIComponent emits a fixed casing, and ignoring case would collapse a real
-    path-case change (`/app` vs `/APP`) into the baseline."""
+    Matches are ANCHORED on a host/port boundary -- a following word char, dot, hyphen, ':' (port)
+    or '@' (userinfo) could EXTEND the authority, so matching there would alter a DIFFERENT change:
+    a longer port that merely starts with ours (`:38271` within `:382719`), a longer hostname
+    (`good.example` within `good.example.evil`), or the same host with an explicit port
+    (`good.example` within `good.example:8443`). A legit occurrence continues with '/', '?', '#', a
+    quote, '%', or ends. For the percent-encoded form, ONLY the `%XX` escape hex is matched
+    case-insensitively (encodeURIComponent emits uppercase; a page may carry lowercase `%3a`); the
+    literal chars stay case-sensitive so a real path-case change (`%2Fapp` vs `%2FAPP`) is NOT
+    masked."""
     enc_base = urllib.parse.quote(base_url, safe="")
     enc_ph = urllib.parse.quote(HOST_PLACEHOLDER, safe="")
-    boundary = r"(?![\w.\-])"
+    boundary = r"(?![\w.\-:@])"
     text = re.sub(re.escape(base_url) + boundary, HOST_PLACEHOLDER, text)
-    text = re.sub(re.escape(enc_base) + boundary, enc_ph, text)
+
+    def _ci_hex(m):  # "%3A" -> "%3[aA]" : case-fold only the escape's letters, not literals
+        return "%" + "".join("[%s%s]" % (c.lower(), c.upper()) if c.isalpha() else c
+                             for c in m.group(1))
+
+    enc_pat = re.sub(r"%([0-9A-Fa-f]{2})", _ci_hex, re.escape(enc_base))
+    text = re.sub(enc_pat + boundary, enc_ph, text)
     return text
 
 
@@ -365,13 +374,18 @@ def _safe_component(name: str, what: str) -> str:
 
 
 def _safe_dir(path: Path, what: str) -> Path:
-    """Refuse a destructive rmtree/copytree on a dangerous target before it runs. An env-supplied
-    dir that is empty (Path('') resolves to '.'), relative, or the filesystem root would wipe the
-    cwd or '/' -- the former bash wrapper got this protection from safe-rm."""
-    rp = str(path)
-    if rp in ("", ".", "/") or not path.is_absolute():
-        raise SystemExit("domsnap: refusing to operate on %s %r (need an absolute non-root dir)"
-                         % (what, rp))
+    """Refuse a destructive rmtree/copytree on a dangerous target before it runs. The path is
+    RESOLVED (collapsing '..' and following symlinks to the real target) and rejected unless it is
+    absolute and at least 3 path components deep -- so the filesystem root and a top-level system
+    dir are refused however they are spelled: '', '.', '/', '//', '/..', '/tmp/..' (all resolve to
+    '/'), and `RAW_DIR=/`+tag -> '/etc' (2 parts). A real corpus dir (~/private-cache/... or a test
+    tmpdir) is always deeper. The former bash wrapper got this protection from safe-rm."""
+    # is_absolute() on the ORIGINAL: a relative path (incl. '' / '.') would resolve against the cwd
+    # and pass the depth test, so rmtree would wipe the working dir -- reject it up front.
+    resolved = path.resolve()
+    if (not path.is_absolute()) or len(resolved.parts) < 3:
+        raise SystemExit("domsnap: refusing to operate on %s %r (resolves to %r -- relative, root, "
+                         "or a top-level system dir)" % (what, str(path), str(resolved)))
     return path
 
 
@@ -512,17 +526,23 @@ def _cmd_wiki_normalise(args) -> int:
     tag = _safe_component(args.tag, "tag")
     raw = Path(env["RAW_DIR"]) / tag
     fix = Path(env["FIX_DIR"]) / tag
+    # Check the raw corpus FIRST, before touching fix: a typo'd / empty / already-captured-away raw
+    # tag must NOT destroy the prior good fixtures (clear-then-check would).
+    page_dirs = sorted(p for p in raw.iterdir() if p.is_dir()) if raw.is_dir() else []
+    if not page_dirs:
+        print("domsnap wiki-normalise: no raw page dirs under %s -- run 'wiki-capture %s' first"
+              % (raw, tag), file=sys.stderr)
+        return 1
+    # Source and destination must differ, or clearing fix below would delete the raw input.
+    if raw.resolve() == fix.resolve():
+        raise SystemExit("domsnap: RAW_DIR and FIX_DIR must differ (both resolve to %s)"
+                         % raw.resolve())
     # Rebuild the tag's fixtures from scratch: a page/mode dropped from the raw corpus must not
     # linger in FIX_DIR and be diffed as current.
     _safe_dir(fix, "FIX_DIR/<tag>")
     if fix.exists():
         shutil.rmtree(fix)
     fix.mkdir(parents=True, exist_ok=True)
-    page_dirs = sorted(p for p in raw.iterdir() if p.is_dir()) if raw.is_dir() else []
-    if not page_dirs:
-        print("domsnap wiki-normalise: no raw page dirs under %s -- run 'wiki-capture %s' first"
-              % (raw, tag), file=sys.stderr)
-        return 1
     # Per-page dirs are independent; normalise them in parallel (NORMALISE_JOBS, default 8), each
     # via normalize.py <raw/page> <fix/page>, as the old wrapper's xargs -P did.
     jobs = max(1, int(os.environ.get("NORMALISE_JOBS", "8")))
