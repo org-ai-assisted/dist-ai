@@ -30,6 +30,12 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
+## Scrub inherited git location vars: GIT_DIR OVERRIDES 'git -C', so a caller with
+## GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE set (a git hook, 'git submodule foreach')
+## would make the fixture's git ops -- and the sourced convert_tree's 'git ls-files'
+## -- operate on the CALLER's repo instead. Unset them before any git runs.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+
 if [ -n "${DERIVATIVE_MAKER_DIR:-}" ]; then
    dm_checkout="${DERIVATIVE_MAKER_DIR}"
 else
@@ -88,7 +94,7 @@ if [ -z "${subject}" ]; then
    printf '%s\n' "FATAL: spdx-reuse.bsh not found (set SPDX_REUSE_BSH)." >&2
    exit 1
 fi
-for tool in reuse git; do
+for tool in reuse git safe-rm; do
    if ! command -v "${tool}" >/dev/null; then
       printf '%s\n' "FATAL: '${tool}' missing; a hard requirement of the test." >&2
       exit 1
@@ -276,9 +282,11 @@ SPDX-License-Identifier = "AGPL-3.0-or-later"
 EOF
 
 ## A git checkout is required (convert_tree enumerates via 'git ls-files').
-## Hooks disabled: the fixture is not testing the operator's git hooks.
+## Hooks disabled persistently (not just -c on one call): the fixture is not
+## testing the operator's git hooks, and convert_tree runs its own git.
 git -C "${fixture}" -c init.defaultBranch=main init --quiet
-git -C "${fixture}" -c core.hooksPath=/dev/null add --all
+git -C "${fixture}" config core.hooksPath /dev/null
+git -C "${fixture}" add --all
 
 ## Pre-state canaries: the fixture starts WITHOUT SPDX and WITH the old layout.
 if grep --quiet --recursive --fixed-strings --exclude-dir=.git -- 'SPDX-FileCopyrightText:' "${fixture}"; then
@@ -309,22 +317,40 @@ assert_grep "${fixture}/man/thing.8.ronn" "# SPDX-FileCopyrightText: ENCRYPTED S
 assert_grep "${fixture}/translations/x.yaml" "SPDX-FileCopyrightText: troubadour <trobador@riseup.net>" \
    "x.yaml: non-company holder preserved"
 
-## Years must be gone from every converted company header.
-if grep --recursive --extended-regexp --exclude-dir=.git -- 'SPDX-FileCopyrightText:.*(19|20)[0-9][0-9]' "${fixture}"; then
-   fail "a converted SPDX header still carries a year"
+## Legacy headers must be REPLACED, not merely supplemented: the unique conditions
+## phrase must survive NOWHERE (it is absent from COPYING and the DEP-5 license
+## text, so a tree-wide check is exact). Presence by output, not grep's exit code.
+leftover="$(grep --recursive --fixed-strings --exclude-dir=.git \
+   -- 'See the file COPYING for copying conditions.' "${fixture}" || true)"
+if [ -n "${leftover}" ]; then
+   fail "a legacy conditions line survived (header appended, not replaced): ${leftover}"
 else
-   pass "no converted SPDX header carries a year"
+   pass "no legacy conditions line survives (headers replaced in place)"
+fi
+
+## Years must be gone from EVERY copyright: the per-file ':' SPDX form, the
+## REUSE.toml ' = ' SPDX form, AND debian/copyright's DEP-5 'Copyright:' field.
+## Matched by OUTPUT presence (a grep error exits non-zero but prints nothing, so
+## the old 'if grep' form would mis-read an error as 'no year').
+year_hits="$(grep --recursive --extended-regexp --exclude-dir=.git \
+   -- 'SPDX-FileCopyrightText.*[0-9][0-9][0-9][0-9]' "${fixture}" || true)"
+dep5_year="$(grep --extended-regexp -- '^Copyright:.*[0-9][0-9][0-9][0-9]' \
+   "${fixture}/debian/copyright" || true)"
+if [ -n "${year_hits}${dep5_year}" ]; then
+   fail "a converted copyright still carries a year: ${year_hits}${dep5_year}"
+else
+   pass "no converted copyright (SPDX header, REUSE.toml, or DEP-5) carries a year"
 fi
 
 ## Headers ADDED to comment-capable files that lacked one.
 assert_grep "${fixture}/README.md" 'SPDX-FileCopyrightText:' "README.md: SPDX header added (HTML)"
-## The added HTML header must be a well-formed comment: both the opener and the
-## closer must be present ('-->' is a printf-format footgun, hence this guard).
-if grep --quiet --fixed-strings -- '<!--' "${fixture}/README.md" \
+## The added HTML header must OPEN on line 1 and be closed ('-->' is a
+## printf-format footgun, hence this guard; order-sensitive, not two loose greps).
+if [ "$(head -n 1 -- "${fixture}/README.md")" = '<!--' ] \
    && grep --quiet --fixed-strings -- '-->' "${fixture}/README.md"; then
-   pass "README.md: added HTML comment is closed ('<!--' and '-->' both present)"
+   pass "README.md: HTML header opens on line 1 and is closed"
 else
-   fail "README.md: added HTML comment is not well-formed (missing '<!--' or '-->')"
+   fail "README.md: added HTML header not well-formed (line 1 '<!--' + a later '-->')"
 fi
 assert_grep "${fixture}/Makefile" '## SPDX-FileCopyrightText:' "Makefile: SPDX header added (hash)"
 assert_grep "${fixture}/.gitignore" '## SPDX-FileCopyrightText:' ".gitignore: SPDX header added (hash)"
@@ -342,21 +368,35 @@ assert_grep "${fixture}/debian/copyright" 'Copyright (C) <year>  <name of author
 
 ## REUSE.toml: narrow, precedence=closest, generic globs + the leftover data file,
 ## and the old star-glob gone.
+## The blanket '**' must be gone in ANY spelling (scalar 'path = "**"' or a list
+## 'path = ["**"]'), so reject the '"**"' token itself, not one fixed spelling.
 if grep --quiet --fixed-strings -- 'precedence = "closest"' "${fixture}/REUSE.toml" \
    && grep --quiet --fixed-strings -- '"debian/**"' "${fixture}/REUSE.toml" \
    && grep --quiet --fixed-strings -- '"config-test.txt"' "${fixture}/REUSE.toml" \
-   && ! grep --quiet --fixed-strings -- 'path = "**"' "${fixture}/REUSE.toml"; then
-   pass "REUSE.toml: narrow precedence=closest, generic globs + leftover, no star-glob"
+   && ! grep --quiet --fixed-strings -- '"**"' "${fixture}/REUSE.toml"; then
+   pass "REUSE.toml: narrow precedence=closest, generic globs + leftover, no '**' glob"
 else
    fail "REUSE.toml: not the expected narrow hybrid shape"
 fi
 
-## reuse lint must pass on the converted tree.
+## reuse lint must pass on the converted tree (convert_tree's own returned rc).
 if [ "${lint_rc}" -eq 0 ]; then
    pass "reuse lint exits 0 on the converted tree"
 else
    fail "reuse lint failed (rc=${lint_rc}):"
    cat -- "${lint_log}" >&2
+fi
+
+## Re-run reuse lint INDEPENDENTLY (do not solely trust the subject's returned rc:
+## a convert_tree that wrote headers but skipped reuse lint and returned 0 would
+## otherwise pass vacuously).
+indep_lint_rc=0
+( cd -- "${fixture}" && reuse lint ) > "${workdir}/indep-lint.log" 2>&1 || indep_lint_rc="$?"
+if [ "${indep_lint_rc}" -eq 0 ]; then
+   pass "independent reuse lint exits 0 on the converted tree"
+else
+   fail "independent reuse lint failed (rc=${indep_lint_rc}):"
+   cat -- "${workdir}/indep-lint.log" >&2
 fi
 
 if [ "${test_failures}" -ne 0 ]; then
