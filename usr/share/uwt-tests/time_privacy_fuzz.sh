@@ -328,36 +328,34 @@ fuzz_options() {
 
 ## --- mode B: counter-file content handling + carry/wrap ---
 fuzz_counter() {
-   local dir sc mc hc inc ks km kh total_s s m h tm min_carry hr_carry expected
+   local dir sc mc hc inc ks km kh total_s s m h expected
    dir="$(fresh_dir)"
    sc="$(gen_counter 59)"
    mc="$(gen_counter 59)"
    hc="$(gen_counter 23)"
-   ## Wide, unbounded increment (-i / -r take any whole number) so the modulo
-   ## carry across minutes AND hours is exercised, not just a single-second step.
-   inc="$(( RANDOM % 7201 ))"
+   ## Increment within the enforced 0-60 range; the sum carries at most one
+   ## minute, so the seconds remainder (total%60) is the property under test.
+   inc="$(( RANDOM % 61 ))"
    printf '%s\n' "${sc}" > "${dir}/seconds_file"
    printf '%s\n' "${mc}" > "${dir}/minutes_file"
    printf '%s\n' "${hc}" > "${dir}/hours_file"
 
-   ## Oracle mirrors the subject's modulo carry exactly: seconds always go through
-   ## base-10 arithmetic and become total%60, carrying total/60 into minutes (and
-   ## likewise minutes into hours). Minutes/hours keep their verbatim string when
-   ## no carry reaches them; a carry replaces the field with a normalized int.
+   ## Oracle mirrors the subject exactly: seconds become total%60 (base-10),
+   ## carrying one minute when the sum reaches 60 (and one hour when minutes do).
+   ## Minutes/hours keep their verbatim string unless a carry reaches them, in
+   ## which case the field becomes a normalized int.
    ks="$(counter_keep "${sc}")"
    km="$(counter_keep "${mc}")"
    kh="$(counter_keep "${hc}")"
    total_s=$(( 10#${ks} + inc ))
    s=$(( total_s % 60 ))
-   min_carry=$(( total_s / 60 ))
    m="${km}"
    h="${kh}"
-   if [ "${min_carry}" -gt 0 ]; then
-      tm=$(( 10#${km} + min_carry ))
-      m=$(( tm % 60 ))
-      hr_carry=$(( tm / 60 ))
-      if [ "${hr_carry}" -gt 0 ]; then
-         h=$(( ( 10#${kh} + hr_carry ) % 24 ))
+   if [ "${total_s}" -ge 60 ]; then
+      m=$(( 10#${km} + 1 ))
+      if [ "${m}" -ge 60 ]; then
+         m=0
+         h=$(( ( 10#${kh} + 1 ) % 24 ))
       fi
    fi
    expected="2013-12-30 ${h}:${m}:${s}"
