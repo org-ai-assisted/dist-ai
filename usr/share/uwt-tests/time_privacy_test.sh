@@ -239,6 +239,21 @@ td="$(make_timedir ovf_sec seconds=9223372036854775808)"
 run_tp -y 2013 -m 12 -d 30 -i 1 -f "${td}"
 check "overflow seconds (2^63) -> reset to 0 (0:0:1)" "${tp_out}" "2013-12-30 0:0:1"
 
+## Exact upper-boundary (max+1): 60 for seconds/minutes, 24 for hours. These
+## pin the bound at 0..59 / 0..23 -- a subject regressed to inclusive 0..60 /
+## 0..24 would keep the value and produce 0:1:1 / 0:60:1 / 24:0:1 respectively.
+td="$(make_timedir bound_sec seconds=60)"
+run_tp -y 2013 -m 12 -d 30 -i 1 -f "${td}"
+check "boundary seconds 60 -> reset to 0 (0:0:1)" "${tp_out}" "2013-12-30 0:0:1"
+
+td="$(make_timedir bound_min minutes=60)"
+run_tp -y 2013 -m 12 -d 30 -i 1 -f "${td}"
+check "boundary minutes 60 -> reset to 0 (0:0:1)" "${tp_out}" "2013-12-30 0:0:1"
+
+td="$(make_timedir bound_hr hours=24)"
+run_tp -y 2013 -m 12 -d 30 -i 1 -f "${td}"
+check "boundary hours 24 -> reset to 0 (0:0:1)" "${tp_out}" "2013-12-30 0:0:1"
+
 ## --- auto-provision: a missing TIMEDIR is created and seeded, not an error. ---
 auto_dir="${test_dir}/autoprov"
 out="$("${subject}" -y 2013 -m 12 -d 30 -i 1 -f "${auto_dir}")"
