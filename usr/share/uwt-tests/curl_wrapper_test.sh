@@ -325,6 +325,20 @@ check "remote host, 'localhost' as username: proxy injected" "$(injected_socks5h
 drive_main 0 none 'http://127.0.0.1@evil.com/'
 check "remote host, '127.0.0.1' as username: proxy injected" "$(injected_socks5h)" "yes"
 
+## The authority ends at the first '?' or '#', so a loopback literal in a
+## query/fragment of a remote host is NOT the host -- keep isolation.
+drive_main 0 none 'http://example.com?email=user@localhost'
+check "remote host, loopback in QUERY userinfo-lookalike: proxy injected" "$(injected_socks5h)" "yes"
+
+## An option flag whose VALUE contains '@localhost' is not a destination.
+drive_main 0 none '--user=alice@localhost' 'https://example.com/'
+check "flag --user=...@localhost + remote URL: proxy injected" "$(injected_socks5h)" "yes"
+
+## An empty port ('http://localhost:/', valid per RFC 3986, curl defaults to 80)
+## is still loopback.
+drive_main 0 none 'http://localhost:/'
+check_loopback_passthrough "loopback empty port" 'http://localhost:/'
+
 ## A non-loopback host must STILL be injected. Guards against over-match: a
 ## loopback literal in the PATH/QUERY, a 'localhost'/'127.'-prefixed SUBDOMAIN or
 ## a public IP with '127' in a non-leading octet are all REMOTE and must keep
