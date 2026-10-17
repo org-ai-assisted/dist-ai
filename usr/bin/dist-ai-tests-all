@@ -748,7 +748,22 @@ wire() {
          ## version-validator source from the checkout; the e2e suite installs
          ## the package and drives the installed binaries. Both resolve the
          ## checkout from TB_UPDATER_REPO.
+         ##
+         ## The gui-mode-wiring test drives the REAL update-torbrowser, which
+         ## calls the bare `sanitize-string` / `stecho` helper-scripts tools. Put
+         ## the helper-scripts checkout's usr/bin on PATH so they resolve (unwired,
+         ## update-torbrowser aborts "stecho and/or sanitize-string missing"), and
+         ## its dist-packages on PYTHONPATH (sanitize-string's '-Bsu' shebang
+         ## excludes the user site, so from a checkout it needs its library there).
+         ## HELPER_SCRIPTS_PATH also feeds the dispvm suite's .bsh sources.
          wire_env=( "TB_UPDATER_REPO=$( pkg_dir tb-updater )" )
+         if [ -n "${hs}" ]; then
+            wire_env+=(
+               "HELPER_SCRIPTS_PATH=${hs}"
+               "PATH=${hs}/usr/bin:${PATH}"
+               "PYTHONPATH=${hs}/usr/lib/python3/dist-packages"
+            )
+         fi
          ;;
       systemcheck)
          ## The scenario harness runs the REAL check_*.bsh fragments, several of
