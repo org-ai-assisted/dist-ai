@@ -158,8 +158,12 @@ def _probe_once(url: str, timeout: int) -> Tuple[str, str]:
         # Defensive: the collector yields http(s) only. Refuse any other scheme here so urlopen
         # below never opens file:// or a custom scheme (see _PROBE_SCHEMES).
         return "dead", "unsupported scheme (only http/https are probed)"
-    _host_gate((parts.hostname or "").lower())   # de-burst same-host probes (archive.org)
+    host = (parts.hostname or "").lower()
     for method in ("HEAD", "GET"):
+        # Gate EACH request start, not once per probe: a 403/405/501/429 on HEAD falls through
+        # to GET below, and that GET is a second same-host start that must also be spaced (else
+        # the HEAD->GET burst defeats the de-burst on exactly the hosts that 429 a HEAD).
+        _host_gate(host)
         req = urllib.request.Request(url, method=method, headers={"User-Agent": _UA})
         try:
             # _OPENER (not urlopen) so the scheme restriction covers redirect hops too; the entry
@@ -222,13 +226,31 @@ def format_baseline(urls: Set[str], site: Optional[str] = None) -> str:
     return "\n".join(header + sorted(urls)) + "\n"
 
 
+def _interleave_by_host(urls: Set[str]) -> List[str]:
+    """Order URLs round-robin across their hosts so same-host links do not cluster. check_root
+    probes with a fixed worker pool, and _host_gate makes a worker WAIT for its host's next slot;
+    if consecutive URLs share a host (lexicographic order groups them), the pool fills with
+    workers all sleeping on that ONE host while other hosts' URLs -- which have free slots -- sit
+    queued. Spreading hosts evenly keeps the workers busy across hosts, so the one throttled host
+    overlaps with the rest instead of serializing the whole run behind it."""
+    from itertools import zip_longest
+    buckets: Dict[str, List[str]] = {}
+    for url in sorted(urls):
+        buckets.setdefault((urlsplit(url).hostname or "").lower(), []).append(url)
+    missing = object()
+    out: List[str] = []
+    for row in zip_longest(*buckets.values(), fillvalue=missing):
+        out.extend(u for u in row if u is not missing)
+    return out
+
+
 def check_root(root: str, baseline: Set[str], timeout: int = _TIMEOUT,
                workers: int = 8) -> Tuple[List[Tuple[str, str]], Set[str]]:
     """Fetch every external link under `root` (CONCURRENTLY -- link checking is I/O-bound and a
     site cites hundreds of URLs). Returns (new_dead, dead_all): new_dead are the (url, reason)
     NOT excused by the baseline (the gate failures); dead_all is every dead URL (for re-seeding)."""
     from concurrent.futures import ThreadPoolExecutor
-    urls = sorted(collect_external_links(root))
+    urls = _interleave_by_host(collect_external_links(root))
     new_dead: List[Tuple[str, str]] = []
     dead_all: Set[str] = set()
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
@@ -239,6 +261,7 @@ def check_root(root: str, baseline: Set[str], timeout: int = _TIMEOUT,
         dead_all.add(url)
         if url not in baseline:
             new_dead.append((url, detail))
+    new_dead.sort()   # stable, host-independent gate output (probe order is interleaved)
     return new_dead, dead_all
 
 

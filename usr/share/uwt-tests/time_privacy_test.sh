@@ -115,22 +115,16 @@ td="$(make_timedir hour_wrap seconds=59 minutes=59 hours=23)"
 out="$("${subject}" -y 2013 -m 12 -d 30 -i 1 -f "${td}")"
 check "hours 23 + carry -> 24h wrap 0:0:0" "${out}" "2013-12-30 0:0:0"
 
-## --- modulo carry (preserve remainder; carry N units, not just 1) -------------
-## A single increment can overflow a unit by more than its remainder or span
-## multiple units (-i / -r are not upper-bounded). The old reset-to-0 + bump-one
-## dropped the remainder and capped accumulation at ~1 minute/call -- every case
-## below would read 0:1:0 (or 0:1:0 / 0:1:0) on that broken code.
-td="$(make_timedir mod_sec_remainder seconds=59)"
+## --- seconds remainder on carry (increment within the 0-60 range) ------------
+## The old reset-to-0 dropped the seconds remainder and capped accumulation at
+## ~1 minute/call; both cases below read 0:1:0 on that broken code.
+td="$(make_timedir sec_remainder seconds=59)"
 out="$("${subject}" -y 2013 -m 12 -d 30 -i 7 -f "${td}")"
 check "seconds 59 + 7 -> remainder kept 0:1:6" "${out}" "2013-12-30 0:1:6"
 
-td="$(make_timedir mod_multi_minute)"
-out="$("${subject}" -y 2013 -m 12 -d 30 -i 125 -f "${td}")"
-check "increment 125 -> carries 2 minutes 0:2:5" "${out}" "2013-12-30 0:2:5"
-
-td="$(make_timedir mod_multi_hour)"
-out="$("${subject}" -y 2013 -m 12 -d 30 -i 3661 -f "${td}")"
-check "increment 3661 -> carries into hours 1:1:1" "${out}" "2013-12-30 1:1:1"
+td="$(make_timedir sec_remainder_max seconds=55)"
+out="$("${subject}" -y 2013 -m 12 -d 30 -i 60 -f "${td}")"
+check "seconds 55 + 60 -> remainder kept 0:1:55" "${out}" "2013-12-30 0:1:55"
 
 ## --- validation (expect exit 1 with the specific message on stdout) ---
 check_err() {
@@ -154,6 +148,15 @@ check_err "-i non-number rejected" "increment is not a digit." -i abc
 check_err "-y non-number rejected" "year is not a digit." -y abc
 check_err "-m non-number rejected" "month is not a digit." -m abc
 check_err "-d non-number rejected" "day is not a digit." -d abc
+
+## The documented 0-60 increment range is enforced (an out-of-range value would
+## otherwise overflow bash arithmetic and store a negative/garbage time). The
+## 2^63 case is the overflow canary: a bare '-gt 60' wraps it negative and lets
+## it through, so the guard must reject it by length.
+check_err "-i above 60 rejected" "increment must be between 0 and 60." -i 61
+check_err "-i far out of range rejected" "increment must be between 0 and 60." -i 125
+check_err "-i 2^63 overflow value rejected" "increment must be between 0 and 60." -i 9223372036854775808
+check_err "-r above 60 rejected" "randomincrement must be between 1 and 60." -r 61
 
 ## -h prints usage and exits 0 (needs no TIMEDIR; must not be treated as error).
 help_rc=0

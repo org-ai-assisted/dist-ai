@@ -176,6 +176,59 @@ def run() -> int:
         el._sleep, el._HOST_MIN_INTERVAL = _orig_sleep2, _orig_interval
         el._host_next_start.clear()
 
+    # the per-host gate must fire for EACH request START, including the HEAD->GET fallback
+    # (a 403/405/501/429 on HEAD retries as GET in the SAME _probe_once): else that GET start
+    # skips same-host spacing and bursts the very host the gate de-bursts. Drive _probe_once
+    # with a stub opener (HEAD -> 403, GET -> 200) + a recording _host_gate. No network.
+    _orig_gate, _orig_opener = el._host_gate, el._OPENER
+    try:
+        _gated = []
+        el._host_gate = _gated.append
+
+        class _Resp:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_a):
+                return False
+
+        class _FallbackOpener:
+            def open(self, req, timeout=None):
+                if req.get_method() == "HEAD":
+                    raise urllib.error.HTTPError(req.full_url, 403, "no HEAD",
+                                                 Message(), io.BytesIO(b""))
+                return _Resp()
+
+        el._OPENER = _FallbackOpener()
+        _verdict, _ = el._probe_once("https://h.test/x", timeout=1)
+        ck(_verdict == "alive" and _gated == ["h.test", "h.test"],
+           "HEAD->GET fallback gates the host once PER request start (twice): %r" % _gated)
+
+        _gated.clear()
+
+        class _OkOpener:
+            def open(self, req, timeout=None):
+                return _Resp()
+
+        el._OPENER = _OkOpener()
+        _verdict, _ = el._probe_once("https://h.test/y", timeout=1)
+        ck(_verdict == "alive" and _gated == ["h.test"],
+           "a HEAD that succeeds gates the host exactly once (no double-count): %r" % _gated)
+    finally:
+        el._host_gate, el._OPENER = _orig_gate, _orig_opener
+
+    # interleave spreads same-host URLs round-robin so a worker pool is not filled with workers
+    # all sleeping on ONE throttled host while other hosts' URLs sit queued with free slots.
+    _il = el._interleave_by_host({
+        "https://a.test/1", "https://a.test/2", "https://a.test/3",
+        "https://b.test/1", "https://c.test/1"})
+    _hosts = [el.urlsplit(u).hostname for u in _il]
+    ck(len(_il) == 5 and set(_hosts[:3]) == {"a.test", "b.test", "c.test"},
+       "interleave_by_host round-robins hosts (first pass covers every host before a repeat): %r"
+       % _hosts)
+
     sys.stdout.write("check_extlinks_test: %d pass, %d fail, 0 skip\n"
                      % (stats["pass"], stats["fail"]))
     return 1 if stats["fail"] else 0
