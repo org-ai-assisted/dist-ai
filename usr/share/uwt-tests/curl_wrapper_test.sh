@@ -319,6 +319,8 @@ drive_main 0 none 'http://127examplehost.com/'
 check "non-loopback host (127examplehost): proxy injected" "$(injected_socks5h)" "yes"
 drive_main 0 none 'https://example.com/localhost'
 check "remote URL, localhost in PATH: proxy injected" "$(injected_socks5h)" "yes"
+drive_main 0 none 'https://example.com/127.0.0.53'
+check "remote URL, 127.x in PATH: proxy injected" "$(injected_socks5h)" "yes"
 drive_main 0 none 'http://example.com/?x=127.2.3.4'
 check "remote URL, 127.x in QUERY: proxy injected" "$(injected_socks5h)" "yes"
 drive_main 0 none 'http://localhost.example/'

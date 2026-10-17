@@ -83,9 +83,10 @@ check() {
 ## ('unset' = key absent). PARENT is a fixed representative app path.
 fake_decision=no
 torsocks_decision=no
+privacy_offset=""
 run_dispatch() {
    local tp_global="$1" uw_global="$2" tp_entry="$3" uw_entry="$4"
-   local out
+   local out f_fake f_privacy f_torsocks
    out="$(
       env \
          SUBJECT="${subject}" \
@@ -97,20 +98,36 @@ run_dispatch() {
          UW_ENTRY="${uw_entry}" \
          "${probe}"
    )"
-   if [ "${out}" = "FAKE=faketime TORSOCKS=torsocks" ]; then
-      fake_decision=yes; torsocks_decision=yes
-   elif [ "${out}" = "FAKE=faketime TORSOCKS=" ]; then
-      fake_decision=yes; torsocks_decision=no
-   elif [ "${out}" = "FAKE= TORSOCKS=torsocks" ]; then
-      fake_decision=no; torsocks_decision=yes
-   elif [ "${out}" = "FAKE= TORSOCKS=" ]; then
-      fake_decision=no; torsocks_decision=no
-   else
-      ## The probe emits exactly one 'FAKE=... TORSOCKS=...' line; anything else
-      ## means it did not reach compute_dispatch. Fail loud.
-      printf '%s\n' "FATAL: unexpected probe output '${out}' from '${subject}'" >&2
-      exit 1
-   fi
+   ## The probe emits exactly one 'FAKE=<v> PRIVACY=<v> TORSOCKS=<v>' line; the
+   ## stub offset is single-token so a plain field split is exact. Anything else
+   ## means it did not reach compute_dispatch -- fail loud.
+   read -r f_fake f_privacy f_torsocks <<< "${out}"
+   case "${f_fake}:${f_privacy}:${f_torsocks}" in
+      "FAKE=faketime:PRIVACY=-15days:TORSOCKS=torsocks")
+         fake_decision=yes
+         torsocks_decision=yes
+         privacy_offset="-15days"
+         ;;
+      "FAKE=faketime:PRIVACY=-15days:TORSOCKS=")
+         fake_decision=yes
+         torsocks_decision=no
+         privacy_offset="-15days"
+         ;;
+      "FAKE=:PRIVACY=:TORSOCKS=torsocks")
+         fake_decision=no
+         torsocks_decision=yes
+         privacy_offset=""
+         ;;
+      "FAKE=:PRIVACY=:TORSOCKS=")
+         fake_decision=no
+         torsocks_decision=no
+         privacy_offset=""
+         ;;
+      *)
+         printf '%s\n' "FATAL: unexpected probe output '${out}' from '${subject}'" >&2
+         exit 1
+         ;;
+   esac
 }
 
 ## --- Time Privacy: global authoritative, per-app may only disable. ---
@@ -125,13 +142,17 @@ check "tp global=0 + per-app=1 -> faketime OFF (global disable wins)" "${fake_de
 run_dispatch 1 1 0 unset
 check "tp global=1 + per-app=0 -> faketime OFF (per-app disable)" "${fake_decision}" "no"
 
-## global on, no per-app entry -> on (kept behavior).
+## global on, no per-app entry -> on (kept behavior). Also assert the enabled
+## faketime received a REAL (non-empty) offset: production runs
+## `faketime "${privacy_time}" ...`, so an empty offset would be a silent bug.
 run_dispatch 1 1 unset unset
 check "tp global=1 + no entry -> faketime ON" "${fake_decision}" "yes"
+check "tp global=1 + no entry -> real offset passed" "${privacy_offset}" "-15days"
 
-## global off, no per-app entry -> off (kept behavior, the default).
+## global off, no per-app entry -> off (kept behavior, the default); no offset.
 run_dispatch 0 1 unset unset
 check "tp global=0 + no entry -> faketime OFF" "${fake_decision}" "no"
+check "tp global=0 + no entry -> no offset" "${privacy_offset}" ""
 
 ## per-app "1" under global on is redundant -> still on.
 run_dispatch 1 1 1 unset
