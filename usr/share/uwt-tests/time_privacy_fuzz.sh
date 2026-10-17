@@ -174,10 +174,11 @@ gen_value() {
    esac
 }
 
-## In-range counter-file content: plain digits, leading-zero digits, non-digit
+## Counter-file content: in-range plain digits, leading-zero digits, a value
+## just ABOVE the range (max+1..max+5, to exercise the upper bound), non-digit
 ## garbage, or empty. $1 = max (59 for seconds/minutes, 23 for hours).
 gen_counter() {
-   local max="${1}" cls=$(( RANDOM % 4 ))
+   local max="${1}" cls=$(( RANDOM % 5 ))
    case "${cls}" in
       0)
          printf '%s' "$(( RANDOM % ( max + 1 ) ))"
@@ -186,9 +187,12 @@ gen_counter() {
          printf '%s' "0$(( RANDOM % ( max + 1 ) ))"
          ;;
       2)
-         printf '%s' "${garbage[$(( RANDOM % ${#garbage[@]} ))]}"
+         printf '%s' "$(( max + 1 + RANDOM % 5 ))"
          ;;
       3)
+         printf '%s' "${garbage[$(( RANDOM % ${#garbage[@]} ))]}"
+         ;;
+      4)
          printf '%s' ""
          ;;
    esac

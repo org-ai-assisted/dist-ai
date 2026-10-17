@@ -30,6 +30,8 @@ import re
 import sys
 import urllib.parse
 
+from dist_ai.webcheck import config
+
 # The generated test-results output tree (test-results-site-generate's
 # RESULTS_SUBDIR). Its goldens/ holds reference screenshots that are referenced by
 # sha256 in golden-approvals.json, not by any page/style/script -- so the orphaned
@@ -790,6 +792,12 @@ def check_csp(root, failures):
         if directives.get('base-uri') not in (["'none'"], ["'self'"]):
             failures.append("%s: CSP base-uri is not 'none'/'self' (a <base> can "
                             "rehome every relative URL)" % rel)
+        # form-action does NOT fall back to default-src either, so without it a <form>
+        # can POST to any origin (data exfiltration / phishing redirect). Require it
+        # restricted to 'none'/'self' -- the emitted family policy already carries 'none'.
+        if directives.get('form-action') not in (["'none'"], ["'self'"]):
+            failures.append("%s: CSP form-action is not 'none'/'self' (a <form> can "
+                            "submit to an external origin)" % rel)
         # No external source may be allow-listed. A legitimate source token is a
         # quoted keyword / nonce / hash ("'self'", "'sha256-...'") or a host-free
         # scheme (data:/blob:/...). ANY other unquoted token names an external
@@ -1432,6 +1440,40 @@ def check_heading_breaks(root, failures):
                 'on mobile' % (rel, audit.hits))
 
 
+class _IdAudit(html.parser.HTMLParser):
+    """Collect every element id in document order (duplicates kept)."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.ids: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        for name, value in attrs:
+            if name == 'id' and value:
+                self.ids.append(value)
+
+
+def check_duplicate_ids(root, failures):
+    # An id must be unique per document: a duplicate makes `#fragment` targeting
+    # ambiguous (the browser scrolls to the FIRST, every other reference silently
+    # wrong) and is invalid HTML. A universally-quantified invariant over every page;
+    # tidy only WARNs on it (advisory, non-gating), so decide it here.
+    for page in html_files(root):
+        rel = os.path.relpath(page, root)
+        audit = _IdAudit()
+        with open(page, encoding='utf-8') as handle:
+            audit.feed(handle.read())
+        seen: set[str] = set()
+        dupes: list[str] = []
+        for ident in audit.ids:
+            if ident in seen and ident not in dupes:
+                dupes.append(ident)
+            seen.add(ident)
+        if dupes:
+            failures.append('%s: duplicate element id(s): %s (a #fragment to a repeated '
+                            'id is ambiguous)' % (rel, ', '.join(dupes)))
+
+
 # --- Color contrast of on-paper text tokens ----------------------------------
 # The family's shared color vocabulary: these CSS custom properties are used as
 # small text on the light page background (--bg). Each must clear WCAG AA for
@@ -1990,27 +2032,54 @@ def _looks_like_wiki(root):
     return len(probe.tokens) >= _WIKI_SIGNATURE_QUORUM
 
 
+def _family_applies(root):
+    """True when check_site's family policy should run against `root`.
+
+    The declarative `.github/web-tests.yml` `policies:` is authoritative when present;
+    with no config, fall back to the markup heuristic (a wiki tree with no config is
+    still skipped, never mis-reported). Returns (applies, reason_when_skipped)."""
+    declared = config.policies(root)
+    if declared is not None:
+        if 'family' in declared:
+            return True, ''
+        return False, ('web-tests.yml policies=%s -- family policy not selected for '
+                       'this site' % ','.join(declared))
+    if _looks_like_wiki(root):
+        return False, ('no web-tests.yml; markup matches a MediaWiki site -- the family '
+                       'policy does not apply (declare policies: [wiki])')
+    return True, ''
+
+
 def main():
     roots = [os.path.normpath(r) for r in sys.argv[1:] if os.path.isdir(r)]
     if not roots:
         sys.stderr.write('website-tests: SKIP (no site root found)\n')
         return 77
-    # Applicability guard: skip a positively-identified wiki root (see _looks_like_wiki) so
-    # the family policy never mis-reports on a wiki/stage site.
+    # Applicability guard: the family policy runs only where it is selected -- by the
+    # site's `.github/web-tests.yml` `policies:` (authoritative) or, absent that, by the
+    # markup heuristic. A malformed config FAILS LOUD (never a silent wrong-policy run).
     applicable = []
+    config_failures = 0
     for root in roots:
-        if _looks_like_wiki(root):
-            sys.stderr.write(
-                'website-tests: SKIP %s (MediaWiki site -- the family-policy checker does '
-                'not apply; this site needs the wiki policy)\n' % os.path.basename(root))
+        name = os.path.basename(root)
+        try:
+            applies, reason = _family_applies(root)
+        except config.ConfigError as exc:
+            sys.stderr.write('FAIL %s: %s\n' % (name, exc))
+            config_failures += 1
             continue
-        applicable.append(root)
+        if applies:
+            applicable.append(root)
+        else:
+            sys.stderr.write('website-tests: SKIP %s (%s)\n' % (name, reason))
     if not applicable:
-        sys.stderr.write('website-tests: SKIP (only wiki site root(s) given; the family '
-                         'policy does not apply here)\n')
+        if config_failures:
+            sys.stderr.write('website-tests: %d failure(s)\n' % config_failures)
+            return 1
+        sys.stderr.write('website-tests: SKIP (no family-policy site root given)\n')
         return 77
     by_name = {os.path.basename(r): r for r in applicable}
-    total = 0
+    total = config_failures
     for root in applicable:
         failures: list[str] = []
         # A subsite (git-diffs-lie) verifies its off-mount absolute links against
@@ -2044,6 +2113,7 @@ def main():
         check_nav(root, failures)
         check_toc_complete(root, failures)
         check_heading_breaks(root, failures)
+        check_duplicate_ids(root, failures)
         check_contrast(root, failures)
         check_undefined_classes(root, failures)
         check_seo_current(root, failures)
@@ -2059,7 +2129,7 @@ def main():
                              'supply-chain + assets + asset-integrity + card-layout + repro-raw + '
                              'nav + '
                              'toc-complete + '
-                             'heading-breaks + contrast + undefined-classes + '
+                             'heading-breaks + duplicate-ids + contrast + undefined-classes + '
                              'seo clean\n' % name)
     sys.stdout.write('website-tests: %d failure(s)\n' % total)
     return 1 if total else 0

@@ -523,8 +523,8 @@ def run():
         # A decoy file OUTSIDE the root; a relative '..'-link that lands on it
         # must still be reported broken (throwaway decoy, not a system file).
         with open(os.path.join(outside, 'decoy.html'), 'w',
-                  encoding='utf-8') as handle:
-            handle.write('x')
+                  encoding='utf-8') as decoy_fh:
+            decoy_fh.write('x')
         rel = os.path.relpath(os.path.join(outside, 'decoy.html'),
                               os.path.join(root, 'sub'))
         _write(root, 'sub/index.html', '<a href="%s">x</a>' % rel)
@@ -1229,11 +1229,7 @@ def run():
 
     # check_footer (family links) now runs on every page that has a footer, so a
     # subpage dropping a family link is caught -- not just the top-level index.
-    def _footer_failures(root):
-        failures: list[str] = []
-        check_site.check_footer(root, failures)
-        return failures
-
+    # (_footer_failures is defined earlier in run() and reused here.)
     with tempfile.TemporaryDirectory() as root:
         full = ('<footer><div class="fbot">'
                 + ''.join('<a href="%s">x</a>' % u for u in check_site.FAMILY.values())
@@ -1356,7 +1352,249 @@ def run():
         check('main() does NOT wiki-skip a non-wiki root (broken family still fails loudly)',
               'MediaWiki site' not in err and rc != 77, repr((rc, err)))
 
-    check('_looks_like_wiki is invoked from main()', '_looks_like_wiki(root)' in main_body)
+    # Phase-4 declarative selector: `.github/web-tests.yml` `policies:` is authoritative,
+    # the markup heuristic is only the fallback when no config is present.
+    from dist_ai.webcheck import config as webcheck_config
+    _cfg = webcheck_config.CONFIG_REL
+    with tempfile.TemporaryDirectory() as root:
+        check('config.policies is None when no web-tests.yml present',
+              webcheck_config.policies(root) is None)
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, _cfg, 'policies: [family]\n')
+        check('config.policies reads a declared family policy',
+              webcheck_config.policies(root) == ['family'])
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, _cfg, 'policies: wiki\n')  # scalar coerces to a one-item list
+        check('config.policies coerces a scalar policy to a list',
+              webcheck_config.policies(root) == ['wiki'])
+    for _bad_label, _bad in (
+            ('missing policies key', 'canonical_host: x\n'),
+            ('empty policies list', 'policies: []\n'),
+            ('unknown policy', 'policies: [bogus]\n'),
+            ('non-mapping top level', '- just\n- a\n- list\n'),
+            # duplicate `policies:` -- safe_load would silently keep the last and mis-select;
+            # the strict loader must reject it, not quietly pick one.
+            ('duplicate policies key', 'policies: [family]\npolicies: [wiki]\n')):
+        with tempfile.TemporaryDirectory() as root:
+            _write(root, _cfg, _bad)
+            raised = False
+            try:
+                webcheck_config.policies(root)
+            except webcheck_config.ConfigError:
+                raised = True
+            check('config.policies fails loud on %s' % _bad_label, raised, _bad_label)
+
+    # config.load: ABSENT (None) vs present-but-unreadable (ConfigError) must diverge, and a
+    # non-UTF-8 file is a loud ConfigError, never an uncaught UnicodeDecodeError crash.
+    with tempfile.TemporaryDirectory() as root:
+        check('config.load: genuinely absent -> None', webcheck_config.load(root) is None)
+    with tempfile.TemporaryDirectory() as root:
+        os.makedirs(os.path.join(root, _cfg))   # a dir where the file should be = unreadable
+        _raised = False
+        try:
+            webcheck_config.load(root)
+        except webcheck_config.ConfigError:
+            _raised = True
+        check('config.load: present-but-unreadable -> ConfigError (not silently None)', _raised)
+    with tempfile.TemporaryDirectory() as root:
+        _p = os.path.join(root, _cfg)
+        os.makedirs(os.path.dirname(_p))
+        with open(_p, 'wb') as _fh:
+            _fh.write(b'policies: [family]\n#\xff\xfe\n')
+        _raised = False
+        try:
+            webcheck_config.load(root)
+        except webcheck_config.ConfigError:
+            _raised = True
+        check('config.load: non-UTF-8 -> ConfigError (not an uncaught crash)', _raised)
+    with tempfile.TemporaryDirectory() as root:
+        # end to end: a non-UTF-8 config makes main() fail LOUD (rc 1 + FAIL), not traceback.
+        _write(root, 'index.html', _page % '<p>x</p>')
+        _p = os.path.join(root, _cfg)
+        os.makedirs(os.path.dirname(_p), exist_ok=True)
+        with open(_p, 'wb') as _fh:
+            _fh.write(b'\xff\xfe\n')
+        rc, _out, err = _run_main([root])
+        check('main() fails loud (rc 1) on a non-UTF-8 config',
+              rc == 1 and 'FAIL ' in err, repr((rc, err)))
+
+    # DECLARATIVE OVERRIDES THE HEURISTIC, both directions:
+    with tempfile.TemporaryDirectory() as root:
+        # wiki MARKUP but policies: [family] -> family policy RUNS (not heuristic-skipped),
+        # so a broken wiki-markup family page fails loudly instead of slipping through.
+        _write(root, 'index.html', _mwpage)
+        _write(root, _cfg, 'policies: [family]\n')
+        applies, _reason = check_site._family_applies(root)
+        check('policies: [family] forces family policy on wiki-looking markup', applies)
+    with tempfile.TemporaryDirectory() as root:
+        # family-looking page but policies: [wiki] -> SKIP, with the DECLARED reason
+        # (not the heuristic "MediaWiki markup" message).
+        _write(root, 'index.html', _page % '<p class="kicker">hand page</p>')
+        _write(root, _cfg, 'policies: [wiki]\n')
+        rc, _out, err = _run_main([root])
+        check('policies: [wiki] skips a family-looking root (rc 77)', rc == 77, repr((rc, err)))
+        check('policies: [wiki] skip names the declared policy, not the heuristic',
+              'policies=wiki' in err and 'markup matches' not in err, repr(err))
+    with tempfile.TemporaryDirectory() as root:
+        # malformed config is a LOUD FAILURE (rc 1 + FAIL line), never a silent 77 skip.
+        _write(root, 'index.html', _page % '<p>x</p>')
+        _write(root, _cfg, 'policies: [nonsense]\n')
+        rc, _out, err = _run_main([root])
+        check('main() fails loud (rc 1) on a malformed web-tests.yml', rc == 1, repr((rc, err)))
+        check('main() emits a FAIL line for a malformed config',
+              'FAIL ' in err and rc != 77, repr(err))
+
+    check('_family_applies is invoked from main()', '_family_applies(root)' in main_body)
+    _fa_body = inspect.getsource(check_site._family_applies)
+    check('_family_applies consults the declarative config',
+          'config.policies(root)' in _fa_body)
+    check('_family_applies falls back to the markup heuristic',
+          '_looks_like_wiki(root)' in _fa_body)
+
+    # Pure-predicate unit tests: these functions were reachable only through fixtures, so a
+    # regression in the math/parsing silently mis-gated. Drive them directly on known values.
+
+    # _csp_directives: a repeated directive keeps the FIRST (what the browser enforces);
+    # empty ';;' segments and multi-space are tolerated.
+    cd = check_site._csp_directives("default-src 'none'; default-src *")
+    check('_csp_directives keeps the first of a repeated directive',
+          cd.get('default-src') == ["'none'"], cd)
+    cd = check_site._csp_directives("default-src   'self';; img-src data:")
+    check('_csp_directives tolerates multi-space and empty segments',
+          cd.get('default-src') == ["'self'"] and cd.get('img-src') == ['data:'], cd)
+
+    # WCAG contrast math.
+    check('_contrast black-on-white is 21:1',
+          abs(check_site._contrast((0, 0, 0), (255, 255, 255)) - 21.0) < 1e-9)
+    check('_contrast of equal colors is 1:1',
+          check_site._contrast((88, 88, 88), (88, 88, 88)) == 1.0)
+    check('_contrast is symmetric',
+          check_site._contrast((10, 20, 30), (200, 210, 220))
+          == check_site._contrast((200, 210, 220), (10, 20, 30)))
+
+    # HSL + hue-unit conversion.
+    check('_hsl_to_rgb hsl(0,1,.5) is pure red',
+          check_site._hsl_to_rgb(0, 1, 0.5) == (255, 0, 0))
+    check('_hsl_to_rgb hue wraps modulo 360',
+          check_site._hsl_to_rgb(0, 1, 0.5) == check_site._hsl_to_rgb(360, 1, 0.5))
+    check('_hsl_to_rgb sat=0 is gray regardless of hue',
+          check_site._hsl_to_rgb(123, 0, 0.4) == (102, 102, 102))
+    check('_hue_deg turn -> deg', check_site._hue_deg('0.5turn') == 180.0)
+    check('_hue_deg grad -> deg', check_site._hue_deg('200grad') == 180.0)
+    check('_hue_deg rad -> deg',
+          abs(check_site._hue_deg('3.141592653589793rad') - 180.0) < 1e-6)
+    _raised = False
+    try:
+        check_site._hue_deg('not-an-angle')
+    except ValueError:
+        _raised = True
+    check('_hue_deg raises ValueError on a bad unit', _raised)
+
+    # rgb() channel + alpha.
+    check('_channel percent scales to 255', check_site._channel('100%') == 255)
+    check('_channel clamps above 255', check_site._channel('300') == 255)
+    check('_channel clamps below 0', check_site._channel('-5') == 0)
+    check('_opaque_alpha: 1 is opaque', check_site._opaque_alpha('1'))
+    check('_opaque_alpha: 100% is opaque', check_site._opaque_alpha('100%'))
+    check('_opaque_alpha: 0.99 is NOT opaque', not check_site._opaque_alpha('0.99'))
+
+    # var() splitting: first top-level comma, nested parens preserved.
+    check('_split_var preserves a nested-paren fallback',
+          check_site._split_var('var(--x, rgb(0,0,0))') == ('--x', 'rgb(0,0,0)'))
+    check('_split_var with no fallback -> (name, None)',
+          check_site._split_var('var(--x)') == ('--x', None))
+    check('_split_var on a non-var value -> None',
+          check_site._split_var('#ffffff') is None)
+
+    # _resolve_color: cycle guard + multi-hop chain.
+    check('_resolve_color breaks a var() cycle -> None',
+          check_site._resolve_color('var(--a)', {'a': 'var(--b)', 'b': 'var(--a)'}) is None)
+    check('_resolve_color follows a chain to a concrete color',
+          check_site._resolve_color('var(--a)', {'a': 'var(--b)', 'b': '#ffffff'})
+          == (255, 255, 255))
+
+    # resolve_internal branches (no disk needed for these).
+    with tempfile.TemporaryDirectory() as root:
+        page = os.path.join(root, 'index.html')
+        check('resolve_internal: external URL -> None',
+              check_site.resolve_internal(root, page, 'https://x.test/') is None)
+        check('resolve_internal: mailto -> None',
+              check_site.resolve_internal(root, page, 'mailto:a@b.c') is None)
+        check('resolve_internal: pure fragment -> #self',
+              check_site.resolve_internal(root, page, '#sec') == ('#self', None, 'sec'))
+        q = check_site.resolve_internal(root, page, 'style.css?v=2#frag')
+        check('resolve_internal: ?query stripped, #frag kept',
+              q[2] == 'frag' and all('?' not in c for c in q[1]), q)
+
+    # check_wording drives the real predicate: case-sensitive, flags only lowercase prose.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               '<!doctype html><html><body><p>we love open source</p></body></html>')
+        _fails: list[str] = []
+        check_site.check_wording(root, _fails)
+        check('check_wording flags lowercase "open source"',
+              any('Open Source' in f for f in _fails), _fails)
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               '<!doctype html><html><body><p>we love Open Source</p></body></html>')
+        _fails = []
+        check_site.check_wording(root, _fails)
+        check('check_wording passes correctly-capitalized prose', not _fails, _fails)
+
+    # CSP form-action invariant (form-action does NOT fall back to default-src).
+    _csp_head = ('<!doctype html><html><head><meta http-equiv="Content-Security-Policy" '
+                 'content="%s"></head><body>x</body></html>')
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               _csp_head % "default-src 'none'; base-uri 'none'; script-src 'self'")
+        _fails = []
+        check_site.check_csp(root, _fails)
+        check('check_csp flags a CSP missing form-action',
+              any('form-action' in f for f in _fails), _fails)
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               _csp_head % "default-src 'none'; base-uri 'none'; form-action 'none'; "
+                           "script-src 'self'")
+        _fails = []
+        check_site.check_csp(root, _fails)
+        check('check_csp accepts form-action \'none\'',
+              not any('form-action' in f for f in _fails), _fails)
+
+    # id-uniqueness invariant.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               '<!doctype html><html><body><p id="x">a</p><span id="x">b</span></body></html>')
+        _fails = []
+        check_site.check_duplicate_ids(root, _fails)
+        check('check_duplicate_ids flags a repeated id',
+              any('duplicate element id' in f and 'x' in f for f in _fails), _fails)
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               '<!doctype html><html><body><p id="a">1</p><p id="b">2</p></body></html>')
+        _fails = []
+        check_site.check_duplicate_ids(root, _fails)
+        check('check_duplicate_ids passes unique ids', not _fails, _fails)
+    # canaries: an id inside <textarea>/<title> (RCDATA = literal text in a browser) or a
+    # <template> (separate DocumentFragment tree) is NOT a document duplicate.
+    for _scope in ('textarea', 'title', 'template'):
+        with tempfile.TemporaryDirectory() as root:
+            _write(root, 'index.html',
+                   '<!doctype html><html><body><%s><span id="x">t</span></%s>'
+                   '<span id="x">real</span></body></html>' % (_scope, _scope))
+            _fails = []
+            check_site.check_duplicate_ids(root, _fails)
+            check('check_duplicate_ids ignores an id inside <%s>' % _scope, not _fails, _fails)
+    with tempfile.TemporaryDirectory() as root:
+        # but the scope element's OWN id is still counted (not over-skipped).
+        _write(root, 'index.html',
+               '<!doctype html><html><body><textarea id="x"></textarea>'
+               '<textarea id="x"></textarea></body></html>')
+        _fails = []
+        check_site.check_duplicate_ids(root, _fails)
+        check('check_duplicate_ids still flags a duplicate id ON the scope elements',
+              any('x' in f for f in _fails), _fails)
+    check('check_duplicate_ids is invoked from main()',
+          'check_duplicate_ids(root' in main_body)
 
     passed = sum(1 for _n, ok, _d in results if ok)
     failed = len(results) - passed

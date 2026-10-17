@@ -13,6 +13,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 def _load():
@@ -57,6 +58,35 @@ def run() -> int:
                     "https://other.test/"},
            "collects absolute http(s) only, frag stripped, de-duped, .git/internal/mailto/anchor out: %r"
            % sorted(urls))
+
+    # wiki profile: exclude social-share hosts (default OFF = family unchanged). The ?query is
+    # KEPT -- a distinct resource -- so a dead ?query citation cannot read as reachable.
+    # Host checks use urlsplit().hostname EQUALITY (`== host`), the CodeQL-documented secure
+    # form -- never `"host" in url` substring, which matches a host at an arbitrary position.
+    def _has_host(urls, host):
+        return any(urlsplit(u).hostname == host for u in urls)
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "index.html").write_text(
+            '<a href="https://www.reddit.com/submit?url=https://site/a">share a</a>'
+            '<a href="https://www.reddit.com/submit?url=https://site/b">share b</a>'
+            '<a href="https://web.archive.org/web/1/https://src/x">real citation</a>'
+            '<a href="https://ok.test/p?v=1">q1</a>'
+            '<a href="https://ok.test/p?v=2">q2</a>', encoding="utf-8")
+        default = el.collect_external_links(str(root))
+        ck(len(default) == 5 and _has_host(default, "www.reddit.com")
+           and "https://ok.test/p?v=1" in default,
+           "default collect keeps share hosts + query (family unchanged): %r" % sorted(default))
+        excl = el.collect_external_links(str(root), exclude_hosts=el._SHARE_HOSTS)
+        ck(not _has_host(excl, "www.reddit.com") and _has_host(excl, "web.archive.org"),
+           "exclude_hosts drops share-permalink hosts, keeps real-citation hosts: %r" % sorted(excl))
+        ck("https://ok.test/p?v=1" in excl and "https://ok.test/p?v=2" in excl,
+           "exclude_hosts keeps BOTH distinct ?query citations (no false-green collapse): %r"
+           % sorted(excl))
+    ck({"www.reddit.com", "twitter.com", "news.ycombinator.com", "t.me", "fosstodon.org",
+        "facebook.com", "www.linkedin.com", "wa.me"} <= el._SHARE_HOSTS,
+       "_SHARE_HOSTS covers the measured top-8 share hosts")
 
     # own-host detection (family cross-links).
     ck(el.is_own_host("https://output-lies.github.io/x", {"output-lies.github.io"}),
@@ -126,7 +156,7 @@ def run() -> int:
         return probe
 
     try:
-        _sleeps = []
+        _sleeps: list[float] = []
         el._sleep = _sleeps.append
 
         el._probe_once = _scripted(["transient", "transient", "alive"])
@@ -155,7 +185,7 @@ def run() -> int:
     # (no real wait) and a small interval. No network.
     _orig_sleep2, _orig_interval = el._sleep, el._HOST_MIN_INTERVAL
     try:
-        _hsleeps = []
+        _hsleeps: list[float] = []
         el._sleep = _hsleeps.append
         el._HOST_MIN_INTERVAL = 0.5
         el._host_next_start.clear()
@@ -182,7 +212,7 @@ def run() -> int:
     # with a stub opener (HEAD -> 403, GET -> 200) + a recording _host_gate. No network.
     _orig_gate, _orig_opener = el._host_gate, el._OPENER
     try:
-        _gated = []
+        _gated: list[str] = []
         el._host_gate = _gated.append
 
         class _Resp:
