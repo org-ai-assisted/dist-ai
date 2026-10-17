@@ -123,7 +123,11 @@ for root in "$@"; do
    seen_base[${base}]=1
    ## Only the .html files are checked; rsync them (preserving tree), skip .git (exclude first, so
    ## it is not re-included by '*/').
-   rsync --archive --prune-empty-dirs --exclude='.git' --include='*/' --include='*.html' \
+   ## --copy-links: DEREFERENCE symlinks so a symlinked index.html (or any .html) is staged as its
+   ## real content. Without it rsync --archive stages the symlink AS a symlink; cspell's glob has
+   ## followSymbolicLinks:false and --no-must-find-files exits 0 on 0 files -> a symlinked-only site
+   ## would scan nothing and pass (false green).
+   rsync --archive --copy-links --prune-empty-dirs --exclude='.git' --include='*/' --include='*.html' \
       --exclude='*' -- "${root}/" "${staging}/roots/${base}/"
    remote_roots+=( "roots/${base}" )
 done
