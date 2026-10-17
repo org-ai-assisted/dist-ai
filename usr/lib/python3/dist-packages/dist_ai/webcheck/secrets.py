@@ -14,14 +14,15 @@ baseline so a reviewed false positive does not re-fail (like the extlinks lane).
 gitleaks output is REDACTED (`--redact`), so the secret value never reaches a log / CI output /
 this gate's stderr -- only the rule id + file:line locate it for a human to rotate + remove.
 
-Standalone / CI lane (needs the gitleaks binary): SKIP 77 (waived) when gitleaks is absent, run
-otherwise. Pure JSON parsing + baseline; only `_run_gitleaks` shells out.
+gitleaks is a hard dependency of this package (debian/control Depends): it is ASSUMED present
+and called directly. Its absence is an ENVIRONMENT BUG that FAILS LOUD (exit 1), never a SKIP --
+a secret-scan that silently did not run is exactly the false green this gate exists to prevent.
+Pure JSON parsing + baseline; only `_run_gitleaks` shells out.
 """
 from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess  # nosec B404 -- invokes the fixed gitleaks binary, no shell, no user input in argv
 import sys
 import tempfile
@@ -36,8 +37,9 @@ _KEEP = ("RuleID", "File", "StartLine", "Fingerprint")
 def _run_gitleaks(root: str) -> List[dict]:
     """Run gitleaks over `root` (no git, read-only, redacted) and return its JSON findings.
 
-    Raises FileNotFoundError if the binary is absent (the caller turns that into a waived SKIP);
-    RuntimeError if gitleaks errors out (not merely 'leaks found', which is a normal exit)."""
+    gitleaks is a hard dependency, so it is called directly (no has-X preflight). A missing
+    binary surfaces as FileNotFoundError and a gitleaks error as RuntimeError; main() turns
+    either into a loud exit-1 FAILURE, never a skip."""
     with tempfile.TemporaryDirectory() as tmp:
         report = os.path.join(tmp, "gitleaks.json")
         # Debian ships gitleaks 8.16 -> `detect --no-git --source`; --redact keeps secret values
@@ -124,12 +126,6 @@ def main(argv: List[str]) -> int:
     if not roots:
         print("secrets: SKIP (no site root found)", file=sys.stderr)  ## style-ok: allow-skip: no target tree
         return 77
-    if shutil.which("gitleaks") is None:
-        # Standalone/CI lane: the scanner is environment-provided. Absent -> waived SKIP, not a
-        # false pass (the SKIP is loud) and not a hard fail (the static suite still runs).
-        print("secrets: SKIP (gitleaks not installed; standalone/CI lane)",  ## style-ok: allow-skip: optional external scanner
-              file=sys.stderr)
-        return 77
     baseline_dir = Path(args.baseline_dir)
     overall = 0
     for root in roots:
@@ -137,6 +133,11 @@ def main(argv: List[str]) -> int:
         baseline = parse_baseline(bpath) if bpath.is_file() else set()
         try:
             new, all_keys = scan_root(root, set() if args.write_baseline else baseline)
+        except FileNotFoundError:
+            # gitleaks is a Depends; its absence is an ENVIRONMENT BUG, a loud fatal, not a skip.
+            print("secrets: FATAL: gitleaks not found -- it is a required dependency "
+                  "(dist-ai Depends); install it, do not skip the scan", file=sys.stderr)
+            return 1
         except RuntimeError as exc:
             print("secrets: FAIL %s: gitleaks error: %s" % (os.path.basename(root), exc),
                   file=sys.stderr)

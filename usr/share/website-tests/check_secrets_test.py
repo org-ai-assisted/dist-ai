@@ -35,10 +35,6 @@ def run() -> int:
         status = "pass" if cond else "FAIL"
         (sys.stdout if cond else sys.stderr).write("check_secrets_test: %s %s\n" % (status, label))
 
-    def skip(label):
-        stats["skip"] += 1
-        sys.stdout.write("check_secrets_test: skip %s\n" % label)  ## style-ok: allow-skip: gitleaks binary absent
-
     # pure: baseline parse/format roundtrip (sorted, comments skipped).
     accepted = {"a.txt:aws-access-token:1", "b.txt:github-pat:1"}
     with tempfile.TemporaryDirectory() as d:
@@ -53,11 +49,12 @@ def run() -> int:
     ck(s.finding_key({"File": "x.txt", "RuleID": "r", "StartLine": 7}) == "x.txt:r:7",
        "finding_key falls back to File:RuleID:StartLine")
 
-    # integration (needs gitleaks): a planted secret is detected; baseline excuses it; a clean
-    # tree yields nothing. Redaction keeps the secret value out of the reported fields.
-    if shutil.which("gitleaks") is None:
-        skip("gitleaks detection tests (binary not installed)")
-    else:
+    # integration: a planted secret is detected; baseline excuses it; a clean tree yields
+    # nothing. gitleaks is a REQUIRED dependency (dist-ai Depends), so its absence is an
+    # environment bug that FAILS here, never a skip ("no unauthorized skips").
+    have_gitleaks = shutil.which("gitleaks") is not None
+    ck(have_gitleaks, "gitleaks (required dependency) is installed")
+    if have_gitleaks:
         with tempfile.TemporaryDirectory() as root:
             # a well-known detectable pattern (GitHub PAT), plus a clean page.
             Path(root, "leak.txt").write_text(
