@@ -115,6 +115,23 @@ td="$(make_timedir hour_wrap seconds=59 minutes=59 hours=23)"
 out="$("${subject}" -y 2013 -m 12 -d 30 -i 1 -f "${td}")"
 check "hours 23 + carry -> 24h wrap 0:0:0" "${out}" "2013-12-30 0:0:0"
 
+## --- modulo carry (preserve remainder; carry N units, not just 1) -------------
+## A single increment can overflow a unit by more than its remainder or span
+## multiple units (-i / -r are not upper-bounded). The old reset-to-0 + bump-one
+## dropped the remainder and capped accumulation at ~1 minute/call -- every case
+## below would read 0:1:0 (or 0:1:0 / 0:1:0) on that broken code.
+td="$(make_timedir mod_sec_remainder seconds=59)"
+out="$("${subject}" -y 2013 -m 12 -d 30 -i 7 -f "${td}")"
+check "seconds 59 + 7 -> remainder kept 0:1:6" "${out}" "2013-12-30 0:1:6"
+
+td="$(make_timedir mod_multi_minute)"
+out="$("${subject}" -y 2013 -m 12 -d 30 -i 125 -f "${td}")"
+check "increment 125 -> carries 2 minutes 0:2:5" "${out}" "2013-12-30 0:2:5"
+
+td="$(make_timedir mod_multi_hour)"
+out="$("${subject}" -y 2013 -m 12 -d 30 -i 3661 -f "${td}")"
+check "increment 3661 -> carries into hours 1:1:1" "${out}" "2013-12-30 1:1:1"
+
 ## --- validation (expect exit 1 with the specific message on stdout) ---
 check_err() {
    local label="$1"; shift

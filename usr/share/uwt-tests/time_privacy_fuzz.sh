@@ -328,34 +328,36 @@ fuzz_options() {
 
 ## --- mode B: counter-file content handling + carry/wrap ---
 fuzz_counter() {
-   local dir sc mc hc inc ks km kh s m h expected
+   local dir sc mc hc inc ks km kh total_s s m h tm min_carry hr_carry expected
    dir="$(fresh_dir)"
    sc="$(gen_counter 59)"
    mc="$(gen_counter 59)"
    hc="$(gen_counter 23)"
-   inc="$(( RANDOM % 6 ))"
+   ## Wide, unbounded increment (-i / -r take any whole number) so the modulo
+   ## carry across minutes AND hours is exercised, not just a single-second step.
+   inc="$(( RANDOM % 7201 ))"
    printf '%s\n' "${sc}" > "${dir}/seconds_file"
    printf '%s\n' "${mc}" > "${dir}/minutes_file"
    printf '%s\n' "${hc}" > "${dir}/hours_file"
 
-   ## Oracle: kept representations, then the script's carry/wrap. Seconds always
-   ## go through base-10 arithmetic; minutes/hours keep their verbatim string
-   ## unless a carry reaches them, in which case they become a normalized int.
+   ## Oracle mirrors the subject's modulo carry exactly: seconds always go through
+   ## base-10 arithmetic and become total%60, carrying total/60 into minutes (and
+   ## likewise minutes into hours). Minutes/hours keep their verbatim string when
+   ## no carry reaches them; a carry replaces the field with a normalized int.
    ks="$(counter_keep "${sc}")"
    km="$(counter_keep "${mc}")"
    kh="$(counter_keep "${hc}")"
-   s=$(( 10#${ks} + inc ))
+   total_s=$(( 10#${ks} + inc ))
+   s=$(( total_s % 60 ))
+   min_carry=$(( total_s / 60 ))
    m="${km}"
    h="${kh}"
-   if [ "${s}" -ge 60 ]; then
-      s=0
-      m=$(( 10#${km} + 1 ))
-      if [ "${m}" -ge 60 ]; then
-         m=0
-         h=$(( 10#${kh} + 1 ))
-         if [ "${h}" -ge 24 ]; then
-            h=0
-         fi
+   if [ "${min_carry}" -gt 0 ]; then
+      tm=$(( 10#${km} + min_carry ))
+      m=$(( tm % 60 ))
+      hr_carry=$(( tm / 60 ))
+      if [ "${hr_carry}" -gt 0 ]; then
+         h=$(( ( 10#${kh} + hr_carry ) % 24 ))
       fi
    fi
    expected="2013-12-30 ${h}:${m}:${s}"
