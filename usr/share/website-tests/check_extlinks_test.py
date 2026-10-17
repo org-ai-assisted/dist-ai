@@ -58,6 +58,37 @@ def run() -> int:
            "collects absolute http(s) only, frag stripped, de-duped, .git/internal/mailto/anchor out: %r"
            % sorted(urls))
 
+    # wiki profile: exclude social-share hosts + collapse ?query (default OFF = family unchanged).
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "index.html").write_text(
+            '<a href="https://www.reddit.com/submit?url=https://site/a">share a</a>'
+            '<a href="https://www.reddit.com/submit?url=https://site/b">share b</a>'
+            '<a href="https://web.archive.org/web/1/https://src/x">real citation</a>'
+            '<a href="https://ok.test/p?v=1">q1</a>'
+            '<a href="https://ok.test/p?v=2">q2</a>', encoding="utf-8")
+        default = el.collect_external_links(str(root))
+        ck(len(default) == 5 and any("reddit.com" in u for u in default)
+           and "https://ok.test/p?v=1" in default,
+           "default collect keeps share hosts + query (family behavior unchanged): %r" % sorted(default))
+        excl = el.collect_external_links(str(root), exclude_hosts=el._SHARE_HOSTS)
+        ck(not any("reddit.com" in u for u in excl)
+           and any("web.archive.org" in u for u in excl)
+           and "https://ok.test/p?v=1" in excl,
+           "exclude_hosts drops share permalinks, keeps real citations + their query: %r" % sorted(excl))
+        collapsed = el.collect_external_links(str(root), exclude_hosts=el._SHARE_HOSTS,
+                                              collapse_query=True)
+        ck(collapsed == {"https://web.archive.org/web/1/https://src/x", "https://ok.test/p"},
+           "collapse_query folds ?v=1/?v=2 to one endpoint, share hosts still excluded: %r"
+           % sorted(collapsed))
+        onlycollapse = el.collect_external_links(str(root), collapse_query=True)
+        ck(any("reddit.com" in u for u in onlycollapse)
+           and "https://ok.test/p" in onlycollapse and "https://ok.test/p?v=1" not in onlycollapse,
+           "collapse_query alone keeps share hosts but still collapses query: %r" % sorted(onlycollapse))
+    ck({"www.reddit.com", "twitter.com", "news.ycombinator.com", "t.me", "fosstodon.org",
+        "facebook.com", "www.linkedin.com", "wa.me"} <= el._SHARE_HOSTS,
+       "_SHARE_HOSTS covers the measured top-8 share hosts")
+
     # own-host detection (family cross-links).
     ck(el.is_own_host("https://output-lies.github.io/x", {"output-lies.github.io"}),
        "own-host detected")

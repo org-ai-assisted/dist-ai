@@ -56,6 +56,18 @@ _RETRY_BACKOFF = 1.5
 _HOST_MIN_INTERVAL = 2.0
 _UA = "Mozilla/5.0 (webcheck external-link gate; +https://github.com/org-ai-assisted)"
 
+# Social-share / intent hosts. A content page carries a share BUTTON per platform, so a site of
+# N pages emits ~N near-identical permalinks per host (distinct only by the shared page's ?url=);
+# on the wiki stage sites these are ~80% of ALL external links and would DOMINATE + hammer the
+# platforms. A share button's "reachability" is just whether the platform is up -- NOT a cited
+# resource whose rot matters -- so the wiki profile (--exclude-share-hosts) skips these hosts.
+_SHARE_HOSTS = frozenset({
+    "reddit.com", "www.reddit.com", "twitter.com", "x.com", "news.ycombinator.com",
+    "t.me", "telegram.me", "fosstodon.org", "mastodon.social",
+    "linkedin.com", "www.linkedin.com", "facebook.com", "www.facebook.com",
+    "wa.me", "api.whatsapp.com", "vk.com", "xing.com",
+})
+
 _host_gate_lock = threading.Lock()
 _host_next_start: Dict[str, float] = {}
 
@@ -118,9 +130,15 @@ class _LinkExtractor(html.parser.HTMLParser):
                     self.urls.add(v)
 
 
-def collect_external_links(root: str) -> Set[str]:
+def collect_external_links(root: str, exclude_hosts: Set[str] = frozenset(),
+                           collapse_query: bool = False) -> Set[str]:
     """Every distinct absolute http(s) URL referenced across the site's HTML. Pure (no
-    network). A fragment (`#frag`) is stripped so the same page+fragment is probed once."""
+    network). A fragment (`#frag`) is always stripped so the same page+fragment is probed once.
+
+    exclude_hosts: drop any URL whose host is in this set (case-insensitive) -- used by the wiki
+    profile to skip social-share/intent hosts (see _SHARE_HOSTS). collapse_query: also strip the
+    `?query`, so permalink / tracking-param variants of one endpoint collapse to a single probe.
+    Both default OFF, so the family lane's URL set is unchanged."""
     found: Set[str] = set()
     for base, dirs, files in os.walk(root):
         if ".git" in dirs:
@@ -135,7 +153,13 @@ def collect_external_links(root: str) -> Set[str]:
             except OSError:
                 continue
             for url in extractor.urls:
-                found.add(urlsplit(url)._replace(fragment="").geturl())
+                parts = urlsplit(url)
+                if exclude_hosts and (parts.hostname or "").lower() in exclude_hosts:
+                    continue
+                parts = parts._replace(fragment="")
+                if collapse_query:
+                    parts = parts._replace(query="")
+                found.add(parts.geturl())
     return found
 
 
@@ -245,12 +269,14 @@ def _interleave_by_host(urls: Set[str]) -> List[str]:
 
 
 def check_root(root: str, baseline: Set[str], timeout: int = _TIMEOUT,
-               workers: int = 8) -> Tuple[List[Tuple[str, str]], Set[str]]:
+               workers: int = 8, exclude_hosts: Set[str] = frozenset(),
+               collapse_query: bool = False) -> Tuple[List[Tuple[str, str]], Set[str]]:
     """Fetch every external link under `root` (CONCURRENTLY -- link checking is I/O-bound and a
     site cites hundreds of URLs). Returns (new_dead, dead_all): new_dead are the (url, reason)
-    NOT excused by the baseline (the gate failures); dead_all is every dead URL (for re-seeding)."""
+    NOT excused by the baseline (the gate failures); dead_all is every dead URL (for re-seeding).
+    exclude_hosts / collapse_query are forwarded to collect_external_links (wiki profile)."""
     from concurrent.futures import ThreadPoolExecutor
-    urls = _interleave_by_host(collect_external_links(root))
+    urls = _interleave_by_host(collect_external_links(root, exclude_hosts, collapse_query))
     new_dead: List[Tuple[str, str]] = []
     dead_all: Set[str] = set()
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
@@ -282,9 +308,16 @@ def main(argv: List[str]) -> int:
                     help="dir holding extlinks-baseline-<site>.txt")
     ap.add_argument("--write-baseline", action="store_true",
                     help="record the current dead set as the accepted baseline instead of gating")
+    ap.add_argument("--exclude-share-hosts", action="store_true",
+                    help="skip social-share/intent hosts (wiki/content profile): their per-page "
+                         "permalinks dominate and are not cited resources")
+    ap.add_argument("--collapse-query", action="store_true",
+                    help="strip the ?query before probing so permalink / tracking-param variants "
+                         "of one endpoint are probed once")
     ap.add_argument("--timeout", type=int, default=_TIMEOUT)
     ap.add_argument("roots", nargs="+")
     args = ap.parse_args(argv)
+    exclude_hosts = _SHARE_HOSTS if args.exclude_share_hosts else frozenset()
     roots = [os.path.abspath(r) for r in args.roots if os.path.isdir(r)]
     if not roots:
         _skip_77("no site root found")
@@ -294,7 +327,8 @@ def main(argv: List[str]) -> int:
         bpath = _baseline_path(baseline_dir, root)
         baseline = parse_baseline(bpath) if bpath.is_file() else set()
         new_dead, dead_all = check_root(root, set() if args.write_baseline else baseline,
-                                        args.timeout)
+                                        args.timeout, exclude_hosts=exclude_hosts,
+                                        collapse_query=args.collapse_query)
         name = os.path.basename(root)
         if args.write_baseline:
             baseline_dir.mkdir(parents=True, exist_ok=True)
