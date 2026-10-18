@@ -207,6 +207,10 @@ parse_base_args=( --type host --target iso --flavor kicksecure-cli --arch amd64 
 ## where 'true'/'false' is expected, so a bad parse never masquerades as a value.
 upload_var_after_parse() {
    (
+      ## Isolate from a caller env that exports dist_build_upload, so the
+      ## omitted-case assertion observes UNSET not the inherited value
+      ## (mirrors rsync_select's subshell unset).
+      unset dist_build_upload
       # shellcheck disable=SC1090
       source "${parse_cmd}"
       if dist_build_one_parse_cmd "${parse_base_args[@]}" "$@" >/dev/null 2>&1; then
