@@ -335,12 +335,16 @@ class SdwdateProfileFileAccessCanaryTest(unittest.TestCase):
                         'missing = vacuous)' % (profile, deny, verdict))
 
 
-## A5: daemon -> url_to_unixtime stacked signal-peer. run_command's 120s reaper
-## SIGTERMs/kills the url_to_unixtime child; that requires the daemon profile's
-## 'signal send set=term peer=.../&/usr/bin/url_to_unixtime' rule to hold at
-## runtime against the STACKED peer label. A daemon-labeled Python starts
-## url_to_unixtime via the Cx transition (child lands in the stacked label) and
-## SIGTERMs it; apparmor denial surfaces as os.kill -> PermissionError.
+## A5: daemon -> privileged-child stacked signal-peer. The reapers kill with
+## SIGKILL -- run_command (url_to_unixtime) at the 120s timeout, kill_sclockadj
+## (sclockadj) on a new sync / shutdown -- via process.kill(). Each needs the
+## daemon profile's 'signal send set=kill peer=<child>//&<daemon>' rule AND the
+## child profile's matching 'signal receive set=kill' to hold at runtime against
+## the STACKED label. A daemon-labeled Python starts the child via the Cx
+## transition (child lands in the stacked label) and SIGKILLs it; an apparmor
+## denial surfaces as os.kill -> PermissionError. Probing SIGKILL (not SIGTERM)
+## matters: a SIGTERM probe passes even while the real reaper path is denied,
+## since the code never sends SIGTERM.
 _SIGNAL_PEER_PROBE = (
     'import os, signal, subprocess, sys, time\n'
     'argv = sys.argv[1:]\n'
@@ -351,7 +355,7 @@ _SIGNAL_PEER_PROBE = (
     '    print("GONE")\n'
     '    sys.exit(0)\n'
     'try:\n'
-    '    os.kill(proc.pid, signal.SIGTERM)\n'
+    '    os.kill(proc.pid, signal.SIGKILL)\n'
     '    print("SENT")\n'
     'except PermissionError:\n'
     '    print("EPERM")\n'
@@ -370,25 +374,30 @@ _SIGNAL_PEER_PROBE = (
                  'runtime AppArmor signal-peer test not testable here: '
                  + _skip_reason())
 class SdwdateDaemonSignalPeerTest(unittest.TestCase):
-    def test_daemon_can_sigterm_its_url_to_unixtime_child(self) -> None:
+    def _assert_reapable(self, tag, child_argv) -> None:
         result = subprocess.run(
             ['aa-exec', '-p', DAEMON_PATH, '--', _READER, '-I', '-c',
-             _SIGNAL_PEER_PROBE] + U2U_ARGV,
+             _SIGNAL_PEER_PROBE] + child_argv,
             capture_output=True, text=True, timeout=60)
         lines = result.stdout.strip().splitlines()
         verdict = lines[-1] if lines else ''
         if verdict in ('GONE', 'ESRCH'):
-            ## style-ok: allow-skip: url_to_unixtime exited before it could be
-            ## signalled (no working Tor time source), so the signal rule cannot
-            ## be exercised; never report that as a pass.
+            ## style-ok: allow-skip: the child exited before it could be
+            ## signalled (e.g. no working Tor time source), so the signal rule
+            ## cannot be exercised; never report that as a pass.
             raise unittest.SkipTest(
-                'url_to_unixtime child not alive to signal (verdict=%r); needs a '
-                'working Tor time source' % verdict)
+                '%s child not alive to signal (verdict=%r)' % (tag, verdict))
         self.assertEqual(
             verdict, 'SENT',
-            'daemon -> url_to_unixtime SIGTERM was DENIED (verdict=%r): the '
-            'daemon profile lacks the stacked signal-send peer rule, so '
-            'run_command cannot reap its child at the 120s timeout' % verdict)
+            'daemon -> %s SIGKILL was DENIED (verdict=%r): the daemon lacks the '
+            'stacked signal-send set=kill peer rule (or the child lacks the '
+            'matching receive), so the reaper cannot kill it' % (tag, verdict))
+
+    def test_daemon_can_sigkill_url_to_unixtime(self) -> None:
+        self._assert_reapable('url_to_unixtime', U2U_ARGV)
+
+    def test_daemon_can_sigkill_sclockadj(self) -> None:
+        self._assert_reapable('sclockadj', SCLOCKADJ_ARGV)
 
 
 ## A6: daemon own-profile ENFORCE functional smoke. Only a live enforce run
