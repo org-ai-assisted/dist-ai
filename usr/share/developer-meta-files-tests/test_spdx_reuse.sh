@@ -288,6 +288,17 @@ Version 3, 19 November 2007
 
     Copyright (C) <year>  <name of author>
 EOF
+## A generated changelog that QUOTES the legacy header in a commit message. pass 1
+## must SKIP it (like pass 2 / REUSE.toml already do), or the whole-file str_replace
+## rewrites the recorded commit text + the historical maintainer email.
+cat > "${fixture}/changelog.upstream" <<EOF
+testpkg (1.0-1) unstable; urgency=medium
+
+  * Dropped the legacy header '## ${co} 2012 - 2025 ENCRYPTED SUPPORT LLC <${W}>'
+    and '## ${cond}' in favor of SPDX tags.
+
+ -- test <test@example.com>  Thu, 01 Jan 2026 00:00:00 +0000
+EOF
 ## LICENSES text present, so convert_tree does not attempt a network download.
 cat > "${fixture}/LICENSES/AGPL-3.0-or-later.txt" <<'EOF'
 GNU AFFERO GENERAL PUBLIC LICENSE Version 3 (verbatim text placeholder).
@@ -389,9 +400,11 @@ assert_grep "${fixture}/translations/x.yaml" "SPDX-FileCopyrightText: 2015 troub
 
 ## Legacy headers must be REPLACED, not merely supplemented: the unique conditions
 ## phrase must survive NOWHERE (absent from COPYING and the DEP-5 license text).
-## Exclude spdx-reuse.bsh: it carries the phrase as CODE and is SKIPPED by the
-## converter on purpose (see the skip assertion below). Presence by output.
-leftover="$(grep --recursive --fixed-strings --exclude-dir=.git --exclude='spdx-reuse.bsh' \
+## Exclude spdx-reuse.bsh and changelog.upstream: both carry the phrase as CODE /
+## quoted text and are SKIPPED by the converter on purpose (see the skip assertions
+## below). Presence by output.
+leftover="$(grep --recursive --fixed-strings --exclude-dir=.git \
+   --exclude='spdx-reuse.bsh' --exclude='changelog.upstream' \
    -- 'See the file COPYING for copying conditions.' "${fixture}" || true)"
 if [ -n "${leftover}" ]; then
    fail "a legacy conditions line survived (header appended, not replaced): ${leftover}"
@@ -409,6 +422,12 @@ assert_grep "${self}" "${co} " \
    "skip: converter's own copyright-marker str_replace argument left intact"
 assert_grep "${self}" 'adrelanos@whonix.org' \
    "skip: converter's own email str_replace argument left intact"
+## changelog.upstream is skipped too: its quoted header + historical maintainer
+## email must survive verbatim (not rewritten into SPDX tags / the package domain).
+assert_grep "${fixture}/changelog.upstream" 'See the file COPYING for copying conditions.' \
+   "skip: changelog.upstream quoted conditions line left intact"
+assert_grep "${fixture}/changelog.upstream" 'adrelanos@whonix.org' \
+   "skip: changelog.upstream historical maintainer email left intact"
 
 ## COMPANY (ENCRYPTED SUPPORT LLC) copyrights must lose their year in the per-file
 ## ':' SPDX header and the REUSE.toml ' = ' SPDX form; a non-company contributor's
