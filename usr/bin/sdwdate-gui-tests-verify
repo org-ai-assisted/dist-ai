@@ -80,12 +80,20 @@ real_rc=0
 ## style-ok: allow-python-interpreter -- crosshair is the pip-only search tool this lane drives
 crosshair check "${crosshair_flags[@]}" verify_sdwdate_gui_crosshair "$@" || real_rc=$?
 
-## 2) Canary: a working search MUST refute the deliberately-false contract
-## (exit 1). A clean canary (exit 0) means the search is vacuous; an error
-## (exit 2) means it could not run -- either FAILS the lane.
-canary_rc=0
-## style-ok: allow-python-interpreter -- crosshair is the pip-only search tool this lane drives
-crosshair check "${crosshair_flags[@]}" verify_sdwdate_gui_crosshair_canary "$@" || canary_rc=$?
+## 2) Canaries: a working search MUST refute EACH deliberately-false contract
+## (exit 1), checked INDIVIDUALLY. A clean canary (exit 0) means that branch is
+## vacuous -- the subject is not driven there, or its precondition is
+## unsatisfiable -- and an error (exit 2) means it could not run; either FAILS the
+## lane. Checked per-function because `crosshair check <module>` exits 1 if ANY
+## contract is refuted, which would let one live canary mask a dead sibling.
+canary_targets=(
+   verify_sdwdate_gui_crosshair_canary.prop_canary_printable_always_true
+   verify_sdwdate_gui_crosshair_canary.prop_canary_parse_short_reachable
+   verify_sdwdate_gui_crosshair_canary.prop_canary_parse_zero_length_reachable
+   verify_sdwdate_gui_crosshair_canary.prop_canary_parse_oversized_length_reachable
+   verify_sdwdate_gui_crosshair_canary.prop_canary_parse_incomplete_body_reachable
+   verify_sdwdate_gui_crosshair_canary.prop_canary_parse_nonprintable_body_reachable
+)
 
 fail=0
 if [ "${real_rc}" -eq 0 ]; then
@@ -95,15 +103,23 @@ else
    fail=1
 fi
 
-if [ "${canary_rc}" -eq 1 ]; then
-   printf '%s\n' "PASS: canary refuted as expected -- the search has teeth"
-else
-   printf '%s\n' "FAIL: canary was NOT refuted (rc=${canary_rc}); the search is vacuous, so the real-contract result cannot be trusted" >&2
-   fail=1
-fi
+canary_pass=0
+for target in "${canary_targets[@]}"; do
+   canary_rc=0
+   ## style-ok: allow-python-interpreter -- crosshair is the pip-only search tool this lane drives
+   crosshair check "${crosshair_flags[@]}" "${target}" "$@" || canary_rc=$?
+   if [ "${canary_rc}" -eq 1 ]; then
+      printf '%s\n' "PASS: canary refuted as expected -- ${target##*.}"
+      canary_pass=$((canary_pass + 1))
+   else
+      printf '%s\n' "FAIL: canary NOT refuted (rc=${canary_rc}) -- ${target##*.}; that branch is vacuous, so the real-contract result for it cannot be trusted" >&2
+      fail=1
+   fi
+done
 
 if [ "${fail}" -ne 0 ]; then
    exit 1
 fi
-printf '%s\n' "== sdwdate-gui-tests-verify: 2 pass, 0 fail, 0 skip =="
+## Real-contract run (1 module) + each refuted canary.
+printf '%s\n' "== sdwdate-gui-tests-verify: $((1 + canary_pass)) pass, 0 fail, 0 skip =="
 exit 0

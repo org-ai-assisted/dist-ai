@@ -325,6 +325,21 @@ class TestTrayIconWorstStatus(_TrayFixture):
             self.tray.tor_icon_list[server.TorStatus.STOPPED.value],
         )
 
+    def test_tor_disabled_takes_priority(self) -> None:
+        ## DISABLED (value 3) is the highest Tor status and, like STOPPED, must
+        ## override a healthy sdwdate status in the tray -- a disabled Tor is an
+        ## outage to surface, not to hide behind a SUCCESS icon. Pins DISABLED in
+        ## the priority tuple at set_tray_icon (dropping it hides the outage).
+        self.tray.client_list = [
+            self._client(server.SdwdateStatus.SUCCESS, server.TorStatus.DISABLED)
+        ]
+        captured = self._capture_icon()
+        self.tray.set_tray_icon()
+        self.assertIs(
+            captured[-1],
+            self.tray.tor_icon_list[server.TorStatus.DISABLED.value],
+        )
+
     def test_all_unknown_sets_no_icon(self) -> None:
         self.tray.client_list = [
             self._client(server.SdwdateStatus.UNKNOWN, server.TorStatus.ABSENT)

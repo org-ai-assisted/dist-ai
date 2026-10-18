@@ -172,6 +172,25 @@ MUTANTS = [
          new="msg_len += 1",
          killers=["test_mutation_server.py"],
          note="the length prefix byte would be dropped from the sent frame."),
+    dict(id="server set_tray_icon Tor priority tuple drops DISABLED",
+         module="sdwdate_gui_server.py",
+         old="        if tor_status_index in (\n"
+             "            TorStatus.STOPPED.value,\n"
+             "            TorStatus.DISABLED.value,\n"
+             "        ):",
+         new="        if tor_status_index in (\n"
+             "            TorStatus.STOPPED.value,\n"
+             "        ):",
+         killers=["test_mutation_server.py"],
+         note="a DISABLED-Tor client would show its sdwdate icon instead of the "
+              "Tor-error icon, hiding a Tor outage in the tray."),
+    dict(id="server reserved-name tuple drops Domain-0",
+         module="sdwdate_gui_server.py",
+         old='client_name in ("Domain-0", "none", "default")',
+         new='client_name in ("none", "default")',
+         killers=["test_server_coverage.py"],
+         note="a client could set the name 'Domain-0' and impersonate dom0 in "
+              "the tray/menu (defense-in-depth on correctly-stamped qrexec)."),
     dict(id="server worst-status index init -1 -> 1",
          module="sdwdate_gui_server.py",
          old="sdwdate_status_index: int = -1",

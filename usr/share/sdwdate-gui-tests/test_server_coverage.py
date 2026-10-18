@@ -165,7 +165,11 @@ class TestSetClientName(ClientTestBase):
 
     def test_qubes_invalid_name_kicks(self) -> None:
         self.set_qubes(True)
-        for bad in ('x' * 32, '1startsdigit', 'none', 'foo-dm', 'a/b'):
+        ## 'Domain-0' and 'default' are Qubes reserved names: each passes the
+        ## identifier regex and the -dm check, so only the reserved-name tuple
+        ## rejects them. Pins every member of that tuple.
+        for bad in ('x' * 32, '1startsdigit', 'none', 'default', 'Domain-0',
+                    'foo-dm', 'a/b'):
             with self.subTest(bad=bad):
                 self.client.client_name_set = False
                 with mock.patch.object(self.client, 'kick_client') as kc:

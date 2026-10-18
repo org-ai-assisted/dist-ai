@@ -6,24 +6,38 @@
 ## AI-Assisted
 
 """
-Anti-silent-green canary for the CrossHair lane.
+Anti-silent-green + reachability canaries for the CrossHair lane.
 
-A DELIBERATELY FALSE contract over the real check_bytes_printable. The lane
-runs `crosshair check` on it and REQUIRES a counterexample (crosshair exit 1):
-if this ever comes back clean, CrossHair is not actually exercising the subject
-(a broken import, a stubbed function, an engine regression) and every clean
-result on the real contracts would be a vacuous false pass. So the canary turns
-a vacuous run into a loud lane FAILURE.
+Each function below is a DELIBERATELY FALSE contract. The lane runs
+`crosshair check` on EACH one INDIVIDUALLY and REQUIRES a counterexample
+(crosshair exit 1) for every one. A canary that comes back clean (exit 0) is a
+VACUOUS pass -- the engine is not exercising that subject/branch at all (a broken
+import, a stubbed function, an engine regression, or an UNSATISFIABLE precondition
+in the real contract that shares this branch) -- so the lane turns it into a loud
+FAILURE instead of trusting the real-contract result.
 
-The claim below -- that check_bytes_printable is ALWAYS True -- is false for any
-non-printable byte (e.g. 0x00), so a working CrossHair refutes it fast. It is
-based on the same bounded byte loop as the real contracts (no unsupported
-stdlib call), so a refutation here proves the engine really ran the subject.
+Two distinct failure modes are covered, which a single module-level canary cannot
+separate (crosshair exits 1 if ANY contract in a module is refuted, so one live
+canary would mask a dead sibling):
+
+  1. SUBJECT-DRIVEN: the engine really runs check_bytes_printable / parse_ipc_buf
+     (not a stub or a failed import).
+  2. BRANCH-REACHABLE: each parse_ipc_buf non-success branch the real contracts
+     rely on (short buffer, zero length, oversized length, incomplete body,
+     nonprintable body) is actually REACHED -- its precondition is satisfiable.
+     If a future off-by-one made a real contract's preconditions contradict,
+     CrossHair would report "no counterexample" VACUOUSLY and the real lane would
+     pass green while proving nothing; the matching canary here, carrying the SAME
+     precondition over an inverted claim, stays UN-refuted and fails the lane.
+
+Every canary is built on the SAME code path as the real contract it guards (no
+unsupported 2-arg str() -- all stay on parse_ipc_buf's pre-decode branches), so a
+refutation proves the engine really drove the subject on that branch.
 """
 
 # pylint: disable=invalid-name
 
-from sdwdate_gui.sdwdate_gui_shared import check_bytes_printable
+from sdwdate_gui.sdwdate_gui_shared import check_bytes_printable, parse_ipc_buf
 
 
 def prop_canary_printable_always_true(buf: bytes) -> bool:
@@ -33,3 +47,79 @@ def prop_canary_printable_always_true(buf: bytes) -> bool:
     post: __return__
     """
     return check_bytes_printable(buf) is True
+
+
+def prop_canary_parse_short_reachable(buf: bytes) -> bool:
+    """
+    FALSE ON PURPOSE over the short-buffer branch. The real behavior is
+    (remainder == buf, msg_list == []); this claims the opposite, so a working
+    engine reaching the < 2 branch MUST refute it.
+    pre: len(buf) < 2
+    post: __return__
+    """
+    remainder, msg_list = parse_ipc_buf(buf)
+    return not (remainder == buf and msg_list == [])
+
+
+def prop_canary_parse_zero_length_reachable(buf: bytes) -> bool:
+    """
+    FALSE ON PURPOSE over the zero-length-frame branch. The real behavior RAISES
+    ValueError; this returns True only when NO ValueError is raised, so a working
+    engine reaching the msg_len == 0 guard MUST refute it.
+    pre: len(buf) >= 2
+    pre: int.from_bytes(buf[:2], "big") == 0
+    post: __return__
+    """
+    try:
+        parse_ipc_buf(buf)
+    except ValueError:
+        return False
+    return True
+
+
+def prop_canary_parse_oversized_length_reachable(buf: bytes) -> bool:
+    """
+    FALSE ON PURPOSE over the oversized-length branch (msg_len > MAX_MSG_SIZE).
+    The real behavior RAISES ValueError; returns True only when none is raised,
+    so a working engine reaching the cap guard MUST refute it.
+    pre: len(buf) >= 2
+    pre: int.from_bytes(buf[:2], "big") > 4096
+    post: __return__
+    """
+    try:
+        parse_ipc_buf(buf)
+    except ValueError:
+        return False
+    return True
+
+
+def prop_canary_parse_incomplete_body_reachable(buf: bytes) -> bool:
+    """
+    FALSE ON PURPOSE over the incomplete-body branch. The real behavior is
+    (remainder == buf, msg_list == []); this claims the opposite, so a working
+    engine reaching the wait-for-more branch MUST refute it.
+    pre: len(buf) >= 2
+    pre: 0 < int.from_bytes(buf[:2], "big") <= 4096
+    pre: len(buf) - 2 < int.from_bytes(buf[:2], "big")
+    post: __return__
+    """
+    remainder, msg_list = parse_ipc_buf(buf)
+    return not (remainder == buf and msg_list == [])
+
+
+def prop_canary_parse_nonprintable_body_reachable(buf: bytes) -> bool:
+    """
+    FALSE ON PURPOSE over the nonprintable-body branch. The real behavior RAISES
+    ValueError; returns True only when none is raised, so a working engine
+    reaching the printable check MUST refute it.
+    pre: len(buf) >= 2
+    pre: 0 < int.from_bytes(buf[:2], "big") <= 4096
+    pre: len(buf) - 2 >= int.from_bytes(buf[:2], "big")
+    pre: not all(0x20 <= b <= 0x7E for b in buf[2 : 2 + int.from_bytes(buf[:2], "big")])
+    post: __return__
+    """
+    try:
+        parse_ipc_buf(buf)
+    except ValueError:
+        return False
+    return True

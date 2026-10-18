@@ -106,6 +106,33 @@ class TestParseIpcBufBoundary(unittest.TestCase):
         self.assertEqual(rest, buf)
         self.assertEqual(msg_list, [])
 
+    def test_multiple_whole_frames_plus_partial_tail(self) -> None:
+        """k>=2 concatenated whole frames accumulate in order, with a trailing
+        partial frame returned verbatim as the remainder.
+
+        Stresses the out_msg_list accumulation loop together with the
+        remainder-is-trailing-partial invariant: three complete frames must
+        decode to exactly three part-lists, and the incomplete fourth prefix+body
+        must survive as the leftover for the next read.
+        """
+        whole = (
+            self._frame(b"set_client_name host")
+            + self._frame(b"set_sdwdate_status success ok")
+            + self._frame(b"set_tor_status running")
+        )
+        ## A 4th frame declaring 9 body bytes but supplying only 4 -> incomplete.
+        tail = (9).to_bytes(2, "big") + b"abcd"
+        rest, msg_list = shared.parse_ipc_buf(whole + tail)
+        self.assertEqual(
+            msg_list,
+            [
+                ["set_client_name", "host"],
+                ["set_sdwdate_status", "success", "ok"],
+                ["set_tor_status", "running"],
+            ],
+        )
+        self.assertEqual(rest, tail)
+
     def test_prefix_only_small_len_is_incomplete(self) -> None:
         """A bare 2-byte prefix (msg_len=2, no body) is incomplete.
 
