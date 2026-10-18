@@ -58,7 +58,9 @@ sshd_pid=""
 cleanup() {
    trap "" EXIT
    [ -z "${sshd_pid}" ] || kill "${sshd_pid}" 2>/dev/null || true
-   safe-rm --recursive --force -- "${work}"
+   ## Best-effort: a cleanup failure must not become the script's exit status (errexit +
+   ## inherit_errexit are on) and so flip a PASS to a failure. Not a safe-rm||rm fallback.
+   safe-rm --recursive --force -- "${work}" || true
    return 0
 }
 trap cleanup EXIT
@@ -91,8 +93,12 @@ EOF
 sshd_pid=$!
 
 ## Readiness-wait on the port via bash /dev/tcp (no inline python), until-loop not a fixed sleep.
+## Check sshd is still ALIVE each cycle: if it exited (e.g. its port was already taken -> bind
+## failed), fail FAST instead of eventually connecting to an impostor listener and letting the
+## upload retry loop below spin for hours.
 waited=0
 until (exec 3<>"/dev/tcp/127.0.0.1/${port}") 2>/dev/null; do
+   kill -0 "${sshd_pid}" 2>/dev/null || fail "sshd exited before opening port ${port} (bind failed / port taken?)"
    sleep 0.3
    waited=$(( waited + 1 ))
    [ "${waited}" -lt 100 ] || fail "sshd did not open port ${port} within 30s"
@@ -100,9 +106,12 @@ done
 exec 3>&- 2>/dev/null || true
 
 ## ssh transport wrapper (no spaces reach dm's unquoted ${rsync_opts}: rsync gets `-e <wrapper>`).
+## -F /dev/null: ignore the user/system ssh_config entirely, so a stray ~/.ssh/config (e.g. a
+## ProxyCommand/HostName for localhost on the runner) cannot redirect or hijack the connection --
+## the test is hermetic, keyed only by the flags here.
 cat > "${work}/ssh-wrap" <<EOF
 #!/bin/bash
-exec ssh -i "${work}/id" -p "${port}" -o UserKnownHostsFile="${work}/known_hosts" -o StrictHostKeyChecking=accept-new -o BatchMode=yes "\$@"
+exec ssh -F /dev/null -i "${work}/id" -p "${port}" -o UserKnownHostsFile="${work}/known_hosts" -o StrictHostKeyChecking=accept-new -o BatchMode=yes "\$@"
 EOF
 chmod +x "${work}/ssh-wrap"
 
@@ -150,6 +159,11 @@ dist_server_with_upload_location_item="$(id -un)@localhost:${dest}"
 dist_build_upload_locations=("$(id -un)@localhost:${dest}")
 
 ## --- source the REAL dm-upload-images (source-able: defines functions, does NOT run main) ------
+## Fail fast if the subject is NOT source-able (no was_executed guard): sourcing a version that
+## auto-runs main would run parse-cmd AND install help-steps/pre's `trap exithandler EXIT`,
+## clobbering our cleanup (leaking the sshd + key). The landed gitlink points at the source-able
+## refactor; this guards a stale / un-bumped tree before we ever source it.
+grep --quiet 'was_executed' "${subject}" || fail "dm-upload-images is not source-able (no was_executed guard) -- is the developer-meta-files gitlink bumped to the refactor?"
 # shellcheck disable=SC1090
 source "${subject}"
 [ "$(type -t show_files)" = "function" ] || fail "sourcing dm-upload-images did not define show_files (not source-able?)"
@@ -159,6 +173,11 @@ source "${subject}"
 upload_file_list=()
 show_files "${img}"
 [ "${#upload_file_list[@]}" -ge 2 ] || fail "show_files built an empty/short upload_file_list"
+
+## Pre-flight: confirm ssh key auth + the port work BEFORE upload_files. Otherwise a broken
+## connection sends dm's upload_files into its 100x linear-backoff retry (~7h, far past the suite
+## timeout) rather than failing here.
+"${work}/ssh-wrap" "$(id -un)@localhost" true || fail "pre-flight ssh to localhost failed (key/sshd/port); not entering the upload retry loop"
 
 rc=0
 upload_files || rc=$?
