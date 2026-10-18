@@ -14,6 +14,7 @@ sdwdate.timesanitycheck. The module also notifies systemd at import time; that
 is harmless without NOTIFY_SOCKET, and the notifier is stubbed anyway.
 """
 
+import importlib
 import logging
 import os
 import sys
@@ -65,6 +66,59 @@ def import_sdwdate():
         )
         sys.exit(77)
     return sdwdate_module
+
+
+def import_sdwdate_submodule(name: str):
+    """
+    Import and return sdwdate.<name> (config, proxy_settings, timesanitycheck,
+    remote_times) via the SDWDATE_REPO resolver, or exit 77 (the runner's SKIP
+    code) when the subject or one of its imports is unavailable.
+
+    Same resolution and SKIP semantics as import_sdwdate; a single resolver so
+    every suite drives the one checkout the orchestrator wired.
+    """
+    dist_packages = sdwdate_dist_packages()
+    module_path = os.path.join(dist_packages, 'sdwdate', name + '.py')
+    if not os.path.exists(module_path):
+        print(
+            'SKIP: %s not found -- install sdwdate or set SDWDATE_REPO'
+            % module_path,
+            file=sys.stderr,
+        )
+        sys.exit(77)
+    if dist_packages not in sys.path:
+        sys.path.insert(0, dist_packages)
+    try:
+        return importlib.import_module('sdwdate.' + name)
+    except ImportError as exc:
+        print(
+            'SKIP: cannot import sdwdate.%s (%s) -- needs helper-scripts on '
+            'PYTHONPATH plus python3-dateutil, python3-stem' % (name, exc),
+            file=sys.stderr,
+        )
+        sys.exit(77)
+
+
+class RecordingLogger:
+    """
+    Minimal stand-in for sdwdate's module LOGGER (created in main(), absent on a
+    bare import). Suites that assert on the log LEVEL a branch takes (info vs
+    warning vs error) read the recorded calls.
+    """
+
+    def __init__(self) -> None:
+        self.infos: list[str] = []
+        self.warnings: list[str] = []
+        self.errors: list[str] = []
+
+    def info(self, message) -> None:
+        self.infos.append(message)
+
+    def warning(self, message) -> None:
+        self.warnings.append(message)
+
+    def error(self, message) -> None:
+        self.errors.append(message)
 
 
 class FakePopen:
