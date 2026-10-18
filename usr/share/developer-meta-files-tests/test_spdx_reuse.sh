@@ -94,7 +94,7 @@ if [ -z "${subject}" ]; then
    printf '%s\n' "FATAL: spdx-reuse.bsh not found (set SPDX_REUSE_BSH)." >&2
    exit 1
 fi
-for tool in reuse git safe-rm; do
+for tool in reuse git safe-rm str_replace; do
    if ! command -v "${tool}" >/dev/null; then
       printf '%s\n' "FATAL: '${tool}' missing; a hard requirement of the test." >&2
       exit 1
@@ -107,6 +107,12 @@ source "${subject}"
 K='adrelanos@kicksecure.com'
 W='adrelanos@whonix.org'
 
+## Legacy header markers, assembled from variables so a literal header line does not
+## appear in this test's own source (the gate's R-002 would misread it as THIS file's
+## header). Fixtures built from them are byte-identical to real Kicksecure files.
+co='Copyright (C)'
+cond='See the file COPYING for copying conditions.'
+
 ## --- UNIT: email domain derived from the package path -----------------------
 assert_eq "${K}" "$(spdx_reuse_email_for_path /x/packages/kicksecure/sdwdate)" \
    "email: packages/kicksecure -> kicksecure.com"
@@ -115,41 +121,48 @@ assert_eq "${W}" "$(spdx_reuse_email_for_path /x/packages/whonix/anon-meta)" \
 assert_eq "${K}" "$(spdx_reuse_email_for_path /x/anything-else)" \
    "email: default -> kicksecure.com"
 
-## --- UNIT: per-line conversion, every comment-prefix variant ----------------
+## --- UNIT: convert_file rewrites headers in place via literal str_replace -----
+## Drive the REAL convert_file on a one-line temp file. Proves the str_replace path:
+## the company year is dropped + email normalized, the comment prefix and any
+## SAME-LINE closer (/* */, <!-- -->) are preserved (finding 1), and a non-company
+## holder keeps its year + handle (the year drop is anchored on the company name).
+convert_one() {
+   ## convert_one <line> <email> ; echoes the converted single line
+   local line="$1" email="$2" tmp
+   tmp="$(mktemp)"
+   printf '%s\n' "${line}" > "${tmp}"
+   spdx_reuse_convert_file "${tmp}" "${email}"
+   cat -- "${tmp}"
+   safe-rm --force -- "${tmp}"
+}
 assert_eq "## SPDX-FileCopyrightText: ENCRYPTED SUPPORT LLC <${K}>" \
-   "$(spdx_reuse_convert_line '## Copyright (C) 2022 - 2025 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>' "${K}")" \
-   "convert: '## ' company copyright -> SPDX (years dropped, email normalized)"
+   "$(convert_one "## ${co} 2022 - 2025 ENCRYPTED SUPPORT LLC <${W}>" "${K}")" \
+   "convert: '## ' company header -> SPDX (year dropped, email normalized)"
 assert_eq "# SPDX-FileCopyrightText: ENCRYPTED SUPPORT LLC <${K}>" \
-   "$(spdx_reuse_convert_line '# Copyright (C) 2017 - 2025 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>' "${K}")" \
-   "convert: '# ' company copyright -> SPDX"
-assert_eq "SPDX-FileCopyrightText: ENCRYPTED SUPPORT LLC <${K}>" \
-   "$(spdx_reuse_convert_line 'Copyright (C) 2016 - 2025 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>' "${K}")" \
-   "convert: bare company copyright -> SPDX (C block / HTML comment)"
+   "$(convert_one "# ${co} 2017 - 2025 ENCRYPTED SUPPORT LLC <${W}>" "${K}")" \
+   "convert: '# ' company header -> SPDX"
 assert_eq "## SPDX-License-Identifier: AGPL-3.0-or-later" \
-   "$(spdx_reuse_convert_line '## See the file COPYING for copying conditions.' "${K}")" \
-   "convert: '## ' conditions line -> SPDX-License-Identifier"
-assert_eq "# SPDX-License-Identifier: AGPL-3.0-or-later" \
-   "$(spdx_reuse_convert_line '# See the file COPYING for copying conditions.' "${K}")" \
-   "convert: '# ' conditions line -> SPDX-License-Identifier"
-assert_eq "SPDX-License-Identifier: AGPL-3.0-or-later" \
-   "$(spdx_reuse_convert_line 'See the file COPYING for copying conditions.' "${K}")" \
-   "convert: bare conditions line -> SPDX-License-Identifier"
-assert_eq "## SPDX-FileCopyrightText: troubadour <trobador@riseup.net>" \
-   "$(spdx_reuse_convert_line '## Copyright (C) 2015 troubadour <trobador@riseup.net>' "${K}")" \
-   "convert: non-company holder preserved (year dropped, email NOT normalized)"
-## CANARY: a line that matches no marker must pass through byte-identical, so the
-## converter is proven to rewrite only what it recognizes (not blindly).
-canary_in='readonly foo="Copyright notice in a string"'
-assert_eq "${canary_in}" "$(spdx_reuse_convert_line "${canary_in}" "${K}")" \
-   "canary: a non-header line is returned unchanged"
-## A marker inside a CODE string literal (non-comment prefix) must NOT convert,
-## or the tool corrupts its own source when run on developer-meta-files.
-code_cond='   local marker_cond="See the file COPYING for copying conditions."'
-assert_eq "${code_cond}" "$(spdx_reuse_convert_line "${code_cond}" "${K}")" \
-   "code literal mentioning the conditions marker is left unchanged"
-code_copy='msg="Copyright (C) 2020 Acme"'
-assert_eq "${code_copy}" "$(spdx_reuse_convert_line "${code_copy}" "${K}")" \
-   "code literal mentioning a copyright marker is left unchanged"
+   "$(convert_one "## ${cond}" "${K}")" \
+   "convert: '## ' conditions -> SPDX-License-Identifier"
+## FINDING 1: a SINGLE-LINE block / HTML header keeps its closer (pre-fix the closer
+## was dropped, leaving an unterminated comment that swallowed the rest of the file).
+assert_eq "<!-- ## SPDX-FileCopyrightText: ENCRYPTED SUPPORT LLC <${K}> -->" \
+   "$(convert_one "<!-- ## ${co} 2019 - 2025 ENCRYPTED SUPPORT LLC <${W}> -->" "${K}")" \
+   "convert: single-line <!-- --> company header keeps its closer"
+assert_eq "<!-- ## SPDX-License-Identifier: AGPL-3.0-or-later -->" \
+   "$(convert_one "<!-- ## ${cond} -->" "${K}")" \
+   "convert: single-line <!-- --> conditions keeps its closer"
+assert_eq "/* SPDX-FileCopyrightText: ENCRYPTED SUPPORT LLC <${K}> */" \
+   "$(convert_one "/* ${co} 2020 - 2025 ENCRYPTED SUPPORT LLC <${W}> */" "${K}")" \
+   "convert: single-line /* */ company header keeps its closer"
+## Company off-domain email (riseup.net) folded into the package domain.
+assert_eq "## SPDX-FileCopyrightText: ENCRYPTED SUPPORT LLC <${K}>" \
+   "$(convert_one "## ${co} 2013 - 2025 ENCRYPTED SUPPORT LLC <adrelanos@riseup.net>" "${K}")" \
+   "convert: company riseup.net email normalized to the package domain"
+## Non-company holder: year KEPT, handle + email untouched (company-anchored drop).
+assert_eq "## SPDX-FileCopyrightText: 2015 troubadour <trobador@riseup.net>" \
+   "$(convert_one "## ${co} 2015 troubadour <trobador@riseup.net>" "${K}")" \
+   "convert: non-company holder keeps its year and handle"
 
 ## --- INTEGRATION: convert a git fixture tree end to end ---------------------
 workdir="$(mktemp --directory)"
@@ -162,11 +175,8 @@ fixture="${workdir}/pkg"
 mkdir --parents -- "${fixture}/usr/bin" "${fixture}/usr/lib" "${fixture}/src" \
    "${fixture}/man" "${fixture}/translations" "${fixture}/LICENSES" "${fixture}/debian"
 
-## Legacy header lines, assembled from variables so the literal does not appear
-## as a source header line (which the gate's R-002 would misread as THIS file's
-## own header). The written fixtures are byte-identical to real Kicksecure files.
-co='Copyright (C)'
-cond='See the file COPYING for copying conditions.'
+## co / cond are defined above (reused for the fixture headers). The written
+## fixtures are byte-identical to real Kicksecure files.
 
 ## Files carrying the legacy header, one per comment-prefix variant.
 cat > "${fixture}/usr/bin/toolscript" <<EOF
@@ -233,6 +243,14 @@ all:
 EOF
 cat > "${fixture}/.gitignore" <<'EOF'
 *.tmp
+EOF
+## FINDING 2: an EXTENSIONLESS file whose first line is a shebang gets a hash header
+## added -- its comment style is detected by probing the real file, so this must work
+## even though convert_tree runs with CWD != the fixture (a relative-path probe missed
+## it). No legacy header, so pass 2 (add-header) handles it.
+cat > "${fixture}/usr/bin/helperscript" <<'EOF'
+#!/bin/bash
+echo hi
 EOF
 
 ## Uncommentable data file (ends up in REUSE.toml's leftover list).
@@ -342,8 +360,10 @@ assert_grep "${fixture}/src/thing.c" "SPDX-FileCopyrightText: ENCRYPTED SUPPORT 
    "thing.c: bare SPDX header in C block"
 assert_grep "${fixture}/man/thing.8.ronn" "# SPDX-FileCopyrightText: ENCRYPTED SUPPORT LLC <${K}>" \
    "thing.8.ronn: '# ' SPDX header in HTML comment"
-assert_grep "${fixture}/translations/x.yaml" "SPDX-FileCopyrightText: troubadour <trobador@riseup.net>" \
-   "x.yaml: non-company holder preserved"
+## Non-company holder keeps its handle, email, AND its year (the year drop is
+## anchored on the company name, so a contributor's copyright is left intact).
+assert_grep "${fixture}/translations/x.yaml" "SPDX-FileCopyrightText: 2015 troubadour <trobador@riseup.net>" \
+   "x.yaml: non-company holder preserved, year kept"
 
 ## Legacy headers must be REPLACED, not merely supplemented: the unique conditions
 ## phrase must survive NOWHERE (it is absent from COPYING and the DEP-5 license
@@ -356,18 +376,21 @@ else
    pass "no legacy conditions line survives (headers replaced in place)"
 fi
 
-## Years must be gone from EVERY copyright: the per-file ':' SPDX form, the
-## REUSE.toml ' = ' SPDX form, AND debian/copyright's DEP-5 'Copyright:' field.
-## Matched by OUTPUT presence (a grep error exits non-zero but prints nothing, so
-## the old 'if grep' form would mis-read an error as 'no year').
+## COMPANY (ENCRYPTED SUPPORT LLC) copyrights must lose their year in all three
+## forms: the per-file ':' SPDX header, the REUSE.toml ' = ' SPDX form, AND
+## debian/copyright's DEP-5 'Copyright:' field. A non-company contributor's year is
+## intentionally KEPT, so the check is scoped to the company holder (the year sits
+## before the holder, e.g. '2012 - 2026 ENCRYPTED SUPPORT LLC'). Matched by OUTPUT
+## presence (a grep error exits non-zero but prints nothing, so the old 'if grep'
+## form would mis-read an error as 'no year').
 year_hits="$(grep --recursive --extended-regexp --exclude-dir=.git \
-   -- 'SPDX-FileCopyrightText.*[0-9][0-9][0-9][0-9]' "${fixture}" || true)"
+   -- 'SPDX-FileCopyrightText.*[0-9][0-9][0-9][0-9].*ENCRYPTED SUPPORT LLC' "${fixture}" || true)"
 dep5_year="$(grep --extended-regexp -- '^Copyright:.*[0-9][0-9][0-9][0-9]' \
    "${fixture}/debian/copyright" || true)"
 if [ -n "${year_hits}${dep5_year}" ]; then
-   fail "a converted copyright still carries a year: ${year_hits}${dep5_year}"
+   fail "a converted company copyright still carries a year: ${year_hits}${dep5_year}"
 else
-   pass "no converted copyright (SPDX header, REUSE.toml, or DEP-5) carries a year"
+   pass "no converted company copyright (SPDX header, REUSE.toml, or DEP-5) carries a year"
 fi
 
 ## Headers ADDED to comment-capable files that lacked one.
@@ -389,6 +412,15 @@ else
    fail "tool.js: shebang was displaced by the header block"
 fi
 assert_grep "${fixture}/tool.js" 'SPDX-FileCopyrightText:' "tool.js: SPDX header added (C block)"
+## FINDING 2: the extensionless shebang script gets a hash header added, with the
+## shebang kept on line 1 (detected via the real-file probe regardless of CWD).
+assert_grep "${fixture}/usr/bin/helperscript" '## SPDX-FileCopyrightText:' \
+   "helperscript: extensionless shebang script got a hash SPDX header"
+if [ "$(head -n 1 -- "${fixture}/usr/bin/helperscript")" = '#!/bin/bash' ]; then
+   pass "helperscript: shebang preserved on line 1"
+else
+   fail "helperscript: shebang displaced by the header"
+fi
 
 ## A tracked symlink is NEVER written through: its external target (carrying a
 ## legacy header) must be left verbatim, and the link must still be a symlink.
