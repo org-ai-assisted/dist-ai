@@ -211,5 +211,75 @@ class SdwdateRuntimeConfinementTest(unittest.TestCase):
         _assert_stacked_enforce(self, labels, URL_TO_UNIXTIME_PATH)
 
 
+## Per-profile file-access canary: each profile must READ a trivial file in its
+## own set, and be DENIED a trivial file outside it. The deny file MUST exist, so
+## a refusal is EACCES (permission) not ENOENT (missing) -- an ENOENT would pass
+## vacuously. `aa-exec -p <profile> -- python3 -I` enters the profile and runs the
+## reader: the reader's exec is the profile ENTRY (onexec, needs no x rule), while
+## its open() calls ARE mediated by the profile; `-I` keeps python to builtins so
+## it starts even under the minimal sclockadj set. Testing the profile ALONE
+## isolates its own ruleset; the runtime label additionally stacks the daemon
+## (strictly tighter), proven by the label tests above. Note this ALSO catches
+## complain: a complain profile permits the deny-read, so the EACCES assert fails.
+_READER = '/usr/bin/python3'
+_READ_PROBE = (
+    'import sys\n'
+    'try:\n'
+    '    open(sys.argv[1], "rb").read(1)\n'
+    '    print("OK")\n'
+    'except PermissionError:\n'
+    '    print("EACCES")\n'
+    'except FileNotFoundError:\n'
+    '    print("ENOENT")\n'
+    'except OSError as exc:\n'
+    '    print("ERR%d" % exc.errno)\n')
+
+## A trivial, safe, always-present file outside every profile's set.
+_DENY_FILE = '/etc/hostname'
+## allow = a trivial file the profile SHOULD read (its own binary; the daemon also
+## reads the helper it execs). All exist whenever the package is installed.
+_CANARY_ALLOW = {
+    DAEMON_PATH: SCLOCKADJ_PATH,
+    URL_TO_UNIXTIME_PATH: URL_TO_UNIXTIME_PATH,
+    SCLOCKADJ_PATH: SCLOCKADJ_PATH,
+}
+
+
+def _read_under(profile, path):
+    result = subprocess.run(
+        ['aa-exec', '-p', profile, '--', _READER, '-I', '-c', _READ_PROBE, path],
+        capture_output=True, text=True)
+    return result.stdout.strip()
+
+
+@unittest.skipIf(_skip_reason(),
+                 ## style-ok: allow-skip: runtime AppArmor needs an enforcing
+                 ## host + root + loaded profiles (absent in CI / the dev VM).
+                 'runtime AppArmor file-access canary not testable here: '
+                 + _skip_reason())
+class SdwdateProfileFileAccessCanaryTest(unittest.TestCase):
+    def test_each_profile_allows_its_set_and_denies_outside(self) -> None:
+        self.assertTrue(
+            os.path.exists(_DENY_FILE),
+            'canary deny-file %s must EXIST so a refusal is EACCES not ENOENT'
+            % _DENY_FILE)
+        for profile, allow in _CANARY_ALLOW.items():
+            with self.subTest(profile=profile):
+                self.assertTrue(
+                    os.path.exists(allow),
+                    'canary allow-file %s missing (package not installed?)'
+                    % allow)
+                self.assertEqual(
+                    _read_under(profile, allow), 'OK',
+                    '%s CANNOT read %s, which is in its allowed set'
+                    % (profile, allow))
+                verdict = _read_under(profile, _DENY_FILE)
+                self.assertEqual(
+                    verdict, 'EACCES',
+                    '%s read of out-of-set %s returned %r; expected EACCES '
+                    '(OK = NOT confined / complain mode; ENOENT = deny-file '
+                    'missing = vacuous)' % (profile, _DENY_FILE, verdict))
+
+
 if __name__ == '__main__':
     unittest.main()
