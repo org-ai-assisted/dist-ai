@@ -170,6 +170,15 @@ main() {
    ## which would also redirect the OUTPUT path that dm-release-test + the result harness read.
    local build_user
    build_user="$(id -un)"
+   ## dm derives user_name (-> HOMEVAR=/home/${user_name} -> the whole build/output/cowbuilder tree)
+   ## from the `logname` COMMAND, which reads the login session's utmp -- the SSH login user (e.g.
+   ## debian), NOT the EFFECTIVE user this build runs as when driven via `server-exec --user admin`
+   ## (sudo/runuser do not rewrite utmp). Unset, dm would build into /home/<ssh-login-user>, which
+   ## the effective user cannot even mkdir (observed: "mkdir: cannot create directory '/home/debian'").
+   ## dm-image-build is the invoking-user build entry point, so preset user_name to the EFFECTIVE
+   ## user (dm's default_if_empty then keeps it instead of calling logname). A real admin-login build
+   ## is unaffected (id -un == logname there).
+   export user_name="${build_user}"
    export cowbuilder_cache_dir="/var/cache/pbuilder/${build_user}"
    ## This is a test/install build on a host with NO release-server credentials; a failed
    ## dm-upload-images connection retries with linear backoff for ~7h. A real upload is an

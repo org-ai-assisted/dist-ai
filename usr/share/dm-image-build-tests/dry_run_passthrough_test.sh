@@ -49,10 +49,11 @@ trap cleanup EXIT
 fakedir="${work}/dm"
 mkdir -p -- "${fakedir}/.git" "${fakedir}/help-steps"
 export DMBO_ARGV="${work}/dmbo.argv"
+export DMBO_USER="${work}/dmbo.user"
 printf '%s\n' '#!/bin/bash' 'exit 0' > "${fakedir}/help-steps/signing-key-create"
 printf '%s\n' '#!/bin/bash' 'exit 0' > "${fakedir}/help-steps/sign-and-tag"
-# shellcheck disable=SC2016  ## recorder body: ${DMBO_ARGV} expands when the STUB runs
-printf '%s\n' '#!/bin/bash' 'printf "%s\n" "$*" > "${DMBO_ARGV}"' 'exit 0' > "${fakedir}/help-steps/dm-build-official"
+# shellcheck disable=SC2016  ## recorder body: ${DMBO_ARGV}/${DMBO_USER}/${user_name} expand when the STUB runs
+printf '%s\n' '#!/bin/bash' 'printf "%s\n" "$*" > "${DMBO_ARGV}"' 'printf "%s" "${user_name:-UNSET}" > "${DMBO_USER}"' 'exit 0' > "${fakedir}/help-steps/dm-build-official"
 chmod +x -- "${fakedir}/help-steps/"*
 
 ## Stub the host-poking commands main() runs in its cascade, so the test needs no git repo/root.
@@ -86,6 +87,14 @@ run_main
 argv="$(cat -- "${DMBO_ARGV}")"
 rc=0; has '--target iso' "${argv}" && ! has '--dry-run' "${argv}" || rc=1
 check 'default -> dm-build-official WITHOUT --dry-run (real image)' "${rc}"
+
+## --- build user: user_name preset to the EFFECTIVE user (not logname) --------------------------
+## CANARY: without the export, dm falls back to the `logname` command (the ssh login user when
+## driven via server-exec --user), building into /home/<login-user> which the effective user cannot
+## mkdir. dm-image-build presets user_name to id -un so the build tree is the effective user's.
+run_main
+rc=0; [ "$(cat -- "${DMBO_USER}")" = "$(id -un)" ] || rc=1
+check 'user_name exported as the effective user (id -un), not logname' "${rc}"
 
 ## --- --dry-run true: forwarded ---------------------------------------------------------------
 run_main --dry-run true
