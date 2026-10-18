@@ -324,13 +324,30 @@ def _limit_cpu_seconds(seconds):
         _soft, hard = resource.getrlimit(resource.RLIMIT_CPU)
         if hard == resource.RLIM_INFINITY:
             seconds_capped = seconds
+            soft_below_hard = True
         elif hard >= 2:
             seconds_capped = min(seconds, hard - 1)
+            soft_below_hard = True
         else:
             ## hard in {0,1}: no room for soft<hard (soft=0 fires SIGXCPU instantly).
             ## The gate cannot complete under a <=1 CPU-second hard limit anyway; let it
-            ## hit the hard limit (SIGKILL -> fail closed, loud). Not a cap-degrade case.
+            ## hit the hard limit (SIGKILL -> fail closed, loud). Not a cap-degrade case,
+            ## so the inherited SIGXCPU disposition is left as-is (SIGKILL ignores it).
             seconds_capped = hard
+            soft_below_hard = False
+        if soft_below_hard:
+            ## SIGXCPU at the soft limit is the operative cap signal here, so clear BOTH
+            ## inherited states that would suppress its delivery -- either one lets shellcheck
+            ## run to the wall backstop and fails the gate OPEN. Both are inherited across fork
+            ## and preserved across execve (POSIX); subprocess clears neither (restore_signals
+            ## only resets Python's own ignored dispositions, not the mask), and preexec_fn
+            ## runs last so neither reset is undone:
+            ##   - disposition SIG_IGN (an ancestor's `trap '' XCPU`): reset to SIG_DFL so the
+            ##     signal terminates shellcheck (returncode == -SIGXCPU -> no-follow degrade).
+            ##   - a blocked signal mask (an ancestor's sigprocmask / `env --block-signal`):
+            ##     unblock, else the soft-limit SIGXCPU stays pending and is never delivered.
+            signal.signal(signal.SIGXCPU, signal.SIG_DFL)
+            signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGXCPU})
         resource.setrlimit(resource.RLIMIT_CPU, (seconds_capped, hard))
     return apply
 

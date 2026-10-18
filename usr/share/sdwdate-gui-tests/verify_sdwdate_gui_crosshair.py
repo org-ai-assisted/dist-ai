@@ -33,6 +33,20 @@ to those paths IS checkable. The contracts below carry exactly those
 preconditions; a precondition-free parse_ipc_buf contract would re-hit the
 engine TypeError and must not be added back.
 
+KNOWN FORMAL-LANE BOUNDARY (not closeable without refactoring the subject): the
+multi-message loop -- a 2nd iteration, msg_scan_pos advancement past a decoded
+frame, and a non-zero-offset remainder -- is UNREACHABLE here, because reaching a
+2nd iteration requires a COMPLETE printable first frame, whose decode hits the
+unsupported 2-arg str(). Those paths are covered by the property / mutation /
+conformance lanes and the exhaustive-enumeration lanes, not here. Do not assume
+this lane covers them.
+
+Each non-success branch the contracts below rely on is pinned REACHABLE by a
+matching inverted-claim canary in verify_sdwdate_gui_crosshair_canary.py, each
+checked individually by the runner: if a precondition here ever became
+unsatisfiable (a vacuous "no counterexample" green), its canary stays un-refuted
+and FAILS the lane.
+
 Contracts are PEP 316 docstring pre/post-conditions on thin wrappers that CALL
 the real subjects.
 """
@@ -76,12 +90,13 @@ def prop_parse_short_buffer_unchanged(buf: bytes) -> bool:
     return remainder == buf and msg_list == []
 
 
-def prop_parse_rejects_bad_length(buf: bytes) -> bool:
+def prop_parse_rejects_zero_length(buf: bytes) -> bool:
     """
-    A declared message length of 0 (empty) or above MAX_MSG_SIZE (4096) is
-    rejected with ValueError, before any body is read or decoded.
+    A declared message length of 0 (empty frame) is rejected with ValueError,
+    before any body is read or decoded. Pins the `msg_len == 0` guard
+    independently of the oversized guard.
     pre: len(buf) >= 2
-    pre: int.from_bytes(buf[:2], "big") == 0 or int.from_bytes(buf[:2], "big") > 4096
+    pre: int.from_bytes(buf[:2], "big") == 0
     post: __return__
     """
     try:
@@ -89,6 +104,39 @@ def prop_parse_rejects_bad_length(buf: bytes) -> bool:
     except ValueError:
         return True
     return False
+
+
+def prop_parse_rejects_oversized_length(buf: bytes) -> bool:
+    """
+    A declared message length above MAX_MSG_SIZE (4096) is rejected with
+    ValueError, before any body is read or decoded. Pins the `msg_len >
+    MAX_MSG_SIZE` guard independently of the zero-length guard.
+    pre: len(buf) >= 2
+    pre: int.from_bytes(buf[:2], "big") > 4096
+    post: __return__
+    """
+    try:
+        parse_ipc_buf(buf)
+    except ValueError:
+        return True
+    return False
+
+
+def prop_parse_accepts_max_boundary(buf: bytes) -> bool:
+    """
+    A declared length of EXACTLY MAX_MSG_SIZE (4096) is NOT rejected by the
+    length guard -- the cap is `> 4096`, not `>= 4096`. Checked on the
+    incomplete-body path (body shorter than declared), so the frame waits
+    (returns verbatim, no messages) rather than reaching the unsupported str()
+    success decode. A mutant tightening the cap to `>= 4096` would raise here and
+    be refuted.
+    pre: len(buf) >= 2
+    pre: int.from_bytes(buf[:2], "big") == 4096
+    pre: len(buf) - 2 < 4096
+    post: __return__
+    """
+    remainder, msg_list = parse_ipc_buf(buf)
+    return remainder == buf and msg_list == []
 
 
 def prop_parse_incomplete_body_waits(buf: bytes) -> bool:
