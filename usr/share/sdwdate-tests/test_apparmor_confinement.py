@@ -174,5 +174,36 @@ class UrlToUnixtimeProfileTest(SdwdateApparmorBase):
             '%s: does not attach %s' % (path, URL_TO_UNIXTIME_PATH))
 
 
+_FLAGS_RE = re.compile(r'flags\s*=\s*\(([^)]*)\)')
+
+
+class ShipsEnforceNotComplainTest(SdwdateApparmorBase):
+    """None of the three profiles may ship in complain mode.
+
+    A profile carrying 'complain' in its flags loads PERMISSIVE: AppArmor only
+    LOGS, never denies. For the stacked privileged helpers this is silent
+    under-confinement -- the narrow sclockadj/url_to_unixtime profile adds no
+    real restriction, so the helper is bounded only by the broad parent, i.e.
+    effectively not confined to its own set at all. It is also a false-green
+    trap: a 'zero denials' e2e on a complain build proves nothing, because
+    complain never denies. (url_to_unixtime historically shipped complain
+    upstream; it was re-pointed to enforce once its enforce ruleset was proven
+    complete by a real time fetch with zero denials.) Enforce is mandatory.
+    """
+
+    def test_no_profile_declares_complain(self) -> None:
+        for profile in (DAEMON_PROFILE, SCLOCKADJ_PROFILE,
+                        URL_TO_UNIXTIME_PROFILE):
+            path, lines = _read(profile)
+            for line in lines:
+                for flags in _FLAGS_RE.findall(line):
+                    tokens = [t.strip() for t in flags.split(',')]
+                    self.assertNotIn(
+                        'complain', tokens,
+                        '%s: ships in COMPLAIN mode (flags=(%s)) -- complain is '
+                        'permissive, so the stacked helper is not actually '
+                        'confined to its set. Must be enforce.' % (path, flags))
+
+
 if __name__ == '__main__':
     unittest.main()
