@@ -158,30 +158,45 @@ def test_guestctl_env_float_falls_back_on_bad_value(monkeypatch):
     assert GC._env_float('VBOX_GUESTCTL_CLICK_SETTLE', 0.3) == 0.5
 
 
-def test_guestctl_negative_hold_knob_clamped_release_still_sent(monkeypatch):
-    ## a NEGATIVE dwell knob (VBOX_GUESTCTL_CLICK_HOLD=-1) must NOT reach time.sleep:
-    ## sleep(-1) raises AFTER the press and BEFORE the release, leaving the mouse
-    ## button held down and wedging the test. _env_float clamps it to 0 so the
-    ## release still fires. Canary: pre-clamp _env_float returns -1.0, fake_sleep(-1)
-    ## raises inside perform_pointer and the release is never sent.
-    monkeypatch.setenv('VBOX_GUESTCTL_CLICK_HOLD', '-1')
-    hold = GC._env_float('VBOX_GUESTCTL_CLICK_HOLD', 0.08)
-    assert hold >= 0.0
+def test_guestctl_env_float_rejects_nonfinite_and_negative(monkeypatch):
+    ## a negative / NaN / infinite dwell knob is nonsensical: fall back to the safe
+    ## finite default, NOT a 0 dwell (a 0 settle loses the first click) and NOT the
+    ## raw value (inf would strand the mouse button in time.sleep AFTER the press).
+    ## An explicit, finite 0 is honored. Canary: a plain max(0.0, value) clamp
+    ## returns 0.0 for negative/NaN and leaves inf unchanged, failing these.
+    for bad in ('-1', '-0.5', 'nan', 'inf', '-inf', 'Infinity'):
+        monkeypatch.setenv('VBOX_GUESTCTL_CLICK_HOLD', bad)
+        assert GC._env_float('VBOX_GUESTCTL_CLICK_HOLD', 0.08) == 0.08
+    monkeypatch.setenv('VBOX_GUESTCTL_CLICK_HOLD', '0')
+    assert GC._env_float('VBOX_GUESTCTL_CLICK_HOLD', 0.08) == 0.0
+    monkeypatch.setenv('VBOX_GUESTCTL_CLICK_HOLD', '0.5')
+    assert GC._env_float('VBOX_GUESTCTL_CLICK_HOLD', 0.08) == 0.5
 
+
+def test_guestctl_pointer_releases_button_even_if_hold_sleep_raises():
+    ## Safety invariant: a click must NEVER leave the mouse button pressed. If
+    ## sleep(hold) raises for any reason (a finite-but-huge duration that time.sleep
+    ## rejects with OverflowError slips past the knob guard), the release must still
+    ## fire -- a stuck button wedges the VBox test. The finally in perform_pointer
+    ## guarantees it. Canary: without the finally, the hold-sleep exception skips the
+    ## release and the final event is the press, not the release.
     events: list[tuple] = []
 
     class FakeMouse:
         def putMouseEventAbsolute(self, x, y, dz, dw, buttons):
             events.append(('mouse', x, y, buttons))
 
-    def fake_sleep(secs):
-        if secs < 0:   # model time.sleep's own ValueError on a negative duration
-            raise ValueError('sleep length must be non-negative')
-        events.append(('sleep', secs))
+    seen: list[float] = []
 
-    GC.perform_pointer(FakeMouse(), 10, 20, True, 1, hold=hold, sleep=fake_sleep)
-    ## release (buttons 0) is the final event -- the button is not left pressed
-    assert events[-1] == ('mouse', 10, 20, 0)
+    def fake_sleep(secs):
+        seen.append(secs)
+        if len(seen) == 2:   # the hold sleep, after the press
+            raise OverflowError('timestamp out of range for platform time_t')
+
+    with pytest.raises(OverflowError):
+        GC.perform_pointer(FakeMouse(), 10, 20, True, 1, sleep=fake_sleep)
+    ## move (buttons 0) -> press (buttons 1) -> release (buttons 0), despite the raise
+    assert events == [('mouse', 10, 20, 0), ('mouse', 10, 20, 1), ('mouse', 10, 20, 0)]
 
 
 def test_poweroff_quietly_tolerates_missing_vboxmanage(monkeypatch):
