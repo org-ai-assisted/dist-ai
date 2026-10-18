@@ -23,6 +23,7 @@ test_apparmor_confinement.py; no dpkg needed.
 import os
 import re
 import unittest
+from typing import Any
 
 ## rm_conffile paths that must NOT be shipped (resurrected) by the package.
 EXPECTED_RM_CONFFILES = {
@@ -51,6 +52,10 @@ def _repo_root() -> str:
 
 
 class RmConffileMigrationTest(unittest.TestCase):
+    root: Any
+    maintscript: Any
+    rm_conffiles: Any
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.root = _repo_root()

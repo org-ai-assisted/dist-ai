@@ -27,6 +27,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from typing import Any
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 FULL_JUMP = 5000000
@@ -48,6 +49,11 @@ def _require(tool: str) -> str:
 
 
 class SclockadjMain(unittest.TestCase):
+    src_dir: Any
+    gcc: Any
+    binary: Any
+    _workdir: Any
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.src_dir = _src_dir()

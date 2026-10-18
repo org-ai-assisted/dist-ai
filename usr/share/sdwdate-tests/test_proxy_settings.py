@@ -25,6 +25,7 @@ real via sdwdate_testlib (SDWDATE_REPO).
 import os
 import tempfile
 import unittest
+from typing import Any
 
 import sdwdate_testlib
 
@@ -33,6 +34,8 @@ SDWDATE_D = '/etc/sdwdate.d/'
 
 
 class ProxySettingsBase(unittest.TestCase):
+    mod: Any
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.mod = sdwdate_testlib.import_sdwdate_submodule('proxy_settings')

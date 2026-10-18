@@ -24,6 +24,7 @@ import os
 import tempfile
 import types
 import unittest
+from typing import Any
 
 import sdwdate_testlib
 
@@ -33,6 +34,8 @@ NOW_INT = 1_700_000_000
 
 
 class SetNewTimeBase(unittest.TestCase):
+    sdwdate: Any
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.sdwdate = sdwdate_testlib.import_sdwdate()

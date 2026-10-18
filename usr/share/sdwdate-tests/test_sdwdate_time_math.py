@@ -22,11 +22,14 @@ The subject is imported for real via sdwdate_testlib (SDWDATE_REPO).
 
 import types
 import unittest
+from typing import Any
 
 import sdwdate_testlib
 
 
 class TimeMathBase(unittest.TestCase):
+    sdwdate: Any
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.sdwdate = sdwdate_testlib.import_sdwdate()

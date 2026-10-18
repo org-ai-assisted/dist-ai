@@ -26,6 +26,7 @@ import os
 import tempfile
 import types
 import unittest
+from typing import Any
 
 import sdwdate_testlib
 
@@ -39,6 +40,8 @@ def _pool(urls):
 
 
 class FetchLoopBase(unittest.TestCase):
+    sdwdate: Any
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.sdwdate = sdwdate_testlib.import_sdwdate()

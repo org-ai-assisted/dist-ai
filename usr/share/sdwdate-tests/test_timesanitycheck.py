@@ -18,11 +18,14 @@ The subject is imported for real via sdwdate_testlib (SDWDATE_REPO).
 """
 
 import unittest
+from typing import Any
 
 import sdwdate_testlib
 
 
 class TimeSanityCheckBase(unittest.TestCase):
+    mod: Any
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.mod = sdwdate_testlib.import_sdwdate_submodule('timesanitycheck')

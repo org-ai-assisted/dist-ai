@@ -15,12 +15,18 @@ the daemon would be SIGSYS-killed at runtime (e.g. clock_settime is how it sets
 the clock; splice/mincore show up in the Python/Tor path). This static parse
 catches both at CI time, no root.
 
-Scans usr/lib/systemd/system/sdwdate.service (resolved via SDWDATE_REPO),
-joining the '\\'-continued SystemCallFilter= assignment.
+systemd ACCUMULATES multiple SystemCallFilter= assignments and an EMPTY one
+RESETS the filter, so a sneaked `SystemCallFilter=` + `SystemCallFilter=~read`
+pair would reset the allowlist to a permissive denylist; parsing only the first
+directive would miss it. So every SystemCallFilter= directive is collected (with
+'\\' continuation) and the effective set is computed with reset semantics.
+
+Scans usr/lib/systemd/system/sdwdate.service (resolved via SDWDATE_REPO).
 """
 
 import os
 import unittest
+from typing import Any
 
 ## A conservative core that must always be present; not the whole set, so adding
 ## a syscall does not need a test edit, but dropping one of these fails.
@@ -38,32 +44,54 @@ def _service_path() -> str:
         base, 'usr', 'lib', 'systemd', 'system', 'sdwdate.service')
 
 
-def _parse_syscall_filter(lines):
-    """Return the whitespace-joined SystemCallFilter value, following '\\'
-    line continuations, or None if the directive is absent."""
+def _parse_syscall_filters(lines):
+    """Return every SystemCallFilter= directive VALUE in order, each with its
+    '\\'-continuations joined (systemd accumulates multiple assignments)."""
+    directives = []
     collecting = False
-    parts = []
+    parts: list = []
     for raw in lines:
         line = raw.rstrip('\n')
-        if not collecting:
-            if line.startswith('SystemCallFilter='):
-                collecting = True
-                body = line[len('SystemCallFilter='):]
-                continued = body.endswith('\\')
-                parts.append(body[:-1] if continued else body)
-                if not continued:
-                    break
-        else:
+        if collecting:
             continued = line.endswith('\\')
             parts.append(line[:-1] if continued else line)
             if not continued:
-                break
-    if not parts:
-        return None
-    return ' '.join(parts)
+                directives.append(' '.join(parts))
+                parts = []
+                collecting = False
+            continue
+        if line.startswith('SystemCallFilter='):
+            body = line[len('SystemCallFilter='):]
+            continued = body.endswith('\\')
+            parts = [body[:-1] if continued else body]
+            if continued:
+                collecting = True
+            else:
+                directives.append(' '.join(parts))
+                parts = []
+    if parts:
+        directives.append(' '.join(parts))
+    return directives
+
+
+def _effective_allow(directives):
+    """The effective allowed-syscall set after systemd reset semantics: an empty
+    value clears it; a '~' (denylist) value clears it (the allowlist assertion
+    fails separately); otherwise the tokens accumulate."""
+    effective: set = set()
+    for directive in directives:
+        value = directive.strip()
+        if value == '' or value.startswith('~'):
+            effective = set()
+        else:
+            effective |= set(value.split())
+    return effective
 
 
 class SeccompFilterTest(unittest.TestCase):
+    path: Any
+    directives: Any
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.path = _service_path()
@@ -72,22 +100,21 @@ class SeccompFilterTest(unittest.TestCase):
             raise unittest.SkipTest(
                 '%s not found -- set SDWDATE_REPO or install sdwdate' % cls.path)
         with open(cls.path, encoding='utf-8') as handle:
-            cls.value = _parse_syscall_filter(handle.readlines())
+            cls.directives = _parse_syscall_filters(handle.readlines())
 
     def test_directive_present(self) -> None:
-        self.assertIsNotNone(
-            self.value, '%s has no SystemCallFilter=' % self.path)
+        self.assertTrue(
+            self.directives, '%s has no SystemCallFilter=' % self.path)
 
     def test_is_an_allowlist_not_a_denylist(self) -> None:
-        stripped = self.value.strip()
-        self.assertFalse(
-            stripped.startswith('~'),
-            'SystemCallFilter starts with "~" -- that is a DENYLIST, which '
-            'permits every unnamed syscall and removes the sandbox')
+        for directive in self.directives:
+            self.assertFalse(
+                directive.strip().startswith('~'),
+                'a SystemCallFilter directive is a DENYLIST (%r) -- that permits '
+                'every unnamed syscall and removes the sandbox' % directive)
 
     def test_required_syscalls_present(self) -> None:
-        tokens = set(self.value.split())
-        missing = REQUIRED_SYSCALLS - tokens
+        missing = REQUIRED_SYSCALLS - _effective_allow(self.directives)
         self.assertEqual(
             missing, set(),
             'SystemCallFilter is missing required syscalls %s -- the daemon '

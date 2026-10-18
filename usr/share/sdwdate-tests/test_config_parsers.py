@@ -27,6 +27,7 @@ import tempfile
 import time
 import types
 import unittest
+from typing import Any
 
 import fuzz_sdwdate
 
@@ -34,6 +35,8 @@ SDWDATE_D = '/etc/sdwdate.d/'
 
 
 class ConfigBase(unittest.TestCase):
+    config: Any
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.config = fuzz_sdwdate._load_config()

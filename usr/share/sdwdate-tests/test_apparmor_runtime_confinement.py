@@ -30,7 +30,6 @@ LOADED in enforce -- i.e. an installed+booted sdwdate, not a CI container or the
 AppArmor-less dev VM. Skips (authorized) when that environment is absent.
 """
 
-import datetime
 import json
 import os
 import re
@@ -408,6 +407,28 @@ def _status_icon():
         return None
 
 
+def _journal_cursor():
+    """A journal cursor for the current tip. Cursors are monotonic sequence
+    positions, so --after-cursor is immune to the clock stepping (which sdwdate
+    DOES during a cycle) -- a wall-clock --since would drop post-step entries."""
+    result = subprocess.run(
+        ['journalctl', '--no-pager', '-n0', '--show-cursor'],
+        capture_output=True, text=True)
+    for line in result.stdout.splitlines():
+        prefix = '-- cursor: '
+        if line.startswith(prefix):
+            return line[len(prefix):].strip()
+    return None
+
+
+def _journal_after(cursor, extra_args):
+    result = subprocess.run(
+        ['journalctl', '--no-pager', '--after-cursor', cursor, '-o', 'cat']
+        + extra_args,
+        capture_output=True, text=True)
+    return result.stdout
+
+
 @unittest.skipIf(_skip_reason(),
                  ## style-ok: allow-skip: runtime AppArmor needs an enforcing
                  ## host + root + loaded profiles (absent in CI / the dev VM).
@@ -419,8 +440,11 @@ class SdwdateDaemonEnforceSmokeTest(unittest.TestCase):
             ## style-ok: allow-skip: systemd tooling absent; cannot drive or
             ## observe a live service cycle on this host.
             raise unittest.SkipTest('systemctl/journalctl not available')
-        marker = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        start_epoch = time.time()
+        cursor = _journal_cursor()
+        if cursor is None:
+            ## style-ok: allow-skip: no readable journal cursor; cannot observe
+            ## the run clock-step-safely, so the enforce path cannot be judged.
+            raise unittest.SkipTest('no journal cursor available')
         restart = subprocess.run(
             ['systemctl', 'restart', 'sdwdate'],
             capture_output=True, text=True)
@@ -443,14 +467,11 @@ class SdwdateDaemonEnforceSmokeTest(unittest.TestCase):
         ## Scan for daemon-label denials over the run FIRST, independent of the
         ## status. A denial is the exact failure A6 guards against (an over-tight
         ## enforce profile the source scan cannot catch), so it must FAIL -- never
-        ## be masked by the "no working Tor" skip below. Status 'error' is often
-        ## CAUSED by such a denial, so skipping on non-success without checking
-        ## would hide the very bug this test exists to catch.
-        journal = subprocess.run(
-            ['journalctl', '--since', marker, '--no-pager', '-k', '-o', 'cat'],
-            capture_output=True, text=True)
+        ## be masked by the skip below. The scan is cursor-anchored, not
+        ## wall-clock: sdwdate STEPS the clock mid-cycle, which would move a
+        ## post-step denial's timestamp before a --since marker and hide it.
         denials = [
-            line for line in journal.stdout.splitlines()
+            line for line in _journal_after(cursor, ['-k']).splitlines()
             if 'apparmor="DENIED"' in line and DAEMON_PATH in line]
         self.assertEqual(
             denials, [],
@@ -460,16 +481,12 @@ class SdwdateDaemonEnforceSmokeTest(unittest.TestCase):
 
         ## Zero denials is the core guarantee. Requiring a successful FETCH would
         ## make the test flaky (a full fetch+set over Tor often exceeds the
-        ## window), so instead require only EVIDENCE the daemon actually ran its
-        ## preparation under the enforce profile: the daemon rewrites its status
-        ## file each cycle, so a fresh mtime proves the profiled code executed and
-        ## was exercised with zero denials. If it never ran, the zero-denial
-        ## result is vacuous -> authorized skip.
-        try:
-            daemon_ran = (os.path.getmtime(_STATUS_FILE) >= start_epoch
-                          and icon in ('success', 'busy', 'error'))
-        except OSError:
-            daemon_ran = False
+        ## window), so instead require only EVIDENCE the daemon actually ran under
+        ## the enforce profile: success, or any sdwdate unit log after the cursor
+        ## (cursor-anchored, so a clock step cannot hide it). If it never ran, the
+        ## zero-denial result is vacuous -> authorized skip.
+        daemon_ran = (icon == 'success'
+                      or bool(_journal_after(cursor, ['-u', 'sdwdate']).strip()))
         if not daemon_ran:
             ## style-ok: allow-skip: the daemon did not run a preparation cycle
             ## here (service/Tor unavailable), so the enforce path was not

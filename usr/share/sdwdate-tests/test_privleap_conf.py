@@ -26,6 +26,7 @@ test_apparmor_confinement.py; commented (#...) directives are ignored.
 import os
 import re
 import unittest
+from typing import Any
 
 ## The full intended matrix. Equality catches an added/removed/retyped field.
 EXPECTED_ACTIONS = {
@@ -95,12 +96,11 @@ def _repo_root() -> str:
 
 
 def _parse(path):
-    sections = {}
+    sections: dict = {}
     current = None
     with open(path, encoding='utf-8') as handle:
         for raw in handle:
-            line = raw.rstrip('\n')
-            stripped = line.strip()
+            stripped = raw.rstrip('\n').strip()
             if not stripped or stripped.startswith('#'):
                 continue
             section = _SECTION_RE.match(stripped)
@@ -108,13 +108,21 @@ def _parse(path):
                 current = section.group(1)
                 sections[current] = {}
                 continue
-            kv = _KV_RE.match(line)
+            ## Match the STRIPPED line, as privleap does (it strips then splits on
+            ## '='): a leading-whitespace directive like ' TargetGroup=root' is a
+            ## real directive to privleap, so the matrix check must see it too.
+            kv = _KV_RE.match(stripped)
             if kv and current is not None:
                 sections[current][kv.group(1)] = kv.group(2)
     return sections
 
 
 class PrivleapConfTest(unittest.TestCase):
+    conf: Any
+    root: Any
+    sections: Any
+    actions: Any
+
     @classmethod
     def setUpClass(cls) -> None:
         root = _repo_root()
