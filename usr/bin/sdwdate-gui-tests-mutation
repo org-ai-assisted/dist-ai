@@ -68,17 +68,27 @@ export SDWDATE_GUI_REPO="${repo}"
 
 ## The subject imports helper-scripts modules (sanitize_string, strict_config_parser).
 ## Keep them on PYTHONPATH so the staged-copy suites resolve them; the lane prepends
-## the staged package dir ahead of this. Resolve from HELPER_SCRIPTS_PATH, else the
-## sibling package in the derivative-maker tree.
+## the staged package dir ahead of this. HELPER_SCRIPTS_PATH is the checkout ROOT (the
+## dist-ai wire convention -- consumers append the subpath themselves), so BOTH branches
+## must resolve to the dist-packages dir under it, not the bare root; the sibling
+## helper-scripts in the derivative-maker tree is the fallback.
 hs_pkg=''
 [ -v HELPER_SCRIPTS_PATH ] || HELPER_SCRIPTS_PATH=''
-if [ -n "${HELPER_SCRIPTS_PATH}" ] && [ -d "${HELPER_SCRIPTS_PATH}" ]; then
-   hs_pkg="${HELPER_SCRIPTS_PATH}"
+if [ -n "${HELPER_SCRIPTS_PATH}" ] && [ -d "${HELPER_SCRIPTS_PATH}/${pkg_rel}" ]; then
+   hs_pkg="$(readlink --canonicalize -- "${HELPER_SCRIPTS_PATH}/${pkg_rel}")"
 elif [ -d "${repo}/../helper-scripts/${pkg_rel}" ]; then
    hs_pkg="$(readlink --canonicalize -- "${repo}/../helper-scripts/${pkg_rel}")"
 fi
 if [ -n "${hs_pkg}" ]; then
    export PYTHONPATH="${hs_pkg}${PYTHONPATH:+:${PYTHONPATH}}"
+fi
+
+## Test seam: print the derived PYTHONPATH and exit before staging/running the lane,
+## so a regression test can assert helper-scripts resolved to its dist-packages dir
+## (not the bare HELPER_SCRIPTS_PATH root) without a full mutation run.
+if [ "${DIST_AI_MUTATION_PRINT_PYTHONPATH:-}" = '1' ]; then
+   printf '%s\n' "${PYTHONPATH:-}"
+   exit 0
 fi
 
 ## Offscreen Qt, no bytecode writes -- matches the sdwdate-gui-tests runners.
