@@ -803,6 +803,20 @@ class TestListener(unittest.TestCase):
             self._init_with(pid_is_file=True, proc_is_dir=False,
                             pid_text='notanumber')
 
+    def test_listen_failure_exits(self) -> None:
+        ## org-ai-assisted/sdwdate-gui#19: a failed QLocalServer.listen() must
+        ## bail out loudly, not sit in the event loop with no bound socket.
+        run_dir = mock.MagicMock()
+        pid_file = mock.MagicMock()
+        pid_file.is_file.return_value = False
+        run_dir.joinpath.side_effect = [pid_file, mock.MagicMock()]
+        qls = mock.MagicMock()
+        qls.listen.return_value = False
+        with self.assertRaises(SystemExit), self.assertLogs(level='CRITICAL'):
+            self._run_init(run_dir, mock.mock_open(read_data='1'),
+                           FileNotFoundError, qls=qls)
+        qls.listen.assert_called_once()
+
     def _run_init(self, run_dir, open_mock, remove_side, qls=None):
         proc_path = mock.MagicMock()
         proc_path.is_dir.return_value = False
