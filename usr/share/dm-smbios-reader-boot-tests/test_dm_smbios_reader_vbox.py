@@ -199,6 +199,27 @@ def test_guestctl_pointer_releases_button_even_if_hold_sleep_raises():
     assert events == [('mouse', 10, 20, 0), ('mouse', 10, 20, 1), ('mouse', 10, 20, 0)]
 
 
+def test_guestctl_pointer_releases_button_even_if_press_call_raises():
+    ## the same safety invariant covers the press itself: if the press
+    ## putMouseEventAbsolute dispatches the button-down and then raises (e.g. a
+    ## KeyboardInterrupt landing as the XPCOM call returns), the release must still
+    ## fire. The press is inside the try. Canary: with the press outside the try, the
+    ## release is skipped and the final event is the press, leaving the button down.
+    events: list[tuple] = []
+
+    class FakeMouse:
+        def putMouseEventAbsolute(self, x, y, dz, dw, buttons):
+            events.append(('mouse', x, y, buttons))
+            if buttons != 0:   # the press dispatched; now raise as the call returns
+                raise RuntimeError('XPCOM raised after dispatching the press')
+
+    with pytest.raises(RuntimeError):
+        GC.perform_pointer(FakeMouse(), 10, 20, True, 1, settle=0, hold=0,
+                           sleep=lambda _secs: None)
+    ## move (buttons 0) -> press (buttons 1, raised) -> release (buttons 0) via finally
+    assert events == [('mouse', 10, 20, 0), ('mouse', 10, 20, 1), ('mouse', 10, 20, 0)]
+
+
 def test_poweroff_quietly_tolerates_missing_vboxmanage(monkeypatch):
     ## a missing VBoxManage raises FileNotFoundError in the finally; cleanup must
     ## swallow it, not crash over the real exit status.

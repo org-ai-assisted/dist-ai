@@ -77,14 +77,17 @@ def perform_pointer(mouse, x, y, do_click, button, *,
     """Move the absolute pointer to (x, y); for a click, dwell after the move so the
     guest processes the motion BEFORE the press (else the first click is lost at high
     resolutions), then hold briefly before release. Takes the IMouse + sleep so the
-    sequence is unit-testable without a VM. The release is in a finally so a
-    sleep(hold) that raises (a duration time.sleep rejects, e.g. a huge finite value)
-    can never leave the button pressed and wedge the test."""
+    sequence is unit-testable without a VM. The press and hold are in a try whose
+    finally ALWAYS sends the release, so neither a press that dispatches the button-
+    down and then raises (e.g. a KeyboardInterrupt as the XPCOM call returns) nor a
+    sleep(hold) that raises (a duration time.sleep rejects) can leave the button
+    pressed and wedge the test. settle is outside: if it raises, no press has
+    happened, and a release for a press that never dispatched is a harmless no-op."""
     mouse.putMouseEventAbsolute(x, y, 0, 0, 0)
     if do_click:
         sleep(settle)
-        mouse.putMouseEventAbsolute(x, y, 0, 0, button)
         try:
+            mouse.putMouseEventAbsolute(x, y, 0, 0, button)
             sleep(hold)
         finally:
             mouse.putMouseEventAbsolute(x, y, 0, 0, 0)
