@@ -58,8 +58,9 @@ expected="$(readlink --canonicalize -- "${fake_hs}/${pkg_rel}")"
 failures=0
 
 derived="$(
-   env "SDWDATE_GUI_REPO=${fake_repo}" "HELPER_SCRIPTS_PATH=${fake_hs}" \
-      "DIST_AI_MUTATION_PRINT_PYTHONPATH=1" --unset=PYTHONPATH \
+   env --unset=PYTHONPATH \
+      "SDWDATE_GUI_REPO=${fake_repo}" "HELPER_SCRIPTS_PATH=${fake_hs}" \
+      "DIST_AI_MUTATION_PRINT_PYTHONPATH=1" \
       "${runner}" 2>/dev/null
 )"
 first_entry="${derived%%:*}"
