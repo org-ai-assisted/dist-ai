@@ -889,7 +889,7 @@ class TestListener(unittest.TestCase):
         fake_server = mock.MagicMock()
         fake_server.nextPendingConnection.return_value = QLocalSocket()
         listener.server = fake_server
-        received = []
+        received: list = []
         listener.newClient.connect(received.append)
         listener.spawn_client()
         _APP.processEvents()
