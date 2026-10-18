@@ -336,13 +336,18 @@ def _limit_cpu_seconds(seconds):
             seconds_capped = hard
             soft_below_hard = False
         if soft_below_hard:
-            ## SIGXCPU at the soft limit is the operative cap signal here. Reset its
-            ## disposition to default so an ANCESTOR's SIG_IGN -- inherited across fork and
-            ## preserved across execve -- cannot swallow the soft-limit signal and let
-            ## shellcheck run to the wall backstop (fail open). SIG_DFL makes the cap kill
-            ## shellcheck (returncode == -SIGXCPU) -> _run_shellcheck degrades to no-follow.
-            ## Runs after subprocess's restore_signals (preexec_fn is last), so not undone.
+            ## SIGXCPU at the soft limit is the operative cap signal here, so clear BOTH
+            ## inherited states that would suppress its delivery -- either one lets shellcheck
+            ## run to the wall backstop and fails the gate OPEN. Both are inherited across fork
+            ## and preserved across execve (POSIX); subprocess clears neither (restore_signals
+            ## only resets Python's own ignored dispositions, not the mask), and preexec_fn
+            ## runs last so neither reset is undone:
+            ##   - disposition SIG_IGN (an ancestor's `trap '' XCPU`): reset to SIG_DFL so the
+            ##     signal terminates shellcheck (returncode == -SIGXCPU -> no-follow degrade).
+            ##   - a blocked signal mask (an ancestor's sigprocmask / `env --block-signal`):
+            ##     unblock, else the soft-limit SIGXCPU stays pending and is never delivered.
             signal.signal(signal.SIGXCPU, signal.SIG_DFL)
+            signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGXCPU})
         resource.setrlimit(resource.RLIMIT_CPU, (seconds_capped, hard))
     return apply
 

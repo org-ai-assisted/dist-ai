@@ -412,6 +412,30 @@ if [ "${gate_rc}" -eq 124 ] || [ "${gate_rc}" -eq 137 ]; then
 fi
 assert_graceful_degrade "ancestor-sigxcpu-ignored-degrades"
 
+## Case 11: an ANCESTOR with SIGXCPU BLOCKED (sigprocmask, as from 'env --block-signal').
+## The signal MASK is inherited across fork AND preserved across execve, same as an ignored
+## disposition, but it is a DISTINCT suppression: a blocked SIGXCPU stays PENDING and is never
+## delivered, so resetting the disposition to SIG_DFL alone does NOT help -- the cap signal
+## never fires and the follow explosion runs to the wall backstop -> the gate FAILS OPEN. The
+## fix UNBLOCKS SIGXCPU in preexec_fn (alongside the SIG_DFL reset), closing the second half
+## of the inherited-signal-state class. Inner cap 4 again makes the wall backstop (4 x 5 = 20s)
+## exceed the 15s outer cap. Pre-unblock (disposition reset only): gate killed by the outer
+## 'timeout' here (assert_graceful_degrade catches it).
+blkxcpu_dir="$(mktemp --directory --tmpdir="${test_dir}" blkxcpu.XXXXXX)"
+build_graph "${blkxcpu_dir}"
+gate_outer="${OUTER_TIMEOUT}"
+gate_rc=0
+gate_output="$( cd -- "${blkxcpu_dir}" \
+   && DIST_AI_SHELLCHECK_TIMEOUT=4 \
+      timeout --kill-after=5 "${OUTER_TIMEOUT}" \
+         env --block-signal=XCPU "${GATE}" --check ./caller 2>&1 )" \
+   || gate_rc=$?
+gate_timed_out=0
+if [ "${gate_rc}" -eq 124 ] || [ "${gate_rc}" -eq 137 ]; then
+   gate_timed_out=1
+fi
+assert_graceful_degrade "ancestor-sigxcpu-blocked-degrades"
+
 if [ "${fail}" -ne 0 ]; then
    printf '%s\n' "" "FAILED"
    exit 1
