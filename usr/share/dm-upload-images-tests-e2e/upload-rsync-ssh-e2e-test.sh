@@ -30,7 +30,10 @@ export LC_ALL=C
 
 case_dir="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")"
 
-fail() { printf '%s\n' "FAIL: $1" >&2; exit 1; }
+## To STDOUT, not stderr: dist-ai-tests-all captures a failing suite's STDOUT into its shown
+## "captured output" block and drops stderr to a per-suite log it removes on exit, so a
+## stderr-only reason is invisible in CI. Print the reason where the failure block will show it.
+fail() { printf '%s\n' "FAIL: $1"; exit 1; }
 
 ## --- subject: the dm tree's REAL dm-upload-images (wired via DERIVATIVE_MAKER_DIR) ---
 dm_dir="${DERIVATIVE_MAKER_DIR:-}"
@@ -182,11 +185,13 @@ show_files "${img}"
 ## Pre-flight: confirm ssh key auth + the port work BEFORE upload_files. Otherwise a broken
 ## connection sends dm's upload_files into its 100x linear-backoff retry (~7h, far past the suite
 ## timeout) rather than failing here.
-"${work}/ssh-wrap" "$(id -un)@localhost" true || fail "pre-flight ssh to localhost failed (key/sshd/port); not entering the upload retry loop"
+preflight_rc=0
+preflight_out="$("${work}/ssh-wrap" "$(id -un)@localhost" true 2>&1)" || preflight_rc=$?
+[ "${preflight_rc}" -eq 0 ] || fail "pre-flight ssh to localhost failed (key/sshd/port) rc=${preflight_rc}: ${preflight_out}"
 
 rc=0
-upload_files || rc=$?
-[ "${rc}" -eq 0 ] || fail "upload_files (real rsync --dry-run over localhost ssh) returned ${rc}"
+upload_out="$(upload_files 2>&1)" || rc=$?
+[ "${rc}" -eq 0 ] || fail "upload_files (real rsync --dry-run over localhost ssh) returned ${rc}: ${upload_out}"
 
 ## --- assert it was a genuine dry-run: nothing actually transferred into the dest ---------------
 written="$(find "${dest}" -type f | wc -l)"
