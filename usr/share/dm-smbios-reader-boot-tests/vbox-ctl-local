@@ -52,9 +52,12 @@ _BREAK_BIT = 0x80
 def _env_float(name, default):
     """A float tuning knob from the environment, falling back to the safe default
     on a MISSING or MALFORMED value -- a bad VBOX_GUESTCTL_CLICK_* must not crash
-    unrelated subcommands (res/shot never dwell) with a ValueError traceback."""
+    unrelated subcommands (res/shot never dwell) with a ValueError traceback.
+    Clamp to >= 0: a negative dwell is meaningless and time.sleep rejects it, which
+    in perform_pointer would raise AFTER the press and BEFORE the release -- leaving
+    the mouse button held down and wedging the test."""
     try:
-        return float(os.environ[name])
+        return max(0.0, float(os.environ[name]))
     except (KeyError, ValueError):
         return default
 
