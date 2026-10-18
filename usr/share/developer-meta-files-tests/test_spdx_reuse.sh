@@ -155,6 +155,11 @@ assert_eq "<!-- ## SPDX-License-Identifier: AGPL-3.0-or-later -->" \
 assert_eq "/* SPDX-FileCopyrightText: ENCRYPTED SUPPORT LLC <${K}> */" \
    "$(convert_one "/* ${co} 2020 - 2025 ENCRYPTED SUPPORT LLC <${W}> */" "${K}")" \
    "convert: single-line /* */ company header keeps its closer"
+## A multi-line block whose CLOSER rides the conditions line keeps the ' */' too
+## (the real .c/.js header shape), so the comment never swallows the code below.
+assert_eq "   SPDX-License-Identifier: AGPL-3.0-or-later */" \
+   "$(convert_one "   ${cond} */" "${K}")" \
+   "convert: conditions line carrying the block closer keeps ' */'"
 ## Company off-domain email (riseup.net) folded into the package domain.
 assert_eq "## SPDX-FileCopyrightText: ENCRYPTED SUPPORT LLC <${K}>" \
    "$(convert_one "## ${co} 2013 - 2025 ENCRYPTED SUPPORT LLC <adrelanos@riseup.net>" "${K}")" \
@@ -173,7 +178,8 @@ trap cleanup EXIT
 
 fixture="${workdir}/pkg"
 mkdir --parents -- "${fixture}/usr/bin" "${fixture}/usr/lib" "${fixture}/src" \
-   "${fixture}/man" "${fixture}/translations" "${fixture}/LICENSES" "${fixture}/debian"
+   "${fixture}/man" "${fixture}/translations" "${fixture}/LICENSES" "${fixture}/debian" \
+   "${fixture}/usr/libexec/developer-meta-files"
 
 ## co / cond are defined above (reused for the fixture headers). The written
 ## fixtures are byte-identical to real Kicksecure files.
@@ -251,6 +257,21 @@ EOF
 cat > "${fixture}/usr/bin/helperscript" <<'EOF'
 #!/bin/bash
 echo hi
+EOF
+## The converter's OWN source carries the marker + email literals as CODE (the
+## has-header grep, the str_replace arguments). It already ships an SPDX header, so
+## pass 2 / REUSE.toml leave it alone; pass 1 must SKIP it by path, else the
+## whole-file str_replace rewrites its own logic. Built from co/cond so the literal
+## header line does not appear in THIS test's source.
+cat > "${fixture}/usr/libexec/developer-meta-files/spdx-reuse.bsh" <<EOF
+#!/bin/bash
+
+## SPDX-FileCopyrightText: ENCRYPTED SUPPORT LLC <${K}>
+## SPDX-License-Identifier: AGPL-3.0-or-later
+
+grep --quiet -F -- '${cond}' "\${1}"
+str_replace "${co} " 'SPDX-FileCopyrightText: ' "\${1}"
+str_replace 'adrelanos@whonix.org' "\${2}" "\${1}"
 EOF
 
 ## Uncommentable data file (ends up in REUSE.toml's leftover list).
@@ -335,7 +356,8 @@ git -C "${fixture}" config core.hooksPath /dev/null
 git -C "${fixture}" add --all
 
 ## Pre-state canaries: the fixture starts WITHOUT SPDX and WITH the old layout.
-if grep --quiet --recursive --fixed-strings --exclude-dir=.git -- 'SPDX-FileCopyrightText:' "${fixture}"; then
+## Exclude spdx-reuse.bsh: it ships an SPDX header on purpose (the converter skips it).
+if grep --quiet --recursive --fixed-strings --exclude-dir=.git --exclude='spdx-reuse.bsh' -- 'SPDX-FileCopyrightText:' "${fixture}"; then
    fail "canary: fixture already has SPDX headers before conversion"
 else
    pass "canary: fixture has no SPDX headers before conversion"
@@ -366,9 +388,10 @@ assert_grep "${fixture}/translations/x.yaml" "SPDX-FileCopyrightText: 2015 troub
    "x.yaml: non-company holder preserved, year kept"
 
 ## Legacy headers must be REPLACED, not merely supplemented: the unique conditions
-## phrase must survive NOWHERE (it is absent from COPYING and the DEP-5 license
-## text, so a tree-wide check is exact). Presence by output, not grep's exit code.
-leftover="$(grep --recursive --fixed-strings --exclude-dir=.git \
+## phrase must survive NOWHERE (absent from COPYING and the DEP-5 license text).
+## Exclude spdx-reuse.bsh: it carries the phrase as CODE and is SKIPPED by the
+## converter on purpose (see the skip assertion below). Presence by output.
+leftover="$(grep --recursive --fixed-strings --exclude-dir=.git --exclude='spdx-reuse.bsh' \
    -- 'See the file COPYING for copying conditions.' "${fixture}" || true)"
 if [ -n "${leftover}" ]; then
    fail "a legacy conditions line survived (header appended, not replaced): ${leftover}"
@@ -376,21 +399,33 @@ else
    pass "no legacy conditions line survives (headers replaced in place)"
 fi
 
-## COMPANY (ENCRYPTED SUPPORT LLC) copyrights must lose their year in all three
-## forms: the per-file ':' SPDX header, the REUSE.toml ' = ' SPDX form, AND
-## debian/copyright's DEP-5 'Copyright:' field. A non-company contributor's year is
-## intentionally KEPT, so the check is scoped to the company holder (the year sits
-## before the holder, e.g. '2012 - 2026 ENCRYPTED SUPPORT LLC'). Matched by OUTPUT
-## presence (a grep error exits non-zero but prints nothing, so the old 'if grep'
-## form would mis-read an error as 'no year').
+## The converter SKIPS its own source (operator-chosen guard): the code literals in
+## spdx-reuse.bsh must survive verbatim -- NOT rewritten to SPDX -- so running the
+## converter over the developer-meta-files package cannot mangle its own logic.
+self="${fixture}/usr/libexec/developer-meta-files/spdx-reuse.bsh"
+assert_grep "${self}" 'See the file COPYING for copying conditions.' \
+   "skip: converter's own has-header grep literal left intact"
+assert_grep "${self}" "${co} " \
+   "skip: converter's own copyright-marker str_replace argument left intact"
+assert_grep "${self}" 'adrelanos@whonix.org' \
+   "skip: converter's own email str_replace argument left intact"
+
+## COMPANY (ENCRYPTED SUPPORT LLC) copyrights must lose their year in the per-file
+## ':' SPDX header and the REUSE.toml ' = ' SPDX form; a non-company contributor's
+## year is intentionally KEPT, so this is scoped to the company holder. The year may
+## sit before OR after the holder, so match both orders. The DEP-5 'Copyright:' field
+## is dropped for every single holder (fix_dep5's behaviour), so check it unscoped.
+## Matched by OUTPUT presence (a grep error prints nothing; the old 'if grep' form
+## would mis-read an error as 'no year').
 year_hits="$(grep --recursive --extended-regexp --exclude-dir=.git \
-   -- 'SPDX-FileCopyrightText.*[0-9][0-9][0-9][0-9].*ENCRYPTED SUPPORT LLC' "${fixture}" || true)"
+   -- 'SPDX-FileCopyrightText.*([0-9]{4}.*ENCRYPTED SUPPORT LLC|ENCRYPTED SUPPORT LLC.*[0-9]{4})' \
+   "${fixture}" || true)"
 dep5_year="$(grep --extended-regexp -- '^Copyright:.*[0-9][0-9][0-9][0-9]' \
    "${fixture}/debian/copyright" || true)"
 if [ -n "${year_hits}${dep5_year}" ]; then
-   fail "a converted company copyright still carries a year: ${year_hits}${dep5_year}"
+   fail "a converted copyright still carries a year (company SPDX/REUSE.toml or DEP-5): ${year_hits}${dep5_year}"
 else
-   pass "no converted company copyright (SPDX header, REUSE.toml, or DEP-5) carries a year"
+   pass "no converted company SPDX/REUSE.toml copyright, nor the DEP-5 field, carries a year"
 fi
 
 ## Headers ADDED to comment-capable files that lacked one.
