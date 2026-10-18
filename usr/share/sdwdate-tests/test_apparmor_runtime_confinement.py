@@ -297,6 +297,7 @@ class SdwdateProfileFileAccessCanaryTest(unittest.TestCase):
             try:
                 os.unlink(path)
             except OSError:
+                ## best-effort cleanup of a temp canary file; already-gone is fine.
                 pass
 
     def _make_temp(self, directory: str, tag: str) -> str:
