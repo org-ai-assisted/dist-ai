@@ -123,3 +123,22 @@ def prop_canary_parse_nonprintable_body_reachable(buf: bytes) -> bool:
     except ValueError:
         return False
     return True
+
+
+def prop_canary_parse_max_boundary_reachable(buf: bytes) -> bool:
+    """
+    FALSE ON PURPOSE over the msg_len == MAX_MSG_SIZE (4096) accept-boundary,
+    checked on an incomplete body (stays off the str() success path). The real
+    behavior is (remainder == buf, msg_list == []); this claims the opposite, so
+    a working engine reaching the exact-4096 boundary MUST refute it. Guards
+    prop_parse_accepts_max_boundary specifically: the general incomplete-body
+    canary is satisfiable at any 0 < msg_len <= 4096, so it would stay refuted
+    (lane green) even if the == 4096 precondition went unsatisfiable and the
+    boundary contract passed VACUOUSLY.
+    pre: len(buf) >= 2
+    pre: int.from_bytes(buf[:2], "big") == 4096
+    pre: len(buf) - 2 < 4096
+    post: __return__
+    """
+    remainder, msg_list = parse_ipc_buf(buf)
+    return not (remainder == buf and msg_list == [])
