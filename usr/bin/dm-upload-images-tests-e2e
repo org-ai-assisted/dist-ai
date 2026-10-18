@@ -1,0 +1,73 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## End-to-end suite for the derivative-maker image-upload path. Runs every case script in
+## usr/share/dm-upload-images-tests-e2e and fails if any of them does. Each case stands up a
+## THROWAWAY localhost sshd and drives the REAL dm-upload-images (sourced from the dm tree) over
+## real rsync-over-ssh in --dry-run -- proving the upload path + ssh key auth without writing or
+## sending anything. The subject tree is wired by dist-ai-tests-all as DERIVATIVE_MAKER_DIR.
+##
+## e2e-only: needs openssh-server/openssh-client/rsync; run via the '--e2e' category, never the
+## core lane. A missing payload dir is a SKIP (77); a zero-case run is a FAIL (a payload that
+## failed to install must not read as success).
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d "${script_dir}/../share/dm-upload-images-tests-e2e" ]; then
+   tests_dir="${script_dir}/../share/dm-upload-images-tests-e2e"
+else
+   tests_dir='/usr/share/dm-upload-images-tests-e2e'
+fi
+
+if [ ! -d "${tests_dir}" ]; then
+   printf '%s\n' "SKIP: dm-upload-images-tests-e2e payload not found at '${tests_dir}'" >&2
+   ## style-ok: allow-skip: payload dir absent = a broken/partial install, a genuine skip-shape
+   exit 77
+fi
+
+case_count=0
+failures=0
+skips=0
+
+for case_script in "${tests_dir}"/*-e2e-test.sh; do
+   [ -e "${case_script}" ] || break
+   case_count=$(( case_count + 1 ))
+   printf '%s\n' "=== ${case_script##*/}"
+   case_status=0
+   "${case_script}" "$@" || case_status=$?
+   if [ "${case_status}" -eq 0 ]; then
+      continue
+   fi
+   if [ "${case_status}" -eq 77 ]; then
+      skips=$(( skips + 1 ))
+      printf '%s\n' "SKIP  ${case_script##*/} (exit 77)"
+      continue
+   fi
+   failures=$(( failures + 1 ))
+   printf '%s\n' "FAIL  ${case_script##*/} (exit ${case_status})"
+done
+
+if [ "${case_count}" -eq 0 ]; then
+   printf '%s\n' "FAIL: no '*-e2e-test.sh' case scripts found in '${tests_dir}'" >&2
+   exit 1
+fi
+
+printf '%s\n' "" "${case_count} case(s), ${failures} failed, ${skips} skipped"
+
+## A SKIP is not a pass: surface it through the exit code so dist-ai-tests-all records it.
+[ "${failures}" -eq 0 ] || exit 1
+## style-ok: allow-skip: propagate a case-level SKIP (77) so the orchestrator records it, not a pass
+[ "${skips}" -eq 0 ] || exit 77
+exit 0

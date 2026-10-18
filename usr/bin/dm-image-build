@@ -41,14 +41,19 @@ freshness="current"
 ## false = include non-free firmware -> broadly bootable (real HW + VBox), the right default for
 ## a test/install ISO; true = Free-Software-only firmware.
 freedom="false"
+## Default false = a REAL image. --dry-run true forwards to dm-build-official (dummy images,
+## ~35 min) -- the fast validation of the ref-landing + submodule + build spine before a ~1 h
+## real build. Independent of the upload axis (which stays SIMULATED; --upload is never passed).
+dry_run="false"
 dir="${DM_IMAGE_BUILD_DIR:-${HOME}/derivative-maker}"
 
 usage() {
-   printf '%s\n' "usage: ${me} [--flavor F] [--target T] [--freshness frozen|current] [--freedom true|false] [--dir DIR]
+   printf '%s\n' "usage: ${me} [--flavor F] [--target T] [--freshness frozen|current] [--freedom true|false] [--dry-run true|false] [--dir DIR]
 
 Build a derivative-maker image on the OVH host, NO docker, from DIR (default
 \${HOME}/derivative-maker). Defaults: --flavor kicksecure-lxqt --target iso
---freshness current --freedom false. Run as a sudo-capable NON-root user."
+--freshness current --freedom false --dry-run false. --dry-run true builds dummy
+images (fast pipeline check). Run as a sudo-capable NON-root user."
 }
 
 ## Release loop/kpartx devices THIS user's own prior failed build leaked: grml-debootstrap's
@@ -84,6 +89,18 @@ main() {
             ;;
          --freedom)
             freedom="$2"
+            shift 2
+            ;;
+         --dry-run)
+            case "$2" in
+               true | false)
+                  dry_run="$2"
+                  ;;
+               *)
+                  printf '%s\n' "${me}: ERROR: --dry-run must be true or false (got '$2')" >&2
+                  exit 2
+                  ;;
+            esac
             shift 2
             ;;
          --dir)
@@ -141,7 +158,7 @@ main() {
    ## --- build: DIRECT (no docker), NATIVE arch (so a non-CI native build is a real image) ---
    local native_arch
    native_arch="$(dpkg --print-architecture)"
-   printf '%s\n' "${me}: build: flavor=${flavor} target=${target} freshness=${freshness} freedom=${freedom} arch=${native_arch} (direct, no docker, non-CI)"
+   printf '%s\n' "${me}: build: flavor=${flavor} target=${target} freshness=${freshness} freedom=${freedom} dry-run=${dry_run} arch=${native_arch} (direct, no docker, non-CI)"
    unset CI || true
    export dist_build_sign_and_tag=true
    export dist_build_target_arch="${native_arch}"
@@ -153,6 +170,15 @@ main() {
    ## which would also redirect the OUTPUT path that dm-release-test + the result harness read.
    local build_user
    build_user="$(id -un)"
+   ## dm derives user_name (-> HOMEVAR=/home/${user_name} -> the whole build/output/cowbuilder tree)
+   ## from the `logname` COMMAND, which reads the login session's utmp -- the SSH login user (e.g.
+   ## debian), NOT the EFFECTIVE user this build runs as when driven via `server-exec --user admin`
+   ## (sudo/runuser do not rewrite utmp). Unset, dm would build into /home/<ssh-login-user>, which
+   ## the effective user cannot even mkdir (observed: "mkdir: cannot create directory '/home/debian'").
+   ## dm-image-build is the invoking-user build entry point, so preset user_name to the EFFECTIVE
+   ## user (dm's default_if_empty then keeps it instead of calling logname). A real admin-login build
+   ## is unaffected (id -un == logname there).
+   export user_name="${build_user}"
    export cowbuilder_cache_dir="/var/cache/pbuilder/${build_user}"
    ## This is a test/install build on a host with NO release-server credentials; a failed
    ## dm-upload-images connection retries with linear backoff for ~7h. A real upload is an
@@ -161,11 +187,15 @@ main() {
    ## so the upload code is exercised yet nothing is sent to the release server. No
    ## credential is needed.
 
+   ## Forward --dry-run only when true, so the default real-build invocation stays byte-identical.
+   local -a build_args=(--target "${target}" --freshness "${freshness}" --freedom "${freedom}")
+   [ "${dry_run}" != "true" ] || build_args+=(--dry-run true)
+
    local build_rc=0
    {
       ./help-steps/signing-key-create \
       && ./help-steps/sign-and-tag \
-      && ./help-steps/dm-build-official --target "${target}" --freshness "${freshness}" --freedom "${freedom}"
+      && ./help-steps/dm-build-official "${build_args[@]}"
    } || build_rc=$?
 
    printf '%s\n' "${me}: build finished rc=${build_rc} $(date -u +%Y-%m-%dT%H:%M:%SZ)"

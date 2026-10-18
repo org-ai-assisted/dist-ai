@@ -216,6 +216,7 @@ e2e_suites=(
    privleap-tests-e2e
    privleap-tests-e2e-systemd
    tb-updater-tests-e2e
+   dm-upload-images-tests-e2e
 )
 integration_suites=(
    whonix-firewall-leaktest-tests
@@ -864,6 +865,12 @@ wire() {
             wire_env+=( "HELPER_SCRIPTS_PATH=${hs}" )
          fi
          ;;
+      dm-upload-images)
+         ## The e2e sources the REAL dm-upload-images from the dm tree (it is source-able) and
+         ## drives it over a throwaway localhost sshd; without the tree it falls back to
+         ## '${HOME}/derivative-maker', absent on any CI runner, and FATAL.
+         wire_env=( "DERIVATIVE_MAKER_DIR=$( pkg_dir derivative-maker )" )
+         ;;
       dm-reprepro-tracking)
          wire_env=( "DM_SOURCE_DIR=$( pkg_dir derivative-maker )" )
          ;;
@@ -1145,7 +1152,7 @@ suite_component() {
       developer-meta-files|github-org-tools|dm-virtualbox-wiki-links)
          printf '%s' 'developer-meta-files'
          ;;
-      dm-smbios-reader-boot-test|dm-help-steps|dm-package-depends|dm-approx-curlrc|dm-reprepro-tracking|dm-reproducible-build|dm-grub-smbios|dm-grub-theme|dm-iso-grub-menu|dm-iso-grub-menu-lint|dm-grub-menu-render|dm-smbios-reader-boot|dm-upgrade-regression|dm-whonix-pair)
+      dm-smbios-reader-boot-test|dm-help-steps|dm-upload-images|dm-package-depends|dm-approx-curlrc|dm-reprepro-tracking|dm-reproducible-build|dm-grub-smbios|dm-grub-theme|dm-iso-grub-menu|dm-iso-grub-menu-lint|dm-grub-menu-render|dm-smbios-reader-boot|dm-upgrade-regression|dm-whonix-pair)
          printf '%s' 'derivative-maker'
          ;;
       dist-installer-cli)
