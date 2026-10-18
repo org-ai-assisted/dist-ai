@@ -75,6 +75,11 @@ chmod 600 "${work}/authorized_keys"
 ## Kernel-picked free port (standalone helper run via its own shebang, not an inline python -c).
 port="$("${case_dir}/pick-free-port.py")"
 
+## PermitRootLogin prohibit-password, NOT 'no': in CI the suite runs AS ROOT, so the pre-flight +
+## upload loop below authenticate to THIS sshd as root with the auto-gen key. 'no' refuses every
+## root login (sshd logs "ROOT LOGIN REFUSED"), failing the test for an environment reason only.
+## 'prohibit-password' allows the key-based root login while PasswordAuthentication/KbdInteractive
+## no keep every password path closed -- the key is the sole credential, root or not.
 cat > "${work}/sshd_config" <<EOF
 Port ${port}
 ListenAddress 127.0.0.1
@@ -83,7 +88,7 @@ AuthorizedKeysFile ${work}/authorized_keys
 PidFile ${work}/sshd.pid
 UsePAM no
 StrictModes no
-PermitRootLogin no
+PermitRootLogin prohibit-password
 PasswordAuthentication no
 KbdInteractiveAuthentication no
 AllowUsers $(id -un)
