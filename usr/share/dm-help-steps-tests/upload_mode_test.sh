@@ -59,10 +59,11 @@ done
 
 ## Source the real fragment in a clean subshell under the given inputs and print
 ## 'rsync_cmd|||rsync_opts'. The subshell isolates each run.
-## Args: $1 = dist_build_upload, $2 = CI, $3 = build_dry_run ('' leaves unset).
+## Args: $1 dist_build_upload, $2 CI, $3 build_dry_run, $4
+## build_remote_derivative_pkgs, $5 a PRE-SET rsync_cmd ('' leaves each unset).
 rsync_select() {
    (
-      unset rsync_cmd rsync_opts build_dry_run dist_build_upload CI
+      unset rsync_cmd rsync_opts build_dry_run dist_build_upload CI build_remote_derivative_pkgs
       ## Consumed by the sourced fragment (a path shellcheck cannot follow):
       ## SC2034 (set-but-unused here), SC2030 (intended subshell-local).
       # shellcheck disable=SC2034,SC2030
@@ -71,6 +72,10 @@ rsync_select() {
       [ -z "${2}" ] || CI="${2}"
       # shellcheck disable=SC2034,SC2030
       [ -z "${3}" ] || build_dry_run="${3}"
+      # shellcheck disable=SC2034,SC2030
+      [ -z "${4:-}" ] || build_remote_derivative_pkgs="${4}"
+      # shellcheck disable=SC2034,SC2030
+      [ -z "${5:-}" ] || rsync_cmd="${5}"
       # shellcheck disable=SC1090
       source "${rsync_fragment}"
       ## Delimiter lives in the DATA, not the printf format (R-030).
@@ -112,6 +117,43 @@ if [ "${ci_cmd}" = "echo simulate-only rsync" ]; then
    pass "CI hard-block: --upload true + CI=true still simulates"
 else
    fail "CI hard-block broken: --upload true + CI yielded '${ci_cmd}', expected the echo no-op"
+fi
+
+## Fail-closed over --upload true: a dry-run and a remote-derivative-packages build
+## must NOT upload even when the operator passes --upload true.
+dryrun_upload_cmd="$(rsync_select 'true' '' 'true')"
+dryrun_upload_cmd="${dryrun_upload_cmd%%|||*}"
+if [ "${dryrun_upload_cmd}" = "echo simulate-only rsync" ]; then
+   pass "fail-closed: --upload true + build_dry_run=true still simulates"
+else
+   fail "fail-closed broken: --upload true + build_dry_run yielded '${dryrun_upload_cmd}' (a dry-run must not upload)"
+fi
+remote_upload_cmd="$(rsync_select 'true' '' '' 'true')"
+remote_upload_cmd="${remote_upload_cmd%%|||*}"
+if [ "${remote_upload_cmd}" = "echo simulate-only rsync" ]; then
+   pass "fail-closed: --upload true + build_remote_derivative_pkgs=true still simulates"
+else
+   fail "fail-closed broken: --upload true + remote pkgs yielded '${remote_upload_cmd}' (opaque prebuilt must not be published)"
+fi
+
+## Fail-closed BEATS a pre-set rsync_cmd: a pre-set real 'rsync' must still be
+## forced to the no-op on CI (the old unconditional CI override, preserved).
+preset_ci_cmd="$(rsync_select 'true' 'true' '' '' 'rsync')"
+preset_ci_cmd="${preset_ci_cmd%%|||*}"
+if [ "${preset_ci_cmd}" = "echo simulate-only rsync" ]; then
+   pass "fail-closed: pre-set rsync_cmd=rsync is overridden to the no-op on CI"
+else
+   fail "fail-closed broken: pre-set rsync_cmd survived CI ('${preset_ci_cmd}') -- CI can publish"
+fi
+
+## ... but a pre-set rsync_cmd WINS when no fail-closed mode applies (the hermetic
+## localhost-sshd upload test relies on overriding rsync_cmd this way).
+preset_ok_cmd="$(rsync_select '' '' '' '' 'rsync -e ssh-localhost')"
+preset_ok_cmd="${preset_ok_cmd%%|||*}"
+if [ "${preset_ok_cmd}" = "rsync -e ssh-localhost" ]; then
+   pass "pre-set rsync_cmd wins when not CI/dry-run/remote (test-override path)"
+else
+   fail "pre-set rsync_cmd was clobbered ('${preset_ok_cmd}') -- the override path is broken"
 fi
 
 ## build_dry_run is the broader mode: echo no-op AND --dry-run on rsync_opts.

@@ -95,8 +95,8 @@ make_home() {
 ## run_req <HOME> <dist_build_upload> : run the function in a subshell (so its
 ## error()/exit is contained); capture rc in CAP_RC, output in CAP.
 run_req() {
-   local home_dir="$1" upload="$2"
-   if CAP="$( HOME="${home_dir}" dist_build_upload="${upload}" check-redistributable-builds-requirements 2>&1 )"; then
+   local home_dir="$1" upload="$2" remote="${3:-}"
+   if CAP="$( HOME="${home_dir}" dist_build_upload="${upload}" build_remote_derivative_pkgs="${remote}" check-redistributable-builds-requirements 2>&1 )"; then
       CAP_RC=0
    else
       CAP_RC=$?
@@ -136,6 +136,15 @@ if [ "${CAP_RC}" -eq 0 ]; then
    pass "--upload true with .ssh + .signify + buildconfig.d: passes"
 else
    fail "--upload true with all credentials present wrongly aborted (rc=${CAP_RC}) -- ${CAP}"
+fi
+
+## --- remote-derivative-packages never uploads: ~/.ssh not required even with ---
+## --- --upload true (opaque prebuilt packages are not publishable). ------------
+run_req "${home_no_ssh}" "true" "true"
+if [ "${CAP_RC}" -eq 0 ]; then
+   pass "--upload true + build_remote_derivative_pkgs=true, NO .ssh: passes (remote build never uploads)"
+else
+   fail "--upload true + remote pkgs wrongly required ~/.ssh (rc=${CAP_RC}) -- ${CAP}"
 fi
 
 if [ "${fail_count}" -ne 0 ]; then

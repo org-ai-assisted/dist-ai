@@ -150,6 +150,30 @@ else
    fail "canary broken: --upload true no longer requires ~/.ssh (a real upload would start without credentials)"
 fi
 
+## --- --upload true but a fail-closed mode applies: NOT a real upload, so the ---
+## --- guard must NOT require ~/.ssh (matches variables.d/35_rsync.bsh). --------
+rc=0
+out="$(run_guard "${no_ssh_home}" true --upload true --flavor kicksecure-cli --target raw)" || rc="$?"
+if [ "${rc}" -eq 0 ]; then
+   pass "--upload true + CI=true, no ~/.ssh: passes (CI simulates the upload)"
+else
+   fail "--upload true + CI=true wrongly required ~/.ssh (${rc}) -- ${out}"
+fi
+rc=0
+out="$(run_guard "${no_ssh_home}" "" --upload true --dry-run true --flavor kicksecure-cli --target raw)" || rc="$?"
+if [ "${rc}" -eq 0 ]; then
+   pass "--upload true + --dry-run true, no ~/.ssh: passes (dry-run simulates the upload)"
+else
+   fail "--upload true + --dry-run true wrongly required ~/.ssh (${rc}) -- ${out}"
+fi
+rc=0
+out="$(run_guard "${no_ssh_home}" "" --upload true --remote-derivative-packages true --flavor kicksecure-cli --target raw)" || rc="$?"
+if [ "${rc}" -eq 0 ]; then
+   pass "--upload true + --remote-derivative-packages true, no ~/.ssh: passes (not publishable)"
+else
+   fail "--upload true + remote pkgs wrongly required ~/.ssh (${rc}) -- ${out}"
+fi
+
 ## --- CANARY: '--upload false' must not be read as the opt-in ----------------
 ## The scan pairs the option with its VALUE; a scan matching only the '--upload'
 ## token would wrongly bite here.
