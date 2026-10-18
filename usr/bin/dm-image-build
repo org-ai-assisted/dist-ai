@@ -155,10 +155,11 @@ main() {
    build_user="$(id -un)"
    export cowbuilder_cache_dir="/var/cache/pbuilder/${build_user}"
    ## This is a test/install build on a host with NO release-server credentials; a failed
-   ## dm-upload-images connection retries with linear backoff for ~7h. Run the FULL upload path
-   ## (file-list build, target derivation, dm-prepare-release) but make the transfer a no-op, so
-   ## the upload code is really exercised yet nothing is sent to the release server.
-   export dist_build_simulate_upload=true
+   ## dm-upload-images connection retries with linear backoff for ~7h. A real upload is an
+   ## explicit opt-in ('--upload true'); the DEFAULT (not passed below) runs the FULL upload
+   ## path (file-list build, target derivation, dm-prepare-release) with the transfer mocked,
+   ## so the upload code is exercised yet nothing is sent to the release server. No
+   ## credential is needed.
 
    local build_rc=0
    {
