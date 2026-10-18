@@ -158,6 +158,32 @@ def test_guestctl_env_float_falls_back_on_bad_value(monkeypatch):
     assert GC._env_float('VBOX_GUESTCTL_CLICK_SETTLE', 0.3) == 0.5
 
 
+def test_guestctl_negative_hold_knob_clamped_release_still_sent(monkeypatch):
+    ## a NEGATIVE dwell knob (VBOX_GUESTCTL_CLICK_HOLD=-1) must NOT reach time.sleep:
+    ## sleep(-1) raises AFTER the press and BEFORE the release, leaving the mouse
+    ## button held down and wedging the test. _env_float clamps it to 0 so the
+    ## release still fires. Canary: pre-clamp _env_float returns -1.0, fake_sleep(-1)
+    ## raises inside perform_pointer and the release is never sent.
+    monkeypatch.setenv('VBOX_GUESTCTL_CLICK_HOLD', '-1')
+    hold = GC._env_float('VBOX_GUESTCTL_CLICK_HOLD', 0.08)
+    assert hold >= 0.0
+
+    events: list[tuple] = []
+
+    class FakeMouse:
+        def putMouseEventAbsolute(self, x, y, dz, dw, buttons):
+            events.append(('mouse', x, y, buttons))
+
+    def fake_sleep(secs):
+        if secs < 0:   # model time.sleep's own ValueError on a negative duration
+            raise ValueError('sleep length must be non-negative')
+        events.append(('sleep', secs))
+
+    GC.perform_pointer(FakeMouse(), 10, 20, True, 1, hold=hold, sleep=fake_sleep)
+    ## release (buttons 0) is the final event -- the button is not left pressed
+    assert events[-1] == ('mouse', 10, 20, 0)
+
+
 def test_poweroff_quietly_tolerates_missing_vboxmanage(monkeypatch):
     ## a missing VBoxManage raises FileNotFoundError in the finally; cleanup must
     ## swallow it, not crash over the real exit status.
