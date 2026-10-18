@@ -81,6 +81,17 @@ case "${guard}" in
       fail "guard does not reference \$dist_build_upload; it is not the upload-opt-in guard"
       ;;
 esac
+## The remote axis MUST use the canonical 'build_remote_derivative_pkgs' -- the
+## same name 'variables.d/35_rsync.bsh' reads -- or the gate and the real-upload
+## decision can disagree (gate says "simulated", rsync uploads for real).
+case "${guard}" in
+   *'build_remote_derivative_pkgs'*)
+      pass "guard keys the remote axis off the canonical \$build_remote_derivative_pkgs"
+      ;;
+   *)
+      fail "guard does not reference \$build_remote_derivative_pkgs; it may disagree with 35_rsync.bsh"
+      ;;
+esac
 
 workdir=""
 cleanup() {
