@@ -51,6 +51,22 @@ these rules:
                              .github/owner-gate-exempt.yml and must
                              state a reason.
 
+  W-009 FORK-PR-GUARD        In a reusable (workflow_call) workflow,
+                             any job that checks out a PR-controllable
+                             ref -- an actions/checkout whose 'ref:' is
+                             a '${{ ... }}' expression -- must carry the
+                             fork-PR guard in its 'if:'. A reusable
+                             cannot see its caller's trigger, so CodeQL
+                             (actions/untrusted-checkout) and we assume
+                             the caller MAY route pull_request_target.
+                             Sanctioned forms: the guard literal
+                             'head.repo.full_name == github.repository',
+                             or a restriction to non-pull_request events
+                             (github.event_name named, pull_request
+                             absent). Anything else is flagged -- a new
+                             reusable must not silently omit the guard,
+                             the way reusable-coverity.yml once did.
+
 Usage: python3 test_workflow_yaml.py <repo_root>
 
 Exit codes:
@@ -103,6 +119,12 @@ DEPRECATED_MARKERS = {
 ## contributor fork) means the job skips with no runner allocated and the
 ## run still reports green.
 OWNER_GATE_LITERAL = "vars.CI_ENABLED_ORG_AI_ASSISTED == 'true'"
+
+## W-009: the fork-PR guard. Distinctive substring of
+## 'github.event.pull_request.head.repo.full_name == github.repository'
+## -- the condition that makes a reusable safe to check out a
+## PR-controllable ref even if a caller routes pull_request_target.
+FORK_PR_GUARD_LITERAL = 'head.repo.full_name == github.repository'
 
 
 def effective_condition(cond):
@@ -197,6 +219,7 @@ RULE_LEGEND = [
     ('W-006 DEPRECATED',           'deprecated GitHub Actions syntax / action version'),
     ('W-007 DEPENDABOT-MISSING',   'direct third-party SHAs but no .github/dependabot.yml'),
     ('W-008 OWNER-GATE',           'job runs steps without the CI-enabled gate'),
+    ('W-009 FORK-PR-GUARD',        'reusable job checks out a PR-controllable ref without the fork-PR guard'),
     ('W-YAML',                     'YAML parse error'),
 ]
 
@@ -481,6 +504,79 @@ def check_owner_gate(repo_root, targets, findings):
             )
 
 
+def job_checks_out_expression_ref(job):
+    """True if JOB has an actions/checkout step whose 'ref:' is a
+    '${{ ... }}' expression -- i.e. a ref that may resolve to
+    PR-controlled code (github.sha, an input, an env derived from
+    either). A literal 'ref: master' is trusted and does NOT count."""
+    steps = job.get('steps')
+    if not isinstance(steps, list):
+        return False
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        uses = step.get('uses')
+        if not isinstance(uses, str) or not uses.startswith('actions/checkout'):
+            continue
+        with_block = step.get('with')
+        if not isinstance(with_block, dict):
+            continue
+        ref = with_block.get('ref')
+        if isinstance(ref, str) and '${{' in ref:
+            return True
+    return False
+
+
+def check_fork_pr_guard(repo_root, targets, findings):
+    """W-009: a reusable (workflow_call) job that checks out a
+    PR-controllable ref must carry the fork-PR guard.
+
+    A reusable runs in the CALLER's context and cannot see whether the
+    caller triggers it on pull_request (fork PRs get no secrets) or
+    pull_request_target (fork PRs DO). So a reusable that checks out a
+    '${{ ... }}' ref must defend itself. Two sanctioned forms:
+
+      * the guard literal 'head.repo.full_name == github.repository'
+        (ANDed into the if:), or
+      * a restriction to non-pull_request events (the if: names
+        github.event_name and never mentions pull_request -- e.g. a
+        schedule/workflow_dispatch-only job).
+
+    Anything else is flagged. The bias is fail-closed: a reusable job
+    that neither guards nor excludes pull_request is exactly the
+    reusable-coverity.yml gap this rule exists to stop recurring.
+    Non-reusable workflows are out of scope (their own 'on:' triggers,
+    visible in-file, bound the risk).
+    """
+    for path in targets:
+        try:
+            with open(path) as f:
+                parsed = yaml.safe_load(f)
+        except (yaml.YAMLError, OSError):
+            continue
+        if not isinstance(parsed, dict) or is_composite_action(parsed):
+            continue
+        if not is_workflow_call(parsed):
+            continue
+        jobs = parsed.get('jobs') or {}
+        if not isinstance(jobs, dict):
+            continue
+        for job_id, job in jobs.items():
+            if not isinstance(job, dict):
+                continue
+            if not job_checks_out_expression_ref(job):
+                continue
+            cond = effective_condition(job.get('if') or '')
+            guarded = FORK_PR_GUARD_LITERAL in cond
+            non_pr_only = 'github.event_name' in cond and 'pull_request' not in cond
+            if guarded or non_pr_only:
+                continue
+            emit(findings, path, repo_root, 'W-009 FORK-PR-GUARD',
+                 f"job {job_id!r} checks out a PR-controllable ref (actions/checkout "
+                 f"with an expression 'ref:') but its 'if:' neither carries the fork-PR "
+                 f"guard ({FORK_PR_GUARD_LITERAL}) nor excludes pull_request events")
+
+
 def main(repo_root):
     targets = collect_target_files(repo_root)
     if not targets:
@@ -492,6 +588,7 @@ def main(repo_root):
         check_workflow(p, repo_root, findings)
     check_dependabot(repo_root, targets, findings)
     check_owner_gate(repo_root, targets, findings)
+    check_fork_pr_guard(repo_root, targets, findings)
     n_files = len(targets)
 
     if not findings:

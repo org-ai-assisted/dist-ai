@@ -1,0 +1,21 @@
+## A NON-reusable workflow: its own 'on:' triggers (here push only)
+## bound the risk and are visible in-file, so W-009 does not apply even
+## with an expression ref and no guard. Expect no W-009.
+name: fixture
+on:
+  push:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  work:
+    if: vars.CI_ENABLED_ORG_AI_ASSISTED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
