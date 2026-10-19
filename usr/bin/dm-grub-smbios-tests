@@ -477,6 +477,16 @@ printf '%s\n' \
 ## '] <CR>; then' at runtime ('[: missing ]'), so the matcher tolerates only
 ## [[:blank:]] (space/tab), never [[:space:]] (which also matches CR/VT/FF).
 ## Prove the gate refuses a CR-contaminated guard rather than pass it green.
+##
+## Scope of the [[:blank:]] tightening: it aligns the token-separator match with
+## bash. The REALISTIC contamination -- a CRLF or CR line ending -- fails the
+## '$'/'then$'-anchored matches everywhere (the trailing CR defeats the anchor)
+## and reports RED, i.e. fail-safe, so it needs no further handling. extract_block's
+## drift-trim keeps [[:space:]] on purpose (it normalizes a trailing CR so two
+## reader copies that differ only in line ending do not read as drift), and the
+## leading-indent presence anchors keep [[:space:]] (a CRLF line fails their '$'
+## anchor -> RED). A stray mid-line or leading CR that is not a line ending is a
+## crafted input, not a realistic refactor, and is deliberately out of scope.
 cr=$'\r'
 # shellcheck disable=SC2016  # literal fixture, not an expansion
 printf '%s\n' \
