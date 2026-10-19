@@ -979,6 +979,14 @@ rt_lane_kicksecure() {
    ## the installed system boots under SB with its modules loading. Only the efi-secureboot lane.
    if [ "${firmware}" = 'efi-secureboot' ]; then
       mok_arg=( --mok-enroll )
+      ## --mok-enroll's host-side MOK read escalates via the 'vbox-disk-extract-mok'
+      ## privleap action (so the deliberately sudo-less runner needs no host sudo). That
+      ## needs the runner's per-user privleap comm socket, but a runner account never logs
+      ## in, so leapctl@<uid>.service never fires -- create it here (root; the action
+      ## config's [allowed-users] Group=vboxusers permits it). Best-effort: mok_host_enroll
+      ## fails loud later if the socket / action is genuinely missing.
+      leapctl --create "${account}" >/dev/null 2>&1 \
+         || log warn "leapctl --create '${account}' failed; --mok-enroll will fail if the privleap comm socket is absent (is the vbox-disk-extract-mok privleap action installed?)"
    fi
 
    rc=0
