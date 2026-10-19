@@ -201,6 +201,77 @@ class TestRegressionInvariants(SystemcheckTestBase):
         self.assertNotIn('<a ', out,
                          f"'<a ' anchor survived sanitization: {out!r}")
 
+    def test_log_checker_tolerates_apparmor_info_failure(self) -> None:
+        """Regression (errexit/pipefail): check_service_logs must NOT abort when
+        the privileged `read-apparmor-info` read exits non-zero. apparmor-info
+        legitimately returns non-zero -- it exits 1 when it finds AppArmor
+        DENIED lines, and it did so in the release VBox guest -- so the apparmor
+        pipeline MUST be guarded: `{ leaprun read-apparmor-info || true; } | tee`.
+        An UNGUARDED `leaprun read-apparmor-info | tee` under errexit+pipefail
+        aborts the whole journal read, which systemcheck then reports as the
+        false 'Could not read the systemd journal (read failed with exit code
+        1)' warning (seen on the built-ISO automated-test lane). The guard was
+        removed once and re-added, so lock it here.
+
+        The abort is only observable as a SUBPROCESS: capturing the function's
+        status in the sourcing shell would disable errexit for the whole call (a
+        false green). The harness re-sets pipefail+inherit_errexit because a
+        bare `source` skips the script's own `was_executed` strict-mode block.
+        read-apparmor-info is stubbed to FAIL (the real failure mode) while every
+        other read succeeds, so a non-zero return can only come from the
+        unguarded apparmor pipeline.
+        """
+        log_checker = os.path.join(self.dir, 'log-checker')
+        ## The real check_service_logs pipes the journal through these; the runner
+        ## puts helper-scripts' usr/bin on PATH. Required: absent, the run would
+        ## fail for an unrelated reason and the guard assertion would be vacuous.
+        for tool in ('sanitize-string', 'stcatn'):
+            self.assertIsNotNone(shutil.which(tool),
+                                 f'{tool} not on PATH (wire helper-scripts)')
+
+        marker = 'APPARMORGUARDCANARY'
+        journal = f'warning something {marker}\n'
+        with tempfile.TemporaryDirectory() as tmpdir:
+            harness = '\n'.join([
+                f"source {_q(log_checker)}",
+                'set -o errexit',
+                'set -o nounset',
+                'set -o pipefail',
+                'set -o errtrace',
+                'shopt -s inherit_errexit',
+                f"export TMPDIR={_q(tmpdir)}",
+                f"export TMP={_q(tmpdir)}",
+                ## Journal reads succeed (crafted content); the apparmor-info read
+                ## FAILS, exactly like the real tool. Only an unguarded apparmor
+                ## pipeline can then abort the run under errexit+pipefail.
+                'leaprun() {',
+                '  case "$1" in',
+                '    read-journalctl-logs-this-boot|read-journalctl-logs-last-boot)',
+                f"      printf '%s' {_q(journal)} ;;",
+                '    read-apparmor-info) return 1 ;;',
+                '    *) : ;;',
+                '  esac',
+                '}',
+                'safe-rm() { command rm "$@"; }',
+                'journal_ignore_fixed_list=( "ZZZ_NEVER_MATCH_FIXED_ZZZ" )',
+                'journal_ignore_patterns_list=( "ZZZ_NEVER_MATCH_PATTERN_ZZZ" )',
+                'check_service_logs this_boot',
+            ])
+            proc = subprocess.run(['bash', '-c', harness],
+                                  capture_output=True, text=True, timeout=60)
+
+        self.assertEqual(
+            proc.returncode, 0,
+            "check_service_logs aborted when read-apparmor-info failed -- the "
+            "apparmor pipeline needs the `|| true` guard so a non-zero "
+            f"apparmor-info does not fail the journal read; rc={proc.returncode}, "
+            f"out={proc.stdout!r}")
+        ## Anti-vacuous: the marker proves the run proceeded PAST the apparmor
+        ## read and emitted the matched journal line (not aborted, not a vacuous
+        ## pass on an empty fixture).
+        self.assertIn(marker, proc.stdout,
+                      f"fixture did not reach the output; got: {proc.stdout!r}")
+
     def test_no_legacy_stcatn_sanitization_comment(self) -> None:
         """The misleading 'sanitized by ... stcatn' claim must stay gone,
         regardless of how it is reflowed or re-indented (stcatn strips ANSI,
