@@ -88,8 +88,9 @@ class TestMakeSaneReturnsErrorString(unittest.TestCase):
 
     @unittest.expectedFailure
     def test_empty_bridge_line_returns_str_not_assertionerror(self):
-        ## KNOWN BUG (see BUGS.md): a caller-supplied empty/whitespace bridge line
-        ## with bridges enabled. Contract says return a str; the implementation's
+        ## KNOWN BUG (BUGS.md; org-ai-assisted/tor-control-panel#5): a caller-supplied
+        ## empty/whitespace bridge line with bridges enabled. Contract says return a
+        ## str; the implementation's
         ## bare 'assert len(bridge_bit_list) > 1' raises AssertionError instead.
         ## xfail until tor-control-panel hardens the bridge path -- an XPASS here
         ## (suite goes red) is the signal to drop this marker once it is fixed.
