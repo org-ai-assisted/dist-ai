@@ -138,19 +138,21 @@ else
    fail "resolve_st_site: unset override + absent default wrongly set st_site=${st_site}"
 fi
 
-## --- unset HOME (the ${HOME}-rooted defaults must not crash under nounset) ---
+## --- unset HOME (UNEXPECTED scrubbed environment -> must FAIL loudly, never SKIP) ---
 
 ## With HOME unset and no explicit override (a scrubbed CI / systemd env), the runner must
-## honor the documented no-checkout SKIP (exit 77), not abort with an unbound-variable
-## error. The SKIP path is reached before any live-site / Playwright branch, so driving the
-## real runner here is cheap. Pre-fix (unguarded ${HOME} under nounset) this exits 1.
+## FAIL loudly. An unset HOME is an unexpected, broken environment -- NOT the legitimate
+## "no site checkout on this host" case -- so silently honoring the no-checkout SKIP would
+## hide that website-tests never ran (an unauthorized skip). It must emit a clear FATAL and
+## exit nonzero: not exit 77, and not a raw unbound-variable nounset crash.
 run_rc=0
-env --unset=HOME --unset=OUTPUT_LIES_REPO --unset=SECURE_TERMINAL_SITE_REPO \
-   --unset=ORG_AI_ASSISTED_REPO "${runner}" >/dev/null 2>&1 || run_rc=$?
-if [ "${run_rc}" -eq 77 ]; then
-   pass 'website-tests: unset HOME + no override honors the SKIP (exit 77), not a nounset crash'
+run_err="$(env --unset=HOME --unset=OUTPUT_LIES_REPO --unset=SECURE_TERMINAL_SITE_REPO \
+   --unset=ORG_AI_ASSISTED_REPO "${runner}" 2>&1 >/dev/null)" || run_rc=$?
+if [ "${run_rc}" -ne 0 ] && [ "${run_rc}" -ne 77 ] \
+   && printf '%s' "${run_err}" | grep --quiet 'FATAL: HOME is unset'; then
+   pass 'website-tests: unset HOME + no override FAILs loudly with a FATAL (not a SKIP, not a nounset crash)'
 else
-   fail "website-tests: unset HOME did not SKIP cleanly (exit ${run_rc}; want 77)"
+   fail "website-tests: unset HOME did not FAIL cleanly (exit ${run_rc}; want nonzero + 'FATAL: HOME is unset', err='${run_err}')"
 fi
 
 printf '%s\n' "" "test_website_tests_site_override_fatal: ${pass_count} pass, ${fail_count} fail, 0 skip"
