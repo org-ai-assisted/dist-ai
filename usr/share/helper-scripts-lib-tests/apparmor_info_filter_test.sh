@@ -141,11 +141,13 @@ run_filter() {
 ## capturing the call's status (a '|| rc=$?', a subshell, an 'if') necessarily
 ## disables errexit for the whole call, so the abort never happens here. These
 ## assert the pure OUTPUT contract only.
-run_filter DENIED <<< 'type=SYSCALL msg=audit(1.0:2): nothing to see here'
-check "no match -> empty output" "${LAST_OUT}" ""
+## Byte-exact (wc -c, not a captured string -- command substitution strips a
+## stray trailing newline, so a subject emitting "\n" would read as empty).
+nomatch_bytes="$(printf '%s\n' 'type=SYSCALL msg=audit(1.0:2): nothing to see here' | apparmor_info_filter DENIED | wc -c | tr -d ' ')"
+check "no match -> 0 bytes output" "${nomatch_bytes}" "0"
 
-run_filter DENIED </dev/null
-check "empty stdin -> empty output" "${LAST_OUT}" ""
+empty_bytes="$(apparmor_info_filter DENIED </dev/null | wc -c | tr -d ' ')"
+check "empty stdin -> 0 bytes output" "${empty_bytes}" "0"
 
 ## a DENIED record -> redacted record emitted, pid=/fsuid= stripped, AND return 0
 ## (the function does not own the exit code; main() derives it from the output).
@@ -187,6 +189,24 @@ nul_out="$( { printf '%s\n' "${denied_line}"; printf '%s\0' 'type=AVC embedded';
    | apparmor_info_filter DENIED )" || nul_rc=$?
 check "NUL in stream -> return 0" "${nul_rc}" "0"
 check "NUL in stream -> DENIED record not dropped (--text)" "$(contains "${nul_out}" "${denied_redacted}")" "yes"
+
+## a NUL byte INSIDE a matching record must be PRESERVED, not silently dropped:
+## two DENIED records differing ONLY by a NUL must stay DISTINCT (2 lines), not
+## collapse to one. A buffered '$(grep ...)' filter drops the NUL (bash strips
+## NULs from a command substitution) so 'sha<NUL>dow' becomes 'shadow', the two
+## records become identical, awk dedups, and a denial DISAPPEARS. A streaming
+## grep|sed|awk filter never puts the record in a variable, so the NUL survives.
+## Fed as a real stream (a NUL cannot live in a shell string); the NUL is built
+## from R-030-allowed printf forms and the output LINE COUNT is NUL-free to
+## capture safely.
+nul_shadow='apparmor="DENIED" name="/etc/shadow" pid=1 comm="x" fsuid=1'
+nul_merge_lines="$( {
+   printf '%s\n' "${nul_shadow}"
+   printf '%s' 'apparmor="DENIED" name="/etc/sha'
+   printf '%s\0' ''
+   printf '%s\n' 'dow" pid=2 comm="x" fsuid=1'
+} | apparmor_info_filter DENIED | wc -l | tr -d ' ')"
+check "NUL inside a record -> distinct records kept, not merged" "${nul_merge_lines}" "2"
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
