@@ -10,8 +10,8 @@ onion-time-pre-script source-ability contract.
 
 Every other test in this suite sources the real script and calls its
 functions. That only isolates the function under test if sourcing defines
-functions and does nothing else: no auto-run of main, no strict mode and no
-ERR/EXIT trap leaking into the sourcing shell.
+functions and does nothing else: no auto-run of the entry point, no strict mode
+and no ERR/EXIT trap leaking into the sourcing shell.
 """
 
 import unittest
@@ -49,10 +49,10 @@ class TestSourceContract(PreScriptTestBase):
         self.assertEqual(result.stdout, '')
         self.assertEqual(result.stderr, '')
 
-    def test_main_is_defined(self) -> None:
-        self.assert_predicate('declare -F main >/dev/null')
+    def test_entry_point_is_defined(self) -> None:
+        self.assert_predicate('declare -F te_pe_tb_check >/dev/null')
 
-    def test_main_is_not_run(self) -> None:
+    def test_entry_point_is_not_run(self) -> None:
         self.assertNotIn('### START', self.run_to_end(''))
 
     def test_no_errexit_leak(self) -> None:
