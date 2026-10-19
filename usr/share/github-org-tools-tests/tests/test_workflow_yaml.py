@@ -56,9 +56,11 @@ these rules:
                              ref -- an actions/checkout whose 'ref:' is
                              a '${{ ... }}' expression -- must carry the
                              fork-PR guard in its 'if:'. A reusable
-                             cannot see its caller's trigger, so CodeQL
-                             (actions/untrusted-checkout) and we assume
-                             the caller MAY route pull_request_target.
+                             cannot restrict which trigger its caller
+                             uses (nor can this static check know it),
+                             so CodeQL (actions/untrusted-checkout) and
+                             we assume the caller MAY route
+                             pull_request_target.
                              Sanctioned forms: the guard literal
                              'head.repo.full_name == github.repository',
                              or a restriction to non-pull_request events
@@ -581,8 +583,8 @@ def check_fork_pr_guard(repo_root, targets, findings):
     """W-009: a reusable (workflow_call) job that checks out a
     PR-controllable ref must carry the fork-PR guard.
 
-    A reusable runs in the CALLER's context and cannot see whether the
-    caller triggers it on pull_request (fork PRs get no secrets) or
+    A reusable runs in the CALLER's context and cannot restrict whether
+    the caller triggers it on pull_request (fork PRs get no secrets) or
     pull_request_target (fork PRs DO). So a reusable that checks out a
     '${{ ... }}' ref must defend itself. The guard must hold on EVERY
     top-level '||' disjunct (same reasoning as W-008): 'guard || true' still
