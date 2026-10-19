@@ -135,20 +135,25 @@ class _FifoWriteStub:
         self._thread.start()
 
     def _drain(self, fifo_path: Path) -> None:
+        ## Runs on a side thread, so ANY failure must set a non-zero result --
+        ## never leave returncode 0 on a failed drain (a silent false success).
         try:
-            with open(fifo_path, 'r', encoding='utf-8') as fifo_obj:
+            ## newline='' so the stub does not translate a bare '\r' (universal
+            ## newlines would); the real 'cat | tee' helper does not either.
+            with open(
+                fifo_path, 'r', encoding='utf-8', newline=''
+            ) as fifo_obj:
                 content = fifo_obj.read()
-        except OSError as exc:
+            stripped = content.rstrip('\n')
+            if stripped == '':
+                self.returncode = 1
+                self._err = 'No Tor configuration provided by client!'
+                return
+            self._torrc_file.write_text(stripped + '\n', encoding='utf-8')
+            os.chmod(self._torrc_file, 0o644)
+        except Exception as exc:  # noqa: BLE001
             self.returncode = 1
             self._err = str(exc)
-            return
-        stripped = content.rstrip('\n')
-        if stripped == '':
-            self.returncode = 1
-            self._err = 'No Tor configuration provided by client!'
-            return
-        self._torrc_file.write_text(stripped + '\n', encoding='utf-8')
-        os.chmod(self._torrc_file, 0o644)
 
     def communicate(self):
         ## Join the drain thread with a bound so a wedged test fails rather than

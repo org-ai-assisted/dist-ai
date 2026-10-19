@@ -25,7 +25,7 @@ tcp_testlib.require_app()
 class TestEmitBootstrapEventMaybe(unittest.TestCase):
     def setUp(self):
         self.monitor = TcplTorMonitor()
-        self.events = []
+        self.events: list[tuple[int, str, str]] = []
         self.monitor.torBootstrapChanged.connect(
             lambda pct, tag, summary: self.events.append((pct, tag, summary))
         )
