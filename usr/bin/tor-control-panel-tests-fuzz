@@ -5,12 +5,12 @@
 
 ## AI-Assisted
 
-## Randomized fuzz run of tor-control-panel's untrusted-input parsers (torrc
-## generation/parsing, custom-bridge extraction, and the shared validators).
-## See fuzz_torrc.py for the properties checked. Override the sweep length with
-## --iterations N and reproduce a failure with --seed N. The tor_control_panel
-## package under test is resolved by tcp_testlib (TCP_REPO=<checkout> else the
-## installed package).
+## Randomized fuzz run of tor-control-panel's untrusted-input logic in
+## tor_control_panel_lib (torrc parsing, config normalisation, bridge-line
+## prefix conversion, default-port lookup). See fuzz_torrc.py for the properties
+## checked. Override the sweep length with --iterations N and reproduce a
+## failure with --seed N. The tor_control_panel package under test is resolved
+## by tcp_testlib (TCP_REPO=<checkout> else the installed package).
 
 set -o errexit
 set -o nounset
@@ -20,8 +20,8 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
-## The parsers pull in the PyQt5 GUI modules; the Qt offscreen platform plugin
-## lets them import without an X server or display.
+## tcp_testlib brings up an offscreen QApplication (PyQt6); the offscreen
+## platform plugin lets it import without an X server or display.
 export QT_QPA_PLATFORM="offscreen"
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"

@@ -6,163 +6,196 @@
 ## AI-Assisted
 
 """
-Randomized in-process fuzzer for tor-control-panel's untrusted-input parsers.
+Randomized, in-process fuzzer for tor_control_panel's untrusted-input logic in
+tor_control_panel_lib (the Qt-free layer).
 
-These functions consume attacker-influenceable input -- a torrc that round-trips
-through disk (user-pasted bridge lines, possibly tampered with) and the config
-the GUI regenerates. They must never crash, hang, or return a wrong-typed value;
-a crash here is a GUI that dies (or mangles the config) on a hostile torrc.
+Properties checked (per phase, each over --iterations rounds):
 
-Targets (master-present only):
-  * torrc_gen.gen_torrc  +  torrc_gen.parse_torrc            -> no crash, and
-    parse_torrc always returns the documented tuple shape
-  * tor_status.tor_status                                    -> a defined state
-    string, on adversarial torrc content
+  parse        tcpl_parse_torrc() on arbitrary torrc text must return a
+               TcplTorConfInfo or a str -- never raise.
+  make_sane    tcpl_make_tor_conf_info_sane() on an arbitrary TcplTorConfInfo
+               must return a TcplTorConfInfo or a str -- never raise (its
+               documented contract is to describe problems via a returned str).
+  bridge_pfx   tcpl_bridge_lines_add_prefix()/remove_prefix() may raise ONLY
+               ValueError (documented) and otherwise return list[str].
+  port         tcpl_default_port_for_protocol() returns an int or raises ONLY
+               ValueError.
 
-Scope note: gen_torrc AND parse_torrc on upstream master are NOT hardened
-against malformed input (a junk bridge/proxy argument raises IndexError/
-ValueError, and parse_torrc raises IndexError on a bare 'Bridge' line), so both
-are exercised over VALID input only -- gen_torrc over its valid argument space,
-parse_torrc over the well-formed torrc gen_torrc just wrote. tor_status reads
-whatever is on disk defensively, so it takes the adversarial blobs. The
-validator / bootstrap-phase / custom-bridge-reader fuzz phases were dropped:
-those targets (validators, tor_bootstrap_parse, torrc_gen.read_custom_bridge_lines)
-do not exist on master.
-
-Run: fuzz_torrc.py [--iterations N] [--seed N]. On a failure it prints the seed
-and the offending input so the case can be replayed deterministically.
+A phase records the first offending input with the seed to reproduce it, and
+keeps running the remaining phases so one defect does not mask the others.
+Reproduce a specific run with --seed N. Exits non-zero if any phase found a
+property violation.
 """
 
 import argparse
+import copy
 import random
+import string
 import sys
-import tempfile
-from pathlib import Path
 
-import tcp_testlib as T  # noqa: F401  (resolves the source + offscreen Qt)
-from tor_control_panel import torrc_gen, tor_status
+import tcp_testlib
+from tor_control_panel import tor_control_panel_lib as tcpl
+
+tcp_testlib.require_app()
 
 
-## ---- input generators -------------------------------------------------------
-
-## Bytes/among these make the torrc parsers interesting.
-_ALPHABET = (
-    'obfs4 snowflake meek_lite Bridge BridgeRelay DisableNetwork UseBridges '
-    'ClientTransportPlugin # %include /etc/tor 1.2.3.4:1234 [::1]:9050 '
-    "\t\n\r\x00\x1b[31m <b> obfs4proxy cert= iat-mode=0 . : , = \" ' \\ /"
-).split(' ')
-
-_CHARS = "abcdef0123456789.:[]# \t\n\r\x00\x1b<>\"'/=%-"
-
-## Valid gen_torrc inputs. 'Custom bridges' is deliberately NOT a bridge_type
-## choice: bridges_command has no matching entry on master, so it would raise.
-_BRIDGE_TYPES = ['None', 'obfs4', 'snowflake', 'meek']
-_CUSTOM_BRIDGES = [
-    'None',
-    'obfs4 1.2.3.4:1234 ABCDEF0123456789ABCDEF0123456789ABCDEF01',
-    'snowflake 5.6.7.8:9000 0123456789ABCDEF0123456789ABCDEF01234567',
+TORRC_TOKENS = [
+    'DisableNetwork', 'UseBridges', 'ClientTransportPlugin', 'Bridge',
+    'HTTPSProxy', 'Socks4Proxy', 'Socks5Proxy', 'HTTPSProxyAuthenticator',
+    'Socks5ProxyUsername', 'Socks5ProxyPassword', '0', '1', '2', 'obfs4',
+    'snowflake', 'meek_lite', '10.0.0.1:443', 'user:pass', '#', '',
+    ':', '::1', 'x' * 40,
 ]
-## Exact master proxy strings (proxies list); 'HTTP / HTTPS' has spaces.
-_PROXY_TYPES = ['None', 'HTTP / HTTPS', 'SOCKS4', 'SOCKS5']
+PROXY_TYPES = tcpl.tcpl_proxy_type_list + ['SOCKS4', 'bogus', '', None]
+BRIDGE_TYPES = tcpl.tcpl_bridge_type_list + ['telepathy', '']
 
 
-def _rand_token(rnd):
-    kind = rnd.random()
-    if kind < 0.35:
-        return rnd.choice(_ALPHABET)
-    if kind < 0.7:
-        return ''.join(rnd.choice(_CHARS) for _ in range(rnd.randint(0, 40)))
-    ## Occasionally a very long run, to probe pathological inputs.
-    return rnd.choice(_CHARS) * rnd.randint(0, 4000)
-
-
-def _rand_line(rnd):
-    return ' '.join(_rand_token(rnd) for _ in range(rnd.randint(0, 6)))
-
-
-def _rand_text(rnd):
-    ## A multi-line blob, sometimes seeded with the custom-bridges marker and a
-    ## DisableNetwork directive so parse_torrc / tor_status take their branches.
-    lines = [_rand_line(rnd) for _ in range(rnd.randint(0, 12))]
-    if rnd.random() < 0.4:
-        lines.insert(rnd.randint(0, len(lines)),
-                     '# Custom bridges are used')
-    if rnd.random() < 0.4:
-        lines.insert(0, 'DisableNetwork ' + rnd.choice(['0', '1', 'x', '']))
+def _rand_text(rng):
+    line_count = rng.randint(0, 6)
+    lines = []
+    for _ in range(line_count):
+        token_count = rng.randint(0, 4)
+        tokens = [rng.choice(TORRC_TOKENS) for _ in range(token_count)]
+        lines.append(' '.join(tokens))
     return '\n'.join(lines)
 
 
-def _rand_proxy_field(rnd):
-    ## A benign proxy field: no line break / NUL (gen_torrc on master does not
-    ## guard against torrc injection, so keep the value single-line here).
-    return ''.join(rnd.choice('abcdef0123456789.:') for _ in range(rnd.randint(0, 20)))
+def _rand_bridge_lines(rng):
+    out = []
+    for _ in range(rng.randint(0, 3)):
+        parts = [rng.choice(['Bridge', '']), rng.choice(BRIDGE_TYPES)]
+        parts += [
+            ''.join(rng.choice(string.printable) for _ in range(rng.randint(0, 6)))
+        ]
+        out.append(' '.join(p for p in parts if p != '').strip())
+    return out
 
 
-## ---- fuzz phases ------------------------------------------------------------
-
-def phase_gen_parse(rnd, iterations):
-    with T.sandbox():
-        for _ in range(iterations):
-            args = [
-                rnd.choice(_BRIDGE_TYPES),
-                rnd.choice(_CUSTOM_BRIDGES),
-                rnd.choice(_PROXY_TYPES),
-                ## proxy ip / port / user / pass (used only when len(args) >= 7)
-                rnd.choice(['127.0.0.1', '192.0.2.1', '[::1]', '']),
-                rnd.choice(['9050', '1080', '0', '']),
-                _rand_proxy_field(rnd),
-                _rand_proxy_field(rnd),
-            ]
-            ## gen_torrc over its valid input space must not crash.
-            torrc_gen.gen_torrc(args)
-            ## The well-formed torrc gen_torrc just wrote must always parse back
-            ## into the documented tuple shape without crashing.
-            parsed = torrc_gen.parse_torrc()
-            if not isinstance(parsed, (dict, tuple, list)):
-                raise AssertionError(
-                    'parse_torrc returned {0!r} for args {1!r}'.format(
-                        parsed, args))
-
-
-def phase_tor_status(rnd, iterations):
-    ## tor_status() classifies the torrc's DisableNetwork directive; feed it
-    ## adversarial torrc content and require a defined string result.
-    with T.sandbox() as torrc:
-        for _ in range(iterations):
-            torrc.write_text(_rand_text(rnd), encoding='utf-8')
-            result = tor_status.tor_status()
-            if result not in ('tor_enabled', 'tor_disabled'):
-                raise AssertionError(
-                    'tor_status returned {0!r}'.format(result))
-
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--iterations', type=int, default=20000)
-    parser.add_argument('--seed', type=int, default=None)
-    opts = parser.parse_args()
-
-    seed = opts.seed if opts.seed is not None else random.randrange(2 ** 32)
-    rnd = random.Random(seed)
-    phases = (
-        ('gen_parse', phase_gen_parse),
-        ('tor_status', phase_tor_status),
+def _rand_conf_info(rng):
+    info = copy.deepcopy(tcpl.tcpl_blank_tor_conf_info)
+    info.network_enabled = rng.choice([True, False, None])
+    info.bridges_enabled = rng.choice([True, False, None])
+    info.bridge_type_set = set(
+        rng.choice(BRIDGE_TYPES) for _ in range(rng.randint(0, 2))
     )
-    per_phase = max(1, opts.iterations // len(phases))
-    print('fuzz_torrc: seed={0} iterations={1}'.format(seed, opts.iterations))
-    for name, func in phases:
-        try:
-            func(rnd, per_phase)
-        except Exception:
-            sys.stderr.write(
-                "fuzz_torrc: FAILURE in phase '{0}' -- replay with "
-                '--seed {1}\n'.format(name, seed))
-            raise
-        print("fuzz_torrc: phase '{0}' ok ({1} iterations)".format(
-            name, per_phase))
+    info.bridge_line_list = _rand_bridge_lines(rng)
+    info.proxy_type = rng.choice(PROXY_TYPES)
+    info.proxy_host = rng.choice([None, '10.0.0.1', '', ':'])
+    info.proxy_port = rng.choice([None, 0, 1080, -1, 99999])
+    info.proxy_username = rng.choice([None, '', 'u', 'x' * 300])
+    info.proxy_password = rng.choice([None, '', 'p', 'x' * 300])
+    return info
 
-    print('fuzz_torrc: PASS')
+
+class Failure(Exception):
+    pass
+
+
+def _phase_parse(rng, iterations, torrc_file):
+    for _ in range(iterations):
+        text = _rand_text(rng)
+        torrc_file.write_text(text, encoding='utf-8')
+        try:
+            result = tcpl.tcpl_parse_torrc()
+        except Exception as exc:  # noqa: BLE001
+            raise Failure(f"tcpl_parse_torrc raised {type(exc).__name__}: "
+                          f"{exc}\n--- torrc ---\n{text}") from exc
+        if not isinstance(result, (tcpl.TcplTorConfInfo, str)):
+            raise Failure(f"tcpl_parse_torrc returned {type(result)} for:\n{text}")
+
+
+def _phase_make_sane(rng, iterations, _torrc_file):
+    for _ in range(iterations):
+        info = _rand_conf_info(rng)
+        snapshot = repr(info)
+        try:
+            result = tcpl.tcpl_make_tor_conf_info_sane(info)
+        except Exception as exc:  # noqa: BLE001
+            raise Failure(f"tcpl_make_tor_conf_info_sane raised "
+                          f"{type(exc).__name__}: {exc}\n{snapshot}") from exc
+        if not isinstance(result, (tcpl.TcplTorConfInfo, str)):
+            raise Failure(f"tcpl_make_tor_conf_info_sane returned "
+                          f"{type(result)} for:\n{snapshot}")
+
+
+def _phase_bridge_pfx(rng, iterations, _torrc_file):
+    for _ in range(iterations):
+        lines = _rand_bridge_lines(rng)
+        for func in (tcpl.tcpl_bridge_lines_add_prefix,
+                     tcpl.tcpl_bridge_lines_remove_prefix):
+            try:
+                result = func(list(lines))
+            except ValueError:
+                continue
+            except Exception as exc:  # noqa: BLE001
+                raise Failure(f"{func.__name__} raised {type(exc).__name__}: "
+                              f"{exc}\nlines={lines!r}") from exc
+            if not isinstance(result, list) or not all(
+                isinstance(item, str) for item in result
+            ):
+                raise Failure(f"{func.__name__} returned {result!r} for "
+                              f"{lines!r}")
+
+
+def _phase_port(rng, iterations, _torrc_file):
+    candidates = list(PROXY_TYPES) + [
+        ''.join(rng.choice(string.printable) for _ in range(rng.randint(0, 8)))
+        for _ in range(8)
+    ]
+    for _ in range(iterations):
+        protocol = rng.choice(candidates)
+        if protocol is None:
+            continue
+        try:
+            result = tcpl.tcpl_default_port_for_protocol(protocol)
+        except ValueError:
+            continue
+        except Exception as exc:  # noqa: BLE001
+            raise Failure(f"tcpl_default_port_for_protocol raised "
+                          f"{type(exc).__name__}: {exc}\nprotocol={protocol!r}"
+                          ) from exc
+        if not isinstance(result, int):
+            raise Failure(f"tcpl_default_port_for_protocol returned {result!r} "
+                          f"for {protocol!r}")
+
+
+PHASES = {
+    'parse': _phase_parse,
+    'make_sane': _phase_make_sane,
+    'bridge_pfx': _phase_bridge_pfx,
+    'port': _phase_port,
+}
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--iterations', type=int, default=30000)
+    parser.add_argument('--seed', type=int, default=None)
+    args = parser.parse_args()
+
+    base_seed = args.seed if args.seed is not None else random.randrange(2 ** 32)
+    print(f"fuzz_torrc: seed={base_seed} iterations={args.iterations}")
+
+    failures = []
+    with tcp_testlib.sandbox() as torrc_file:
+        for name, phase_func in PHASES.items():
+            ## A per-phase seed derived from the base keeps each phase
+            ## independently reproducible from the single reported seed.
+            rng = random.Random(f"{base_seed}:{name}")
+            try:
+                phase_func(rng, args.iterations, torrc_file)
+                print(f"  {name}: ok")
+            except Failure as exc:
+                print(f"  {name}: FAIL\n{exc}")
+                failures.append(name)
+
+    if failures:
+        print(f"fuzz_torrc: FAILED phases: {', '.join(failures)} "
+              f"(reproduce with --seed {base_seed})")
+        return 1
+    print("fuzz_torrc: all phases ok")
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())
