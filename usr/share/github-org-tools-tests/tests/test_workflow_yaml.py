@@ -120,11 +120,19 @@ DEPRECATED_MARKERS = {
 ## run still reports green.
 OWNER_GATE_LITERAL = "vars.CI_ENABLED_ORG_AI_ASSISTED == 'true'"
 
-## W-009: the fork-PR guard. Distinctive substring of
-## 'github.event.pull_request.head.repo.full_name == github.repository'
-## -- the condition that makes a reusable safe to check out a
-## PR-controllable ref even if a caller routes pull_request_target.
-FORK_PR_GUARD_LITERAL = 'head.repo.full_name == github.repository'
+## W-009: the sanctioned fork-PR guard FORMS, checked as vetted literals
+## (the W-008 "check the exact string" discipline). A substring of just the
+## head-repo comparison is NOT enough: it can sit in a non-gating '||' arm
+## (e.g. '(head.repo... || github.event_name != 'schedule')') that still runs
+## on fork PRs. So W-009 matches the complete clause.
+##
+## FORK_PR_GUARD_CLAUSE  the canonical OR-guard (coverity/scorecard/...):
+##   runs same-repo PRs + all non-pull_request events, blocks fork PRs.
+## FORK_PR_SAME_REPO_PR  the stricter same-repo-PR-only AND form
+##   (clusterfuzzlite PR job): event==pull_request AND head-repo match.
+FORK_PR_HEAD_REPO = "github.event.pull_request.head.repo.full_name == github.repository"
+FORK_PR_GUARD_CLAUSE = FORK_PR_HEAD_REPO + " || github.event_name != 'pull_request'"
+FORK_PR_SAME_REPO_PR = "github.event_name == 'pull_request'"
 
 
 def effective_condition(cond):
@@ -527,29 +535,46 @@ def job_checks_out_expression_ref(job):
     return False
 
 
+def normalize_condition(expr):
+    """Collapse whitespace and standardize spacing around == / != so a literal
+    match is not defeated by cosmetic spacing: GitHub accepts 'a==b' and
+    'a  ==  b' alike. A pure-literal check must see one canonical form."""
+    expr = re.sub(r'\s+', ' ', expr)
+    expr = re.sub(r'\s*(==|!=)\s*', r' \1 ', expr)
+    return expr.strip()
+
+
 def fork_pr_disjunct_is_safe(part):
     """A single top-level '||' disjunct of an if: that, on its own, keeps a
-    fork PR from reaching the checkout. Two sanctioned forms (the ones the org
-    reusables actually use):
+    fork PR from reaching the checkout. Three sanctioned forms -- the ones the
+    org reusables actually use -- matched as complete vetted literals:
 
-      * the guard literal 'head.repo.full_name == github.repository', ANDed
-        with the rest of the disjunct; or
-      * a restriction to non-pull_request events by POSITIVE equality
-        ('github.event_name == <non-pr-event>'), never mentioning pull_request
-        and never a 'github.event_name !=' negation.
+      1. the canonical OR-guard clause FORK_PR_GUARD_CLAUSE
+         ('head.repo... == github.repository || github.event_name !=
+         'pull_request''), ANDed into the disjunct; or
+      2. the same-repo-PR-only AND form: event_name == 'pull_request' together
+         with the head-repo match, and no 'github.event_name !=' negation; or
+      3. a restriction to non-pull_request events by POSITIVE equality
+         ('github.event_name == <non-pr-event>'), never mentioning pull_request
+         and never a 'github.event_name !=' negation.
 
-    The positive-equality rule is deliberate: 'github.event_name != 'schedule''
-    is true on a pull_request, so a bare event negation does NOT keep fork PRs
-    out -- treating it as safe would fail OPEN. A bare
-    'github.event_name != 'pull_request'' is likewise NOT accepted: it is true
-    on pull_request_target, so it does not defend the pull_request_target path;
-    the sanctioned defense is the head-repo guard literal.
+    The head-repo comparison is matched only as part of a COMPLETE form, never
+    as a bare substring: '(head.repo... || github.event_name != 'schedule')'
+    contains the substring yet still runs on fork PRs through the second arm,
+    so a substring test would fail OPEN. Positive event equality (never a
+    negation) is required for the same reason: 'github.event_name !=
+    'schedule'' is true on a pull_request, and a bare 'github.event_name !=
+    'pull_request'' is true on pull_request_target.
     """
-    if FORK_PR_GUARD_LITERAL in part:
+    norm = normalize_condition(part)
+    if FORK_PR_GUARD_CLAUSE in norm:
         return True
-    return ('github.event_name ==' in part
-            and 'pull_request' not in part
-            and 'github.event_name !=' not in part)
+    if (FORK_PR_SAME_REPO_PR in norm and FORK_PR_HEAD_REPO in norm
+            and 'github.event_name !=' not in norm):
+        return True
+    return ('github.event_name ==' in norm
+            and 'pull_request' not in norm
+            and 'github.event_name !=' not in norm)
 
 
 def check_fork_pr_guard(repo_root, targets, findings):
@@ -605,8 +630,8 @@ def check_fork_pr_guard(repo_root, targets, findings):
             emit(findings, path, repo_root, 'W-009 FORK-PR-GUARD',
                  f"job {job_id!r} checks out a PR-controllable ref (actions/checkout "
                  f"with an expression 'ref:') but its 'if:' does not keep fork PRs out on "
-                 f"every top-level disjunct: carry the fork-PR guard "
-                 f"({FORK_PR_GUARD_LITERAL}) or gate to non-pull_request events by equality")
+                 f"every top-level disjunct: carry the canonical fork-PR guard "
+                 f"({FORK_PR_GUARD_CLAUSE}) or gate to non-pull_request events by equality")
 
 
 def main(repo_root):

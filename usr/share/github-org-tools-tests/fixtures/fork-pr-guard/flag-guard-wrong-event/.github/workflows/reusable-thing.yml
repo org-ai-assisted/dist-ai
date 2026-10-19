@@ -1,0 +1,23 @@
+## Guard-SHAPED but wrong: the head-repo comparison sits in a '||' with
+## 'github.event_name != 'schedule'' instead of '!= 'pull_request''. On a
+## fork pull_request the head-repo arm is false but '!= 'schedule'' is
+## true, so the job runs and checks out the fork ref. The head-repo
+## SUBSTRING is present, but the complete canonical clause is not -- must
+## flag (a bare-substring check would fail open here). Expect W-009.
+name: fixture
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  work:
+    if: >-
+      vars.CI_ENABLED_ORG_AI_ASSISTED == 'true'
+      && (github.event.pull_request.head.repo.full_name == github.repository || github.event_name != 'schedule')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false

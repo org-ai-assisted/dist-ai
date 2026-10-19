@@ -117,11 +117,17 @@ check_case 'flag-negated-nonpr-event' 'flag' 'a reusable gated on a negated non-
 check_case 'flag-or-arm-bypass' 'flag' 'a guard literal in a bypassable OR-arm is flagged'
 ## A bare 'event_name != pull_request' does not defend pull_request_target -> require the head-repo guard.
 check_case 'flag-bare-pr-negation' 'flag' 'a bare pull_request event negation (no head-repo guard) is flagged'
+## The head-repo substring inside a '||' with a fork-firing sibling arm must still flag.
+check_case 'flag-guard-wrong-event' 'flag' 'a guard-shaped clause with the wrong event (|| != schedule) is flagged'
 
 ## The rule does not over-reach.
 check_case 'clean-guarded'     'clean' 'a reusable with the fork-PR guard passes'
 ## A schedule/workflow_dispatch-only job never sees a pull_request.
 check_case 'clean-non-pr'      'clean' 'a non-pull_request-only reusable job passes'
+## The same-repo-PR-only AND form (event==pull_request && head-repo match) is safe.
+check_case 'clean-same-repo-pr' 'clean' 'a same-repo-PR-only AND-form reusable job passes'
+## Normalization treats 'event_name==x' (no spaces) as equivalent -> not a false positive.
+check_case 'clean-nospace-event' 'clean' 'a non-PR event gate without spaces around == passes'
 ## A literal trusted ref ('master') is not PR-controllable.
 check_case 'clean-literal-ref' 'clean' 'a reusable checking out a literal ref is not flagged'
 ## A non-reusable workflow bounds its own risk via its in-file 'on:'.
