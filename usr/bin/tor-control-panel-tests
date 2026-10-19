@@ -21,8 +21,9 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
-## The Qt offscreen platform plugin lets the PyQt5 GUI code run without an X
+## The Qt offscreen platform plugin lets the PyQt6 GUI code run without an X
 ## server or display.
 export QT_QPA_PLATFORM="offscreen"
 

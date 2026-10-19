@@ -502,7 +502,7 @@ rc="$(call_fn pcmanfm_qt_archiver)"
 check "pcmanfm_archiver: lxqt archiver fixed"    "$(grep -c -- '^Archiver=lxqt-archiver$' "$(pcm_conf "${r}" lxqt)")" "1"
 check "pcmanfm_archiver: default archiver fixed" "$(grep -c -- '^Archiver=lxqt-archiver$' "$(pcm_conf "${r}" default)")" "1"
 check "pcmanfm_archiver: writes do_once" \
-   "$(exists "$(do_once "${r}" pcmanfm_qt_archiver_version_2)")" "yes"
+   "$(exists "$(do_once "${r}" pcmanfm_qt_archiver_version_3)")" "yes"
 
 ## ========================= secure_boot_mok_cleanup =========================
 mok_setup() {

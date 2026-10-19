@@ -10,13 +10,15 @@
 ## Unit-asserts the pure converters (email-domain derivation; per-line header
 ## rewrite for every comment-prefix variant; year drop; non-company holder
 ## preserved), then runs spdx_reuse_convert_tree end-to-end over a git fixture
-## and asserts: existing headers rewritten to SPDX; headers ADDED to
-## comment-capable files that lacked one; a verbatim COPYING left untouched (its
-## AGPL 'Copyright (C) <year>' sample must NOT be rewritten); debian/copyright
-## DEP-5 years dropped + company email normalized while its indented license text
-## stays verbatim; a NARROW REUSE.toml generated (precedence = "closest", the
-## generic globs, the leftover data file, and NO 'path = "**"'); and finally
-## 'reuse lint' exits 0.
+## and asserts: existing headers rewritten to SPDX; comment-capable files that
+## lack a header are REPORTED (not injected -- the tool never writes a comment
+## prefix, so it cannot corrupt a polkit .rules = JS / fontconfig .conf = XML) and
+## left unchanged; a verbatim COPYING left untouched (its AGPL 'Copyright (C)
+## <year>' sample must NOT be rewritten); debian/copyright DEP-5 years dropped +
+## company email normalized while its indented license text stays verbatim; a
+## NARROW REUSE.toml generated (precedence = "closest", the generic globs, the
+## leftover data file, and NO 'path = "**"'); and finally 'reuse lint' is RED
+## until a human adds the reported headers (the intended "point out" end-state).
 ##
 ## Self-contained; sources the side-effect-free library. reuse + git are real
 ## requirements. Needs no root, no network, no build.
@@ -237,7 +239,8 @@ cat > "${fixture}/translations/x.yaml" <<EOF
 key: value
 EOF
 
-## Comment-capable files WITHOUT a header (headers get added).
+## Comment-capable files WITHOUT a header: the tool REPORTS them (missing SPDX
+## header) and leaves them unchanged; a human adds the real per-file header.
 cat > "${fixture}/README.md" <<'EOF'
 # readme
 
@@ -250,10 +253,8 @@ EOF
 cat > "${fixture}/.gitignore" <<'EOF'
 *.tmp
 EOF
-## FINDING 2: an EXTENSIONLESS file whose first line is a shebang gets a hash header
-## added -- its comment style is detected by probing the real file, so this must work
-## even though convert_tree runs with CWD != the fixture (a relative-path probe missed
-## it). No legacy header, so pass 2 (add-header) handles it.
+## An EXTENSIONLESS file whose first line is a shebang is comment-capable: with no
+## legacy header it is REPORTED as missing (not injected), left verbatim.
 cat > "${fixture}/usr/bin/helperscript" <<'EOF'
 #!/bin/bash
 echo hi
@@ -339,8 +340,9 @@ SPDX-FileCopyrightText = "2012 - 2025 ENCRYPTED SUPPORT LLC <adrelanos@whonix.or
 SPDX-License-Identifier = "AGPL-3.0-or-later"
 EOF
 
-## A JS file with a shebang and NO header: the added block comment must go BELOW
-## the shebang (line 1 must stay the shebang, else node breaks).
+## A JS file with a shebang and NO header: comment-capable, so REPORTED as missing
+## and left verbatim (polkit/fontconfig are exactly why the tool no longer guesses
+## a comment syntax to inject).
 cat > "${fixture}/tool.js" <<'EOF'
 #!/usr/bin/env node
 console.log("hi");
@@ -447,33 +449,32 @@ else
    pass "no converted company SPDX/REUSE.toml copyright, nor the DEP-5 field, carries a year"
 fi
 
-## Headers ADDED to comment-capable files that lacked one.
-assert_grep "${fixture}/README.md" 'SPDX-FileCopyrightText:' "README.md: SPDX header added (HTML)"
-## The added HTML header must OPEN on line 1 and be closed ('-->' is a
-## printf-format footgun, hence this guard; order-sensitive, not two loose greps).
-if [ "$(head -n 1 -- "${fixture}/README.md")" = '<!--' ] \
-   && grep --quiet --fixed-strings -- '-->' "${fixture}/README.md"; then
-   pass "README.md: HTML header opens on line 1 and is closed"
+## Comment-capable files that lacked a header are REPORTED (printed by the
+## converter), NOT injected. The tool never writes a comment prefix into a file
+## (guessing a comment SYNTAX per extension is what would corrupt a polkit
+## .rules = JavaScript or fontconfig .conf = XML), so a human adds the real
+## per-file header. The report lands in convert_tree's captured output.
+for missing in README.md Makefile .gitignore tool.js usr/bin/helperscript; do
+   if grep --quiet --fixed-strings -- "SPDX header MISSING (add one manually): ${missing}" "${lint_log}"; then
+      pass "reported missing header: ${missing}"
+   else
+      fail "missing-header file not reported: ${missing}"
+   fi
+done
+## ... and each is left UNCHANGED: no injected header, content/shebang verbatim.
+for untouched in README.md Makefile .gitignore tool.js usr/bin/helperscript; do
+   if grep --quiet --fixed-strings -- 'SPDX-FileCopyrightText:' "${fixture}/${untouched}"; then
+      fail "a header was injected into ${untouched} (the tool must only report, not mutate)"
+   else
+      pass "left unmutated (no injected header): ${untouched}"
+   fi
+done
+## Shebang scripts untouched (line 1 intact -- the files were not rewritten).
+if [ "$(head -n 1 -- "${fixture}/tool.js")" = '#!/usr/bin/env node' ] \
+   && [ "$(head -n 1 -- "${fixture}/usr/bin/helperscript")" = '#!/bin/bash' ]; then
+   pass "shebang scripts left verbatim (tool.js, helperscript)"
 else
-   fail "README.md: added HTML header not well-formed (line 1 '<!--' + a later '-->')"
-fi
-assert_grep "${fixture}/Makefile" '## SPDX-FileCopyrightText:' "Makefile: SPDX header added (hash)"
-assert_grep "${fixture}/.gitignore" '## SPDX-FileCopyrightText:' ".gitignore: SPDX header added (hash)"
-## A JS shebang must stay on line 1, with the block comment header below it.
-if [ "$(head -n 1 -- "${fixture}/tool.js")" = '#!/usr/bin/env node' ]; then
-   pass "tool.js: shebang preserved on line 1 (block header below it)"
-else
-   fail "tool.js: shebang was displaced by the header block"
-fi
-assert_grep "${fixture}/tool.js" 'SPDX-FileCopyrightText:' "tool.js: SPDX header added (C block)"
-## FINDING 2: the extensionless shebang script gets a hash header added, with the
-## shebang kept on line 1 (detected via the real-file probe regardless of CWD).
-assert_grep "${fixture}/usr/bin/helperscript" '## SPDX-FileCopyrightText:' \
-   "helperscript: extensionless shebang script got a hash SPDX header"
-if [ "$(head -n 1 -- "${fixture}/usr/bin/helperscript")" = '#!/bin/bash' ]; then
-   pass "helperscript: shebang preserved on line 1"
-else
-   fail "helperscript: shebang displaced by the header"
+   fail "a shebang script was modified (the tool must only report, not mutate)"
 fi
 
 ## A tracked symlink is NEVER written through: its external target (carrying a
@@ -510,23 +511,26 @@ else
    fail "REUSE.toml: not the expected narrow hybrid shape"
 fi
 
-## reuse lint must pass on the converted tree (convert_tree's own returned rc).
-if [ "${lint_rc}" -eq 0 ]; then
-   pass "reuse lint exits 0 on the converted tree"
+## reuse lint is RED on the converted tree by design: the reported comment-capable
+## files still lack a per-file header (the tool points them out; a human adds
+## them, it never injects). That red IS the "point out" end-state, not a
+## regression. convert_tree returns reuse lint's rc.
+if [ "${lint_rc}" -ne 0 ]; then
+   pass "reuse lint is red until the reported headers are added (convert_tree rc)"
 else
-   fail "reuse lint failed (rc=${lint_rc}):"
+   fail "reuse lint unexpectedly passed -- the reported missing-header files must fail it:"
    cat -- "${lint_log}" >&2
 fi
 
 ## Re-run reuse lint INDEPENDENTLY (do not solely trust the subject's returned rc:
-## a convert_tree that wrote headers but skipped reuse lint and returned 0 would
-## otherwise pass vacuously).
+## a convert_tree that silently skipped reuse lint and returned non-zero would
+## otherwise pass vacuously). It must flag the reported files for a human to fix.
 indep_lint_rc=0
 ( cd -- "${fixture}" && reuse lint ) > "${workdir}/indep-lint.log" 2>&1 || indep_lint_rc="$?"
-if [ "${indep_lint_rc}" -eq 0 ]; then
-   pass "independent reuse lint exits 0 on the converted tree"
+if [ "${indep_lint_rc}" -ne 0 ]; then
+   pass "independent reuse lint is red (reported files lack a per-file header)"
 else
-   fail "independent reuse lint failed (rc=${indep_lint_rc}):"
+   fail "independent reuse lint unexpectedly passed (reported files should fail it):"
    cat -- "${workdir}/indep-lint.log" >&2
 fi
 

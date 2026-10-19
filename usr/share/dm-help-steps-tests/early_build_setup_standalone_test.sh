@@ -193,13 +193,16 @@ for line in "${update_lines[@]}" "${install_lines[@]}"; do
    fi
 done
 
-## The installed set must be exactly the single-source list from
-## 60_dependencies.bsh, evaluated as 1050 sees it (no inherited value).
+## The installed set must be exactly the single-source list, evaluated as 1050
+## sees it (no inherited value). 1050 sources help-steps/set-early-dependencies
+## directly (it runs before 'variables' and cannot read 60_dependencies.bsh), so
+## read the list from the same fragment: going through 60_dependencies.bsh instead
+## would need 'source_code_folder_dist' set, which is absent in a clean build env.
 early_deps="$(
    unset dist_build_early_dependencies
-   ## The checkout's single-source dep list, located at runtime.
+   ## The checkout's single-source dep list, as 1050 sources it.
    # shellcheck disable=SC1090,SC1091
-   source "${dm_checkout}/variables.d/60_dependencies.bsh"
+   source "${dm_checkout}/help-steps/set-early-dependencies"
    ## Assigned by the sourced fragment.
    # shellcheck disable=SC2154
    printf '%s' "${dist_build_early_dependencies}"

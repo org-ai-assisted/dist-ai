@@ -17,14 +17,16 @@ These tests pin that contract across the Tor / system states the script
 branches on, so enabling full strict mode (set -o nounset) cannot silently
 change which code a state produces. The whole real script is sourced (its
 was_executed guard keeps it from auto-running) and driven through its real
-entry point main; only the I/O boundary (VM-type marker files, the /run state
-folder, timesanitycheck) and the Tor-control collaborators (the sourced .bsh
-functions) are stubbed to select a state -- the exit-code decision logic under
-test is the script's own.
+entry point te_pe_tb_check; only the I/O boundary (VM-type marker files, the
+/run state folder, timesanitycheck) and the Tor-control collaborators (the
+sourced .bsh functions) are stubbed to select a state -- the exit-code decision
+logic under test is the script's own.
 
-main enables the script's own strict mode (INCLUDING nounset) and installs its
-own ERR/EXIT traps, so an unset-prone reference shows up here as a failing case
-(not a silent pass), and the exit code is the one the EXIT trap delivers.
+The script enables its own strict mode (INCLUDING nounset) and installs its own
+ERR/EXIT handlers in the was_executed guard, which sourcing skips; run_scenario
+replicates that enabling before calling te_pe_tb_check, so an unset-prone
+reference shows up here as a failing case (not a silent pass), and the exit code
+is the one the EXIT handler delivers.
 """
 
 import tempfile
@@ -60,7 +62,7 @@ _DEFAULTS = {
 
 
 class TestExitCodeContract(PreScriptTestBase):
-    """Drive the real main across states; assert the sdwdate code."""
+    """Drive the real entry point across states; assert the sdwdate code."""
 
     def _consensus_stub(self, kind: str, now: int) -> str:
         """
@@ -109,7 +111,8 @@ class TestExitCodeContract(PreScriptTestBase):
     def run_scenario(self, **overrides: object) -> 'tuple[int, str, str]':
         """
         Source the real script, override the I/O + Tor-control boundary to
-        select the state, then run main. Returns (returncode, stdout, stderr).
+        select the state, then run the entry point under the script's own
+        strict mode + handlers. Returns (returncode, stdout, stderr).
         """
         cfg = dict(_DEFAULTS)
         cfg.update(overrides)
@@ -171,7 +174,29 @@ class TestExitCodeContract(PreScriptTestBase):
             % cfg['rate_limited_rc'],
         ]
 
-        stubs.append('main')
+        ## Reproduce the script's executed-mode setup -- its `was_executed`
+        ## guard block enables strict mode and installs the script's OWN
+        ## ERR/EXIT handlers, which is where the exit code is finalized (the
+        ## EXIT handler prints "### END" and re-exits with exit_code; the ERR
+        ## handler forces exit_code=1 on an errexit/nounset failure). Sourcing
+        ## deliberately skips that block (source-contract), so a test that
+        ## drives the entry point must replicate it, or it would test the entry
+        ## without strict mode and the nounset guarantee this suite exists for
+        ## would silently not hold. Only the enabling is replicated; the
+        ## handlers themselves are the script's own, defined on source.
+        stubs += [
+            'set -o errexit',
+            'set -o nounset',
+            'set -o errtrace',
+            'set -o pipefail',
+            'shopt -s inherit_errexit',
+            'shopt -s shift_verbose',
+            'export LC_ALL=C',
+            'exit_code=""',
+            'trap "error_handler" ERR',
+            'trap "exit_handler" EXIT',
+        ]
+        stubs.append('te_pe_tb_check')
         result = self.run_sourced('\n'.join(stubs), USER=str(cfg['user']))
         return result.returncode, result.stdout, result.stderr
 

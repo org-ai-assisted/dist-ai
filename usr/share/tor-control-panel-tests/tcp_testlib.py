@@ -6,39 +6,45 @@
 ## AI-Assisted
 
 """
-Shared harness for the tor-control-panel regression tests.
+Shared harness for the tor-control-panel regression / fuzz tests.
 
-tor-control-panel (which now also contains the merged anon-connection-wizard)
-is a PyQt5 GUI that, in normal operation, reads and writes torrc drop-in files
-under system paths (the distro-aware torrc.d drop-in dir,
-/run/anon-connection-wizard) and
-shells out to privileged 'leaprun' helpers. None of that is available (or
-desirable) in a test/CI sandbox.
+tor-control-panel is the Qt6 (PyQt6) rewrite that consolidated the former
+anon-connection-wizard / tor_status / torrc_gen / tor_bootstrap modules into:
+  * tor_control_panel_lib  -- pure, Qt-free logic (the tcpl_* API);
+  * tor_control_panel       -- the PyQt6 GUI dialog;
+  * tor_status_watcher      -- a QObject that watches Tor status.
+
+In normal operation the logic layer reads/writes a torrc drop-in under a
+system path and pushes the new torrc to a privileged helper (tcp-write-torrc)
+over a root-owned FIFO, and runs other privileged actions (tcp-tor-control,
+tor-config-sane, anon-dns) via leaprun/pkexec. None of that is available or
+desirable in a test/CI sandbox.
 
 This module provides:
-  * a single offscreen QApplication (QT_QPA_PLATFORM=offscreen), so widgets can
-    be constructed with no X server;
-  * source resolution: the tor_control_panel package is imported from a
-    tor-control-panel checkout given by TCP_REPO, else from the installed
-    /usr/lib/python3/dist-packages;
-  * a sandbox() context manager that redirects the torrc/comm-file path
-    constants to a private temp dir and replaces the privileged
-    write_to_temp_then_move()/subprocess plumbing with an in-process stub that
-    just applies the generated content to the fake torrc file -- reproducing the
-    observable effect (torrc ends up with the new content) without root,
-    privleap, or a real Tor daemon.
+  * a single offscreen QApplication (QT_QPA_PLATFORM=offscreen);
+  * source resolution: the tor_control_panel package is imported from the
+    checkout named by TCP_REPO, else from the installed location;
+  * sandbox(): redirects tor_control_panel_lib's torrc / comm-FIFO / bridges
+    path constants into a private temp dir and replaces the privileged-task
+    layer with in-process stubs. The tcp-write-torrc stub reproduces the real
+    helper's observable effect (torrc ends up with the pushed content via the
+    FIFO) with no root, no privleap, no Tor daemon;
+  * no_modal(): neutralises the blocking modal dialogs so the GUI can be driven
+    headless.
 
 No root, no network, no real Tor.
 """
 
 import contextlib
 import os
+import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
-## The Qt offscreen platform plugin lets the PyQt5 GUI code run without an X
-## server or display. Must be set before QApplication is created.
+## Must be set before QApplication is created so the PyQt6 GUI runs with no X
+## server or display.
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 
@@ -46,8 +52,8 @@ def _resolve_source() -> None:
     """Put the tor_control_panel package on sys.path.
 
     TCP_REPO, when set, points at a tor-control-panel checkout; the package
-    lives under usr/lib/python3/dist-packages inside it. Otherwise fall back to
-    the installed location.
+    lives under usr/lib/python3/dist-packages inside it. Otherwise the installed
+    package on the default path is used, exactly like the other dist-ai suites.
     """
     repo = os.environ.get('TCP_REPO', '').strip()
     if repo:
@@ -58,231 +64,214 @@ def _resolve_source() -> None:
                 f"usr/lib/python3/dist-packages/tor_control_panel"
             )
         sys.path.insert(0, candidate)
-    ## When TCP_REPO is unset the installed package on the default sys.path is
-    ## used, exactly like the other dist-ai suites.
 
 
 _resolve_source()
 
-from PyQt5.QtWidgets import QApplication  # noqa: E402
+from PyQt6.QtWidgets import QApplication  # noqa: E402
 
-## A single QApplication must exist for the lifetime of the process; creating a
-## second one aborts. Reuse any instance a test runner already made.
-APP: QApplication = QApplication.instance() or QApplication(['tor-control-panel-tests'])
+## A single QApplication must exist for the process lifetime; a second one
+## aborts. Reuse any instance a test runner already made.
+APP: QApplication = (
+    QApplication.instance() or QApplication(['tor-control-panel-tests'])
+)
+
+## Imported after the source is resolved and the QApplication exists.
+from tor_control_panel import tor_control_panel_lib as tcpl  # noqa: E402
 
 
 def require_app() -> QApplication:
     """Return the process-wide offscreen QApplication (created at import time).
 
-    Test modules that only need the harness for its side effects (sys.path
-    resolution + a live QApplication) call this so the ``import tcp_testlib`` is
-    an explicit, referenced dependency rather than an import that merely looks
-    unused.
+    Test modules that only need the harness side effects (sys.path resolution +
+    a live QApplication) call this so 'import tcp_testlib' is an explicit,
+    referenced dependency.
     """
     return APP
 
-## Imported after the source is resolved and the QApplication exists.
-from tor_control_panel import torrc_gen, tor_status  # noqa: E402
 
-
-def _bridges_default_path() -> str:
-    """Resolve the default-bridges JSON (shipped under usr/share)."""
+def bridges_default_path() -> Path:
+    """Resolve the shipped default-bridges JSON for the package under test."""
     repo = os.environ.get('TCP_REPO', '').strip()
     if repo:
-        candidate = os.path.join(
-            repo, 'usr', 'share', 'anon-connection-wizard', 'bridges_default'
+        candidate = Path(
+            repo, 'usr', 'share', 'tor-control-panel', 'bridges_default'
         )
-        if os.path.isfile(candidate):
+        if candidate.is_file():
             return candidate
-    ## Installed location, matching torrc_gen's own default.
-    return torrc_gen.bridges_default_path
+    return tcpl.tcpl_bridges_default_path
 
 
 DEFAULT_TORRC = (
-    '# This file is generated by and should ONLY be used by tor-control-panel.\n'
+    '## This file is generated by and should ONLY be used by '
+    'tor-control-panel.\n'
     'DisableNetwork 0\n'
 )
 
 
+class _FifoWriteStub:
+    """Stand-in for the privileged 'tcp-write-torrc' helper process.
+
+    Mirrors usr/libexec/tor-control-panel/tcp-write-torrc without root: creates
+    the comm FIFO, and on a background thread reads the torrc the client pushes
+    into it and lands it in the fake torrc file (the real helper's 'cat FIFO |
+    tee torrc', which strips trailing newlines then appends exactly one). An
+    empty push is rejected with returncode 1, exactly like the helper.
+    """
+
+    def __init__(self, fifo_path: Path, torrc_file: Path) -> None:
+        self._torrc_file = torrc_file
+        self.returncode = 0
+        self._err = ''
+        ## Create the FIFO up front so tcpl_write_torrc's is_fifo()/W_OK wait
+        ## loop succeeds, exactly as the real helper does before the client
+        ## writes.
+        if fifo_path.exists() or fifo_path.is_symlink():
+            fifo_path.unlink()
+        os.mkfifo(fifo_path, mode=0o600)
+        self._thread = threading.Thread(
+            target=self._drain, args=(fifo_path,), daemon=True
+        )
+        self._thread.start()
+
+    def _drain(self, fifo_path: Path) -> None:
+        ## Runs on a side thread, so ANY failure must set a non-zero result --
+        ## never leave returncode 0 on a failed drain (a silent false success).
+        try:
+            ## newline='' so the stub does not translate a bare '\r' (universal
+            ## newlines would); the real 'cat | tee' helper does not either.
+            with open(
+                fifo_path, 'r', encoding='utf-8', newline=''
+            ) as fifo_obj:
+                content = fifo_obj.read()
+            stripped = content.rstrip('\n')
+            if stripped == '':
+                self.returncode = 1
+                self._err = 'No Tor configuration provided by client!'
+                return
+            self._torrc_file.write_text(stripped + '\n', encoding='utf-8')
+            os.chmod(self._torrc_file, 0o644)
+        except Exception as exc:  # noqa: BLE001
+            self.returncode = 1
+            self._err = str(exc)
+
+    def communicate(self):
+        ## Join the drain thread with a bound so a wedged test fails rather than
+        ## hangs forever.
+        self._thread.join(timeout=30)
+        if self._thread.is_alive():
+            self.returncode = 1
+            self._err = 'tcp-write-torrc stub timed out'
+        return ('', self._err)
+
+
+class _DummyProc:
+    """A trivially-successful stand-in for a privileged async task process."""
+
+    returncode = 0
+
+    def communicate(self):
+        return ('', '')
+
+    def wait(self):
+        return 0
+
+
 @contextlib.contextmanager
 def sandbox(initial_torrc: str = DEFAULT_TORRC):
-    """Redirect torrc paths to a temp dir and neutralise privileged writes.
+    """Redirect torrc paths and neutralise the privileged-task layer.
 
-    Within the context:
-      * torrc_gen.torrc_file_path / torrc_gen.torrc_user_file_path and
-        tor_status.torrc_file_path / tor_status.acw_comm_file_path point at
-        files inside a private temp directory (torrc seeded with
-        ``initial_torrc``);
-      * torrc_gen.write_to_temp_then_move and tor_status.write_to_temp_then_move
-        are replaced with a stub that writes ``content`` straight to the fake
-        torrc file -- the same net effect the real privileged 'acw-write-torrc'
-        helper would produce;
-      * every privileged 'leaprun ...' call site is neutralised: tor_status's
-        subprocess.call / .check_call return success, and the subprocess.Popen
-        used by restart_tor_gui / tor_control_panel / repair_torrc is redirected
-        to run /bin/true -- so those shell-outs become harmless no-ops with a
-        real Popen interface (communicate / returncode / wait), no leaprun,
-        pkexec, or Tor daemon required.
+    Within the context tor_control_panel_lib's tcpl_torrc_dir / tcpl_torrc_file
+    / tcpl_torrc_comm_fifo / tcpl_bridges_default_path point inside a private
+    temp dir (torrc seeded with initial_torrc), and tcpl_run_privileged_task_*
+    are replaced with in-process stubs: tcp-write-torrc lands the pushed config
+    in the fake torrc via the FIFO; every other action succeeds as a no-op.
 
     Yields the pathlib.Path of the fake torrc file.
     """
-    ## Common.torrc_file_path is a class attribute bound at import time to the
-    ## real installed path; redirect it too, else AnonConnectionWizard.__init__
-    ## regenerates the torrc over the seeded one.
-    import subprocess as _subprocess
-    from tor_control_panel import anon_connection_wizard as _acw
-    from tor_control_panel import repair_torrc as _repair_torrc  # noqa: F401
-    from tor_control_panel import restart_tor_gui as _restart_tor_gui
-    from tor_control_panel import tor_control_panel as _tcp
-
     saved = {
-        'gen_torrc_path': torrc_gen.torrc_file_path,
-        'gen_user_path': torrc_gen.torrc_user_file_path,
-        'status_torrc_path': tor_status.torrc_file_path,
-        'status_comm_path': tor_status.acw_comm_file_path,
-        'gen_write': torrc_gen.write_to_temp_then_move,
-        'status_write': tor_status.write_to_temp_then_move,
-        'resolv_add': torrc_gen.edit_etc_resolv_conf_add,
-        'bridges_default': torrc_gen.bridges_default_path,
-        ## subprocess.call / .check_call are module-qualified in tor_status and
-        ## subprocess.Popen is module-qualified in repair_torrc, so patching the
-        ## shared subprocess module covers all three. restart_tor_gui and
-        ## tor_control_panel imported Popen by name, so patch those separately.
-        'sub_call': _subprocess.call,
-        'sub_check_call': _subprocess.check_call,
-        'sub_popen': _subprocess.Popen,
-        'restart_popen': _restart_tor_gui.Popen,
-        'tcp_popen': _tcp.Popen,
-        'acw_common_torrc': _acw.Common.torrc_file_path,
+        'torrc_dir': tcpl.tcpl_torrc_dir,
+        'torrc_file': tcpl.tcpl_torrc_file,
+        'comm_fifo': tcpl.tcpl_torrc_comm_fifo,
+        'bridges_default': tcpl.tcpl_bridges_default_path,
+        'async': tcpl.tcpl_run_privileged_task_async,
+        'sync': tcpl.tcpl_run_privileged_task_sync,
+        'executor': tcpl.tcpl_priv_executor,
     }
 
     with tempfile.TemporaryDirectory(prefix='tcp-test-') as tmp:
-        torrc_path = Path(tmp) / '40_tor_control_panel.conf'
-        user_path = Path(tmp) / '50_user.conf'
-        comm_path = Path(tmp) / 'tor.conf'
-        torrc_path.write_text(initial_torrc, encoding='utf-8')
-        user_path.write_text('', encoding='utf-8')
+        tmp_path = Path(tmp)
+        torrc_file = tmp_path / '40_tor_control_panel.conf'
+        fifo_path = tmp_path / 'tcp-write-torrc.fifo'
+        torrc_file.write_text(initial_torrc, encoding='utf-8')
 
-        def _stub_write(content: str) -> None:
-            ## The real helper moves the staged content into the torrc file.
-            torrc_path.write_text(content, encoding='utf-8')
+        def _fake_async(task_name: str):
+            if task_name == 'tcp-write-torrc':
+                return _FifoWriteStub(fifo_path, torrc_file)
+            return _DummyProc()
 
-        def _stub_ok(*_args, **_kwargs) -> int:
-            return 0
+        def _fake_sync(task_name: str) -> subprocess.CompletedProcess:
+            return subprocess.CompletedProcess(
+                args=[task_name], returncode=0, stdout='', stderr=''
+            )
 
-        def _stub_popen(command, *args, **kwargs):
-            ## Neutralise ONLY the privileged 'leaprun ...' shell-outs: replace
-            ## them with /bin/true so the call site still gets a real Popen whose
-            ## communicate()/returncode/wait() succeed. Benign commands (e.g. the
-            ## 'tail -n ... <torrc>' that the Tor-log view runs via os.popen,
-            ## which is itself built on subprocess.Popen) pass straight through,
-            ## so the suite exercises the real read path.
-            flat = command if isinstance(command, str) else ' '.join(map(str, command))
-            if 'leaprun' in flat:
-                kwargs.pop('shell', None)
-                return saved['sub_popen'](['true'], *args, **kwargs)
-            return saved['sub_popen'](command, *args, **kwargs)
-
-        torrc_gen.torrc_file_path = str(torrc_path)
-        torrc_gen.torrc_user_file_path = str(user_path)
-        torrc_gen.bridges_default_path = _bridges_default_path()
-        tor_status.torrc_file_path = str(torrc_path)
-        tor_status.acw_comm_file_path = str(comm_path)
-        ## torrc_gen imported these by name; patch them in its namespace.
-        torrc_gen.write_to_temp_then_move = _stub_write
-        torrc_gen.edit_etc_resolv_conf_add = lambda *a, **k: None
-        tor_status.write_to_temp_then_move = _stub_write
-        ## Neutralise every privileged leaprun shell-out so set_enabled /
-        ## set_disabled / restart / stop / log-read / tor-config-sane do not
-        ## touch the system during tests, on CI where neither leaprun nor pkexec
-        ## exists. subprocess.call / .check_call succeed; subprocess.Popen (and
-        ## the by-name Popen in restart_tor_gui / tor_control_panel) run
-        ## /bin/true so the callers still get a working Popen.
-        _subprocess.call = _stub_ok
-        _subprocess.check_call = _stub_ok
-        _subprocess.Popen = _stub_popen
-        _restart_tor_gui.Popen = _stub_popen
-        _tcp.Popen = _stub_popen
-        _acw.Common.torrc_file_path = str(torrc_path)
+        tcpl.tcpl_torrc_dir = tmp_path
+        tcpl.tcpl_torrc_file = torrc_file
+        tcpl.tcpl_torrc_comm_fifo = fifo_path
+        tcpl.tcpl_bridges_default_path = bridges_default_path()
+        tcpl.tcpl_run_privileged_task_async = _fake_async
+        tcpl.tcpl_run_privileged_task_sync = _fake_sync
+        ## Pin the executor so tcpl_get_privileged_task does not probe the host
+        ## for a real leaprun/pkexec binary (it is unused once the task runners
+        ## above are stubbed, but the GUI paths may still call it).
+        tcpl.tcpl_priv_executor = '/usr/bin/leaprun'
 
         try:
-            yield torrc_path
+            yield torrc_file
         finally:
-            _acw.Common.torrc_file_path = saved['acw_common_torrc']
-            torrc_gen.torrc_file_path = saved['gen_torrc_path']
-            torrc_gen.torrc_user_file_path = saved['gen_user_path']
-            torrc_gen.bridges_default_path = saved['bridges_default']
-            tor_status.torrc_file_path = saved['status_torrc_path']
-            tor_status.acw_comm_file_path = saved['status_comm_path']
-            torrc_gen.write_to_temp_then_move = saved['gen_write']
-            torrc_gen.edit_etc_resolv_conf_add = saved['resolv_add']
-            tor_status.write_to_temp_then_move = saved['status_write']
-            _subprocess.call = saved['sub_call']
-            _subprocess.check_call = saved['sub_check_call']
-            _subprocess.Popen = saved['sub_popen']
-            _restart_tor_gui.Popen = saved['restart_popen']
-            _tcp.Popen = saved['tcp_popen']
+            tcpl.tcpl_torrc_dir = saved['torrc_dir']
+            tcpl.tcpl_torrc_file = saved['torrc_file']
+            tcpl.tcpl_torrc_comm_fifo = saved['comm_fifo']
+            tcpl.tcpl_bridges_default_path = saved['bridges_default']
+            tcpl.tcpl_run_privileged_task_async = saved['async']
+            tcpl.tcpl_run_privileged_task_sync = saved['sync']
+            tcpl.tcpl_priv_executor = saved['executor']
 
 
 @contextlib.contextmanager
 def no_modal():
-    """Neutralise the blocking modal loops so widgets can be built headless.
+    """Neutralise the blocking modal dialogs so the GUI can run headless.
 
-    Both AnonConnectionWizard.__init__ (via setup_ui) and TorControlPanel.__init__
-    call self.exec_()/self.show()+exec, entering a modal event loop that never
-    returns without user interaction. Under this context those become no-ops, so
-    a test can construct the widget, inspect it, and invoke handlers directly.
-    Also stubs QMessageBox.exec_ so any dialog raised by a handler cannot block.
+    QDialog.exec / QMessageBox.exec and the static QMessageBox helpers enter a
+    modal event loop that never returns without user interaction. Under this
+    context those become non-blocking: dialogs 'decline' (question -> No) or
+    'acknowledge' (info/warning/critical -> Ok) so a handler under test can be
+    invoked directly without hanging.
     """
-    from PyQt5.QtWidgets import QDialog, QMessageBox
-    from tor_control_panel import anon_connection_wizard as acw
-    from tor_control_panel import tor_bootstrap
-    from tor_control_panel import tor_control_panel as tcp
+    from PyQt6.QtWidgets import QDialog, QMessageBox
 
+    sb_no = QMessageBox.StandardButton.No
+    sb_ok = QMessageBox.StandardButton.Ok
     saved = {
-        'acw_exec': acw.AnonConnectionWizard.exec_,
-        'mbox_exec': QMessageBox.exec_,
-        'mbox_exec_slot': QMessageBox.exec,
-        'dialog_exec': QDialog.exec_,
-        ## Static convenience dialogs also spin a modal loop; stub them too.
+        'dialog_exec': QDialog.exec,
+        'mbox_exec': QMessageBox.exec,
         'mbox_question': QMessageBox.question,
         'mbox_information': QMessageBox.information,
         'mbox_warning': QMessageBox.warning,
         'mbox_critical': QMessageBox.critical,
-        ## TorBootstrap inherits start() from QThread (not in its own __dict__);
-        ## record that so the finally clause removes our override instead of
-        ## re-assigning the inherited C++ slot (which corrupts it).
-        'bootstrap_start_own': 'start' in tor_bootstrap.TorBootstrap.__dict__,
     }
-    acw.AnonConnectionWizard.exec_ = lambda self, *a, **k: 0
-    QMessageBox.exec_ = lambda self, *a, **k: 0
+    QDialog.exec = lambda self, *a, **k: 0
     QMessageBox.exec = lambda self, *a, **k: 0
-    QDialog.exec_ = lambda self, *a, **k: 0
-    ## Decline any question dialog (e.g. the debian-tor group prompt) so a test
-    ## never triggers a privileged action; acknowledge info/warning dialogs.
-    QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.No)
-    QMessageBox.information = staticmethod(lambda *a, **k: QMessageBox.Ok)
-    QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)
-    ## critical() too: an error path is exactly what a handler under test hits
-    ## (e.g. no privilege escalation method available), and without this the
-    ## suite HANGS in a real modal loop rather than failing.
-    QMessageBox.critical = staticmethod(lambda *a, **k: QMessageBox.Ok)
-    ## A handler under test (e.g. Accept -> set_torrc -> restart_tor) may start a
-    ## real TorBootstrap QThread, whose run() imports stem and talks to a control
-    ## socket. Make .start() a no-op so widget tests neither depend on stem nor
-    ## spawn a live thread; the live bootstrap is exercised by test_live_tor.
-    tor_bootstrap.TorBootstrap.start = lambda self, *a, **k: None
+    QMessageBox.question = staticmethod(lambda *a, **k: sb_no)
+    QMessageBox.information = staticmethod(lambda *a, **k: sb_ok)
+    QMessageBox.warning = staticmethod(lambda *a, **k: sb_ok)
+    QMessageBox.critical = staticmethod(lambda *a, **k: sb_ok)
     try:
         yield
     finally:
-        acw.AnonConnectionWizard.exec_ = saved['acw_exec']
-        QMessageBox.exec_ = saved['mbox_exec']
-        QMessageBox.exec = saved['mbox_exec_slot']
-        QDialog.exec_ = saved['dialog_exec']
+        QDialog.exec = saved['dialog_exec']
+        QMessageBox.exec = saved['mbox_exec']
         QMessageBox.question = saved['mbox_question']
         QMessageBox.information = saved['mbox_information']
         QMessageBox.warning = saved['mbox_warning']
         QMessageBox.critical = saved['mbox_critical']
-        if not saved['bootstrap_start_own']:
-            del tor_bootstrap.TorBootstrap.start
-        ## (if it had ever defined its own start(), it still does -- unchanged)

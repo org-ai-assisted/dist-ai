@@ -1,64 +1,47 @@
-# tor-control-panel tests
+# tor-control-panel test suite
 
-Comprehensive headless test suite for **tor-control-panel** (which also contains
-the merged **anon-connection-wizard**): torrc generation/parsing, the GUIs, the
-privilege chain, the plain-Debian write path, and fuzzing of the untrusted-input
-parsers.
-
-## How it runs
-
-The suite exercises the real code through `tcp_testlib`, which:
-
-- runs Qt under the `offscreen` platform plugin (no X server);
-- redirects the torrc / comm-file paths to a private temp dir and replaces the
-  privileged `write_to_temp_then_move()` + privilege-runner calls with in-process
-  stubs, so the generated config is observed without root, privleap, or a Tor
-  daemon;
-- neutralises the blocking modal loops so the wizard / panel are built headless
-  and their handlers invoked directly.
-
-The package under test is resolved by `tcp_testlib`: `TCP_REPO` (a
-tor-control-panel checkout) if set, else the installed
-`/usr/lib/python3/dist-packages/tor_control_panel`. Suites that need extra tools
-skip cleanly when absent (`python3-stem`, the `tor` binary, network).
-
-## Coverage
-
-- **torrc gen/parse** (`test_torrc_gen`): every bridge type (None / obfs4 /
-  snowflake / meek / custom) and proxy type (None / SOCKS4 / SOCKS5, with/without
-  auth) generates the expected torrc and round-trips through `parse_torrc`.
-- **Enable/disable + idempotency** (`test_tor_status`, `test_idempotency`):
-  `DisableNetwork` toggled in place; repeating or interleaving config actions
-  never duplicates, bloats, or corrupts the torrc.
-- **GUIs** (`test_gui_driven`, `test_gui_gaps`, `test_ui_walkthrough`,
-  `test_tor_control_panel`, `test_anon_connection_wizard`): headless feature and
-  branch/handler coverage of both front-ends; NEWNYM without restart; sanitized
-  log/torrc/bootstrap display.
-- **Privilege chain** (`test_privilege`): leaprun -> pkexec -> passwordless sudo
-  -> error; action-to-command mapping.
-- **Plain Debian** (`test_distro_agnostic`, `test_tor_config_sane`,
-  `test_debian_writepath`, `test_torrc_applied`): distro-aware drop-in dir
-  (`/etc/tor/torrc.d` vs `/usr/local/etc/torrc.d`); `tor-config-sane` adds the
-  `%include` (and migrates a stale one) but no redundant `ControlSocket`; the
-  full privileged write path proven with `tor --verify-config`.
-- **Bootstrap parser** (`test_tor_bootstrap`): the untrusted `status/bootstrap-
-  phase` parser and thread lifetime.
-- **Live-Tor integration** (`test_live_tor`): drives the app's own
-  `TorBootstrap` against a throwaway `tor` for obfs4 / snowflake / meek bridges
-  (needs the tor binary + network; skips otherwise).
-- **Interactive plan** (`test_manual_plan`): the GUI walkthrough encoded as
-  skipped tests (require a display + live Tor).
+Regression + fuzz tests for the Qt6 `tor-control-panel` rewrite (the
+consolidated package: `tor_control_panel_lib` pure logic, `tor_control_panel`
+PyQt6 GUI, `tor_status_watcher`).
 
 ## Running
 
 ```
-tor-control-panel-tests                    # core suite (fast, no root/network)
-tor-control-panel-tests -v
-TCP_REPO=/path/to/tor-control-panel tor-control-panel-tests   # test a checkout
-
-tor-control-panel-tests-fuzz               # randomized fuzz of the parsers
-tor-control-panel-tests-fuzz --iterations 50000 --seed 1
+tor-control-panel-tests            # unittest discovery of test_*.py
+tor-control-panel-tests-fuzz       # randomized fuzz of the pure parsers
 ```
 
-Coverage-guided fuzzing (ClusterFuzzLite + Atheris) and the static scanners
-(Bandit, CodeQL, Coverity) live in the `tor-control-panel` repo itself.
+Both resolve the package under test from `TCP_REPO=<checkout>` (the
+`dist-ai-tests-all` wiring sets it), else the installed package. Everything runs
+offscreen (`QT_QPA_PLATFORM=offscreen`); no root, no network, no real Tor.
+
+## Harness
+
+`tcp_testlib.py` provides the offscreen `QApplication`, source resolution, and:
+
+- `sandbox()` -- redirects `tor_control_panel_lib`'s torrc / comm-FIFO / bridges
+  path constants into a temp dir and replaces the privileged-task layer with
+  in-process stubs. The `tcp-write-torrc` stub reproduces the real privileged
+  helper's effect (the pushed config lands in the fake torrc via the FIFO).
+- `no_modal()` -- makes `QDialog.exec` / the `QMessageBox` helpers non-blocking
+  so the GUI can be driven headless.
+
+## Coverage
+
+- `test_parse_torrc` -- `tcpl_parse_torrc` valid / invalid / missing-file.
+- `test_write_torrc` -- `tcpl_write_torrc` + parse<->write round-trips.
+- `test_make_sane` -- `tcpl_make_tor_conf_info_sane` validation contract.
+- `test_bridge_prefix` -- bridge-line `Bridge ` prefix add/remove.
+- `test_default_port` -- `tcpl_default_port_for_protocol`.
+- `test_privileged_consistency` -- the privileged-task map vs the privleap conf
+  / libexec helpers.
+- `test_watcher_bootstrap` -- `TcplTorMonitor.emit_bootstrap_event_maybe`
+  (untrusted control-port bootstrap parsing).
+- `test_gui_smoke` -- headless construction + startup wiring of the GUI dialog.
+- `fuzz_torrc.py` -- never-raise / typed-return properties of the pure parsers.
+
+## Known-failing (documents a rewrite bug, not a test defect)
+
+A failing test here may be an intentionally-red regression documenting a bug in
+the rewrite, cross-referenced to an open issue on the tor-control-panel repo.
+Such tests are left red on purpose; do not "fix" them by weakening the test.

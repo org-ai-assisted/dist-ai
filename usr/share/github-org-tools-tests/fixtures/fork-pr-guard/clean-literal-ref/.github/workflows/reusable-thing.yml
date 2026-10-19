@@ -1,0 +1,19 @@
+## Reusable that checks out a LITERAL trusted ref ('master'), not an
+## expression. Not PR-controllable, so the rule does not apply even
+## without a guard. Expect no W-009.
+name: fixture
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  work:
+    if: vars.CI_ENABLED_ORG_AI_ASSISTED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          repository: org-ai-assisted/dist-ai
+          ref: master
+          persist-credentials: false

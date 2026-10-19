@@ -9,9 +9,9 @@
 Shared helpers for the onion-time-pre-script suite.
 
 The subject is a source-able bash script: sourcing it defines its functions
-without running main, installing traps or enabling strict mode. Tests source
-the real file, stub the collaborators that would reach Tor, privleap or root,
-and call the function under test directly.
+without running its entry point, installing traps or enabling strict mode.
+Tests source the real file, stub the collaborators that would reach Tor,
+privleap or root, and call the function under test directly.
 """
 
 import os

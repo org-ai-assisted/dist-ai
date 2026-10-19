@@ -116,10 +116,17 @@ run_required_unit_test ../domsnap-engine/tests/test_host_scrub.py
 [ -v OUTPUT_LIES_REPO ] || OUTPUT_LIES_REPO=''
 [ -v SECURE_TERMINAL_SITE_REPO ] || SECURE_TERMINAL_SITE_REPO=''
 [ -v ORG_AI_ASSISTED_REPO ] || ORG_AI_ASSISTED_REPO=''
-## The defaults are rooted at ${HOME}; under nounset an unset HOME (a scrubbed CI /
-## systemd env) would crash rather than honor the documented no-checkout SKIP. Empty it
-## so the defaults resolve to absent absolute paths -> no root added -> the SKIP path.
-[ -v HOME ] || HOME=''
+## The defaults below are rooted at ${HOME}. An unset HOME is an UNEXPECTED, scrubbed
+## environment -- NOT the normal "no site checkout on this host" case -- so it must FAIL,
+## never be papered over as a SKIP (no unauthorized skips). Record it, then empty HOME so
+## the ${HOME}-rooted default paths expand to absent absolute paths under nounset (no raw
+## crash); the no-roots branch below turns that into a FATAL when HOME was the cause.
+if [ -v HOME ] && [ -n "${HOME}" ]; then
+   home_unset=''
+else
+   home_unset='yes'
+   HOME=''
+fi
 
 declare -a roots=()
 add_root(){
@@ -173,6 +180,13 @@ resolve_st_site(){
 resolve_st_site "${SECURE_TERMINAL_SITE_REPO}" "${HOME}/private-sources/secure-terminal.github.io"
 
 if [ "${#roots[@]}" -eq 0 ]; then
+   if [ -n "${home_unset}" ]; then
+      ## Unset HOME + no explicit site override: a scrubbed/broken environment, not a
+      ## legitimate no-checkout host. FAIL loudly rather than silently SKIP (no unauthorized
+      ## skips). A valid explicit override would have populated roots above and never reach here.
+      printf '%s\n' "website-tests: FATAL: HOME is unset and no site override (OUTPUT_LIES_REPO / SECURE_TERMINAL_SITE_REPO / ORG_AI_ASSISTED_REPO) given -- unexpected scrubbed environment; refusing to silently SKIP" >&2
+      exit 1
+   fi
    printf '%s\n' 'website-tests: SKIP (no site checkout found; set OUTPUT_LIES_REPO / SECURE_TERMINAL_SITE_REPO / ORG_AI_ASSISTED_REPO)' >&2
    ## style-ok: allow-skip: no site checkout resolved -- there is nothing to verify, and site-deploy already treats this SKIP as a publish failure.
    exit 77

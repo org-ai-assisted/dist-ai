@@ -1,0 +1,22 @@
+## The guard literal is present, but only inside the SECOND top-level
+## '||' arm. The first arm (just the CI gate) runs the job with no
+## fork-PR guard. A bare substring test would pass this; the per-disjunct
+## check must flag it (same bypass class as W-008's 'literal || true').
+## Expect W-009.
+name: fixture
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  work:
+    if: >-
+      vars.CI_ENABLED_ORG_AI_ASSISTED == 'true'
+      || (vars.CI_ENABLED_ORG_AI_ASSISTED == 'true' && github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false

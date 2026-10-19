@@ -423,6 +423,84 @@ assert_inside_conditional() {
    fi
 }
 
+## Self-validation: prove assert_inside_conditional can both MATCH its condition
+## across cosmetic ']'/';'/'then' spacing AND still REJECT an unguarded or
+## outside-the-branch payload -- so a future restyle of a subject script cannot
+## silently turn a gate into a no-op (the exact failure that shipped a stale
+## spaced-only regex). Each case runs in a '$(...)' subshell, so the check_pass /
+## check_fail tally it mutates is discarded and the real suite counts stay clean;
+## a broken matcher hard-exits rather than report a fabricated green.
+selftest_dir="$(mktemp --directory)"
+selftest_condition='^if \[ "\$\{smbios_reader\}" = "true" \][[:blank:]]*;[[:blank:]]*then$'
+selftest_payload='^payload_marker'
+
+selftest_case() {
+   local want="$1" file="$2"
+   local out got
+   out="$(assert_inside_conditional "selftest" "${file}" "${selftest_condition}" "${selftest_payload}")"
+   case "${out}" in
+      *FAIL*)
+         got='fail'
+         ;;
+      *)
+         got='pass'
+         ;;
+   esac
+   if [ "${got}" != "${want}" ]; then
+      printf '%s\n' "FATAL: dm-grub-smbios-tests self-validation broken: expected ${want}, got ${got} for ${file}" >&2
+      printf '%s\n' "${out}" >&2
+      safe-rm --recursive --force -- "${selftest_dir}"
+      exit 1
+   fi
+}
+
+# shellcheck disable=SC2016  # fixtures hold the LITERAL ${smbios_reader}, not an expansion
+printf '%s\n' \
+   'if [ "${smbios_reader}" = "true" ]; then' \
+   'payload_marker inside' \
+   'fi' > "${selftest_dir}/unspaced"
+# shellcheck disable=SC2016  # literal, not an expansion
+printf '%s\n' \
+   'if [ "${smbios_reader}" = "true" ] ; then' \
+   'payload_marker inside' \
+   'fi' > "${selftest_dir}/spaced"
+# shellcheck disable=SC2016  # literal, not an expansion
+printf '%s\n' \
+   'if [ "${smbios_reader}" = "true" ]; then' \
+   'noop' \
+   'fi' \
+   'payload_marker outside' > "${selftest_dir}/outside"
+printf '%s\n' \
+   'noop' \
+   'payload_marker unguarded' > "${selftest_dir}/no_condition"
+## A carriage return is NOT a shell token separator: bash chokes on
+## '] <CR>; then' at runtime ('[: missing ]'), so the matcher tolerates only
+## [[:blank:]] (space/tab), never [[:space:]] (which also matches CR/VT/FF).
+## Prove the gate refuses a CR-contaminated guard rather than pass it green.
+##
+## Scope of the [[:blank:]] tightening: it aligns the token-separator match with
+## bash. The REALISTIC contamination -- a CRLF or CR line ending -- fails the
+## '$'/'then$'-anchored matches everywhere (the trailing CR defeats the anchor)
+## and reports RED, i.e. fail-safe, so it needs no further handling. extract_block's
+## drift-trim keeps [[:space:]] on purpose (it normalizes a trailing CR so two
+## reader copies that differ only in line ending do not read as drift), and the
+## leading-indent presence anchors keep [[:space:]] (a CRLF line fails their '$'
+## anchor -> RED). A stray mid-line or leading CR that is not a line ending is a
+## crafted input, not a realistic refactor, and is deliberately out of scope.
+cr=$'\r'
+# shellcheck disable=SC2016  # literal fixture, not an expansion
+printf '%s\n' \
+   'if [ "${smbios_reader}" = "true" ]'"${cr}"'; then' \
+   'payload_marker inside' \
+   'fi' > "${selftest_dir}/cr_contaminated"
+
+selftest_case pass "${selftest_dir}/unspaced"
+selftest_case pass "${selftest_dir}/spaced"
+selftest_case fail "${selftest_dir}/outside"
+selftest_case fail "${selftest_dir}/no_condition"
+selftest_case fail "${selftest_dir}/cr_contaminated"
+safe-rm --recursive --force -- "${selftest_dir}"
+
 ## Matches the INSTALL action only. The unconditional 'safe-rm' names the same
 ## path on purpose -- a disabled build must clear a file left by an earlier build
 ## in the same slot -- so matching the path alone would report that removal as an
@@ -430,7 +508,7 @@ assert_inside_conditional() {
 assert_inside_conditional \
    "disk build drop-in" \
    "${DERIVATIVE_MAKER_DIR}/build-steps.d/3500_install-packages" \
-   '^if \[ "\$\{dist_build_smbios_reader:-\}" = "true" \]; then$' \
+   '^if \[ "\$\{dist_build_smbios_reader:-\}" = "true" \][[:blank:]]*;[[:blank:]]*then$' \
    'install --mode=0644 .*50_dm-smbios-reader\.cfg'
 
 ## The SMBIOS reader is gated at TWO levels: 4310 passes --smbios-reader to
@@ -442,7 +520,7 @@ assert_inside_conditional \
 assert_inside_conditional \
    "iso option gating" \
    "${DERIVATIVE_MAKER_DIR}/build-steps.d/4310_convert-raw-to-iso" \
-   '^if \[ "\$\{dist_build_smbios_reader:-\}" = "true" \]; then$' \
+   '^if \[ "\$\{dist_build_smbios_reader:-\}" = "true" \][[:blank:]]*;[[:blank:]]*then$' \
    'dm_raw_to_iso_args\+=\( --smbios-reader'
 
 ## Gate 2: dm-raw-to-iso inlines the reader into config.cfg only inside its
@@ -450,7 +528,7 @@ assert_inside_conditional \
 assert_inside_conditional \
    "iso reader inlining" \
    "${DERIVATIVE_MAKER_DIR}/help-steps/dm-raw-to-iso" \
-   '^if \[ "\$\{smbios_reader\}" = "true" \] ; then$' \
+   '^if \[ "\$\{smbios_reader\}" = "true" \][[:blank:]]*;[[:blank:]]*then$' \
    '^cat -- .*smbios-reader\.cfg.*>>.*config\.cfg'
 
 ## Gate 2: dm-raw-to-iso adds the ${dm_smbios_extra} placeholder to the live
@@ -458,14 +536,14 @@ assert_inside_conditional \
 assert_inside_conditional \
    "iso cmdline placeholder" \
    "${DERIVATIVE_MAKER_DIR}/help-steps/dm-raw-to-iso" \
-   '^if \[ "\$\{smbios_reader\}" = "true" \] ; then$' \
+   '^if \[ "\$\{smbios_reader\}" = "true" \][[:blank:]]*;[[:blank:]]*then$' \
    '^iso_cmdline=.*dm_smbios_extra'
 
 ## POLARITY, not token presence: an inverted guard keeps every token while
 ## reversing the default, so the reader would ship in released images with all the
 ## named opt-in checks still green. Match the whole condition, and for the reader
 ## also that the line it guards is the 'exit 0' that makes it a guard at all.
-disk_guard_condition='^if \[ "\$\{GRUB_ENABLE_DM_SMBIOS_READER\}" != "true" \]; then$'
+disk_guard_condition='^if \[ "\$\{GRUB_ENABLE_DM_SMBIOS_READER\}" != "true" \][[:blank:]]*;[[:blank:]]*then$'
 if ! grep --quiet --extended-regexp -- "${disk_guard_condition}" "${disk_file}"; then
    check_fail "disk reader guard is missing or INVERTED in ${disk_file}" \
       "$(grep -nE -- 'GRUB_ENABLE_DM_SMBIOS_READER' "${disk_file}" | tail -3 || true)"
@@ -476,7 +554,7 @@ else
    check_fail "disk reader guard does not exit when disabled in ${disk_file}"
 fi
 
-if grep --quiet --extended-regexp -- '^if \[ "\$\{GRUB_ENABLE_DM_SMBIOS_READER:-\}" = "true" \]; then$' "${cmdline_file}"; then
+if grep --quiet --extended-regexp -- '^if \[ "\$\{GRUB_ENABLE_DM_SMBIOS_READER:-\}" = "true" \][[:blank:]]*;[[:blank:]]*then$' "${cmdline_file}"; then
    check_pass "cmdline fragment guard is default-OFF"
 else
    check_fail "cmdline fragment guard is missing or INVERTED in ${cmdline_file}" \

@@ -1,0 +1,18 @@
+## Reusable gated to pull_request but WITHOUT the head-repo check: it
+## runs on fork PRs too, then checks out their ref. Naming pull_request
+## without the guard literal must still flag. Expect W-009.
+name: fixture
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  work:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false

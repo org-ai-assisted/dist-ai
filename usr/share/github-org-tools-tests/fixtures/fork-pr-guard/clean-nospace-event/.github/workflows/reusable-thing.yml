@@ -1,0 +1,18 @@
+## Non-PR event gate written with no spaces around '==' -- a valid GitHub
+## expression. Normalization must see it as equivalent to the spaced form,
+## so it is NOT a false positive. Expect no W-009.
+name: fixture
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  work:
+    if: vars.CI_ENABLED_ORG_AI_ASSISTED == 'true' && github.event_name=='schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
