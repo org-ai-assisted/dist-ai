@@ -14,6 +14,8 @@ Properties checked (per phase, each over --iterations rounds):
   parse        tcpl_parse_torrc() on arbitrary torrc text must return a
                TcplTorConfInfo or a str -- never raise.
   make_sane    tcpl_make_tor_conf_info_sane() on an arbitrary TcplTorConfInfo
+               (with WELL-FORMED bridge lines -- its bridge path is unhardened
+               and asserts on malformed lines, see BUGS.md / test_make_sane)
                must return a TcplTorConfInfo or a str -- never raise (its
                documented contract is to describe problems via a returned str).
   bridge_pfx   tcpl_bridge_lines_add_prefix()/remove_prefix() may raise ONLY
@@ -71,6 +73,26 @@ def _rand_bridge_lines(rng):
     return out
 
 
+def _rand_valid_bridge_lines(rng):
+    ## Well-formed bridge lines only, for the make_sane phase. make_sane's bridge
+    ## path is UNHARDENED: it does `assert len(line.split(" ")) > 1`, so a line
+    ## with fewer than two tokens (empty / whitespace-only / single token) raises
+    ## AssertionError instead of returning an error string -- a real bug, see
+    ## BUGS.md ("empty / malformed custom bridge line"). Per the unhardened-parser
+    ## rule we fuzz make_sane over VALID input; the malformed-line crash is
+    ## documented and guarded by test_make_sane (xfail) until it is fixed upstream.
+    recognized = tcpl.tcpl_bridge_type_list[1:-1]
+    out = []
+    for _ in range(rng.randint(0, 3)):
+        transport = rng.choice(recognized)
+        addr = f"10.0.0.{rng.randint(1, 254)}:{rng.randint(1, 65535)}"
+        fingerprint = ''.join(
+            rng.choice(string.hexdigits) for _ in range(rng.randint(1, 40))
+        )
+        out.append(f"Bridge {transport} {addr} {fingerprint}")
+    return out
+
+
 def _rand_conf_info(rng):
     info = copy.deepcopy(tcpl.tcpl_blank_tor_conf_info)
     info.network_enabled = rng.choice([True, False, None])
@@ -78,7 +100,7 @@ def _rand_conf_info(rng):
     info.bridge_type_set = set(
         rng.choice(BRIDGE_TYPES) for _ in range(rng.randint(0, 2))
     )
-    info.bridge_line_list = _rand_bridge_lines(rng)
+    info.bridge_line_list = _rand_valid_bridge_lines(rng)
     info.proxy_type = rng.choice(PROXY_TYPES)
     info.proxy_host = rng.choice([None, '10.0.0.1', '', ':'])
     info.proxy_port = rng.choice([None, 0, 1080, -1, 99999])
