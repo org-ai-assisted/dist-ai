@@ -459,6 +459,25 @@ else
    fail "write_grub_cfg: empty dir not handled (rc=${empty_rc})"
 fi
 
+## C (REGRESSION, root arbitrary-delete): an empty boot dir whose 'grub' is a
+## planted symlink must be refused BEFORE the stale-cfg removal. On the pre-fix
+## code the empty-versions branch ran 'safe-rm -- grub/grub.cfg' first, which
+## resolves the symlink and deletes the TARGET's grub.cfg as root. The symlink
+## refusal must run first (org-ai-assisted/helper-scripts#90).
+sym_target="${workdir}/grubsym-target"
+sym_boot="${workdir}/grubsym-boot"
+mkdir --parents -- "${sym_target}" "${sym_boot}"
+printf '%s\n' 'HOST GRUB CFG' > "${sym_target}/grub.cfg"
+ln --symbolic -- "${sym_target}" "${sym_boot}/grub"
+symtoctou_rc=0
+persistent_boot_write_grub_cfg "${sym_boot}" "${test_cmdline}" > /dev/null 2>&1 || symtoctou_rc=$?
+if [ "${symtoctou_rc}" -ne 0 ] && [ -e "${sym_target}/grub.cfg" ]; then
+   pass "write_grub_cfg: refuses a symlinked grub dir before touching the stale cfg"
+else
+   target_present="$( [ -e "${sym_target}/grub.cfg" ] && printf '%s' yes || printf '%s' no )"
+   fail "write_grub_cfg: symlinked-grub delete-through not prevented (rc=${symtoctou_rc}, target cfg present=${target_present})"
+fi
+
 printf '%s\n' ""
 printf '%s\n' "===== persistent-boot: ${pass_count} pass, ${fail_count} fail ====="
 [ "${fail_count}" -eq 0 ]

@@ -629,28 +629,30 @@ def _firmware_block(f):
 
 def render_run(view, header, footer, generated_utc):
     f = run_fields(view)
-    blocks = []
-    ## Firmware-lane evidence panel first (when captured) -- proof of the booted lane.
+    ## Firmware-lane evidence is a one-line attestation, NOT a peer of the test steps --
+    ## side-by-side in the .fg grid it left a near-empty half-column next to the tall
+    ## step card. Render it full-width ABOVE the steps instead ("" -> omitted). The steps
+    ## stay in the .fg grid, so a single step is grid-only-child (full width) and multiple
+    ## steps still tile; the firmware card always stacks above them.
     fw_block = _firmware_block(f)
-    if fw_block:
-        blocks.append(fw_block)
+    step_blocks = []
     if isinstance(view.result, dict):
         step_names = set()
         for step in view.result["steps"]:
             step_names.add(step["name"])
-            blocks.append(render_step(view, step))
+            step_blocks.append(render_step(view, step))
         ## Shots not tied to a rendered step are the expected-but-missing goldens
         ## (an approved golden whose shot this run did not produce); show them so the
         ## non-green status is explained, never a silent omission.
         for shot in view.shots:
             if shot["step"] not in step_names:
-                blocks.append(
+                step_blocks.append(
                     '<div class="issue"><h3>%s %s</h3><p>%s</p></div>'
                     % (esc(shot["sid"]), status_chip(_bucket_status_class(shot["bucket"])),
                        esc(shot["detail"].get("reason", "")))
                 )
     else:
-        blocks.append(
+        step_blocks.append(
             '<div class="issue"><h3>No data</h3><p>This run has no readable '
             "result.json.</p></div>"
         )
@@ -669,11 +671,11 @@ def render_run(view, header, footer, generated_utc):
         "%s"
         '<p class="sub"><a href="../">back to all results</a></p>'
         "</div></section>"
-        '<section class="cat"><div class="wrap"><div class="fg">%s</div></div></section>'
+        '<section class="cat"><div class="wrap">%s<div class="fg">%s</div></div></section>'
     ) % (
         esc(f["lane"]), esc(view.run_id), esc(f["lane"]), esc(f["version"]),
         esc(f["builder"]), esc(f["origin"]), status_chip(view.status),
-        esc(age_text(view.age)), sha_line, "".join(blocks),
+        esc(age_text(view.age)), sha_line, fw_block, "".join(step_blocks),
     )
     return page(
         "Run %s" % view.run_id, "Test run %s" % view.run_id, header, footer, body,
