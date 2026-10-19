@@ -471,11 +471,14 @@ printf '%s\n' 'HOST GRUB CFG' > "${sym_target}/grub.cfg"
 ln --symbolic -- "${sym_target}" "${sym_boot}/grub"
 symtoctou_rc=0
 persistent_boot_write_grub_cfg "${sym_boot}" "${test_cmdline}" > /dev/null 2>&1 || symtoctou_rc=$?
-if [ "${symtoctou_rc}" -ne 0 ] && [ -e "${sym_target}/grub.cfg" ]; then
-   pass "write_grub_cfg: refuses a symlinked grub dir before touching the stale cfg"
+## Assert the TARGET's grub.cfg is byte-for-byte intact, not merely present: a
+## delete-through removes it, and a write-through would rewrite it -- existence
+## alone ('[ -e ]') would miss the latter. Read the canary back.
+sym_target_cfg="$( cat -- "${sym_target}/grub.cfg" 2>/dev/null || true )"
+if [ "${symtoctou_rc}" -ne 0 ] && [ "${sym_target_cfg}" = 'HOST GRUB CFG' ]; then
+   pass "write_grub_cfg: refuses a symlinked grub dir, target cfg untouched"
 else
-   target_present="$( [ -e "${sym_target}/grub.cfg" ] && printf '%s' yes || printf '%s' no )"
-   fail "write_grub_cfg: symlinked-grub delete-through not prevented (rc=${symtoctou_rc}, target cfg present=${target_present})"
+   fail "write_grub_cfg: symlinked-grub delete/write-through not prevented (rc=${symtoctou_rc}, target cfg='${sym_target_cfg}')"
 fi
 
 printf '%s\n' ""
