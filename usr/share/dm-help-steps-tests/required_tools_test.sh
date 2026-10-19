@@ -17,7 +17,7 @@
 ## The fix is a package, not a probe. The early build tools are INSTALLED by
 ## 'build-steps.d/1050_early-build-setup' (function 'install_required_packages')
 ## from the single-source list '$dist_build_early_dependencies' in
-## 'variables.d/60_dependencies.bsh'; 'build-steps.d/1100_sanity-tests' only
+## 'help-steps/set-early-dependencies'; 'build-steps.d/1100_sanity-tests' only
 ## CHECKS their presence (function 'check-required-packages-present', read-only).
 ## What must hold for each needed tool:
 ##   - it is in '$dist_build_early_dependencies' (so 1050 installs it), AND
@@ -76,9 +76,20 @@ if ! sanity_tests="$(locate_build_step 1100_sanity-tests "${DM_SANITY_TESTS:-}")
    exit 1
 fi
 
-deps_conf="$(dirname -- "$(dirname -- "${early_setup}")")/variables.d/60_dependencies.bsh"
+dm_root="$(dirname -- "$(dirname -- "${early_setup}")")"
+deps_conf="${dm_root}/variables.d/60_dependencies.bsh"
 if [ ! -r "${deps_conf}" ]; then
    printf '%s\n' "FATAL: variables.d/60_dependencies.bsh not found at '${deps_conf}'." >&2
+   exit 1
+fi
+
+## dist_build_early_dependencies lives in its own single-source fragment (sourced
+## by 1050_early-build-setup and by 60_dependencies.bsh): 1050 runs before
+## 'variables', so it cannot read the list from there. dist_build_script_build_dependency
+## still lives in 60_dependencies.bsh (deps_conf).
+early_deps_conf="${dm_root}/help-steps/set-early-dependencies"
+if [ ! -r "${early_deps_conf}" ]; then
+   printf '%s\n' "FATAL: help-steps/set-early-dependencies not found at '${early_deps_conf}'." >&2
    exit 1
 fi
 
@@ -185,9 +196,9 @@ extract_dep_tokens() {
       | tr '\n' ' '
 }
 
-early_deps="$(extract_dep_tokens dist_build_early_dependencies "${deps_conf}")"
+early_deps="$(extract_dep_tokens dist_build_early_dependencies "${early_deps_conf}")"
 if [ -z "${early_deps// /}" ]; then
-   printf '%s\n' "FAILED: no dist_build_early_dependencies tokens parsed from ${deps_conf}." >&2
+   printf '%s\n' "FAILED: no dist_build_early_dependencies tokens parsed from ${early_deps_conf}." >&2
    exit 1
 fi
 
