@@ -111,6 +111,12 @@ check_case() {
 check_case 'flag-unguarded'    'flag'  'a reusable checking out an expression ref with no fork-PR guard is flagged'
 ## Naming pull_request without the head-repo check still runs on fork PRs.
 check_case 'flag-pr-event-only' 'flag' 'a pull_request-gated reusable without the head-repo check is flagged'
+## A negated non-PR event ('!= schedule') is true on a PR -> must NOT be treated as safe (fail-closed).
+check_case 'flag-negated-nonpr-event' 'flag' 'a reusable gated on a negated non-PR event is flagged (no fail-open)'
+## The guard literal present only in a non-gating '||' arm must still flag (per-disjunct check).
+check_case 'flag-or-arm-bypass' 'flag' 'a guard literal in a bypassable OR-arm is flagged'
+## A bare 'event_name != pull_request' does not defend pull_request_target -> require the head-repo guard.
+check_case 'flag-bare-pr-negation' 'flag' 'a bare pull_request event negation (no head-repo guard) is flagged'
 
 ## The rule does not over-reach.
 check_case 'clean-guarded'     'clean' 'a reusable with the fork-PR guard passes'

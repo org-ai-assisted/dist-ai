@@ -527,6 +527,31 @@ def job_checks_out_expression_ref(job):
     return False
 
 
+def fork_pr_disjunct_is_safe(part):
+    """A single top-level '||' disjunct of an if: that, on its own, keeps a
+    fork PR from reaching the checkout. Two sanctioned forms (the ones the org
+    reusables actually use):
+
+      * the guard literal 'head.repo.full_name == github.repository', ANDed
+        with the rest of the disjunct; or
+      * a restriction to non-pull_request events by POSITIVE equality
+        ('github.event_name == <non-pr-event>'), never mentioning pull_request
+        and never a 'github.event_name !=' negation.
+
+    The positive-equality rule is deliberate: 'github.event_name != 'schedule''
+    is true on a pull_request, so a bare event negation does NOT keep fork PRs
+    out -- treating it as safe would fail OPEN. A bare
+    'github.event_name != 'pull_request'' is likewise NOT accepted: it is true
+    on pull_request_target, so it does not defend the pull_request_target path;
+    the sanctioned defense is the head-repo guard literal.
+    """
+    if FORK_PR_GUARD_LITERAL in part:
+        return True
+    return ('github.event_name ==' in part
+            and 'pull_request' not in part
+            and 'github.event_name !=' not in part)
+
+
 def check_fork_pr_guard(repo_root, targets, findings):
     """W-009: a reusable (workflow_call) job that checks out a
     PR-controllable ref must carry the fork-PR guard.
@@ -534,19 +559,26 @@ def check_fork_pr_guard(repo_root, targets, findings):
     A reusable runs in the CALLER's context and cannot see whether the
     caller triggers it on pull_request (fork PRs get no secrets) or
     pull_request_target (fork PRs DO). So a reusable that checks out a
-    '${{ ... }}' ref must defend itself. Two sanctioned forms:
+    '${{ ... }}' ref must defend itself. The guard must hold on EVERY
+    top-level '||' disjunct (same reasoning as W-008): 'guard || true' still
+    runs the job unguarded through the always-true arm.
 
-      * the guard literal 'head.repo.full_name == github.repository'
-        (ANDed into the if:), or
-      * a restriction to non-pull_request events (the if: names
-        github.event_name and never mentions pull_request -- e.g. a
-        schedule/workflow_dispatch-only job).
+    This is an ACCIDENT-prevention gate -- it stops a new reusable silently
+    omitting the guard, the way reusable-coverity.yml did -- NOT an
+    adversarial expression analyzer. It checks the sanctioned LITERAL forms
+    (see fork_pr_disjunct_is_safe). Deliberately OUT of scope, like the other
+    policy guards in this org: a crafted 'guard || true' tautology beyond the
+    top-level split, a negated guard, or a condition hand-written to carry the
+    literal without gating. Non-reusable workflows are out of scope too (their
+    own 'on:' triggers, visible in-file, bound the risk).
 
-    Anything else is flagged. The bias is fail-closed: a reusable job
-    that neither guards nor excludes pull_request is exactly the
-    reusable-coverity.yml gap this rule exists to stop recurring.
-    Non-reusable workflows are out of scope (their own 'on:' triggers,
-    visible in-file, bound the risk).
+    Note (surfaced, not enforced): the org-standard guard
+    '(head.repo.full_name == github.repository || github.event_name !=
+    'pull_request')' defends pull_request but NOT pull_request_target (there
+    github.event_name is 'pull_request_target', so the second arm is true).
+    The org reusables are safe anyway because they check out github.sha / a
+    fixed ref, not github.event.pull_request.head.sha -- so no fork head is
+    fetched. A reusable that DID check out head.sha would need a stricter guard.
     """
     for path in targets:
         try:
@@ -566,15 +598,15 @@ def check_fork_pr_guard(repo_root, targets, findings):
                 continue
             if not job_checks_out_expression_ref(job):
                 continue
-            cond = effective_condition(job.get('if') or '')
-            guarded = FORK_PR_GUARD_LITERAL in cond
-            non_pr_only = 'github.event_name' in cond and 'pull_request' not in cond
-            if guarded or non_pr_only:
+            cond = effective_condition(job.get('if') or '').strip()
+            parts = top_level_or_parts(cond) if cond else []
+            if parts and all(fork_pr_disjunct_is_safe(p) for p in parts):
                 continue
             emit(findings, path, repo_root, 'W-009 FORK-PR-GUARD',
                  f"job {job_id!r} checks out a PR-controllable ref (actions/checkout "
-                 f"with an expression 'ref:') but its 'if:' neither carries the fork-PR "
-                 f"guard ({FORK_PR_GUARD_LITERAL}) nor excludes pull_request events")
+                 f"with an expression 'ref:') but its 'if:' does not keep fork PRs out on "
+                 f"every top-level disjunct: carry the fork-PR guard "
+                 f"({FORK_PR_GUARD_LITERAL}) or gate to non-pull_request events by equality")
 
 
 def main(repo_root):
