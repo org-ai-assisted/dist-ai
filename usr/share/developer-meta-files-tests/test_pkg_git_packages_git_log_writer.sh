@@ -89,12 +89,21 @@ writer_text="$(extract_func pkg_git_packages_git_log_writer)"
 dry_run_text="$(extract_func dry_run_or_run)"
 filter_text="$(extract_func commit_filter)"
 announce_text="$(extract_func generate_announcement)"
+vrt_text="$(extract_func verify_release_tags)"
 
-## Assert the resolved subject carries the new-tag guard; otherwise a stale
+## Assert the resolved subject carries each guard under test; otherwise a stale
 ## subject (old /usr/bin copy, pre-fix checkout) would fail with a misleading
 ## "crashed" assertion against code that genuinely lacks the fix.
 if [[ "${writer_text}" != *'not in refs/tags/'* ]]; then
    printf '%s\n' "FATAL: resolved dm-packaging-helper-script ('${subject}') predates the new-tag guard; point DEVELOPER_META_FILES_DIR at a checkout that has it." >&2
+   exit 1
+fi
+if [[ "${writer_text}" != *'wait "$!"'* ]]; then
+   printf '%s\n' "FATAL: resolved dm-packaging-helper-script ('${subject}') predates the git-log-failure guard (wait \"\$!\"); point DEVELOPER_META_FILES_DIR at a checkout that has it." >&2
+   exit 1
+fi
+if [[ "${vrt_text}" != *'git -C '* ]]; then
+   printf '%s\n' "FATAL: resolved dm-packaging-helper-script ('${subject}') predates the dm-dir-qualified release-tag check; point DEVELOPER_META_FILES_DIR at a checkout that has it." >&2
    exit 1
 fi
 
@@ -302,6 +311,108 @@ else
    else
       fail "delimiter-injection/%s hardening wrong: $(tr '\n' '|' < "${inj_out}")"
    fi
+fi
+
+## --- Finding 2: a git log failure is propagated, not masked -----------------
+## Process substitution runs git log asynchronously; without `wait "$!"` its
+## non-zero exit is swallowed and is indistinguishable from an empty range, so
+## the package silently vanishes from the changelog. Drive the writer as
+## derivative-maker (range = the tag names directly) with a NEW ref that does
+## not exist, so `git log old..<missing>` fails. Real `die` is sourced so the
+## fix's die path runs; die exits explicitly, so a suppressing `|| rc` context
+## cannot hide it.
+log_run_die="${dm_checkout}/packages/kicksecure/helper-scripts/usr/libexec/helper-scripts/log_run_die.sh"
+logfail_repo="$(mktemp -d -p "${tmp_root}")"
+git -C "${logfail_repo}" init -q -b master
+git_c "${logfail_repo}" commit -q --allow-empty -m base
+git_c "${logfail_repo}" tag logfail_old
+logfail_rc=0
+(
+   cd -- "${logfail_repo}"
+   # shellcheck disable=SC2034  # consumed by the eval'd functions
+   {
+      red=''
+      bold=''
+      reset=''
+      cyan=''
+      announcements_drafts_dir="$(mktemp -d -p "${tmp_root}")"
+      derivative_maker_source_code_dir="${logfail_repo}"
+      batch_current_package_reponame='derivative-maker'
+      batch_current_package_changelog="$(mktemp -p "${tmp_root}")"
+      batch_func_init_done='true'
+      batch_meta_dry_run='false'
+      derivative_version_old_main='logfail_old'
+      derivative_version_new_main='no-such-release-tag'
+   }
+   # shellcheck disable=SC1090  # path is a runtime-resolved helper-scripts lib
+   source "${log_run_die}"
+   eval "${dry_run_text}"
+   eval "${filter_text}"
+   eval "${writer_text}"
+   pkg_git_packages_git_log_writer
+) >/dev/null 2>&1 || logfail_rc=$?
+if [ "${logfail_rc}" -ne 0 ]; then
+   pass "git log failure propagates (wait \$!), not masked as an empty range"
+else
+   fail "git log failure was masked -> the package would silently drop from the changelog"
+fi
+
+## --- Finding 3: a missing per-derivative changelog does not abort ------------
+## generate_announcement cats BOTH kicksecure_ and whonix_giant_git_log.txt. A
+## --no-batch run on a single package of one project (or zero commits for the
+## other) leaves the other file absent -> cat fails under errexit and leaks the
+## mktemp. The fix creates the file empty first. Run via a child inner with its
+## OWN errexit, so this `if` cannot suppress the cat-abort under test.
+announce_inner="$(dirname -- "${BASH_SOURCE[0]}")/pkg_git_log_writer_announce_inner.sh"
+drafts_missing="$(mktemp -d -p "${tmp_root}")"
+## Only the Kicksecure changelog exists; the Whonix one is intentionally absent.
+printf '%s\n' 'KONLY-changelog-line' > "${drafts_missing}/kicksecure_giant_git_log.txt"
+if DRY_RUN_TEXT="${dry_run_text}" ANNOUNCE_TEXT="${announce_text}" \
+      bash "${announce_inner}" "${drafts_missing}"; then
+   if [ -r "${drafts_missing}/Kicksecure.txt" ] && [ -r "${drafts_missing}/Whonix.txt" ]; then
+      pass "generate_announcement tolerates a missing per-derivative changelog (creates it empty)"
+   else
+      fail "generate_announcement returned 0 but did not produce both announcement drafts"
+   fi
+else
+   fail "generate_announcement aborted on a missing per-derivative changelog (old code: cat fails under errexit)"
+fi
+
+## --- Finding 4: release tags resolve in the dm repo, not the package cwd -----
+## Under --repo the script cd's into a package dir before the tag sanity-check.
+## An unqualified `git rev-parse` would look for the dm release tag in the
+## package repo and spuriously FATAL. verify_release_tags must resolve against
+## ${derivative_maker_source_code_dir}. Fixture: a dm repo carrying the tags and
+## a SEPARATE package repo (own .git, no dm tags) as the cwd. verify_release_tags
+## exits explicitly on failure, so a suppressing `|| rc` context cannot hide it.
+vrt_dm="$(mktemp -d -p "${tmp_root}")"
+git -C "${vrt_dm}" init -q -b master
+git_c "${vrt_dm}" commit -q --allow-empty -m c1
+git_c "${vrt_dm}" tag vrt_oldtag
+git_c "${vrt_dm}" commit -q --allow-empty -m c2
+git_c "${vrt_dm}" tag vrt_newtag
+vrt_pkg="$(mktemp -d -p "${tmp_root}")"
+git -C "${vrt_pkg}" init -q -b master
+git_c "${vrt_pkg}" commit -q --allow-empty -m p1
+vrt_rc=0
+(
+   cd -- "${vrt_pkg}"
+   # shellcheck disable=SC2034  # consumed by the eval'd function
+   {
+      red=''
+      bold=''
+      reset=''
+      derivative_maker_source_code_dir="${vrt_dm}"
+      derivative_version_old_main='vrt_oldtag'
+      derivative_version_new_main='vrt_newtag'
+   }
+   eval "${vrt_text}"
+   verify_release_tags
+) >/dev/null 2>&1 || vrt_rc=$?
+if [ "${vrt_rc}" -eq 0 ]; then
+   pass "release tags resolve in the dm repo even when cwd is a package dir"
+else
+   fail "release-tag check failed from a package cwd -> unqualified rev-parse (the --repo regression)"
 fi
 
 printf '%s\n' "${pass_count} pass, ${test_failures} fail, 0 skip"

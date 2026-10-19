@@ -413,6 +413,37 @@ else
    fail "nohash == nohash was treated as 'unchanged' and skipped (must rebuild)"
 fi
 
+## --- dm_architecture_covers_target: Debian arch wildcards -------------------
+## Guards the switch from a hand-rolled 'any|linux-any|<arch>|linux-<arch>' case
+## to dpkg-architecture --is, which also matches arch-qualified wildcards such as
+## 'any-amd64'. A miss would make dm_package_artifacts_present skip the reprepro
+## check for that binary and read a missing .deb as present ("fresh").
+if dm_architecture_covers_target 'any-amd64' amd64; then
+   pass "arch wildcard: any-amd64 covers amd64 (the case a hand-rolled match missed)"
+else
+   fail "arch wildcard: any-amd64 should cover amd64 but did not"
+fi
+if dm_architecture_covers_target 'amd64' amd64 \
+   && dm_architecture_covers_target 'any' amd64 \
+   && dm_architecture_covers_target 'linux-any' amd64 \
+   && dm_architecture_covers_target 'linux-amd64' amd64; then
+   pass "arch wildcard: plain / any / linux-any / linux-amd64 still cover amd64"
+else
+   fail "arch wildcard: a plain/any/linux-any/linux-amd64 token stopped covering amd64"
+fi
+if dm_architecture_covers_target 'i386' amd64 \
+   || dm_architecture_covers_target 'any-i386' amd64; then
+   fail "arch wildcard: an i386-only stanza must NOT cover amd64"
+else
+   pass "arch wildcard: i386 / any-i386 do not cover amd64"
+fi
+## Multiple tokens in one field: a covering token anywhere in the list wins.
+if dm_architecture_covers_target 'i386 any-amd64' amd64; then
+   pass "arch wildcard: a covering token later in a multi-token field still matches"
+else
+   fail "arch wildcard: a covering token in a multi-token field was missed"
+fi
+
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s) (${pass_count} passed)." >&2
    exit 1
