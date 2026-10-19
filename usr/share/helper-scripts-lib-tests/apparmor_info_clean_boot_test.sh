@@ -24,8 +24,9 @@
 ##     precedence is '(journalctl|grep) || (true|sed|awk)', skipping redaction on a match.
 ##
 ## Drives the REAL script. The only seams stubbed are journalctl (a privileged audit
-## read) and the root guard, both via committed support scripts on PATH; grep, sed and
-## awk are the real pipeline under test. No root, no network.
+## read, injected via the subject's APPARMOR_INFO_JOURNALCTL override) and the root
+## guard ('id' on PATH); grep, sed and awk are the real pipeline under test. Both
+## stubs are committed support scripts. No root, no network.
 
 set -o errexit
 set -o nounset
@@ -65,11 +66,11 @@ cleanup_handler() {
 }
 trap cleanup_handler EXIT
 
-## Stubs go on PATH under their real names; grep/sed/awk still resolve to the real
-## tools from the inherited PATH.
+## The root-guard 'id' goes on PATH under its real name; grep/sed/awk still
+## resolve to the real tools from the inherited PATH. journalctl is injected via
+## the subject's APPARMOR_INFO_JOURNALCTL seam (below), not shadowed on PATH.
 bindir="${test_dir}/bin"
 mkdir --parents -- "${bindir}"
-ln -s -- "${journalctl_stub}" "${bindir}/journalctl"
 ln -s -- "${id_stub}" "${bindir}/id"
 stub_path="${bindir}:${PATH}"
 
@@ -139,6 +140,7 @@ run_subject() {
    rc="${2:-0}"
    LAST_RC=0
    APPARMOR_INFO_STUB_FIXTURE="${fixture}" APPARMOR_INFO_STUB_RC="${rc}" \
+      APPARMOR_INFO_JOURNALCTL="${journalctl_stub}" \
       PATH="${stub_path}" "${subject}" --boot >"${out_file}" 2>/dev/null || LAST_RC=$?
    ## Byte-exact: command substitution would strip trailing newlines, so a lone '\n'
    ## would read as empty. Count bytes from the file instead.
@@ -230,7 +232,8 @@ check "binary journal w/ DENIED -> redacted record reported" "$(contains "${LAST
 count_file="${test_dir}/jcount"
 LAST_RC=0
 APPARMOR_INFO_STUB_FIXTURE="${empty_fixture}" APPARMOR_INFO_STUB_RC_SEQ="0 1" \
-   APPARMOR_INFO_STUB_COUNT_FILE="${count_file}" PATH="${stub_path}" \
+   APPARMOR_INFO_STUB_COUNT_FILE="${count_file}" APPARMOR_INFO_JOURNALCTL="${journalctl_stub}" \
+   PATH="${stub_path}" \
    "${subject}" --boot >"${out_file}" 2>/dev/null || LAST_RC=$?
 ## Both journalctl calls must have run (count==2), so the non-zero status is the SECOND
 ## call's failure, not an abort on the first pipeline.
