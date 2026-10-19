@@ -144,15 +144,16 @@ fi
 ## FAIL loudly. An unset HOME is an unexpected, broken environment -- NOT the legitimate
 ## "no site checkout on this host" case -- so silently honoring the no-checkout SKIP would
 ## hide that website-tests never ran (an unauthorized skip). It must emit a clear FATAL and
-## exit nonzero: not exit 77, and not a raw unbound-variable nounset crash.
+## exit with the exact error-convention code 1 -- not 77 (SKIP), and not a raw
+## unbound-variable nounset crash (which carries no 'FATAL: HOME is unset' message).
 run_rc=0
 run_err="$(env --unset=HOME --unset=OUTPUT_LIES_REPO --unset=SECURE_TERMINAL_SITE_REPO \
    --unset=ORG_AI_ASSISTED_REPO "${runner}" 2>&1 >/dev/null)" || run_rc=$?
-if [ "${run_rc}" -ne 0 ] && [ "${run_rc}" -ne 77 ] \
-   && printf '%s' "${run_err}" | grep --quiet 'FATAL: HOME is unset'; then
+if [ "${run_rc}" -eq 1 ] \
+   && grep --quiet 'FATAL: HOME is unset' <<< "${run_err}"; then
    pass 'website-tests: unset HOME + no override FAILs loudly with a FATAL (not a SKIP, not a nounset crash)'
 else
-   fail "website-tests: unset HOME did not FAIL cleanly (exit ${run_rc}; want nonzero + 'FATAL: HOME is unset', err='${run_err}')"
+   fail "website-tests: unset HOME did not FAIL cleanly (exit ${run_rc}; want exit 1 + 'FATAL: HOME is unset', err='${run_err}')"
 fi
 
 printf '%s\n' "" "test_website_tests_site_override_fatal: ${pass_count} pass, ${fail_count} fail, 0 skip"
