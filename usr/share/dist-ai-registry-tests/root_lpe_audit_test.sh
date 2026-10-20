@@ -605,8 +605,12 @@ EOF
 ## so the advisory's line numbers must not count it as one -- else the op below
 ## is reported one line low, ON the waiver comment, and wrongly suppressed. The
 ## .ffwaived case is the converse: Python accepts a LEADING form feed as
-## statement whitespace, so _indent must count it -- else the form-feed-led op
-## reads as NOT leading its line and its directly-preceding waiver is ignored.
+## statement whitespace, so the LEADER test must treat it as whitespace -- else
+## the form-feed-led op reads as NOT leading its line and its directly-preceding
+## waiver is ignored. The nesting level (_indent_level) must NOT count a form
+## feed as width: a form feed RESETS the indentation column, and counting it
+## would let a deeper suite's waiver reach a module-level sibling (.ffsibling,
+## .ffspace) -- a missed root LPE.
 form_feed=$'\f'
 printf '%s\n' \
    '#!/usr/bin/python3' \
