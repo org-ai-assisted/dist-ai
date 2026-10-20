@@ -175,6 +175,7 @@ core_suites=(
    systemcheck-tests-bwrap
    tb-updater-tests
    terminal-poc-corpus-tests
+   tirdad-tests
    tor-control-panel-tests
    tor-ctrl-tests
    unicode-show-tests
@@ -796,6 +797,13 @@ wire() {
             )
          fi
          ;;
+      tirdad)
+         ## The CBMC suite #includes the real module/tirdad.c resolved from
+         ## TIRDAD_REPO (else the DKMS-installed source). Unwired against a
+         ## checkout the source is absent and the suite SKIPs, which this runner
+         ## reports as a non-clean run rather than a pass.
+         wire_env=( "TIRDAD_REPO=$( pkg_dir tirdad )" )
+         ;;
       tor-ctrl)
          ## The case scripts resolve tor-ctrl-onion and tor-ctrl from
          ## TOR_CTRL_REPO, else the installed package. Unwired, they fall back
@@ -1259,6 +1267,9 @@ suite_component() {
          ;;
       systemcheck)
          printf '%s' 'systemcheck'
+         ;;
+      tirdad)
+         printf '%s' 'tirdad'
          ;;
       tor-control-panel)
          printf '%s' 'tor-control-panel'
