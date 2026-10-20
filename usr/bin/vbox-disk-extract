@@ -267,7 +267,12 @@ main() {
    done < "${fs_list}"
 
    [ "${found}" = 'true' ] || die "'${source_path}' not found in any filesystem on '${disk}'"
-   printf '%s\n' "${me}: extracted ${source_path} -> ${dest_path}"
+   ## Diagnostic to STDERR only: stdout is a DATA channel (a caller may stream the
+   ## extracted bytes from it, or capture a wrapper's stdout as the extracted cert).
+   ## A line on stdout here prepends garbage to that data -- e.g. it corrupted the MOK
+   ## DER enrolled into the UEFI MokListRT, so the kernel rejected the cert (-EBADMSG)
+   ## and every module signed by it failed "Key was rejected by service" under Secure Boot.
+   printf '%s\n' "${me}: extracted ${source_path} -> ${dest_path}" >&2
 }
 
 ## Sourced (dm-release-test-tests) -> expose the functions without running;
