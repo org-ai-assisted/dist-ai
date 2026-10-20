@@ -7,9 +7,12 @@
 
 ## Bounded smoke-fuzz of kloak's libFuzzer harnesses. Drives kloak's OWN
 ## ci/cfuzz-build.sh (no reimplementation) to build every fuzz/fuzz_*.c harness
-## with clang + libFuzzer + ASAN/UBSAN, then runs each for a short burst and
-## fails on any crash. The full coverage-guided campaign is kloak's
-## ClusterFuzzLite lane; this is the fast regression smoke.
+## with clang + libFuzzer + ASAN/UBSAN -- kloak's own, PLUS the dist-ai-owned
+## harnesses under usr/share/kloak-tests/ staged into the build tree's fuzz/
+## (so a harness can be maintained here instead of vendored in the submodule).
+## Each is then run for a short burst, failing on any crash. The full
+## coverage-guided campaign is kloak's ClusterFuzzLite lane; this is the fast
+## regression smoke.
 ##
 ## Subject resolved from KLOAK_REPO (its src/ + protocol/ + fuzz/ + ci/); unset
 ## -> no subject -> SKIP. Build happens in a throwaway copy so KLOAK_REPO (which
@@ -29,6 +32,8 @@ set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
 repo="${KLOAK_REPO:-}"
 src_c="${repo}/src/kloak.c"
@@ -58,6 +63,17 @@ trap cleanup EXIT
 for dir in src protocol fuzz ci; do
    cp -a -- "${repo}/${dir}" "${work}/${dir}"
 done
+
+## dist-ai-owned fuzz harnesses are maintained here, not vendored in the kloak
+## submodule; stage them into the build tree's fuzz/ so kloak's cfuzz-build
+## compiles them alongside kloak's own. The glob matches at least
+## fuzz_parse_esc_key_str.c; a zero-match would fail loud under errexit.
+if [ -d "${script_dir}/../share/kloak-tests" ]; then
+   dist_ai_fuzz="${script_dir}/../share/kloak-tests"
+else
+   dist_ai_fuzz='/usr/share/kloak-tests'
+fi
+cp -a -- "${dist_ai_fuzz}"/fuzz_*.c "${work}/fuzz"/
 
 out="${work}/out"
 mkdir -p -- "${out}"
