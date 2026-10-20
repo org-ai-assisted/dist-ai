@@ -136,6 +136,7 @@ core_suites=(
    helper-scripts-lib-tests-bwrap
    image-optimize-tests
    iso-download-tests
+   kloak-tests
    lock-screen-tests
    lockfile-tests
    mediawiki-shell-tests
@@ -316,7 +317,7 @@ pkg_dir() {
       derivative-maker)
          printf '%s' "${repo_root}"
          ;;
-      anon-gw-anonymizer-config|anon-ws-disable-stacked-tor|onion-grater|qubes-whonix|uwt|whonix-firewall|whonix-gw-network-conf|whonix-ws-network-conf)
+      anon-gw-anonymizer-config|anon-ws-disable-stacked-tor|kloak|onion-grater|qubes-whonix|uwt|whonix-firewall|whonix-gw-network-conf|whonix-ws-network-conf)
          printf '%s' "${repo_root}/packages/whonix/${name}"
          ;;
       ## Standalone repos with no packages/ subpath at all. Yielding empty (not
@@ -687,6 +688,13 @@ wire() {
          if [ -n "${hs}" ]; then
             wire_env+=( "PYTHONPATH=${hs}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}" )
          fi
+         ;;
+      kloak)
+         ## CBMC-only proof suite: it compiles the real src/kloak.c (via kloak's
+         ## KLOAK_FUZZING seam) with wayland-scanner-generated protocol headers.
+         ## No helper-scripts / python subject import, so KLOAK_REPO (which holds
+         ## src/ + protocol/) is the only wiring needed.
+         wire_env=( "KLOAK_REPO=$( pkg_dir kloak )" )
          ;;
       dist-base-files)
          wire_env=( "DIST_BASE_FILES_REPO=$( pkg_dir dist-base-files )" )
@@ -1207,6 +1215,9 @@ suite_component() {
          ;;
       onion-grater)
          printf '%s' 'onion-grater'
+         ;;
+      kloak)
+         printf '%s' 'kloak'
          ;;
       whonix-firewall-leaktest)
          printf '%s' 'whonix-firewall'

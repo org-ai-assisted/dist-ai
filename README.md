@@ -24,6 +24,7 @@ operator's private cache (`~/private-cache`), never in the repo or package.
 | `sdwdate-onion-tester-tests` | shipping | `usr/share/sdwdate-onion-tester-tests/` |
 | `onion-time-pre-script-tests` | shipping | `usr/share/onion-time-pre-script-tests/` |
 | `onion-grater-tests`     | shipping | `usr/share/onion-grater-tests/` |
+| `kloak-tests`            | shipping | `usr/share/kloak-tests/` (CBMC proofs) |
 | `privleap-tests`         | shipping | `usr/share/privleap-tests/` |
 | `pyte-tests`             | shipping | `usr/share/pyte-tests/` |
 | `dist-installer-cli-tests` | shipping | `usr/share/dist-installer-cli-tests/` |
