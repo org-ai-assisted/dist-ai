@@ -62,6 +62,16 @@ if [ ! -x "${probe}" ]; then
    exit 1
 fi
 
+## The subject MUST be the source-able version. A pre-refactor swap-file-creator
+## runs its top-level body on source (live-mode exit, root check, even do_start/
+## do_stop with real I/O), which would false-pass or delete/allocate swap. Static
+## check first -- fail loud instead of sourcing the wrong script. (R-220.)
+if ! grep --quiet -e 'select_swap_backend' -- "${subject}"; then
+   printf '%s\n' "FATAL: subject at '${subject}' is not the source-able version (no select_swap_backend)" >&2
+   printf '%s\n' "needs swap-file-creator with the source-able refactor; a pre-refactor script must not be sourced" >&2
+   exit 1
+fi
+
 ## The subject resolves its check_runtime.bsh via HELPER_SCRIPTS_PATH.
 export HELPER_SCRIPTS_PATH
 
@@ -82,7 +92,9 @@ check() {
 }
 
 ## Source the REAL subject to obtain select_swap_backend (main() does not run:
-## its was_executed guard is false when sourced).
+## its was_executed guard is false when sourced). Clear positional args first so
+## no forwarded arg can reach a dispatch in the sourced script.
+set --
 # shellcheck disable=SC1090,SC1091
 source "${subject}"
 

@@ -1253,6 +1253,9 @@ suite_component() {
       msgcollector)
          printf '%s' 'msgcollector'
          ;;
+      swap-file-creator)
+         printf '%s' 'swap-file-creator'
+         ;;
       tb-updater)
          printf '%s' 'tb-updater'
          ;;
