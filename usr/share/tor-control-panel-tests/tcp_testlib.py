@@ -150,19 +150,26 @@ class _FifoWriteStub:
                 self._err = 'No Tor configuration provided by client!'
                 return
             self._torrc_file.write_text(stripped + '\n', encoding='utf-8')
+            ## Match the real tcp-write-torrc, which chmods the installed file.
             os.chmod(self._torrc_file, 0o644)
         except Exception as exc:  # noqa: BLE001
             self.returncode = 1
             self._err = str(exc)
 
-    def communicate(self):
-        ## Join the drain thread with a bound so a wedged test fails rather than
-        ## hangs forever.
-        self._thread.join(timeout=30)
+    def communicate(self, timeout=None):
+        ## Mirror subprocess.Popen.communicate's signature: the real client now
+        ## calls communicate(timeout=1). Bound the drain-thread join so a wedged
+        ## test fails rather than hangs; fall back to 30s for a bare call.
+        self._thread.join(timeout=timeout if timeout is not None else 30)
         if self._thread.is_alive():
             self.returncode = 1
             self._err = 'tcp-write-torrc stub timed out'
         return ('', self._err)
+
+    def terminate(self):
+        ## The real client calls terminate() in a finally. The drain thread is a
+        ## daemon already joined by communicate(), so there is nothing to kill.
+        return None
 
 
 class _DummyProc:
@@ -225,10 +232,17 @@ def sandbox(initial_torrc: str = DEFAULT_TORRC):
         ## for a real leaprun/pkexec binary (it is unused once the task runners
         ## above are stubbed, but the GUI paths may still call it).
         tcpl.tcpl_priv_executor = '/usr/bin/leaprun'
+        ## tcpl_parse_torrc binds torrc_file=tcpl_torrc_file as a DEFAULT arg at
+        ## import time, so patching the module global above does not reach a
+        ## parse() call with no explicit path. Rebind its default to the sandbox
+        ## torrc for the duration.
+        saved_parse_defaults = tcpl.tcpl_parse_torrc.__defaults__
+        tcpl.tcpl_parse_torrc.__defaults__ = (torrc_file,)
 
         try:
             yield torrc_file
         finally:
+            tcpl.tcpl_parse_torrc.__defaults__ = saved_parse_defaults
             tcpl.tcpl_torrc_dir = saved['torrc_dir']
             tcpl.tcpl_torrc_file = saved['torrc_file']
             tcpl.tcpl_torrc_comm_fifo = saved['comm_fifo']

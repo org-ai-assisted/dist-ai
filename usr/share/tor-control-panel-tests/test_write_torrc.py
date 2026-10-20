@@ -93,6 +93,28 @@ class TestWriteTorrc(unittest.TestCase):
         self.assertEqual(reparsed.proxy_username, 'bob')
         self.assertEqual(reparsed.proxy_password, 'hunter2')
 
+    @unittest.expectedFailure
+    def test_socks5_proxy_credentials_with_space_round_trip(self):
+        ## KNOWN BUG (org-ai-assisted/tor-control-panel#6): a Socks5 proxy
+        ## username/password containing a space is written unquoted, and
+        ## tcpl_parse_torrc still guards `len(torrc_bit_list) == 2` before the
+        ## `" ".join(...)`, so the >2-token line is rejected ("Invalid number of
+        ## arguments") and the config comes back blank. xfail until the parser
+        ## accepts the space; an XPASS here (suite red) is the signal to drop it.
+        info = _blank()
+        info.network_enabled = True
+        info.proxy_type = 'SOCKS5'
+        info.proxy_host = '10.0.0.9'
+        info.proxy_port = 1080
+        info.proxy_username = 'alice smith'
+        info.proxy_password = 'open sesame'
+        with tcp_testlib.sandbox():
+            tcpl.tcpl_write_torrc(info)
+            reparsed = tcpl.tcpl_parse_torrc()
+        self.assertIsInstance(reparsed, tcpl.TcplTorConfInfo)
+        self.assertEqual(reparsed.proxy_username, 'alice smith')
+        self.assertEqual(reparsed.proxy_password, 'open sesame')
+
 
 if __name__ == '__main__':
     unittest.main()
