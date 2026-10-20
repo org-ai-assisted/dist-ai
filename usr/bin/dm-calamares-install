@@ -421,11 +421,26 @@ mok_host_enroll() {
    printf '%s\n' "${me}: --mok-enroll: read MOK cert off the installed disk (host) + enroll"
    "${VBOXMANAGE}" controlvm "${vm}" poweroff 2>/dev/null || true
    sleep 3
-   local der uuid
+   local der uuid req_dir
    der="$(mktemp --tmpdir "${vm}.XXXXXX.der")"
-   sudo vbox-disk-extract --disk "${disk}" --passphrase-file "${passphrase_file}" \
-      --source /var/lib/dkms/mok.pub --dest "${der}" \
-      || die "${FAIL_RC}" "could not read /var/lib/dkms/mok.pub off the installed disk (did the MOK module run?)"
+   ## Read the MOK PUBLIC cert off the installed disk as root WITHOUT host sudo: a
+   ## dm-release-test runner is deliberately sudo-less (vboxusers only, never sysmaint),
+   ## so escalate ONLY this one read via the narrow privleap action 'vbox-disk-extract-mok'
+   ## -- its arg-scoped wrapper reads ONLY this caller's own VM disk and ONLY the public
+   ## /var/lib/dkms/mok.pub. The request (disk path + LUKS passphrase) is handed over in the
+   ## caller-owned request dir (0700, under the account's CANONICAL home so it matches the
+   ## wrapper's getent-derived path); privleap identifies the caller by SO_PEERCRED.
+   req_dir="$(getent passwd "$(id -u)" | cut -d: -f6)/.cache/vbox-mok-extract"
+   # shellcheck disable=SC2174
+   mkdir --parents --mode=0700 -- "${req_dir}"
+   printf '%s' "${disk}" > "${req_dir}/disk"
+   cp --force -- "${passphrase_file}" "${req_dir}/passphrase"
+   chmod 0600 -- "${req_dir}/disk" "${req_dir}/passphrase"
+   leaprun vbox-disk-extract-mok > "${der}" \
+      || { safe-rm --force -- "${req_dir}/disk" "${req_dir}/passphrase" 2>/dev/null || true
+           die "${FAIL_RC}" "could not read /var/lib/dkms/mok.pub off the installed disk via the 'vbox-disk-extract-mok' privleap action (did the MOK module run during install? is the action installed and the runner in vboxusers?)"; }
+   safe-rm --force -- "${req_dir}/disk" "${req_dir}/passphrase" 2>/dev/null || true
+   [ -s "${der}" ] || die "${FAIL_RC}" "extracted MOK cert '${der}' is empty"
    uuid="$(uuidgen)"
    "${VBOXMANAGE}" modifynvram "${vm}" enrollmok --mok="${der}" --owner-uuid="${uuid}" >/dev/null \
       || die "${FAIL_RC}" "VBoxManage modifynvram enrollmok failed"
@@ -766,6 +781,18 @@ parse_args() {
    if [ "${mok_enroll}" = 'true' ] && [ -z "${disk}" ]; then
       usage >&2
       die "${SETUP_RC}" "--mok-enroll requires --disk (the host-side cert read needs the disk path)"
+   fi
+   ## --mok-enroll's post-install mok_host_enroll reads the MOK cert off the disk via the
+   ## narrow privleap action 'vbox-disk-extract-mok' (so a deliberately sudo-less image-test
+   ## runner escalates ONLY that one arg-scoped read, never general host sudo) -- the only
+   ## privileged step, reached only AFTER the ~30 min install. Preflight the privleap plumbing
+   ## NOW so a missing client / uninstalled action fails FAST with the reason, not after the
+   ## whole install.
+   if [ "${mok_enroll}" = 'true' ]; then
+      type -P leaprun >/dev/null 2>&1 \
+         || die "${SETUP_RC}" "--mok-enroll needs privleap's 'leaprun' (not found): the host-side MOK read escalates via the 'vbox-disk-extract-mok' privleap action"
+      grep -rlE '^\[action:vbox-disk-extract-mok\]' /usr/lib/privleap/conf.d/ /etc/privleap/conf.d/ >/dev/null 2>&1 \
+         || die "${SETUP_RC}" "--mok-enroll needs the 'vbox-disk-extract-mok' privleap action installed (dist-ai usr/lib/privleap/conf.d/vbox-disk-extract-mok.conf + usr/libexec/image-test/vbox-mok-extract) and the runner in group vboxusers -- action config not found"
    fi
    ## Resolve the live install session: the GRUB entry to pick (down-count from the
    ## top USER entry) AND the guestcontrol account the live session autologs in as

@@ -281,6 +281,17 @@ cat > "${fixture}/config-test.txt" <<'EOF'
 1.pool.example
 EOF
 
+## Header-incapable extensions: no comment syntax (json) and a compiled binary
+## catalog (mo). A human CANNOT add a per-file header, so they must be swept into
+## REUSE.toml like other data, NOT nagged as missing-header. Classified by
+## extension, so the body content is immaterial.
+cat > "${fixture}/config.json" <<'EOF'
+{ "key": "value" }
+EOF
+cat > "${fixture}/translations/messages.mo" <<'EOF'
+compiled gettext catalog placeholder
+EOF
+
 ## Verbatim COPYING: its AGPL 'Copyright (C) <year> <name of author>' sample must
 ## NOT be rewritten by the converter.
 cat > "${fixture}/COPYING" <<'EOF'
@@ -510,6 +521,17 @@ if grep --quiet --fixed-strings -- 'precedence = "closest"' "${fixture}/REUSE.to
 else
    fail "REUSE.toml: not the expected narrow hybrid shape"
 fi
+
+## Header-incapable extensions (json, mo) are uncommentable DATA: swept into
+## REUSE.toml, NOT nagged as missing-header (nothing a human could add to them).
+assert_not_grep "${lint_log}" "SPDX header MISSING (add one manually): config.json" \
+   "config.json: header-incapable, not nagged"
+assert_grep "${fixture}/REUSE.toml" '"config.json"' \
+   "config.json: swept into REUSE.toml"
+assert_not_grep "${lint_log}" "SPDX header MISSING (add one manually): translations/messages.mo" \
+   "messages.mo: header-incapable, not nagged"
+assert_grep "${fixture}/REUSE.toml" '"translations/messages.mo"' \
+   "messages.mo: swept into REUSE.toml"
 
 ## reuse lint is RED on the converted tree by design: the reported comment-capable
 ## files still lack a per-file header (the tool points them out; a human adds
