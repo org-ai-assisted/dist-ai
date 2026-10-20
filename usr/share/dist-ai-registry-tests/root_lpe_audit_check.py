@@ -87,6 +87,13 @@ def main(argv):
                 return f.get("waiver_reason", "")
         return None
 
+    def cols(items, path_sub, rule, op_sub):
+        ## Byte columns of the matching sinks -- so a multi-sink line can be
+        ## checked per OCCURRENCE (operand is the whole line, shared by both).
+        return {f.get("col") for f in items
+                if path_sub in f["path"] and f["rule"] == rule
+                and op_sub in f["tainted_operand"]}
+
     checks = []
 
     ## Schema pin.
@@ -236,6 +243,75 @@ def main(argv):
         "python trailing waiver above an advisory does not suppress it",
         has(findings, "vuln_py_waived", "python-advisory", ".ssh")
         and not has(suppressed, "vuln_py_waived", "python-advisory", ".ssh")))
+    ## Per-sink attribution: a line with TWO sinks yields a finding per sink at
+    ## its OWN column. A waiver scoped to the leading statement (here the
+    ## '/dev/null' chown) must NOT swallow the unwaived post-';' sink -- else the
+    ## audit silently MISSES a real LPE (a security false negative). The waived
+    ## first sink stays visible under 'suppressed'.
+    ## Per-OCCURRENCE: the unwaived post-';' sink (col > 0) is EMITTED while the
+    ## waived leading '/dev/null' sink (col 0) is SUPPRESSED. Checked by column
+    ## (operand is the whole line, shared by both sinks), so a swapped split
+    ## would fail, not pass vacuously.
+    _tw_f = cols(findings, "vuln_py_waived", "python-advisory", ".twosink")
+    _tw_s = cols(suppressed, "vuln_py_waived", "python-advisory", ".twosink")
+    checks.append((
+        "python multi-sink line: unwaived post-';' sink (col>0) stays flagged",
+        bool(_tw_f) and all(c and c > 0 for c in _tw_f)))
+    checks.append((
+        "python multi-sink line: waived leading '/dev/null' sink (col 0) suppressed",
+        0 in _tw_s and has(suppressed, "vuln_py_waived", "python-advisory",
+                           ".twosink", need_reason=True)))
+    ## A trailing waiver on a statement that OPENED on a prior line (a wrapped
+    ## 'x = (\\n sink); other()  # waiver') must still not reach that earlier sink.
+    checks.append((
+        "python trailing waiver does not reach a sink from a wrapped prior-line statement",
+        has(findings, "vuln_py_waived", "python-advisory", ".wrapmissed")))
+    ## Converse: a waiver on the OPENING line of a wrapped statement DOES waive
+    ## its sink, even when a later statement (';pass') follows on the final line.
+    checks.append((
+        "python opening-line waiver reaches a wrapped sink despite a later final-line statement",
+        has(suppressed, "vuln_py_waived", "python-advisory", ".openwaive",
+            need_reason=True)
+        and not has(findings, "vuln_py_waived", "python-advisory", ".openwaive")))
+    ## A sink on a '#'-led line INSIDE a multiline string is STILL scanned (a
+    ## crude 'line starts with #' skip would hide it, yet exec() makes it live).
+    checks.append((
+        "python sink on a '#'-led line inside a string is still flagged",
+        has(findings, "vuln_py_waived", "python-advisory", ".instr")))
+    ## A sink pattern inside a COMMENT is documentation, never a privileged op:
+    ## a trailing '# ... os.chown(...)' must not be emitted at all (the analogue
+    ## of the whole-line '#' skip). 'not in findings AND not in suppressed'; the
+    ## other .py findings here prove the path is exercised (no vacuous pass).
+    checks.append((
+        "python sink pattern inside a comment is not a finding",
+        not has(findings, "vuln_py_waived", "python-advisory", ".doccomment")
+        and not has(suppressed, "vuln_py_waived", "python-advisory",
+                    ".doccomment")))
+    ## Opposite for a STRING: exec()/eval() make a string LIVE, so a sink inside
+    ## a string must STAY flagged (skipping strings would hide exec'd ops -- a
+    ## false negative). A data string being flagged too is acceptable INFO noise.
+    checks.append((
+        "python sink inside an exec'd string stays flagged",
+        has(findings, "vuln_py_waived", "python-advisory", ".execstr")))
+    ## A TRAILING waiver trails the LAST statement on its line, so it must not
+    ## waive an EARLIER same-line sink: 'sink; sink2  # style-ok' waives only
+    ## sink2 -- else a '/dev/null only' comment silently clears a live /home sink.
+    ## Per-column: the leading .trailpre sink (col 0) EMITTED, trailing /dev/null
+    ## (col > 0) SUPPRESSED.
+    _tp_f = cols(findings, "vuln_py_waived", "python-advisory", ".trailpre")
+    _tp_s = cols(suppressed, "vuln_py_waived", "python-advisory", ".trailpre")
+    checks.append((
+        "python trailing waiver does not reach the earlier same-line sink",
+        0 in _tp_f and bool(_tp_s) and all(c and c > 0 for c in _tp_s)))
+    ## SECURITY (false-negative guard): indentation uses Python's tab width (8),
+    ## so a TAB-indented waiver comment is DEEPER than a 4-space sink and must NOT
+    ## reach it. Counting a tab as one column would route this live sink to
+    ## suppressed -- a missed root LPE.
+    checks.append((
+        "python tab-indented deeper waiver does not suppress a space sink",
+        has(findings, "vuln_py_waived", "python-advisory", ".tabdeep")
+        and not has(suppressed, "vuln_py_waived", "python-advisory",
+                    ".tabdeep")))
     ## Python statement spans (ast): a finding on a LATER line of a multi-line
     ## statement resolves to its first line, where the waiver sits above it; a
     ## compound statement's span is its header only, so a waiver above 'if'
@@ -318,6 +394,42 @@ def main(argv):
         has(findings, "vuln_py_formfeed", "python-advisory", ".formfeed")
         and not has(suppressed, "vuln_py_formfeed", "python-advisory",
                     ".formfeed")))
+    ## A form-feed-led statement LEADS its line (so its directly-preceding
+    ## module-level waiver reaches it), via the form-feed-aware leader test --
+    ## NOT by counting form feeds in _indent.
+    checks.append((
+        "python waiver above a form-feed-led statement reaches its sink",
+        has(suppressed, "vuln_py_formfeed", "python-advisory", ".ffwaived",
+            need_reason=True)
+        and not has(findings, "vuln_py_formfeed", "python-advisory",
+                    ".ffwaived")))
+    ## SECURITY (false-negative guard): a form-feed-led statement keeps nesting
+    ## level 0, so a DEEPER suite's waiver must NOT reach it. If _indent counted
+    ## the form feeds as indent width, the inflated stmt_indent would let the
+    ## if-body waiver suppress this module-level sibling -- a MISSED root LPE.
+    checks.append((
+        "python deeper-suite waiver does not suppress a form-feed-led sibling",
+        has(findings, "vuln_py_formfeed", "python-advisory", ".ffsibling")
+        and not has(suppressed, "vuln_py_formfeed", "python-advisory",
+                    ".ffsibling")))
+    ## SECURITY (false-negative guard): a form feed AFTER spaces still resets the
+    ## indentation to the level following it, so '    \x0cop' is module-level. If
+    ## _indent counted the leading spaces (0-4 here) the deeper if-body waiver
+    ## would suppress this module-level sibling -- a MISSED root LPE.
+    checks.append((
+        "python deeper-suite waiver does not suppress a space-then-ff sibling",
+        has(findings, "vuln_py_formfeed", "python-advisory", ".ffspace")
+        and not has(suppressed, "vuln_py_formfeed", "python-advisory",
+                    ".ffspace")))
+    ## SECURITY (false-negative guard): a COMMENT with a form feed in its own
+    ## indentation reads shallow (the form feed resets the column), so it must
+    ## NOT act as a block-above waiver -- else this dead-if-body comment would
+    ## suppress the live function-body chown below it.
+    checks.append((
+        "python form-feed-indented comment does not waive a shallower sink",
+        has(findings, "vuln_py_formfeed", "python-advisory", ".ffcomment")
+        and not has(suppressed, "vuln_py_formfeed", "python-advisory",
+                    ".ffcomment")))
     checks.append((
         "python waiver in an unparseable file is not honored",
         has(findings, "vuln_py_unparsed", "python-advisory", ".unparsed")

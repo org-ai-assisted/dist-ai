@@ -313,14 +313,32 @@ def severity_of(rule, factors, weight):
 
 def python_advisory(abs_path, rel_path):
     findings = []
+    source = read_text(abs_path)
+    ## A sink pattern inside a COMMENT is documentation -- never executed, so not
+    ## a privileged op -- and is dropped by skipping a match at/after the line's
+    ## comment column (tokenize-located, so a '#' inside a string is not a
+    ## comment). A STRING is NOT skipped: exec()/eval()/compile() make a string
+    ## LIVE, so a sink there can be a real op -- flagging it is the safe
+    ## over-report for an advisory (a data string is acceptable INFO noise). The
+    ## comment skip is the ONLY skip: a crude 'line starts with #' test would also
+    ## drop a '#'-led line INSIDE a multiline string, hiding an exec'd sink.
+    comment_cols = _py_comment_cols(source)
     ## Split on '\n' ONLY, like ast/tokenize: str.splitlines() also breaks on
     ## form feed / vertical tab / etc., shifting finding lines off the
     ## statement spans and comment lines the waivers are matched against.
-    for lineno, raw in enumerate(read_text(abs_path).split("\n"), start=1):
-        if raw.lstrip().startswith("#"):
+    for lineno, raw in enumerate(source.split("\n"), start=1):
+        if not PYTHON_TAINT_RE.search(raw):
             continue
-        match = PYTHON_SINK_RE.search(raw)
-        if match and PYTHON_TAINT_RE.search(raw):
+        comment_col = comment_cols.get(lineno)
+        ## One finding per sink OCCURRENCE (not just the first), each at its OWN
+        ## column, so a waiver scoped to one statement cannot swallow a DIFFERENT
+        ## unwaived sink that shares the line (e.g. a reviewed '/dev/null' chown
+        ## beside an unreviewed '/home/...' chown after a ';'): the latter is a
+        ## non-leading statement the block-above waiver correctly does not reach.
+        for match in PYTHON_SINK_RE.finditer(raw):
+            ## match.start() and comment_col are char indices into raw.
+            if comment_col is not None and match.start() >= comment_col:
+                continue
             findings.append({
                 "rule": "python-advisory", "sink": "python", "line": lineno,
                 ## Byte column of the sink, matching ast col_offset (also bytes),
@@ -486,6 +504,21 @@ def _py_comment_text_by_line(source):
     return comments
 
 
+def _py_comment_cols(source):
+    """Map line -> the start column (char index) of its comment, via tokenize --
+    a '#' inside a string is a STRING token, never a COMMENT, so it cannot pose
+    as a comment. Fails SAFE: a tokenize error yields {}, so no match is treated
+    as in-comment and the whole line is scanned (the safe over-report)."""
+    cols: dict[int, int] = {}
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+            if tok.type == tokenize.COMMENT:
+                cols[tok.start[0]] = tok.start[1]
+    except (tokenize.TokenError, IndentationError, SyntaxError, ValueError):
+        return {}
+    return cols
+
+
 ## Fields holding a compound statement's nested SUITES: their statements get
 ## their own spans, so the compound's span stops at its header.
 _PY_SUITE_FIELDS = frozenset(("body", "orelse", "finalbody", "handlers", "cases"))
@@ -603,9 +636,41 @@ def _py_stmt_spans(source):
     return spans
 
 
+def _leading_ws(line):
+    """LINE's leading indentation whitespace (space, tab, form feed)."""
+    return line[:len(line) - len(line.lstrip(" \t\x0c"))]
+
+
 def _indent(line):
-    """Width of LINE's leading whitespace."""
+    """CHARACTER width of LINE's leading space/tab run -- a COLUMN proxy that
+    matches ast col_offset (also a char count), for anchoring a decorator or
+    match-case header span. NOT a nesting level: use _indent_level for that."""
     return len(line) - len(line.lstrip(" \t"))
+
+
+def _indent_level(line):
+    """Python INDENTATION LEVEL of LINE, for comparing a statement against the
+    comment block above it. Matches CPython's indent computation: a tab advances
+    to the next multiple of 8, and a form feed RESETS the column (a leading form
+    feed, or one anywhere in the leading whitespace, drops everything before it
+    -- so '    \\x0cstmt' is level 0, '\\x0c\\tstmt' is level 8). Mismatching this
+    (counting a tab as 1, or a space before a form feed) lets a deeper suite's
+    waiver reach a shallower statement -- a missed sink."""
+    col = 0
+    for ch in _leading_ws(line).rsplit("\x0c", 1)[-1]:
+        col = col + 8 - (col % 8) if ch == "\t" else col + 1
+    return col
+
+
+def _leads_line(line, col):
+    """True if COL (an ast col_offset, in bytes-as-chars) is the first non-indent
+    column of LINE: everything before it is indentation whitespace, INCLUDING a
+    form feed (which Python accepts as leading statement whitespace). This is the
+    line-LEADER test, in col_offset's CHARACTER units (a tab is one char here,
+    matching col_offset), distinct from _indent_level's tab-expanded nesting: a
+    form-feed-led statement LEADS its line (so its own/directly-above waiver
+    applies) yet keeps a low nesting level (so a deeper suite's cannot reach)."""
+    return col <= len(line) - len(line.lstrip(" \t\x0c"))
 
 
 def lpe_waivers(comment_text_by_line, standalone_lines, call_spans, finding_line,
@@ -659,16 +724,36 @@ def lpe_waivers(comment_text_by_line, standalone_lines, call_spans, finding_line
         stmt_start, owner_col = (min(owners) if owners
                                  else (finding_line, finding_col))
         owner_leads = (1 <= stmt_start <= len(source_lines)
-                       and owner_col <= _indent(source_lines[stmt_start - 1]))
-    stmt_indent = (_indent(source_lines[stmt_start - 1])
+                       and _leads_line(source_lines[stmt_start - 1], owner_col))
+    ## A TRAILING comment (on a line that also holds code) trails the LAST
+    ## statement on that physical line, so it must not waive an EARLIER same-line
+    ## statement: 'sink_a(); sink_b()  # style-ok' waives only sink_b. Scoped PER
+    ## candidate line, since the finding's own statement may span lines:
+    ##  - FINDING_LINE's trailing comment is disqualified by a statement starting
+    ##    after the SINK on that line ('x = (\\n sink); other()  # waiver' -- the
+    ##    comment trails other(), not the wrapped sink);
+    ##  - STMT_START's own opening-line comment is disqualified only by a statement
+    ##    starting after the OWNER on the opening line, so 'value = (  # waiver\\n
+    ##    sink); pass' still honors the waiver on the owner's own line.
+    ## (Shell spans are line-only: finding_col is None -> both candidates stand.)
+    def _trails(line_no, after_col):
+        return finding_col is None or not any(
+            sl == line_no and sc > after_col for sl, sc, el, ec in call_spans)
+    fl_trails = _trails(finding_line, finding_col if finding_col is not None else -1)
+    ss_trails = _trails(stmt_start, owner_col if finding_col is not None else -1)
+    stmt_indent = (_indent_level(source_lines[stmt_start - 1])
                    if 1 <= stmt_start <= len(source_lines) else 0)
     ## Standalone comment block above the statement, nearest first -- only when
-    ## the owning statement leads its line (else the block is the LEADER's).
+    ## the owning statement leads its line (else the block is the LEADER's). A
+    ## comment with a FORM FEED in its own indentation is skipped (it closes the
+    ## block): a form feed resets the column, so _indent_level would read such a
+    ## visually-deep comment as shallow and let it waive a shallower statement.
     block = []
     if owner_leads:
         above = stmt_start - 1
         while (above >= 1 and above in standalone_lines
-               and _indent(source_lines[above - 1]) <= stmt_indent):
+               and "\x0c" not in _leading_ws(source_lines[above - 1])
+               and _indent_level(source_lines[above - 1]) <= stmt_indent):
             block.append(above)
             above -= 1
     ## Wrapped-reason text: the block's plain comment lines BELOW each waiver.
@@ -682,7 +767,9 @@ def lpe_waivers(comment_text_by_line, standalone_lines, call_spans, finding_line
         else:
             prose = text.lstrip("#").strip()
             tail = [prose] + tail if prose else tail
-    for cand in [finding_line, stmt_start] + block:
+    line_cands = ([finding_line] if fl_trails else []) \
+        + ([stmt_start] if ss_trails else [])
+    for cand in line_cands + block:
         text = comment_text_by_line.get(cand)
         if text is None:
             continue
@@ -787,6 +874,10 @@ def audit(dm_root):
                 "submodule": submodule,
                 "path": rel_path,
                 "line": finding["line"],
+                ## Byte column of THIS sink occurrence (None for shell). Carried
+                ## to the report so the dedupe key below keeps two distinct sinks
+                ## on one line apart -- one finding per sink, as intended.
+                "col": finding.get("col"),
                 "rule": finding["rule"],
                 "sink": finding["sink"],
                 "tainted_operand": finding["tainted_operand"],
@@ -826,11 +917,13 @@ def audit(dm_root):
 
 
 def _dedupe(items):
-    """Dedupe identical (path, line, rule, operand); keep the highest severity,
-    then sort HIGH-first by component/path/line."""
+    """Dedupe identical (path, line, col, rule, operand); keep the highest
+    severity, then sort HIGH-first by component/path/line/col."""
     unique: dict[tuple, dict] = {}
     for item in items:
-        key = (item["path"], item["line"], item["rule"],
+        ## Include col: two distinct sinks sharing a line (same path/rule/operand)
+        ## are separate findings, not a dup. Shell's col is None -> unchanged.
+        key = (item["path"], item["line"], item.get("col"), item["rule"],
                item["tainted_operand"])
         current = unique.get(key)
         if current is None or SEVERITY_ORDER.index(item["severity"]) > \
@@ -839,7 +932,7 @@ def _dedupe(items):
     ordered = list(unique.values())
     ordered.sort(key=lambda f: (
         -SEVERITY_ORDER.index(f["severity"]), f["component"], f["path"],
-        f["line"] or 0))
+        f["line"] or 0, f["col"] if f.get("col") is not None else -1))
     return ordered
 
 
