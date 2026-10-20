@@ -67,19 +67,24 @@ OUT="${out}" "${work}/ci/cfuzz-build.sh"
 ## -- it fatal-errors at process exit and libFuzzer reads that as a crash (a
 ## false red). This lane is a build+run SMOKE (ASAN/UBSAN memory-safety + UB,
 ## crash-free); deep leak detection is kloak's full ClusterFuzzLite campaign,
-## which runs in a privileged container.
-export ASAN_OPTIONS="detect_leaks=0${ASAN_OPTIONS:+:${ASAN_OPTIONS}}"
+## which runs in a privileged container. detect_leaks=0 goes LAST so it wins
+## over any inherited ASAN_OPTIONS (LLVM parses the list left-to-right).
+export ASAN_OPTIONS="${ASAN_OPTIONS:+${ASAN_OPTIONS}:}detect_leaks=0"
 
 fail=0
 pass=0
 for binary in "${out}"/fuzz_*; do
    [ -x "${binary}" ] || continue
    name="$(basename -- "${binary}")"
-   if "${binary}" -runs="${runs}" -max_len=256 >/dev/null 2>&1; then
+   ## Capture output so a crash's sanitizer report + libFuzzer reproduction
+   ## (the failing input) survive into the CI log, not just the binary name.
+   log="${work}/${name}.log"
+   if "${binary}" -runs="${runs}" -max_len=256 >"${log}" 2>&1; then
       printf '%s\n' "PASS: ${name} (${runs} runs, no crash)"
       pass=$(( pass + 1 ))
    else
       printf '%s\n' "FAIL: ${name} crashed during smoke-fuzz" >&2
+      tail -n 60 -- "${log}" >&2
       fail=$(( fail + 1 ))
    fi
 done

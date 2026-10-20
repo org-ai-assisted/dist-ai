@@ -152,7 +152,11 @@ void verify_get_ticks_from_scroll_accum(void)
 void verify_current_time_ms(void)
 {
     start_time = 0;
-    (void)current_time_ms();
+    /* First call seeds start_time and returns 0; later calls return a delta.
+     * Prove the documented non-negative property for both, not just absence of
+     * UB. */
+    __CPROVER_assert(current_time_ms() >= 0, "seed current_time_ms non-negative");
+    __CPROVER_assert(current_time_ms() >= 0, "delta current_time_ms non-negative");
 }
 
 /* sleep_ms: a non-negative millisecond count produces a valid timespec with no

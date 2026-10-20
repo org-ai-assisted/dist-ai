@@ -33,7 +33,14 @@ else
    tests_dir='/usr/share/kloak-tests'
 fi
 
-python3 -m unittest discover \
+## Driven through run-unittest.py so a subject-absent run (the whole suite
+## skips from setUpClass when KLOAK_REPO lacks src/kloak.c) surfaces as a skip
+## exit (78), not a bare `unittest discover` exit 0 the orchestrator reads as a
+## false-green PASS.
+run_unittest="${script_dir}/../share/dist-ai-tests-common/run-unittest.py"
+[ -r "${run_unittest}" ] || run_unittest='/usr/share/dist-ai-tests-common/run-unittest.py'
+
+"${run_unittest}" \
    --start-directory "${tests_dir}" \
    --pattern 'test_*.py' \
    "$@"
