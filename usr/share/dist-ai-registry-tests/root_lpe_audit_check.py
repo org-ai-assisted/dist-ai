@@ -236,6 +236,27 @@ def main(argv):
         "python trailing waiver above an advisory does not suppress it",
         has(findings, "vuln_py_waived", "python-advisory", ".ssh")
         and not has(suppressed, "vuln_py_waived", "python-advisory", ".ssh")))
+    ## Per-sink attribution: a line with TWO sinks yields a finding per sink at
+    ## its OWN column. A waiver scoped to the leading statement (here the
+    ## '/dev/null' chown) must NOT swallow the unwaived post-';' sink -- else the
+    ## audit silently MISSES a real LPE (a security false negative). The waived
+    ## first sink stays visible under 'suppressed'.
+    checks.append((
+        "python second unwaived sink on a multi-sink line stays flagged",
+        has(findings, "vuln_py_waived", "python-advisory", ".twosink")))
+    checks.append((
+        "python waived first sink on that multi-sink line is suppressed",
+        has(suppressed, "vuln_py_waived", "python-advisory", ".twosink",
+            need_reason=True)))
+    ## A sink pattern inside a COMMENT is documentation, never a privileged op:
+    ## a trailing '# ... os.chown(...)' must not be emitted at all (the analogue
+    ## of the whole-line '#' skip). 'not in findings AND not in suppressed'; the
+    ## other .py findings here prove the path is exercised (no vacuous pass).
+    checks.append((
+        "python sink pattern inside a comment is not a finding",
+        not has(findings, "vuln_py_waived", "python-advisory", ".doccomment")
+        and not has(suppressed, "vuln_py_waived", "python-advisory",
+                    ".doccomment")))
     ## Python statement spans (ast): a finding on a LATER line of a multi-line
     ## statement resolves to its first line, where the waiver sits above it; a
     ## compound statement's span is its header only, so a waiver above 'if'
@@ -318,6 +339,15 @@ def main(argv):
         has(findings, "vuln_py_formfeed", "python-advisory", ".formfeed")
         and not has(suppressed, "vuln_py_formfeed", "python-advisory",
                     ".formfeed")))
+    ## _indent counts a leading form feed (\x0c, which Python accepts as
+    ## statement whitespace): else a form-feed-led op reads as NOT leading its
+    ## line and its directly-preceding waiver is ignored (false positive).
+    checks.append((
+        "python waiver above a form-feed-led statement reaches its sink",
+        has(suppressed, "vuln_py_formfeed", "python-advisory", ".ffwaived",
+            need_reason=True)
+        and not has(findings, "vuln_py_formfeed", "python-advisory",
+                    ".ffwaived")))
     checks.append((
         "python waiver in an unparseable file is not honored",
         has(findings, "vuln_py_unparsed", "python-advisory", ".unparsed")

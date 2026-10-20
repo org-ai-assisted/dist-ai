@@ -313,14 +313,28 @@ def severity_of(rule, factors, weight):
 
 def python_advisory(abs_path, rel_path):
     findings = []
+    source = read_text(abs_path)
+    ## A sink pattern inside a COMMENT is documentation, not a privileged op --
+    ## the trailing-comment analogue of the whole-line '#' skip below.
+    comment_cols = _py_comment_cols(source)
     ## Split on '\n' ONLY, like ast/tokenize: str.splitlines() also breaks on
     ## form feed / vertical tab / etc., shifting finding lines off the
     ## statement spans and comment lines the waivers are matched against.
-    for lineno, raw in enumerate(read_text(abs_path).split("\n"), start=1):
+    for lineno, raw in enumerate(source.split("\n"), start=1):
         if raw.lstrip().startswith("#"):
             continue
-        match = PYTHON_SINK_RE.search(raw)
-        if match and PYTHON_TAINT_RE.search(raw):
+        if not PYTHON_TAINT_RE.search(raw):
+            continue
+        comment_col = comment_cols.get(lineno)
+        ## One finding per sink OCCURRENCE (not just the first), each at its OWN
+        ## column, so a waiver scoped to one statement cannot swallow a DIFFERENT
+        ## unwaived sink that shares the line (e.g. a reviewed '/dev/null' chown
+        ## beside an unreviewed '/home/...' chown after a ';'): the latter is a
+        ## non-leading statement the block-above waiver correctly does not reach.
+        for match in PYTHON_SINK_RE.finditer(raw):
+            ## match.start() and comment_col are both char indices into raw.
+            if comment_col is not None and match.start() >= comment_col:
+                continue
             findings.append({
                 "rule": "python-advisory", "sink": "python", "line": lineno,
                 ## Byte column of the sink, matching ast col_offset (also bytes),
@@ -486,6 +500,21 @@ def _py_comment_text_by_line(source):
     return comments
 
 
+def _py_comment_cols(source):
+    """Map line -> the start column (char index) of its comment, via tokenize --
+    a '#' inside a string is a STRING token, never a COMMENT. Fails SAFE: a
+    tokenize error yields {}, so no match is treated as in-comment and the whole
+    line is scanned (over-report, the safe direction for a security tool)."""
+    cols: dict[int, int] = {}
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+            if tok.type == tokenize.COMMENT:
+                cols[tok.start[0]] = tok.start[1]
+    except (tokenize.TokenError, IndentationError, SyntaxError, ValueError):
+        return {}
+    return cols
+
+
 ## Fields holding a compound statement's nested SUITES: their statements get
 ## their own spans, so the compound's span stops at its header.
 _PY_SUITE_FIELDS = frozenset(("body", "orelse", "finalbody", "handlers", "cases"))
@@ -604,8 +633,11 @@ def _py_stmt_spans(source):
 
 
 def _indent(line):
-    """Width of LINE's leading whitespace."""
-    return len(line) - len(line.lstrip(" \t"))
+    """Width of LINE's leading whitespace. A leading form feed (\\x0c) counts:
+    Python accepts it as statement whitespace (a '\\x0cstmt' parses with
+    col_offset 1), so it must be part of the indent, else such a statement reads
+    as NOT leading its line and its directly-preceding waiver is ignored."""
+    return len(line) - len(line.lstrip(" \t\x0c"))
 
 
 def lpe_waivers(comment_text_by_line, standalone_lines, call_spans, finding_line,

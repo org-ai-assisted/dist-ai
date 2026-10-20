@@ -583,11 +583,17 @@ match chowned:
         os.chown("/home/user/.casetrail", 0, 0)
     ):
         pass
+# style-ok: lpe-python-advisory -- reviewed the /dev/null chown on this line only
+os.chown("/dev/null", 0, 0); os.chown("/home/user/.twosink", 0, 0)
+marker_doc = 1  # documentation only: os.chown("/home/user/.doccomment", 0, 0) is prose, not a call
 EOF
 
 ## VULN + WAIVER (python form feed): a form feed is NOT a line break to Python,
 ## so the advisory's line numbers must not count it as one -- else the op below
-## is reported one line low, ON the waiver comment, and wrongly suppressed.
+## is reported one line low, ON the waiver comment, and wrongly suppressed. The
+## .ffwaived case is the converse: Python accepts a LEADING form feed as
+## statement whitespace, so _indent must count it -- else the form-feed-led op
+## reads as NOT leading its line and its directly-preceding waiver is ignored.
 form_feed=$'\f'
 printf '%s\n' \
    '#!/usr/bin/python3' \
@@ -600,6 +606,8 @@ printf '%s\n' \
    'waived = [' \
    '    0,' \
    ']' \
+   '# style-ok: lpe-python-advisory -- form-feed-led op reviewed' \
+   "${form_feed}"'os.chown("/home/user/.ffwaived", 0, 0)' \
    | write 'packages/kicksecure/targetpkg/usr/libexec/targetpkg/vuln_py_formfeed.py'
 
 ## VULN + WAIVER (python parse error): the file tokenizes but does not parse, so
