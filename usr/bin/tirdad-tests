@@ -1,0 +1,43 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Formal-verification suite for tirdad: CBMC proofs over the real
+## module/tirdad.c TCP ISN hook path. No kernel, no root, no network -- CBMC
+## checks the source directly through a header shim.
+##
+## The subject is resolved by test_tirdad_verification.py:
+##   * TIRDAD_REPO=/path/to/tirdad -> that checkout's module/tirdad.c, OR
+##   * unset -> the DKMS-installed source under /usr/src/tirdad*.
+##
+## Driven through run-unittest.py so a subject-absent run (the whole suite
+## skips from setUpClass) surfaces as a skip exit (78), not a bare
+## `unittest discover` exit 0 that the orchestrator would read as a false-green
+## PASS. cbmc is required. Any extra arguments are forwarded to the runner.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d "${script_dir}/../share/tirdad-tests" ]; then
+   tests_dir="${script_dir}/../share/tirdad-tests"
+else
+   tests_dir='/usr/share/tirdad-tests'
+fi
+
+run_unittest="${script_dir}/../share/dist-ai-tests-common/run-unittest.py"
+[ -r "${run_unittest}" ] || run_unittest='/usr/share/dist-ai-tests-common/run-unittest.py'
+
+"${run_unittest}" \
+   --start-directory "${tests_dir}" \
+   --pattern 'test_*.py' \
+   "$@"

@@ -41,22 +41,23 @@ work="$(mktemp --directory --tmpdir mok-extract-stdout-test.XXXXXX)"
 
 ## vbox-mok-extract derives the request dir from the CALLER's passwd home (unspoofable
 ## PRIVLEAP_CALLER_UID), not an env var, so the request MUST live under the real home.
-## Create only our own transient files there and restore the slot on exit.
+## The slot is shared: REFUSE to run when it is already occupied or symlinked (below), so
+## the test never clobbers a concurrent real MOK request and never follows a symlink on
+## write. Only files WE create are cleaned up (created flag), so a refusal leaves the real
+## slot untouched.
 uid="$(id -u)"
 home="$(getent passwd "${uid}" | cut -d: -f6)"
 req="${home}/.cache/vbox-mok-extract"
 req_preexisted='true'
 [ -d "${req}" ] || req_preexisted='false'
-disk_bak=''; pass_bak=''
-[ -e "${req}/disk" ] && { disk_bak="${work}/disk.bak"; cp -a -- "${req}/disk" "${disk_bak}"; }
-[ -e "${req}/passphrase" ] && { pass_bak="${work}/pass.bak"; cp -a -- "${req}/passphrase" "${pass_bak}"; }
+created='false'
 
 cleanup() {
-   safe-rm --force -- "${req}/disk" "${req}/passphrase" "${req}/fakedisk" 2>/dev/null || true
-   [ -n "${disk_bak}" ] && cp -a -- "${disk_bak}" "${req}/disk"
-   [ -n "${pass_bak}" ] && cp -a -- "${pass_bak}" "${req}/passphrase"
-   if [ "${req_preexisted}" = 'false' ]; then
-      rmdir -- "${req}" 2>/dev/null || true
+   if [ "${created}" = 'true' ]; then
+      safe-rm --force -- "${req}/disk" "${req}/passphrase" "${req}/fakedisk" 2>/dev/null || true
+      if [ "${req_preexisted}" = 'false' ]; then
+         rmdir -- "${req}" 2>/dev/null || true
+      fi
    fi
    safe-rm --recursive --force -- "${work}"
 }
@@ -72,13 +73,40 @@ check() {
    fi
 }
 
+## Refuse an occupied or symlinked slot before any write: a symlinked request dir would
+## redirect every write, and an existing disk/passphrase/fakedisk means a concurrent real
+## MOK request we must not clobber. Runs while created='false', so the early exit leaves
+## the slot untouched.
+## This guard covers the REALISTIC accident: a real pending request (or a stale symlink)
+## already in the slot when the test starts. A request that RACES in AFTER this check, a
+## directory symlink planted before the mkdir below, or an adversary with write access to
+## the real home are OUT of scope: req is a fixed real-home path, so closing those fully
+## needs an isolated test home/account, DELIBERATELY not done (the threat is a realistic
+## pre-existing-slot accident, not a live MOK enrollment during the sub-second test). Do
+## NOT "fix" the residual with an isolated account.
+[ -L "${req}" ] && { printf '%s\n' "FATAL: ${req} is a symlink; refusing" >&2; exit 1; }
+for leaf in disk passphrase fakedisk; do
+   if [ -e "${req}/${leaf}" ] || [ -L "${req}/${leaf}" ]; then
+      printf '%s\n' "FATAL: ${req}/${leaf} exists; refusing to clobber a concurrent MOK request" >&2
+      exit 1
+   fi
+done
+
 ## Request: a caller-owned dummy disk (owner == PRIVLEAP_CALLER_UID passes the wrapper's
 ## ownership gate) + a passphrase file. The stub ignores both; the owner check is real.
+## noclobber is best-effort defense-in-depth on top of the guard: '>' then refuses to
+## overwrite an existing regular file (or a symlink to one) that raced into the slot after
+## the check. It is NOT full O_EXCL and NOT race-safe -- it does not stop a symlink to a
+## non-regular file, a directory symlink followed by mkdir, or the cleanup window (all the
+## out-of-scope residual above).
 mkdir --parents -- "${req}"
+created='true'
 disk="${req}/fakedisk"
-touch -- "${disk}"
+set -o noclobber
+printf '%s' '' > "${disk}"
 printf '%s\n' "${disk}" > "${req}/disk"
 printf '%s' 'irrelevant' > "${req}/passphrase"
+set +o noclobber
 
 ## Fixed "DER" payload: a leading 0x30 (SEQUENCE) + bytes incl. a NUL and a high byte, so
 ## a text-mangling channel is caught. base64-decoded (binary, incl. NUL, cannot go through

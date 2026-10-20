@@ -10,15 +10,17 @@
 ## On a live ISO booted boot-role=unrestricted-admin, check-unrestricted-admin.service
 ## purges user-sysmaint-split (slow apt), which restores sudo/pkexec to setuid root:root.
 ## The autologin desktop appears before that finishes, so install-host raced it and
-## died "Unable To Elevate". The fix: install-host waits for system-ready via the
-## sanctioned system-wide helper-scripts action leaprun system-ready-check before the
-## elevation assert -- it does NOT start the unit and does NOT busy-poll.
+## died "Unable To Elevate". The fix: install-host sources the sanctioned helper-scripts
+## readiness wait (try-wait-for-system-ready, which polls 'leaprun system-ready-check' on a
+## monotonic deadline) and CALLS it before the elevation assert -- it does NOT start the
+## unit and does NOT busy-poll.
 ##
 ## This pins that contract:
-##   - a CODE line invokes leaprun system-ready-check (matched on non-comment lines only --
-##     install-host's own explanatory comment names the action, so a bare substring over the
-##     whole file would false-pass if the call were removed but the comment kept);
-##   - the wait runs BEFORE the pkexec/sudo elevation assert;
+##   - a CODE line sources the try-wait-for-system-ready helper, and a CODE line calls
+##     try_wait_for_system_ready (matched on non-comment lines only -- install-host's own
+##     explanatory comment names the wait, so a bare substring over the whole file would
+##     false-pass if the call were removed but the comment kept);
+##   - the call runs BEFORE the pkexec/sudo elevation assert;
 ##   - the superseded elevate_deadline busy-poll band-aid and the --user readiness variant
 ##     are gone.
 ##
@@ -74,19 +76,20 @@ assert_code_absent() {
    fi
 }
 
-assert_code_present 'leaprun system-ready-check' 'waits via the system-wide system-ready-check action (not --user, not systemctl start)'
+assert_code_present 'source .*/try-wait-for-system-ready' 'sources the sanctioned helper-scripts system-ready wait'
+assert_code_present 'try_wait_for_system_ready' 'calls the system-ready wait before elevating (via leaprun system-ready-check, not --user, not systemctl start)'
 assert_code_present 'boot-role=unrestricted-admin' 'the unlock wait is gated on the unrestricted-admin boot-role'
 assert_code_absent 'elevate_deadline' 'the superseded 180s busy-poll band-aid is gone'
 assert_code_absent 'systemctl --user' 'the --user readiness variant is not used for a system unit'
 
 ## Ordering: the readiness wait must run BEFORE the pkexec/sudo elevation assert, otherwise it
 ## cannot prevent the race it exists to close.
-leaprun_line="$(code_lines 'leaprun system-ready-check' | head -n1 | cut -d: -f1)"
+call_line="$(code_lines 'try_wait_for_system_ready' | head -n1 | cut -d: -f1)"
 assert_line="$(grep -nF -- "[ -x '/usr/bin/pkexec' ]" "${subject}" | head -n1 | cut -d: -f1 || true)"
-if [ -n "${leaprun_line}" ] && [ -n "${assert_line}" ] && [ "${leaprun_line}" -lt "${assert_line}" ]; then
-   printf '%s\n' "ok: readiness wait (line ${leaprun_line}) precedes the elevation assert (line ${assert_line})"
+if [ -n "${call_line}" ] && [ -n "${assert_line}" ] && [ "${call_line}" -lt "${assert_line}" ]; then
+   printf '%s\n' "ok: readiness wait (line ${call_line}) precedes the elevation assert (line ${assert_line})"
 else
-   printf '%s\n' "FAIL: readiness wait must precede the elevation assert (wait=${leaprun_line:-none} assert=${assert_line:-none})" >&2
+   printf '%s\n' "FAIL: readiness wait must precede the elevation assert (wait=${call_line:-none} assert=${assert_line:-none})" >&2
    fail=1
 fi
 
