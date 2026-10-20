@@ -41,22 +41,23 @@ work="$(mktemp --directory --tmpdir mok-extract-stdout-test.XXXXXX)"
 
 ## vbox-mok-extract derives the request dir from the CALLER's passwd home (unspoofable
 ## PRIVLEAP_CALLER_UID), not an env var, so the request MUST live under the real home.
-## Create only our own transient files there and restore the slot on exit.
+## The slot is shared: REFUSE to run when it is already occupied or symlinked (below), so
+## the test never clobbers a concurrent real MOK request and never follows a symlink on
+## write. Only files WE create are cleaned up (created flag), so a refusal leaves the real
+## slot untouched.
 uid="$(id -u)"
 home="$(getent passwd "${uid}" | cut -d: -f6)"
 req="${home}/.cache/vbox-mok-extract"
 req_preexisted='true'
 [ -d "${req}" ] || req_preexisted='false'
-disk_bak=''; pass_bak=''
-[ -e "${req}/disk" ] && { disk_bak="${work}/disk.bak"; cp -a -- "${req}/disk" "${disk_bak}"; }
-[ -e "${req}/passphrase" ] && { pass_bak="${work}/pass.bak"; cp -a -- "${req}/passphrase" "${pass_bak}"; }
+created='false'
 
 cleanup() {
-   safe-rm --force -- "${req}/disk" "${req}/passphrase" "${req}/fakedisk" 2>/dev/null || true
-   [ -n "${disk_bak}" ] && cp -a -- "${disk_bak}" "${req}/disk"
-   [ -n "${pass_bak}" ] && cp -a -- "${pass_bak}" "${req}/passphrase"
-   if [ "${req_preexisted}" = 'false' ]; then
-      rmdir -- "${req}" 2>/dev/null || true
+   if [ "${created}" = 'true' ]; then
+      safe-rm --force -- "${req}/disk" "${req}/passphrase" "${req}/fakedisk" 2>/dev/null || true
+      if [ "${req_preexisted}" = 'false' ]; then
+         rmdir -- "${req}" 2>/dev/null || true
+      fi
    fi
    safe-rm --recursive --force -- "${work}"
 }
@@ -72,9 +73,22 @@ check() {
    fi
 }
 
+## Refuse an occupied or symlinked slot before any write: a symlinked request dir would
+## redirect every write, and an existing disk/passphrase/fakedisk means a concurrent real
+## MOK request we must not clobber. Runs while created='false', so the early exit leaves
+## the slot untouched.
+[ -L "${req}" ] && { printf '%s\n' "FATAL: ${req} is a symlink; refusing" >&2; exit 1; }
+for leaf in disk passphrase fakedisk; do
+   if [ -e "${req}/${leaf}" ] || [ -L "${req}/${leaf}" ]; then
+      printf '%s\n' "FATAL: ${req}/${leaf} exists; refusing to clobber a concurrent MOK request" >&2
+      exit 1
+   fi
+done
+
 ## Request: a caller-owned dummy disk (owner == PRIVLEAP_CALLER_UID passes the wrapper's
 ## ownership gate) + a passphrase file. The stub ignores both; the owner check is real.
 mkdir --parents -- "${req}"
+created='true'
 disk="${req}/fakedisk"
 touch -- "${disk}"
 printf '%s\n' "${disk}" > "${req}/disk"
