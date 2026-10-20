@@ -77,6 +77,12 @@ check() {
 ## redirect every write, and an existing disk/passphrase/fakedisk means a concurrent real
 ## MOK request we must not clobber. Runs while created='false', so the early exit leaves
 ## the slot untouched.
+## Residual scope: a request RACING in after this check (or an adversary with write access
+## to the real home) is OUT of scope -- req is a fixed real-home path, so full race-safety
+## would need an isolated test home/account, DELIBERATELY not done (the threat here is a
+## realistic pre-existing-slot accident, not a live MOK enrollment during the sub-second
+## test). Do NOT "fix" the residual with an isolated account. The leaf writes below still
+## close the write-time window with noclobber (O_EXCL).
 [ -L "${req}" ] && { printf '%s\n' "FATAL: ${req} is a symlink; refusing" >&2; exit 1; }
 for leaf in disk passphrase fakedisk; do
    if [ -e "${req}/${leaf}" ] || [ -L "${req}/${leaf}" ]; then
@@ -87,12 +93,17 @@ done
 
 ## Request: a caller-owned dummy disk (owner == PRIVLEAP_CALLER_UID passes the wrapper's
 ## ownership gate) + a passphrase file. The stub ignores both; the owner check is real.
+## noclobber makes each create O_EXCL: if the slot was raced after the guard (a leaf
+## symlink or file planted post-check), the create FAILS loudly instead of following the
+## symlink or clobbering a concurrent request.
 mkdir --parents -- "${req}"
 created='true'
 disk="${req}/fakedisk"
-touch -- "${disk}"
+set -o noclobber
+printf '%s' '' > "${disk}"
 printf '%s\n' "${disk}" > "${req}/disk"
 printf '%s' 'irrelevant' > "${req}/passphrase"
+set +o noclobber
 
 ## Fixed "DER" payload: a leading 0x30 (SEQUENCE) + bytes incl. a NUL and a high byte, so
 ## a text-mangling channel is caught. base64-decoded (binary, incl. NUL, cannot go through
