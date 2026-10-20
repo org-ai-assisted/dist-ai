@@ -281,15 +281,27 @@ cat > "${fixture}/config-test.txt" <<'EOF'
 1.pool.example
 EOF
 
-## Header-incapable extensions: no comment syntax (json) and a compiled binary
-## catalog (mo). A human CANNOT add a per-file header, so they must be swept into
-## REUSE.toml like other data, NOT nagged as missing-header. Classified by
-## extension, so the body content is immaterial.
-cat > "${fixture}/config.json" <<'EOF'
-{ "key": "value" }
+## Only binary OpenPGP '.gpg' is classified: no source ecosystem uses it and reuse
+## reads no inline tag, so a header cannot exist -> swept into REUSE.toml, NOT nagged.
+cat > "${fixture}/secret.gpg" <<'EOF'
+not-a-real-key
+EOF
+## Contrast: extensions that ALSO name a source language stay REPORTED -- reuse
+## reads an inline SPDX tag from them (verified: .sig/.mo populate LicenseInfoInFile),
+## so blanket-annotating would mislicense a real source file. One per excluded
+## extension, guarding against re-adding any to the uncommentable list.
+cat > "${fixture}/manual.asc" <<'EOF'
+= Upstream Manual
+text
+EOF
+cat > "${fixture}/counter.sig" <<'EOF'
+signature COUNTER = sig val next : unit -> int end
 EOF
 cat > "${fixture}/translations/messages.mo" <<'EOF'
-compiled gettext catalog placeholder
+placeholder
+EOF
+cat > "${fixture}/tsconfig.json" <<'EOF'
+{ "compilerOptions": { "noEmit": true } }
 EOF
 
 ## Verbatim COPYING: its AGPL 'Copyright (C) <year> <name of author>' sample must
@@ -522,16 +534,31 @@ else
    fail "REUSE.toml: not the expected narrow hybrid shape"
 fi
 
-## Header-incapable extensions (json, mo) are uncommentable DATA: swept into
-## REUSE.toml, NOT nagged as missing-header (nothing a human could add to them).
-assert_not_grep "${lint_log}" "SPDX header MISSING (add one manually): config.json" \
-   "config.json: header-incapable, not nagged"
-assert_grep "${fixture}/REUSE.toml" '"config.json"' \
-   "config.json: swept into REUSE.toml"
-assert_not_grep "${lint_log}" "SPDX header MISSING (add one manually): translations/messages.mo" \
-   "messages.mo: header-incapable, not nagged"
-assert_grep "${fixture}/REUSE.toml" '"translations/messages.mo"' \
-   "messages.mo: swept into REUSE.toml"
+## Only '.gpg' is classified (binary, no inline tag possible): swept into
+## REUSE.toml, NOT nagged.
+assert_not_grep "${lint_log}" "SPDX header MISSING (add one manually): secret.gpg" \
+   "secret.gpg: binary, not nagged"
+assert_grep "${fixture}/REUSE.toml" '"secret.gpg"' \
+   "secret.gpg: swept into REUSE.toml"
+## Source-named extensions stay REPORTED and are NOT annotated in REUSE.toml (reuse
+## reads an inline SPDX tag from .asc/.sig/.mo/.json, so classifying would
+## mislicense a real source file). Guards against re-adding them to the list.
+assert_grep "${lint_log}" "SPDX header MISSING (add one manually): manual.asc" \
+   "manual.asc: source-named, reported"
+assert_not_grep "${fixture}/REUSE.toml" '"manual.asc"' \
+   "manual.asc: not swept into REUSE.toml"
+assert_grep "${lint_log}" "SPDX header MISSING (add one manually): counter.sig" \
+   "counter.sig: source-named, reported"
+assert_not_grep "${fixture}/REUSE.toml" '"counter.sig"' \
+   "counter.sig: not swept into REUSE.toml"
+assert_grep "${lint_log}" "SPDX header MISSING (add one manually): translations/messages.mo" \
+   "messages.mo: source-named, reported"
+assert_not_grep "${fixture}/REUSE.toml" '"translations/messages.mo"' \
+   "messages.mo: not swept into REUSE.toml"
+assert_grep "${lint_log}" "SPDX header MISSING (add one manually): tsconfig.json" \
+   "tsconfig.json: source-named, reported"
+assert_not_grep "${fixture}/REUSE.toml" '"tsconfig.json"' \
+   "tsconfig.json: not swept into REUSE.toml"
 
 ## reuse lint is RED on the converted tree by design: the reported comment-capable
 ## files still lack a per-file header (the tool points them out; a human adds

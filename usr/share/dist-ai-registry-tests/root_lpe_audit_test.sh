@@ -583,11 +583,34 @@ match chowned:
         os.chown("/home/user/.casetrail", 0, 0)
     ):
         pass
+# style-ok: lpe-python-advisory -- reviewed the /dev/null chown on this line only
+os.chown("/dev/null", 0, 0); os.chown("/home/user/.twosink", 0, 0)
+marker_doc = 1  # documentation only: os.chown("/home/user/.doccomment", 0, 0) is prose, not a call
+exec("os.chown('/home/user/.execstr', 0, 0)")
+os.chown("/home/user/.trailpre", 0, 0); os.chown("/dev/null", 0, 0)  # style-ok: lpe-python-advisory -- /dev/null only
+val_wrap = (
+    os.chown("/home/user/.wrapmissed", 0, 0)); os.chown("/dev/null", 0, 0)  # style-ok: lpe-python-advisory -- /dev/null only
+value_ow = (  # style-ok: lpe-python-advisory -- reviews the whole assignment on its OPENING line
+    os.chown("/home/user/.openwaive", 0, 0)); pass
+payload_instr = """
+# os.chown("/home/user/.instr", 0, 0)
+"""
+exec(payload_instr)
+if marker_py:
+	# style-ok: lpe-python-advisory -- TAB comment is DEEPER (col 8) than the space sink, must NOT reach it
+    os.chown("/home/user/.tabdeep", 0, 0)
 EOF
 
 ## VULN + WAIVER (python form feed): a form feed is NOT a line break to Python,
 ## so the advisory's line numbers must not count it as one -- else the op below
-## is reported one line low, ON the waiver comment, and wrongly suppressed.
+## is reported one line low, ON the waiver comment, and wrongly suppressed. The
+## .ffwaived case is the converse: Python accepts a LEADING form feed as
+## statement whitespace, so the LEADER test must treat it as whitespace -- else
+## the form-feed-led op reads as NOT leading its line and its directly-preceding
+## waiver is ignored. The nesting level (_indent_level) must NOT count a form
+## feed as width: a form feed RESETS the indentation column, and counting it
+## would let a deeper suite's waiver reach a module-level sibling (.ffsibling,
+## .ffspace) -- a missed root LPE.
 form_feed=$'\f'
 printf '%s\n' \
    '#!/usr/bin/python3' \
@@ -600,6 +623,21 @@ printf '%s\n' \
    'waived = [' \
    '    0,' \
    ']' \
+   '# style-ok: lpe-python-advisory -- form-feed-led op reviewed' \
+   "${form_feed}"'os.chown("/home/user/.ffwaived", 0, 0)' \
+   'if waived:' \
+   '    pass' \
+   '    # style-ok: lpe-python-advisory -- if-body only, must NOT reach the ff sibling below' \
+   "${form_feed}${form_feed}${form_feed}${form_feed}"'os.chown("/home/user/.ffsibling", 0, 0)' \
+   'if waived:' \
+   '    pass' \
+   '    # style-ok: lpe-python-advisory -- space+ff dead branch, must NOT reach the sibling below' \
+   '    '"${form_feed}"'os.chown("/home/user/.ffspace", 0, 0)' \
+   'def _ffbodyfn():' \
+   '    if False:' \
+   '        pass' \
+   "        ${form_feed}"'# style-ok: lpe-python-advisory -- FF in comment indent (reads shallow), dead if-body, must NOT reach the live chown' \
+   '    os.chown("/home/user/.ffcomment", 0, 0)' \
    | write 'packages/kicksecure/targetpkg/usr/libexec/targetpkg/vuln_py_formfeed.py'
 
 ## VULN + WAIVER (python parse error): the file tokenizes but does not parse, so

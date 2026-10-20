@@ -37,6 +37,9 @@ export LC_ALL=C
 
 me="$(basename -- "$0")"
 tmp_der=""
+## Overridable so a unit test can assert stdout stays clean against a stub extractor;
+## production is byte-identical (unset -> the real tool).
+VBOX_DISK_EXTRACT="${VBOX_DISK_EXTRACT:-/usr/bin/vbox-disk-extract}"
 
 die() {
    printf '%s\n' "${me}: ERROR: $1" >&2
@@ -84,11 +87,16 @@ tmp_der="$(mktemp)"
 
 ## --source is FIXED (a public cert); --dest to a root-owned temp, then streamed
 ## back to the caller over privleap's stdout channel.
-/usr/bin/vbox-disk-extract \
+## STDOUT here IS the cert data channel (the caller captures it as the enrolled MOK),
+## so nothing but the DER may reach it: the extractor's own stdout is routed to stderr
+## so only the final `cat` writes the cert. (A stray diagnostic prepended to the DER
+## corrupts the MokListRT enrollment -> kernel rejects the key -> signed modules fail
+## under Secure Boot.)
+"${VBOX_DISK_EXTRACT}" \
    --disk "${disk_real}" \
    --passphrase-file "${pass_file}" \
    --source /var/lib/dkms/mok.pub \
-   --dest "${tmp_der}" \
+   --dest "${tmp_der}" >&2 \
    || die "vbox-disk-extract failed -- /var/lib/dkms/mok.pub not readable off the disk (did the MOK module run during the install?)" 3
 
 cat -- "${tmp_der}"
