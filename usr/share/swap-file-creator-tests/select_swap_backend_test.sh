@@ -5,13 +5,21 @@
 
 ## AI-Assisted
 
-## swap-file-creator: the pure platform/LUKS skip-decision and source-ability.
-##  (1) select_swap_backend() is a PURE decision function (no I/O, no side
-##      effects): given DO_PRE_CHECK, the systemd-detect-virt output and whether
-##      the swapfile path is on LUKS, it returns exactly one of
+## swap-file-creator: every PURE, source-able function + the source-ability
+## contract. (The privileged create/teardown path -- fallocate/mkswap/swapon/
+## btrfs/safe-rm -- is exercised by the root+loop e2e lane, not here.)
+##  (1) select_swap_backend(): given DO_PRE_CHECK, the systemd-detect-virt
+##      output and whether the swapfile path is on LUKS, returns exactly one of
 ##      skip-xen | skip-no-luks | proceed. The whole decision table is asserted.
-##  (2) Sourcing the REAL script does NOT auto-run main() and does NOT leak
-##      strict-mode, and select_swap_backend + main are defined. Probed by the
+##  (2) swap_size_field_to_gb(): swapon SIZE field (G/M) -> rounded integer GB,
+##      or reject an unrecognized unit.
+##  (3) swap_fits_free_disk() / (4) swap_size_self_check_ok(): the disk-space
+##      and post-swapon size-check comparisons, both boundaries.
+##  (5) swapfile_path_is_absolute(): absolute-path validation.
+##  (6) swap_safe_to_remove(): the P0 teardown gate -- shred/remove only when
+##      swapoff succeeded (rc 0); refuse for any non-zero / empty code.
+##  (7) Sourcing the REAL script does NOT auto-run main(), leaks no strict-mode
+##      option and no trap, and the functions are defined. Probed by the
 ##      committed non-strict swap_file_creator_source_probe.sh.
 ##
 ## Drives the REAL swap-file-creator script -- no synthetic copy. A missing
@@ -91,6 +99,14 @@ check() {
    fi
 }
 
+## Run a predicate function and print its exit code (so an expected non-zero
+## return does not trip the test's own errexit).
+rc_of() {
+   local rc=0
+   "$@" >/dev/null 2>&1 || rc=$?
+   printf '%s' "${rc}"
+}
+
 ## Source the REAL subject to obtain select_swap_backend (main() does not run:
 ## its was_executed guard is false when sourced). Clear positional args first so
 ## no forwarded arg can reach a dispatch in the sourced script.
@@ -132,7 +148,40 @@ check "microsoft (hyperv), luks no -> skip-no-luks" "$(select_swap_backend yes m
 check "luks token 'YES' (wrong case) -> skip-no-luks" "$(select_swap_backend yes '' YES)" "skip-no-luks"
 check "luks token empty -> skip-no-luks"              "$(select_swap_backend yes '' '')"  "skip-no-luks"
 
-## --- (2) source-ability contract: no auto-run, no strict leak, defined ---
+## --- (2) swap_size_field_to_gb: swapon SIZE field -> rounded integer GB ---
+check "4G -> 4"        "$(swap_size_field_to_gb 4G)"     "4"
+check "16G -> 16"      "$(swap_size_field_to_gb 16G)"    "16"
+check "1024M -> 1"     "$(swap_size_field_to_gb 1024M)"  "1"
+check "2048M -> 2"     "$(swap_size_field_to_gb 2048M)"  "2"
+check "6144M -> 6"     "$(swap_size_field_to_gb 6144M)"  "6"
+check "1500M -> 1 (1.46 rounds down)" "$(swap_size_field_to_gb 1500M)" "1"
+check "2600M -> 3 (2.53 rounds up)"   "$(swap_size_field_to_gb 2600M)" "3"
+check "unknown unit K rejected"  "$(rc_of swap_size_field_to_gb 2048K)" "1"
+check "no unit rejected"         "$(rc_of swap_size_field_to_gb 123)"   "1"
+check "empty rejected"           "$(rc_of swap_size_field_to_gb '')"    "1"
+
+## --- (3) swap_fits_free_disk: target GB strictly below free GB (+headroom) ---
+check "4 fits in 10"             "$(rc_of swap_fits_free_disk 4 10)"  "0"
+check "equal 10 does NOT fit"    "$(rc_of swap_fits_free_disk 10 10)" "1"
+check "11 does NOT fit in 10"    "$(rc_of swap_fits_free_disk 11 10)" "1"
+
+## --- (4) swap_size_self_check_ok: reported (+headroom) GB >= target GB ---
+check "5 >= 4 ok"                "$(rc_of swap_size_self_check_ok 5 4)" "0"
+check "4 >= 4 ok (equal)"        "$(rc_of swap_size_self_check_ok 4 4)" "0"
+check "3 >= 4 fails"             "$(rc_of swap_size_self_check_ok 3 4)" "1"
+
+## --- (5) swapfile_path_is_absolute ---
+check "/var/swapfile is absolute"   "$(rc_of swapfile_path_is_absolute /var/swapfile)" "0"
+check "relative path rejected"      "$(rc_of swapfile_path_is_absolute var/swapfile)"  "1"
+check "empty path rejected"         "$(rc_of swapfile_path_is_absolute '')"            "1"
+
+## --- (6) swap_safe_to_remove: shred/remove ONLY when swapoff succeeded (P0) ---
+check "swapoff rc 0 -> safe to remove"        "$(rc_of swap_safe_to_remove 0)"  "0"
+check "swapoff rc 1 -> NOT safe (keep file)"  "$(rc_of swap_safe_to_remove 1)"  "1"
+check "swapoff rc 32 -> NOT safe"             "$(rc_of swap_safe_to_remove 32)" "1"
+check "empty rc -> NOT safe (fail closed)"    "$(rc_of swap_safe_to_remove '')" "1"
+
+## --- (7) source-ability contract: no auto-run, no option/trap leak, defined ---
 check "main defined after source"                 "$(declare -F main >/dev/null && printf '%s' yes || printf '%s' no)" "yes"
 check "select_swap_backend defined after source"  "$(declare -F select_swap_backend >/dev/null && printf '%s' yes || printf '%s' no)" "yes"
 
