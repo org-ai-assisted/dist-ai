@@ -65,6 +65,32 @@ real VirtualBox 7.x server (see the `vbox-image-testing` skill) to confirm:
   needs a differencing-capable format (VDI/VMDK/VHD); a RAW disk is rejected. dm
   images are often qcow2/raw, so confirm the format works (convert raw->vdi if not).
 
+### Secure Boot (efi-secureboot) lane: SB OFF to install, SB ON after
+
+The lane proves the installed system runs a REAL Secure Boot chain, not merely
+boots with SB enabled. By design (dm-calamares-install):
+
+- **Install with SB OFF.** Calamares and the live Guest-Additions modules are
+  unsigned; enforcing SB during the live/install phase would block them. The
+  harness disables SB for install, enables it afterwards.
+- **Enroll the per-machine MOK after install.** On the installed disk
+  mok-enroll-opt-in generates a MOK, DKMS-signs tirdad, and vbox-guest-installer
+  signs the GA modules against it. dm-calamares-install reads the PUBLIC MOK cert
+  off the disk host-side (read-only, via a narrow privleap action), enrolls it
+  into the UEFI varstore, then boots with SB enforcing so shim trusts the MOK.
+- **Under SB the signed modules MUST load.** tirdad + vboxguest/vboxsf load (GA
+  functional, guestcontrol works), systemd is not degraded. check 8 (systemcheck)
+  runs the IDENTICAL command on every firmware -- NO --ignore-failed-unit masking;
+  a module that fails to load under SB fails check 8.
+
+Two enroll-path traps (regression-guarded in dist-ai):
+
+- The cert streamed back for enrollment must be EXACTLY the DER. A stray
+  diagnostic on vbox-disk-extract's stdout prepends ASCII to it, so the kernel
+  rejects the MokListRT cert (-EBADMSG) and every signed module fails.
+- The install-generated MOK must be protected from the build-time-leaked-key guard
+  (drop the legacy-dist mok-ok flag) or it is deleted on first boot before enroll.
+
 ## Kernel cmdline injection: firmware -> GRUB -> kernel (no image edit)
 
 The tester injects kernel cmdline (session selection, `console=ttyS0`,
