@@ -112,6 +112,9 @@ static void unit_parse_uint31(void)
     CHECK(!parse_uint31_arg("", 10, &v));
     CHECK(!parse_uint31_arg("12x", 10, &v));
     CHECK(!parse_uint31_arg("-1", 10, &v));
+    /* A leading '-' that strtoul wraps to a SMALL in-range value must still be
+     * rejected (bug: "-18446744073709551615" wraps to 1). */
+    CHECK(!parse_uint31_arg("-18446744073709551615", 10, &v));
 }
 
 static void unit_parse_uint32(void)
@@ -123,6 +126,7 @@ static void unit_parse_uint32(void)
     CHECK(!parse_uint32_arg("4294967296", 10, &v));
     CHECK(!parse_uint32_arg("", 10, &v));
     CHECK(!parse_uint32_arg("x", 10, &v));
+    CHECK(!parse_uint32_arg("-18446744073709551615", 10, &v));
 }
 
 static void unit_get_ticks_from_scroll_accum(void)
@@ -244,6 +248,23 @@ static void unit_parse_esc_key_str(void)
     CHECK(esc_key_sublist_len[1] == 1);
 }
 
+/* randname must fill the buffer with [A-Za-z] only. Bug: the lowercase branch
+ * adds ASCII_LOWERCASE_START (97) without first subtracting ALPHABET_LEN, so a
+ * reduced value in [26,51] becomes bytes 123..148 ({ | } ~ DEL and high bytes),
+ * not a-z. Needs randfd (applayer_random_init). */
+static void unit_randname(void)
+{
+    char buf[256];
+    size_t n;
+
+    applayer_random_init();
+    randname(buf, (ssize_t)sizeof(buf));
+    for (n = 0; n < sizeof(buf); ++n) {
+        CHECK((buf[n] >= 'A' && buf[n] <= 'Z')
+              || (buf[n] >= 'a' && buf[n] <= 'z'));
+    }
+}
+
 int main(void)
 {
     unit_lookup_keycode();
@@ -257,6 +278,7 @@ int main(void)
     unit_current_time_ms();
     unit_coord_space();
     unit_parse_esc_key_str();
+    unit_randname();
     printf("kloak harness: all assertions passed (%d checks)\n", checks);
     return 0;
 }
