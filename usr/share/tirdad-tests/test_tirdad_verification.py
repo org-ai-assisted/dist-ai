@@ -73,6 +73,9 @@ def _require(tool: str) -> str:
 
 
 class TirdadVerification(unittest.TestCase):
+    src_dir: str
+    cbmc: str
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.src_dir = _src_dir()

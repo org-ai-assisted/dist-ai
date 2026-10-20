@@ -13,8 +13,10 @@
 ##   * TIRDAD_REPO=/path/to/tirdad -> that checkout's module/tirdad.c, OR
 ##   * unset -> the DKMS-installed source under /usr/src/tirdad*.
 ##
-## cbmc is required. Any extra arguments are forwarded to
-## "python3 -m unittest".
+## Driven through run-unittest.py so a subject-absent run (the whole suite
+## skips from setUpClass) surfaces as a skip exit (78), not a bare
+## `unittest discover` exit 0 that the orchestrator would read as a false-green
+## PASS. cbmc is required. Any extra arguments are forwarded to the runner.
 
 set -o errexit
 set -o nounset
@@ -32,7 +34,10 @@ else
    tests_dir='/usr/share/tirdad-tests'
 fi
 
-python3 -m unittest discover \
+run_unittest="${script_dir}/../share/dist-ai-tests-common/run-unittest.py"
+[ -r "${run_unittest}" ] || run_unittest='/usr/share/dist-ai-tests-common/run-unittest.py'
+
+"${run_unittest}" \
    --start-directory "${tests_dir}" \
    --pattern 'test_*.py' \
    "$@"
