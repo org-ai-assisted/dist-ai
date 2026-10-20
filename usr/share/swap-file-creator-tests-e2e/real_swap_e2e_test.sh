@@ -51,7 +51,7 @@ done
 source "${libdir}/has.bsh"
 ## These tools are REQUIRED for the e2e (not optional): absence on a root VM lane
 ## is an environment bug -> FATAL, never a silent skip (R-220).
-for dep in mkfs.ext4 mkfs.btrfs mkswap swapon swapoff losetup mount umount btrfs bc; do
+for dep in mkfs.ext4 mkfs.btrfs mkswap swapon swapoff losetup mount umount btrfs bc safe-rm; do
    if ! has "${dep}"; then
       printf '%s\n' "FATAL: required tool '${dep}' not found -- provision it on this VM lane" >&2
       exit 1
