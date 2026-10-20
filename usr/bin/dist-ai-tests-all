@@ -214,6 +214,7 @@ fuzz_suites=(
    unicode-show-tests-fuzz
 )
 e2e_suites=(
+   swap-file-creator-tests-e2e
    onion-grater-tests-e2e
    security-misc-tests-e2e
    tor-ctrl-tests-e2e
