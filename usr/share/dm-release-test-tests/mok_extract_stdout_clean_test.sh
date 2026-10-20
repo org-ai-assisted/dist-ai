@@ -77,12 +77,13 @@ check() {
 ## redirect every write, and an existing disk/passphrase/fakedisk means a concurrent real
 ## MOK request we must not clobber. Runs while created='false', so the early exit leaves
 ## the slot untouched.
-## Residual scope: a request RACING in after this check (or an adversary with write access
-## to the real home) is OUT of scope -- req is a fixed real-home path, so full race-safety
-## would need an isolated test home/account, DELIBERATELY not done (the threat here is a
-## realistic pre-existing-slot accident, not a live MOK enrollment during the sub-second
-## test). Do NOT "fix" the residual with an isolated account. The leaf writes below still
-## close the write-time window with noclobber (O_EXCL).
+## This guard covers the REALISTIC accident: a real pending request (or a stale symlink)
+## already in the slot when the test starts. A request that RACES in AFTER this check, a
+## directory symlink planted before the mkdir below, or an adversary with write access to
+## the real home are OUT of scope: req is a fixed real-home path, so closing those fully
+## needs an isolated test home/account, DELIBERATELY not done (the threat is a realistic
+## pre-existing-slot accident, not a live MOK enrollment during the sub-second test). Do
+## NOT "fix" the residual with an isolated account.
 [ -L "${req}" ] && { printf '%s\n' "FATAL: ${req} is a symlink; refusing" >&2; exit 1; }
 for leaf in disk passphrase fakedisk; do
    if [ -e "${req}/${leaf}" ] || [ -L "${req}/${leaf}" ]; then
@@ -93,9 +94,11 @@ done
 
 ## Request: a caller-owned dummy disk (owner == PRIVLEAP_CALLER_UID passes the wrapper's
 ## ownership gate) + a passphrase file. The stub ignores both; the owner check is real.
-## noclobber makes each create O_EXCL: if the slot was raced after the guard (a leaf
-## symlink or file planted post-check), the create FAILS loudly instead of following the
-## symlink or clobbering a concurrent request.
+## noclobber is best-effort defense-in-depth on top of the guard: '>' then refuses to
+## overwrite an existing regular file (or a symlink to one) that raced into the slot after
+## the check. It is NOT full O_EXCL and NOT race-safe -- it does not stop a symlink to a
+## non-regular file, a directory symlink followed by mkdir, or the cleanup window (all the
+## out-of-scope residual above).
 mkdir --parents -- "${req}"
 created='true'
 disk="${req}/fakedisk"
