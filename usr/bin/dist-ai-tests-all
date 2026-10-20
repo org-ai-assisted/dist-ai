@@ -150,6 +150,7 @@ core_suites=(
    qubes-whonix-tests
    sanitize-string-tests
    serial-console-enable-tests
+   swap-file-creator-tests
    set-keyboard-layout-tests
    secure-terminal-shots-tests
    secure-terminal-tests
@@ -194,6 +195,7 @@ fuzz_suites=(
    helper-scripts-lib-tests-fuzz
    helper-scripts-lib-tests-fuzz-atheris
    iso-boot-tests-fuzz
+   kloak-tests-fuzz
    lockfile-tests-fuzz
    msgcollector-tests-fuzz
    privleap-tests-fuzz
@@ -726,6 +728,17 @@ wire() {
          ## helper-scripts on PATH + PYTHONPATH (the entrypoint wires those from
          ## HELPER_SCRIPTS_PATH); without it the common cases die instead of run.
          wire_env=( "MEDIAWIKI_SHELL_REPO=$( pkg_dir mediawiki-shell )" )
+         if [ -n "${hs}" ]; then
+            wire_env+=( "HELPER_SCRIPTS_PATH=${hs}" )
+         fi
+         ;;
+      swap-file-creator)
+         ## select_swap_backend_test.sh sources the REAL swap-file-creator
+         ## script (SWAP_FILE_CREATOR_REPO) to unit-test the pure
+         ## select_swap_backend decision. The script sources check_runtime.bsh
+         ## (provides was_executed) from helper-scripts at source time, so
+         ## HELPER_SCRIPTS_PATH must point at the helper-scripts checkout.
+         wire_env=( "SWAP_FILE_CREATOR_REPO=$( pkg_dir swap-file-creator )" )
          if [ -n "${hs}" ]; then
             wire_env+=( "HELPER_SCRIPTS_PATH=${hs}" )
          fi
