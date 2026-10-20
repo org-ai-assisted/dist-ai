@@ -7,25 +7,28 @@
 
 ## Contract test for helper-scripts try-wait-for-system-ready.
 ##
-## The novel logic is the wait LOOP, which must:
-##  - return 0 as soon as 'leaprun system-ready-check' reports 'running' or
-##    'degraded';
-##  - be bounded by ELAPSED WALL-CLOCK, not by an iteration count: the probe can
-##    return instantly on failure (missing binary / rejected comm socket), so an
-##    iteration cap plus a per-iteration light_sleep would collapse the wait to
-##    ~(iterations)s and give up long before the intended ~180s ceiling -- the
-##    exact bug this helper exists to avoid. Case B is the canary: it fails on an
-##    iteration-count loop, which ignores the seconds cap and runs its fixed count.
-##  - still return 0 (best-effort) when the system never reports ready, so the
-##    consumer falls through to its own gate.
+## The subject re-probes 'leaprun system-ready-check' and must:
+##  - return 0 as soon as a whole output LINE is 'running' or 'degraded' --
+##    matching the STDOUT state regardless of leaprun's exit code (real
+##    'systemctl is-system-running' exits non-zero for 'degraded'), and
+##    tolerating a stderr warning line that system-ready-check merges into the
+##    output ahead of the state;
+##  - re-probe every iteration, so a system that becomes ready on a later probe
+##    is still detected;
+##  - NOT accept any other state ('starting', 'offline', ...) or empty output;
+##  - be bounded by ELAPSED WALL-CLOCK, not an iteration count: with a slow
+##    probe an iteration-count loop runs iterations*probe, far past the cap --
+##    Case "wall-clock" is the canary that fails such a loop;
+##  - bound each probe with 'timeout', so a hung leaprun cannot block past the
+##    cap -- Case "probe-timeout" is the canary for that;
+##  - still return 0 (best-effort) when never ready, so the consumer's own gate
+##    stays authoritative.
 ##
 ## Drives the REAL script by SOURCING it (the was_executed guard suppresses its
-## main, so sourcing only defines the pure function), then exercises
-## try_wait_for_system_ready with the readiness oracle ('leaprun', an external
-## privileged action that needs a live system) stubbed as a shell function. The
-## stub is inherited by the subject's '$(leaprun ...)' command-substitution
-## subshell, so it logs each call to a FILE (a counter variable would not survive
-## the subshell). No root, no systemd, no privleap.
+## main). 'leaprun' is the real privileged action in production; here it is a
+## stub EXECUTABLE on PATH (not a shell function -- the subject runs it through
+## 'timeout', which execs via PATH and would miss a function), driven by
+## LEAPRUN_FAKE_* env. No root, no systemd, no privleap.
 
 set -o errexit
 set -o nounset
@@ -37,17 +40,29 @@ export LC_ALL=C
 
 [ -v HELPER_SCRIPTS_REPO ] || HELPER_SCRIPTS_REPO=""
 if [ -n "${HELPER_SCRIPTS_REPO}" ]; then
-   subject="${HELPER_SCRIPTS_REPO}/usr/libexec/helper-scripts/try-wait-for-system-ready"
+   repo="${HELPER_SCRIPTS_REPO}"
 else
-   subject='/usr/libexec/helper-scripts/try-wait-for-system-ready'
+   repo="/"
 fi
-if [ ! -r "${subject}" ]; then
-   printf '%s\n' "FATAL: subject not readable at '${subject}' (set HELPER_SCRIPTS_REPO)." >&2
-   exit 1
-fi
+subject="${repo%/}/usr/libexec/helper-scripts/try-wait-for-system-ready"
+libdir="${repo%/}/usr/libexec/helper-scripts"
 
-## The subject resolves check_runtime.bsh / strings.bsh / light_sleep.bsh through
-## HELPER_SCRIPTS_PATH; empty -> the installed /usr/libexec, same as production.
+## Absent subject / libs -> SKIP (a source-tree or partial run whose wired
+## helper-scripts predates this helper); once helper-scripts ships it, the lane
+## runs for real.
+if [ ! -r "${subject}" ]; then
+   printf '%s\n' "SKIP: subject not readable at '${subject}' (set HELPER_SCRIPTS_REPO)" >&2
+   exit 77  ## style-ok: allow-skip: try-wait-for-system-ready absent (source-tree / helper-scripts not installed)
+fi
+for lib in check_runtime.bsh strings.bsh light_sleep.bsh; do
+   if [ ! -r "${libdir}/${lib}" ]; then
+      printf '%s\n' "SKIP: helper-scripts lib '${lib}' not readable under '${libdir}'" >&2
+      exit 77  ## style-ok: allow-skip: helper-scripts lib absent (source-tree / helper-scripts not installed)
+   fi
+done
+
+## The subject resolves its libs through HELPER_SCRIPTS_PATH; empty -> the
+## installed /usr/libexec, same as production.
 export HELPER_SCRIPTS_PATH="${HELPER_SCRIPTS_REPO}"
 
 pass_count=0
@@ -61,85 +76,180 @@ cleanup() { safe-rm --recursive --force -- "${work_dir}"; }
 trap cleanup EXIT
 
 probe_log="${work_dir}/leaprun-calls"
+export LEAPRUN_PROBE_LOG="${probe_log}"
 
-## Sourcing defines the pure function without running main: was_executed sees
-## BASH_SOURCE[0] (the subject) != $0 (this test), so main is skipped.
+## Stub 'leaprun' executable, modelling 'leaprun system-ready-check':
+##  - logs one line per call (count survives across the timeout/exec boundary);
+##  - optionally delays (a slow / hung probe);
+##  - once LEAPRUN_READY_ON_CALL (>0) calls have happened, reports 'running';
+##  - prints LEAPRUN_FAKE_RESULT to stdout (empty -> nothing);
+##  - exits 0 ONLY for 'running', non-zero otherwise -- as real
+##    'systemctl is-system-running' does (exit 0 only when fully running).
+leaprun_stub="${work_dir}/leaprun"
+cat >"${leaprun_stub}" <<'STUB'
+#!/bin/bash
+## The subject MUST invoke exactly the 'system-ready-check' action; any other
+## args mean a wrong call -> fail loud so the test catches it.
+if [ "$*" != 'system-ready-check' ]; then
+   printf '%s\n' "leaprun-stub: unexpected args: $*" >&2
+   exit 99
+fi
+printf '%s\n' 'call' >>"${LEAPRUN_PROBE_LOG}"
+if [ "${LEAPRUN_FAKE_DELAY:-0}" -gt 0 ]; then
+   sleep "${LEAPRUN_FAKE_DELAY}"
+fi
+out="${LEAPRUN_FAKE_RESULT:-}"
+calls="$(wc -l <"${LEAPRUN_PROBE_LOG}")"
+if [ "${LEAPRUN_READY_ON_CALL:-0}" -gt 0 ] \
+   && [ "${calls}" -ge "${LEAPRUN_READY_ON_CALL}" ]; then
+   out='running'
+fi
+if [ -n "${out}" ]; then
+   printf '%s\n' "${out}"
+fi
+[ "${out}" = 'running' ]
+STUB
+chmod 0755 "${leaprun_stub}"
+export PATH="${work_dir}:${PATH}"
+
+## Reset per-case stub state to known defaults.
+reset_stub() {
+   true >"${probe_log}"
+   export LEAPRUN_FAKE_RESULT=''
+   export LEAPRUN_FAKE_DELAY='0'
+   export LEAPRUN_READY_ON_CALL='0'
+   unset system_ready_wait_max_seconds system_ready_probe_timeout 2>/dev/null || true
+}
+
+## Sourcing defines the pure function without running main.
 # shellcheck disable=SC1090
 source "${subject}"
-
 if ! declare -F try_wait_for_system_ready >/dev/null; then
    printf '%s\n' "FATAL: sourcing the subject did not define try_wait_for_system_ready" >&2
    exit 1
 fi
 
-## Readiness oracle stub. 'leaprun' is the real privileged action in production
-## (needs a live system); here it is a shell function, inherited by the subject's
-## '$(leaprun ...)' subshell, that appends one line per call to probe_log (so the
-## re-probe count survives the subshell) and prints the fake verdict passed via
-## leaprun_fake_result ('' + non-zero models the fast-fail / unusable case).
-leaprun_fake_result=''
-# shellcheck disable=SC2329  # invoked across the 'source' boundary (dynamic scope)
-leaprun() {
-   printf '%s\n' 'call' >>"${probe_log}"
-   if [ -z "${leaprun_fake_result}" ]; then
-      return 1
-   fi
-   printf '%s\n' "${leaprun_fake_result}"
-}
-
-## 'running' on the first probe -> returns 0 after exactly one probe, no wait.
-true >"${probe_log}"
-leaprun_fake_result='running'
+## 'running' (exit 0) -> return 0 after one probe, no wait.
+reset_stub
+export LEAPRUN_FAKE_RESULT='running'
 rc=0
-try_wait_for_system_ready || rc="$?"
+system_ready_wait_max_seconds=5 try_wait_for_system_ready || rc="$?"
 probe_calls="$(wc -l <"${probe_log}")"
 if [ "${rc}" = '0' ] && [ "${probe_calls}" = '1' ]; then
-   pass "'running' immediately -> exit 0 after 1 probe"
+   pass "'running' -> exit 0 after 1 probe"
 else
-   fail "'running' immediately -> rc=${rc}, probes=${probe_calls} (want 0, 1)"
+   fail "'running' -> rc=${rc}, probes=${probe_calls} (want 0, 1)"
 fi
 
-## 'degraded' is also accepted (is-system-running reports it on a booted system
-## with a failed unit) -> returns 0 after exactly one probe.
-true >"${probe_log}"
-leaprun_fake_result='degraded'
+## 'degraded' prints 'degraded' and exits NON-ZERO (as real is-system-running
+## does) -> still accepted via the stdout line after one probe. Regression: a
+## subject gating on leaprun's exit code would miss it and wait out the cap.
+reset_stub
+export LEAPRUN_FAKE_RESULT='degraded'
 rc=0
-try_wait_for_system_ready || rc="$?"
+system_ready_wait_max_seconds=5 try_wait_for_system_ready || rc="$?"
 probe_calls="$(wc -l <"${probe_log}")"
 if [ "${rc}" = '0' ] && [ "${probe_calls}" = '1' ]; then
-   pass "'degraded' immediately -> exit 0 after 1 probe"
+   pass "'degraded' (exit!=0) -> exit 0 after 1 probe"
 else
    fail "'degraded' accepted -> rc=${rc}, probes=${probe_calls} (want 0, 1)"
 fi
 
-## CANARY: probe never reports ready and fails FAST (empty + non-zero), with the
-## REAL light_sleep (1s floor) running. A correct WALL-CLOCK cap waits ~max_seconds
-## and re-probes repeatedly; an iteration-count loop would ignore max_seconds and
-## either collapse to ~0s or run its own fixed count. Assert the elapsed time
-## tracks the seconds cap and that it re-probed more than once.
-true >"${probe_log}"
-leaprun_fake_result=''
+## system-ready-check merges systemctl's stderr into stdout, so a warning line
+## can precede the state -> whole-line match still detects 'running'.
+reset_stub
+export LEAPRUN_FAKE_RESULT='Failed to acquire match for StartupFinished
+running'
+rc=0
+system_ready_wait_max_seconds=5 try_wait_for_system_ready || rc="$?"
+probe_calls="$(wc -l <"${probe_log}")"
+if [ "${rc}" = '0' ] && [ "${probe_calls}" = '1' ]; then
+   pass "stderr-warning line + 'running' -> exit 0 after 1 probe"
+else
+   fail "multi-line result -> rc=${rc}, probes=${probe_calls} (want 0, 1)"
+fi
+
+## Becomes ready on the 3rd probe -> returns 0 after exactly 3 probes, proving
+## it re-evaluates every iteration (not a cached first verdict).
+reset_stub
+export LEAPRUN_READY_ON_CALL='3'
+rc=0
+system_ready_wait_max_seconds=10 try_wait_for_system_ready || rc="$?"
+probe_calls="$(wc -l <"${probe_log}")"
+if [ "${rc}" = '0' ] && [ "${probe_calls}" = '3' ]; then
+   pass "ready on 3rd probe -> exit 0 after exactly 3 probes"
+else
+   fail "re-probe -> rc=${rc}, probes=${probe_calls} (want 0, 3)"
+fi
+
+## A non-ready, non-empty state ('starting', exit!=0) is NOT accepted: the loop
+## keeps probing to the cap. Regression: a subject treating any non-empty output
+## as ready returns after 1 probe.
+reset_stub
+export LEAPRUN_FAKE_RESULT='starting'
+rc=0
+system_ready_wait_max_seconds=2 try_wait_for_system_ready || rc="$?"
+probe_calls="$(wc -l <"${probe_log}")"
+if [ "${rc}" = '0' ] && [ "${probe_calls}" -ge 2 ]; then
+   pass "'starting' not accepted -> kept probing to cap (${probe_calls} probes)"
+else
+   fail "'starting' -> rc=${rc}, probes=${probe_calls} (want 0, >=2)"
+fi
+
+## A state that merely CONTAINS 'running' as a substring ('not-running') is NOT
+## ready: the match is whole-line. Regression: a subject using an unanchored
+## 'grep -E running|degraded' accepts it and returns after 1 probe.
+reset_stub
+export LEAPRUN_FAKE_RESULT='not-running'
+rc=0
+system_ready_wait_max_seconds=2 try_wait_for_system_ready || rc="$?"
+probe_calls="$(wc -l <"${probe_log}")"
+if [ "${rc}" = '0' ] && [ "${probe_calls}" -ge 2 ]; then
+   pass "'not-running' (substring) not accepted -> kept probing (${probe_calls} probes)"
+else
+   fail "'not-running' -> rc=${rc}, probes=${probe_calls} (want 0, >=2)"
+fi
+
+## CANARY (wall-clock): never ready, each probe SLOW (3s), cap 3s. A monotonic
+## wall-clock cap runs ~1 probe and stops at ~4s; a loop that treats the cap as
+## an iteration count runs cap probes = cap*3s (>=9s even with no sleep) -> over
+## the upper bound. The old fixed count runs far longer still.
+reset_stub
+export LEAPRUN_FAKE_DELAY='3'
 rc=0
 t0="$(date +%s)"
 system_ready_wait_max_seconds=3 try_wait_for_system_ready || rc="$?"
 t1="$(date +%s)"
 elapsed=$(( t1 - t0 ))
-probe_calls="$(wc -l <"${probe_log}")"
-if [ "${rc}" = '0' ] \
-   && [ "${elapsed}" -ge 2 ] \
-   && [ "${elapsed}" -le 10 ] \
-   && [ "${probe_calls}" -ge 2 ]; then
-   pass "never ready -> exit 0, waited ~cap (${elapsed}s for cap=3), re-probed ${probe_calls}x"
+if [ "${rc}" = '0' ] && [ "${elapsed}" -ge 2 ] && [ "${elapsed}" -le 7 ]; then
+   pass "wall-clock cap honoured -> exit 0 in ${elapsed}s (slow probe, cap=3)"
 else
-   fail "wall-clock cap -> rc=${rc}, elapsed=${elapsed}s (want 2..10), probes=${probe_calls} (want >=2)"
+   fail "wall-clock cap -> rc=${rc}, elapsed=${elapsed}s (want 2..7)"
 fi
 
-## Errexit contract: the standalone main() calls this under 'set -o errexit', so a
-## never-ready run must RETURN (0), not abort on an internal command. errexit is
-## IGNORED inside an if-condition / '&&'-'||' list, so an in-process check would
-## assert nothing -- run it in a real child 'bash' where errexit is set at top
-## level and the function runs as a plain command. Use the REAL light_sleep (a
-## stub returning 0 could hide a subject that misuses it).
+## CANARY (probe-timeout): a probe that hangs (5s) with probe_timeout=1 and cap
+## 1s must be bounded by the CONFIGURED timeout -> total ~2s (1s probe + 1s
+## sleep). Regressions caught: an unbounded probe (~6s) and one that ignores the
+## configured value and hardcodes a larger timeout (~4s) both exceed the bound.
+reset_stub
+export LEAPRUN_FAKE_DELAY='5'
+rc=0
+t0="$(date +%s)"
+system_ready_wait_max_seconds=1 system_ready_probe_timeout=1 \
+   try_wait_for_system_ready || rc="$?"
+t1="$(date +%s)"
+elapsed=$(( t1 - t0 ))
+probe_calls="$(wc -l <"${probe_log}")"
+if [ "${rc}" = '0' ] && [ "${probe_calls}" -ge 1 ] && [ "${elapsed}" -ge 1 ] && [ "${elapsed}" -le 3 ]; then
+   pass "hung probe bounded by configured timeout -> exit 0 in ${elapsed}s (${probe_calls} probes)"
+else
+   fail "probe-timeout -> rc=${rc}, elapsed=${elapsed}s, probes=${probe_calls} (want 0, >=1, 1..3)"
+fi
+
+## Errexit contract: main() calls this under 'set -o errexit', so a never-ready
+## run must RETURN 0, not abort on an internal command. errexit is ignored
+## inside an if-condition / '&&'-'||' list, so assert it in a real child 'bash'
+## where the function runs as a plain command at top level.
 errexit_probe="${work_dir}/errexit-probe.bash"
 cat >"${errexit_probe}" <<'PROBE'
 #!/bin/bash
@@ -151,15 +261,15 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 source "${SUBJECT}"
-## Never-ready oracle (the real leaprun needs a live system).
-leaprun() { return 1; }
 system_ready_wait_max_seconds=1 try_wait_for_system_ready
 PROBE
+reset_stub
 rc=0
-SUBJECT="${subject}" HELPER_SCRIPTS_PATH="${HELPER_SCRIPTS_PATH}" \
+SUBJECT="${subject}" HELPER_SCRIPTS_PATH="${HELPER_SCRIPTS_PATH}" PATH="${PATH}" \
+   LEAPRUN_PROBE_LOG="${probe_log}" LEAPRUN_FAKE_RESULT='' \
    bash "${errexit_probe}" >/dev/null 2>&1 || rc="$?"
 if [ "${rc}" = '0' ]; then
-   pass "never-ready run returns cleanly under errexit (child process, does not abort)"
+   pass "never-ready run returns cleanly under errexit (child process)"
 else
    fail "aborted under errexit (rc=${rc})"
 fi
