@@ -181,7 +181,18 @@ check "swapoff rc 1 -> NOT safe (keep file)"  "$(rc_of swap_safe_to_remove 1)"  
 check "swapoff rc 32 -> NOT safe"             "$(rc_of swap_safe_to_remove 32)" "1"
 check "empty rc -> NOT safe (fail closed)"    "$(rc_of swap_safe_to_remove '')" "1"
 
-## --- (7) source-ability contract: no auto-run, no option/trap leak, defined ---
+## --- (7) swapon_record_for: EXACT first-field match, never a substring ---
+two=$'/var/swapfile 1024M\n/var/swapfile-old 8G'
+check "exact match selects the right row"   "$(swapon_record_for "${two}" /var/swapfile)"     "/var/swapfile 1024M"
+check "sibling path matches itself exactly" "$(swapon_record_for "${two}" /var/swapfile-old)" "/var/swapfile-old 8G"
+check "no substring false-match"            "$(swapon_record_for '/var/swapfile-old 8G' /var/swapfile)" ""
+check "unrelated device -> empty"           "$(swapon_record_for '/dev/dm-0 partition 8G' /var/swapfile)" ""
+tbl=$'NAME TYPE SIZE\n/dev/dm-0 partition 8G\n/var/swapfile file 1G'
+check "header + partition skipped, file row matched" "$(swapon_record_for "${tbl}" /var/swapfile)" "/var/swapfile file 1G"
+dup=$'/var/swapfile 1G\n/var/swapfile 2G'
+check "duplicate exact row -> last wins"    "$(swapon_record_for "${dup}" /var/swapfile)"     "/var/swapfile 2G"
+
+## --- (8) source-ability contract: no auto-run, no option/trap leak, defined ---
 check "main defined after source"                 "$(declare -F main >/dev/null && printf '%s' yes || printf '%s' no)" "yes"
 check "select_swap_backend defined after source"  "$(declare -F select_swap_backend >/dev/null && printf '%s' yes || printf '%s' no)" "yes"
 
