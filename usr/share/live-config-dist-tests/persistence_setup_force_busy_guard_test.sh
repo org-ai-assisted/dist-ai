@@ -77,7 +77,7 @@ export PS_RECORD="${work}/record"
 export MOUNT_OUT=""
 
 ## lsblk shim: dispatch on the requested --output columns.
-##   PATH,PARTN,PARTLABEL -> delete_overlay_partitions enumerates: two overlay rows.
+##   NAME,PARTN,PARTLABEL -> delete_overlay_partitions enumerates: two overlay rows.
 ##   MOUNTPOINT           -> overlay_partition_busy mount check: MOUNT_OUT.
 ##   KNAME                -> disk_is_held holder scan: basename of the queried node
 ##                           (a nonexistent block name, so the real /sys scan finds no holder).
@@ -85,7 +85,7 @@ export MOUNT_OUT=""
 {
    printf '%s\n' '#!/bin/bash'
    printf '%s\n' 'args=" $* "'
-   printf '%s\n' 'if [[ "${args}" == *" PATH,PARTN,PARTLABEL "* ]]; then'
+   printf '%s\n' 'if [[ "${args}" == *" NAME,PARTN,PARTLABEL "* ]]; then'
    printf '%s\n' '   printf "%s\n" "/dev/fakedisk3 3 persistence" "/dev/fakedisk4 4 persistbootx"'
    printf '%s\n' 'elif [[ "${args}" == *" MOUNTPOINT "* ]]; then'
    printf '%s\n' '   if [ -n "${MOUNT_OUT}" ]; then printf "%s\n" "${MOUNT_OUT}"; fi'
