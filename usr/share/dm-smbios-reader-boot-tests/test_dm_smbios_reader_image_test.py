@@ -918,37 +918,23 @@ def test_cross_file_numbering_contract():
     assert 'systemcheck' in cal[8], cal[8]
 
 
-def _release_check_cmd(num, firmware):
+def _release_check_cmd(num):
     ## Exercise the REAL bash command-builder (release_check_cmd) by sourcing
     ## release-checks.bsh, so the test tracks the single source, not a reimplementation.
     script = f'source "{RELEASE_CHECKS_BSH}"; release_check_cmd {int(num)}'
-    env = {**os.environ, 'RELEASE_CHECK_FIRMWARE': firmware}
     out = subprocess.run(['bash', '-c', script],
-                         capture_output=True, text=True, check=True, env=env)
+                         capture_output=True, text=True, check=True)
     return out.stdout
 
 
-def test_release_check8_ignore_flags_efi_secureboot_only():
-    ## check 8 (systemcheck) tolerates the VBox Guest-Additions units SecureBoot
-    ## rejects -- EXACTLY those, and ONLY under efi-secureboot. Canary: reverting the
-    ## EFI+SB gate, widening the unit set, or blanket-tolerating any firmware fails here.
+def test_release_check8_no_firmware_masking():
+    ## check 8 (systemcheck) runs the IDENTICAL command on every firmware -- no
+    ## --ignore-failed-unit masking. Under efi-secureboot the MOK enrolls cleanly and
+    ## the DKMS-signed modules (tirdad, GA) load, so a vboxadd/module failure MUST fail
+    ## check 8, never be tolerated. Canary: re-adding a firmware-gated ignore fails here.
     base = _release_check_cmds()[8]
-    efisb = _release_check_cmd(8, 'efi-secureboot')
-    assert efisb.startswith(base), efisb
-    for unit in ('vboxadd.service', 'vboxadd-service.service'):
-        assert f'--ignore-failed-unit {unit}' in efisb, (unit, efisb)
-    ## exactly two ignore flags -- never a blanket 'degraded' tolerance.
-    assert efisb.count('--ignore-failed-unit') == 2, efisb
-    ## systemd-modules-load.service MUST NOT be ignored: it loads SHIPPED hardened
-    ## modules (jitterentropy_rng), so a unit-wide ignore would mask a real
-    ## shipped-module regression under efi-secureboot.
-    assert 'systemd-modules-load.service' not in efisb, efisb
-    ## bios / plain-efi / unset get NO ignore flag, so a real vboxadd degradation
-    ## still fails check 8 there (the GA modules load fine when not under SecureBoot).
-    for firmware in ('bios', 'efi', ''):
-        assert _release_check_cmd(8, firmware) == base, firmware
-    ## a non-8 check is never adjusted, even under efi-secureboot.
-    assert _release_check_cmd(1, 'efi-secureboot') == _release_check_cmds()[1]
+    assert '--ignore-failed-unit' not in _release_check_cmd(8), _release_check_cmd(8)
+    assert _release_check_cmd(8) == base, _release_check_cmd(8)
 
 
 ## --- backend selection (--backend {auto,qemu,vbox}) ---------------------------

@@ -14,8 +14,7 @@
 ## The TABLE is transport-agnostic; HOW a check runs in-guest is the caller's
 ## executor callback (OCR terminal markers for a Guest-Additions-less Calamares
 ## disk; VBoxManage guestcontrol for a shipped VM image). The caller sets `me`
-## (program name, for messages) and, when it matters, RELEASE_CHECK_FIRMWARE
-## (bios|efi|efi-secureboot) so check 8 can tolerate the SecureBoot-only GA failures.
+## (program name, for messages). check 8 runs the IDENTICAL command on every firmware.
 ##
 ## style-ok: no-strict -- sourced-only fragment; a top-level 'set -o errexit'/
 ## 'nounset'/'pipefail' would leak into (and could kill) the sourcing shell.
@@ -79,29 +78,10 @@ declare -A RELEASE_CHECK_CMD=(
    [3]='upgrade-nonroot'
 )
 
-## VBox Guest-Additions service units that SecureBoot REJECTS (unsigned, out-of-tree
-## modules) in an EFI+SecureBoot test VM, leaving systemd 'degraded'. These units are
-## TEST-INFRA ONLY (the GA is injected for the VBox test; nothing ships them, and no
-## shipped modules-load.d references them), so check 8 (systemcheck) tolerates EXACTLY
-## these -- and ONLY under efi-secureboot -- via systemcheck's --ignore-failed-unit.
-## Any OTHER failed unit, or any other firmware (bios / plain-efi, where the modules
-## load fine), still fails check 8.
-##
-## DELIBERATELY NOT here: systemd-modules-load.service. It also loads SHIPPED hardened
-## modules (e.g. jitterentropy_rng via security-misc's 30_security-misc.conf), so a
-## unit-wide ignore would MASK a real shipped-module load regression under the most
-## security-critical config -- the exact "stable users bricked" guarantee this gate
-## protects. If it fails under SB for a test-only module, fix that at the specific
-## module/injection, never by ignoring the whole unit.
-RELEASE_CHECK8_SB_IGNORED_UNITS=(
-   vboxadd.service
-   vboxadd-service.service
-)
-
 ## Per-consumer check exclusions. A check that a SPECIFIC gate's transport cannot run
 ## FAITHFULLY is skipped HERE with a loud, named reason, and stays owned by the gate
-## that CAN run it. The caller populates this AFTER sourcing this fragment (like `me` /
-## RELEASE_CHECK_FIRMWARE); default empty -> every gate runs every check, so GUI-OCR,
+## that CAN run it. The caller populates this AFTER sourcing this fragment (like `me`);
+## default empty -> every gate runs every check, so GUI-OCR,
 ## the serial harness, and the existing tests are byte-for-byte unchanged. This is NOT
 ## a silent skip: run_release_check_battery prints the reason to stdout, so a skipped
 ## check reads as ROUTED-ELSEWHERE, never as a green PASS.
@@ -112,19 +92,14 @@ RELEASE_CHECK8_SB_IGNORED_UNITS=(
 ##   (dm-calamares-install), which runs the identical command inside the real LXQt login.
 declare -A RELEASE_CHECK_SKIP_REASON
 
-## The in-guest command for a check, with firmware-specific adjustments applied.
-## RELEASE_CHECK_FIRMWARE (caller-set; empty = none) gates the check-8 SecureBoot
-## tolerance above -- so bios / plain-efi and other callers (dm-upgrade-regression)
-## are byte-for-byte unchanged. Pure (no side effects), hence unit-testable.
+## The in-guest command for a check. The same command runs on every firmware:
+## under efi-secureboot the per-machine MOK is enrolled cleanly and the DKMS-signed
+## modules (tirdad, VBox Guest Additions) load, so there is nothing to tolerate --
+## check 8 (systemcheck) must go green for the REAL reason, never via a masking
+## --ignore-failed-unit. Pure (no side effects), hence unit-testable.
 release_check_cmd() {
-   local num="$1" unit
-   local cmd="${RELEASE_CHECK_CMD[${num}]}"
-   if [ "${num}" = '8' ] && [ "${RELEASE_CHECK_FIRMWARE:-}" = 'efi-secureboot' ]; then
-      for unit in "${RELEASE_CHECK8_SB_IGNORED_UNITS[@]}"; do
-         cmd+=" --ignore-failed-unit ${unit}"
-      done
-   fi
-   printf '%s' "${cmd}"
+   local num="$1"
+   printf '%s' "${RELEASE_CHECK_CMD[${num}]}"
 }
 
 ## Set by the driver on a failed check; READ by the sourcing tool for its message.
