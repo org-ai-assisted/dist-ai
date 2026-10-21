@@ -226,23 +226,6 @@ def _is_text_file(base_cwd, content_cwd, path, source_rev):
     return any(token in mime for token in _TEXT_MIME)
 
 
-def _is_diff_file(content_cwd, path):
-    ## A diff by extension (.patch/.diff) needs no read. Otherwise classify by
-    ## CONTENT via the shared context.is_diff_file (a unified-diff hunk header),
-    ## reading the gated bytes from content_cwd (the blob mirror in a git mode) --
-    ## catching an extensionless debian/patches/* or a renamed '.patch.disabled'.
-    ## One source of truth with the engine; a known text extension short-circuits
-    ## inside is_diff_file, so a plain .sh/.py is never mistaken for a diff.
-    if context.is_diff_file(path):
-        return True
-    try:
-        with open(_abs(content_cwd, path), "rb") as handle:
-            data = handle.read()
-    except OSError:
-        return False
-    return context.is_diff_file(path, data)
-
-
 def _read_text(base_cwd, path):
     try:
         with open(_abs(base_cwd, path), "rb") as handle:
@@ -572,10 +555,10 @@ def _run_batch(paths, base_ref, staged_mode, base_cwd, content_cwd, source_rev,
     ## significant (a blank context line is a single space), so stripping them
     ## corrupts the patch. end-of-file + byte-order-marker still run on the full
     ## list -- adding a final newline or stripping a leading BOM only makes a patch
-    ## MORE applicable. A diff is matched by extension OR file(1) content (see
-    ## _is_diff_file), so an extensionless debian/patches/* is covered too.
+    ## MORE applicable. A diff is identified by name/location (context.is_diff_file),
+    ## so an extensionless debian/patches/* and a '.patch.disabled' are covered too.
     text_fixable = [path for path in text
-                    if not _is_diff_file(content_cwd, path)]
+                    if not context.is_diff_file(path)]
     yield from _run_fixer("fix-byte-order-marker", text, content_cwd, apply)
     yield from _run_fixer("end-of-file-fixer", text, content_cwd, apply)
     yield from _run_fixer(

@@ -44,42 +44,35 @@ TEXT_BASENAMES = ("Dockerfile", "Makefile", "COPYING", "README", "LICENSE")
 TEXT_MIME_NEEDLES = ("text/", "x-shellscript", "x-python", "json", "xml",
                      "yaml", "toml", "charset=us-ascii", "charset=utf-8")
 
-## A unified diff is text, but its TRAILING whitespace is SEMANTICALLY significant:
-## a blank context line is a single leading space, and a line's trailing blanks may
-## be the very change the patch encodes. Stripping either corrupts the patch so it
-## no longer applies -- so ONLY the trailing-whitespace rule/fixer skips a diff.
-## end-of-file and byte-order-marker still run: adding a final newline or stripping
-## a leading BOM only makes a patch MORE applicable, never less. detect-only checks
-## and the secret scanners always run. R-001 non-ASCII is DETECTED (so a diff
-## carrying a confusable BLOCKS) but not auto-substituted (that would corrupt it).
+## A diff's TRAILING whitespace is SEMANTICALLY significant: a blank context line is
+## a single leading space, and a line's trailing blanks may be the very change the
+## patch encodes. Stripping either corrupts the patch -- so ONLY the trailing-ws rule
+## skips a diff, and R-001 only DETECTS (blocks) rather than auto-substitutes its
+## non-ASCII. end-of-file and byte-order-marker still run (a final newline or a
+## stripped BOM only makes a patch MORE applicable); detect-only checks and the
+## secret scanners always run.
+##
+## Detection is by NAME/LOCATION, not content. Every content heuristic leaks both
+## ways: file(1)'s mime types a format-patch as application/mbox and a long-header
+## DEP-3 as text/plain (missed), and a hunk-header sniff misses rename-only, context
+## (diff -c) and combined (@@@) diffs while false-exempting prose that merely embeds
+## a hunk line. A committed patch is instead identified reliably, in ANY diff format,
+## by a .patch/.diff extension, a '.patch.'/'.diff.' infix (a renamed/disabled patch
+## like '.patch.disabled'), or the conventional debian/patches/ location. A patch
+## kept elsewhere under an opaque name is out of scope -- name it .patch/.diff.
 DIFF_EXTS = (".patch", ".diff")
-
-## A unified-diff hunk header -- the one structure shared by a plain diff, a git
-## format-patch/mbox patch, and a DEP-3 quilt patch, regardless of any mail/DEP-3
-## header above it. This is why detection sniffs CONTENT, not file(1)'s mime: file
-## types a format-patch as application/mbox and a long-header DEP-3 as text/plain,
-## so a mime check misses exactly the debian/patches shapes this must protect.
-_DIFF_HUNK_RE = re.compile(rb'(?m)^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@')
+_PATCH_DIR_RE = re.compile(r'(?:^|/)debian/patches/')
 
 
-def is_diff_file(path, data=None):
-    """A unified diff whose trailing whitespace is significant. Matched by
-    extension (.patch/.diff, case-insensitive) or, when DATA (bytes) is given, by a
-    unified-diff hunk header in the content -- so an extensionless debian/patches/*
-    or a renamed '.patch.disabled' is covered. A KNOWN text extension/basename is
-    classified by name (a real patch is not named .sh/.md/.txt), which keeps the
-    content sniff off ordinary source and bounds its one accepted false positive to
-    an odd-named/extensionless file that happens to embed a diff hunk. One source of
-    truth, shared by the engine (FileContext.is_diff) and precommit."""
-    if path.lower().endswith(DIFF_EXTS):
-        return True
-    if data is None:
-        return False
-    base = os.path.basename(path)
-    _, ext = os.path.splitext(base)
-    if ext.lower() in TEXT_EXTS or base in TEXT_BASENAMES:
-        return False
-    return bool(_DIFF_HUNK_RE.search(data))
+def is_diff_file(path):
+    """True for a committed patch, by name/location (see DIFF_EXTS comment). Pure
+    path classification -- one source of truth, shared by the engine
+    (FileContext.is_diff) and precommit, identical on both so neither can disagree."""
+    low = path.lower()
+    base = os.path.basename(low)
+    return (low.endswith(DIFF_EXTS)
+            or ".patch." in base or ".diff." in base
+            or bool(_PATCH_DIR_RE.search(low)))
 
 
 def _matches(path, patterns):
@@ -280,12 +273,11 @@ class FileContext:
 
     @property
     def is_diff(self):
-        """A unified diff whose TRAILING whitespace is significant -- the
+        """A committed patch whose trailing whitespace is significant -- the
         trailing-whitespace rule must not rewrite it, and R-001 must not
-        auto-substitute its non-ASCII. Matched by extension (.patch/.diff) or, for
-        an extensionless/odd-named file, a unified-diff hunk header in the content
-        (see is_diff_file); a known text extension is classified by name."""
-        return is_diff_file(self.path, self.data)
+        auto-substitute its non-ASCII. Identified by name/location (see
+        is_diff_file)."""
+        return is_diff_file(self.path)
 
     @property
     def is_text(self):
