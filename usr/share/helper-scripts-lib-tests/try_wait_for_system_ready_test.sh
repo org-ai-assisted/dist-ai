@@ -278,21 +278,25 @@ fi
 
 ## Configured per-probe timeout is passed through verbatim. With max_seconds >
 ## probe_timeout the remaining-budget clamp (probe_this=min(probe_timeout,remaining))
-## does not apply, so the recorded 'timeout' DURATION must equal the configured 2 --
-## 'running' exits after one probe. Regression: a subject ignoring
-## system_ready_probe_timeout (hardcoded literal) records a different value.
-reset_stub
-export LEAPRUN_FAKE_RESULT='running'
-rc=0
-system_ready_wait_max_seconds=5 system_ready_probe_timeout=2 \
-   try_wait_for_system_ready || rc="$?"
-recorded_timeout="$(head -n1 "${timeout_arg_log}")"
-probe_calls="$(wc -l <"${probe_log}")"
-if [ "${rc}" = '0' ] && [ "${probe_calls}" = '1' ] && [ "${recorded_timeout}" = '2' ]; then
-   pass "configured probe timeout passed through -> 'timeout ${recorded_timeout}' (1 probe)"
-else
-   fail "configured timeout -> rc=${rc}, probes=${probe_calls}, timeout-arg='${recorded_timeout}' (want 0, 1, 2)"
-fi
+## does not apply, so the recorded 'timeout' DURATION must equal the configured value.
+## TWO distinct values: a subject that ignores system_ready_probe_timeout and hardcodes
+## a constant records the same number for both, so it fails one assertion (a single
+## value would let a subject hardcoding exactly that value pass). 'running' exits after
+## one probe.
+for cfg in 2 4; do
+   reset_stub
+   export LEAPRUN_FAKE_RESULT='running'
+   rc=0
+   system_ready_wait_max_seconds=10 system_ready_probe_timeout="${cfg}" \
+      try_wait_for_system_ready || rc="$?"
+   recorded_timeout="$(head -n1 "${timeout_arg_log}")"
+   probe_calls="$(wc -l <"${probe_log}")"
+   if [ "${rc}" = '0' ] && [ "${probe_calls}" = '1' ] && [ "${recorded_timeout}" = "${cfg}" ]; then
+      pass "configured probe timeout ${cfg} passed through -> 'timeout ${recorded_timeout}' (1 probe)"
+   else
+      fail "configured timeout ${cfg} -> rc=${rc}, probes=${probe_calls}, timeout-arg='${recorded_timeout}' (want 0, 1, ${cfg})"
+   fi
+done
 
 ## Errexit contract: main() calls this under 'set -o errexit', so a never-ready
 ## run must RETURN 0, not abort on an internal command. errexit is ignored

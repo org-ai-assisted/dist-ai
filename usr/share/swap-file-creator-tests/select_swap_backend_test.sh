@@ -114,8 +114,10 @@ rc_of() {
 ## and (like the real source below) clears positional args first, so a subject gated on
 ## $# cannot behave one way under the probe and another under the real source. Require
 ## the marker (plus no-leak / no-auto-run) before sourcing. Scope: this guards an
-## accidental exit-on-source REGRESSION in the trusted project subject, not a subject
-## that deliberately forges the marker (it cannot, being the project's own script).
+## accidental exit-on-source / leak / auto-run REGRESSION in the trusted project subject.
+## It does NOT sandbox a hostile subject (a crafted top-level side effect, a forged marker,
+## or a subject that overwrites test internals is out of scope -- the subject is the
+## project's own script, not an adversary).
 probe_tmp="$(mktemp --directory)"
 # shellcheck disable=SC2317  # reached via the EXIT trap
 probe_tmp_cleanup() { safe-rm --recursive --force -- "${probe_tmp}"; }
@@ -134,10 +136,11 @@ call_rc=0
 SUBJECT="${subject}" "${probe}" call >/dev/null 2>&1 || call_rc=$?
 check "calling select_swap_backend stays pure (no leak)" "${call_rc}" "0"
 
-## FATAL if the isolation gate did not pass: refuse to source a subject that exits or
-## leaks into this process (a silent false green), fail loud instead.
-if [ "${src_rc}" -ne 0 ] || [ ! -f "${marker}" ]; then
-   printf '%s\n' "FATAL: subject at '${subject}' did not source cleanly to completion (rc=${src_rc}); refusing to source into the test process" >&2
+## FATAL if ANY isolation check failed (exit-on-source, errexit/trap leak, auto-run main,
+## or impure call): refuse to source a subject that would corrupt this process (a silent
+## false green), fail loud instead. 'fail' here reflects only the four checks above.
+if [ "${fail}" -ne 0 ]; then
+   printf '%s\n' "FATAL: subject at '${subject}' failed the source-ability isolation gate (src_rc=${src_rc}, auto-run='${src_out}', call_rc=${call_rc}, marker=$([ -f "${marker}" ] && printf '%s' present || printf '%s' absent)); refusing to source into the test process" >&2
    exit 1
 fi
 
