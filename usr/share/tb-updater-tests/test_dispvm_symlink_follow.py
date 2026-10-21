@@ -316,11 +316,13 @@ def test_preexisting_cache_is_owned_safely_not_aborted(tmp_path):
 
 DISPVM_UNIT = "tb-updater-dispvm.service"
 
-## A recipe line this check cannot model: any shell separator / redirection,
-## any quote, any make or command substitution ('$'), or a backslash line
-## continuation. Such a line is REFUSED (reported), never silently passed --
-## honest scope beats a fragile Makefile/shell parser that lies.
-_COMPLEX_RECIPE = re.compile(r"""[;|&<>'"`$]|\\\s*$""")
+## A recipe line this check cannot model: any shell separator / redirection, any
+## quote, any make or command substitution ('$'), or a non-leading '#' (make
+## passes a recipe '#' to the shell, so it is part of a word there, NOT a
+## comment). Such a line is REFUSED (reported), never silently passed -- honest
+## scope beats a fragile Makefile/shell parser that lies. A backslash
+## continuation is handled before this, by a dedicated refuse.
+_COMPLEX_RECIPE = re.compile(r"""[;|&<>'"`$#]""")
 
 
 def _check_dispvm_no_start(rules_text):
@@ -331,20 +333,25 @@ def _check_dispvm_no_start(rules_text):
     unit must carry --no-start.
 
     HONEST SCOPE, not a parser. It BLESSES exactly one invocation shape -- an
-    'override_dh_installsystemd:' target whose recipe lines are each
+    'override_dh_installsystemd:' target (defined once, a bare rule with no
+    prerequisite or target-specific variable) whose recipe lines are each
     'dh_installsystemd [--no-start] <unit>...' (command token exactly
     'dh_installsystemd', every argument either '--no-start' or a plain unit
     name) -- and REFUSES everything else rather than model debhelper's option
     grammar or make/shell syntax. Refused (reported, never silently passed): no
     override (dh auto-runs dh_installsystemd and STARTS the unit); a
-    dh_installsystemd outside the override (hook target / sequencer); a recipe
-    line with a quote, separator, substitution or continuation; and any
-    dh_installsystemd call carrying an env/path prefix or an unmodeled option
-    ('--name X', '-p pkg', '-X unit', '--restart-after-upgrade' -- each can start
-    the unit or hide the flag as its argument). Nothing is faked green: an
-    unmodeled rules file fails loud for human review. It checks the rules SOURCE
-    under make's 'an override replaces the auto call' rule, not the generated
-    maintainer scripts.
+    dh_installsystemd outside the override (hook target / sequencer); a Make
+    conditional ('ifeq' etc. -- a dead branch must not read as a live target) or
+    a 'DH_OPTIONS' assignment (injects options this check never sees); a recipe
+    line with a quote, separator, substitution, '#' or backslash continuation;
+    and any dh_installsystemd call with an env/path prefix or an unmodeled option
+    ('--name X' swallows --no-start, '-p pkg' / '-X unit' still start the dispvm
+    unit, '--restart-after-upgrade' restarts it). Nothing is faked green: an
+    unmodeled rules file fails loud for human review. OUT OF SCOPE (the run-once
+    sentinel and the '[ -L ]' reject are the real race guards, not this one): a
+    unit pulled in by another unit's '[Install] Also=', and the generated
+    maintainer scripts -- it checks the rules SOURCE under make's 'an override
+    replaces the auto call' rule.
 
     Problems are category-prefixed ('missing-override', 'unparseable:',
     'missing-no-start:', 'no-governing-invocation:') so a canary can assert the
@@ -352,18 +359,36 @@ def _check_dispvm_no_start(rules_text):
     lines = rules_text.splitlines()
     problems = []
 
-    ## The override target and the span of its recipe: the consecutive
-    ## TAB-indented lines right after it (a non-tab line ends the recipe).
-    override_idx = None
+    ## Make conditionals and DH_OPTIONS change which recipe runs or what options
+    ## dh_installsystemd receives; not modeled -> refuse (never read a dead 'ifeq'
+    ## branch as a live target, nor miss an injected flag).
     for i, line in enumerate(lines):
-        if re.match(r'override_dh_installsystemd\s*:', line):
-            override_idx = i
-            break
-    if override_idx is None:
+        if re.match(r'\s*(?:ifeq|ifneq|ifdef|ifndef|else|endif)\b', line):
+            problems.append(f"unparseable: Make conditional at line {i + 1} "
+                            f"({line.strip()!r}); which recipe runs is not modeled")
+        if "DH_OPTIONS" in line:
+            problems.append(f"unparseable: DH_OPTIONS at line {i + 1} can inject "
+                            f"dh_installsystemd options this check cannot see")
+    if problems:
+        return problems
+
+    ## The override target: defined exactly once, as a bare rule (nothing after
+    ## the colon -- no prerequisite, no target-specific variable). Else not modeled.
+    override_lines = [i for i, line in enumerate(lines)
+                      if re.match(r'override_dh_installsystemd\s*:', line)]
+    if not override_lines:
         return [f"missing-override: debian/rules has no "
                 f"'override_dh_installsystemd' target, so 'dh' auto-runs "
                 f"dh_installsystemd and STARTS {DISPVM_UNIT} (mount race, CWE-59)"]
+    override_idx = override_lines[0]
+    if (len(override_lines) > 1 or not
+            re.match(r'override_dh_installsystemd\s*:\s*$', lines[override_idx])):
+        return ["unparseable: override_dh_installsystemd is defined more than "
+                "once or carries a prerequisite / target-specific variable; "
+                "not modeled"]
 
+    ## Its recipe: the consecutive TAB-indented lines right after it (a non-tab
+    ## line ends the recipe).
     recipe = []
     recipe_span = set()
     for i in range(override_idx + 1, len(lines)):
@@ -392,10 +417,19 @@ def _check_dispvm_no_start(rules_text):
 
     governed_ok = 0
     for i, line in recipe:
-        ## Strip the leading tab(s), a leading make recipe prefix ('-'/'@'/'+'),
-        ## and a trailing '# comment'.
-        code = re.sub(r'^[-@+]+', '', line.lstrip("\t")).split("#", 1)[0].strip()
-        if not code:
+        ## Strip leading tab(s) and a leading make recipe prefix ('-'/'@'/'+').
+        ## Do NOT strip a '#': make passes a recipe '#' to the shell verbatim, so
+        ## a LEADING '#' is a shell-comment line (skip) but a '#' elsewhere is
+        ## part of a word -> refused via _COMPLEX_RECIPE below.
+        code = re.sub(r'^[-@+]+', '', line.lstrip("\t")).strip()
+        if not code or code.startswith("#"):
+            continue  # blank or a full-line shell comment
+        ## A backslash continuation can SPLIT the command name across lines
+        ## ('dh_install\' + 'systemd ...'), hiding it from the token check -- so
+        ## refuse before looking for the 'dh_installsystemd' word.
+        if code.endswith("\\"):
+            problems.append(f"unparseable: override recipe line {i + 1} is a "
+                            f"backslash line-continuation ({code!r}); not modeled")
             continue
         if not re.search(r'\bdh_installsystemd\b', code):
             continue  # an unrelated command in the override recipe
@@ -510,11 +544,11 @@ def test_check_dispvm_refuses_complex_recipe_line(recipe):
     "\tdh_installsystemd --name --no-start tb-updater-dispvm.service\n",
     ## A '-p pkg' restriction with no unit operand still starts EVERY unit in the
     ## package incl the dispvm one; a classifier misreads 'pkg' as a unit operand.
-    "\tdh_installsystemd --no-start tb-updater-dispvm.service\n"
-    "\tdh_installsystemd -p tb-updater\n",
+    ("\tdh_installsystemd --no-start tb-updater-dispvm.service\n"
+     "\tdh_installsystemd -p tb-updater\n"),
     ## '-X unit' excludes only the named unit; the dispvm unit is still started.
-    "\tdh_installsystemd --no-start tb-updater-dispvm.service\n"
-    "\tdh_installsystemd -X tb-updater-first-boot.service\n",
+    ("\tdh_installsystemd --no-start tb-updater-dispvm.service\n"
+     "\tdh_installsystemd -X tb-updater-first-boot.service\n"),
     ## '--restart-after-upgrade' restarts the unit on upgrade even with --no-start.
     "\tdh_installsystemd --no-start --restart-after-upgrade tb-updater-dispvm.service\n",
     ## An env prefix or an absolute path is still a real invocation debhelper runs.
@@ -526,6 +560,40 @@ def test_check_dispvm_refuses_unmodeled_invocation(recipe):
     ## avoids: any dh_installsystemd call outside the blessed
     ## 'dh_installsystemd [--no-start] <unit>...' shape is refused, not classified.
     rules = "override_dh_installsystemd:\n" + recipe
+    problems = _check_dispvm_no_start(rules)
+    assert any(p.startswith("unparseable:") for p in problems), problems
+
+
+@pytest.mark.parametrize("rules", [
+    ## (ai-review) A backslash continuation splitting the command name across
+    ## lines ('dh_install\\' + 'systemd ...') -- make joins them into a real,
+    ## unguarded call; a per-line token check would miss it.
+    ("override_dh_installsystemd:\n"
+     "\tdh_installsystemd --no-start tb-updater-dispvm.service\n"
+     "\tdh_install\\\nsystemd tb-updater-dispvm.service\n"),
+    ## A '#' inside a shell word is NOT a comment to the shell, so make runs the
+    ## separated second (unguarded) command after it.
+    ("override_dh_installsystemd:\n"
+     "\tdh_installsystemd --no-start tb-updater-dispvm.service\n"
+     "\techo marker#x; dh_installsystemd tb-updater-dispvm.service\n"),
+    ## A Make conditional: the dead branch's override must not read as live (dh
+    ## would then auto-run an unguarded dh_installsystemd).
+    ("ifeq (1,0)\noverride_dh_installsystemd:\n"
+     "\tdh_installsystemd --no-start tb-updater-dispvm.service\nendif\n"
+     "%:\n\tdh $@\n"),
+    ## DH_OPTIONS injects '--restart-after-upgrade' into the otherwise-pinned call.
+    ("override_dh_installsystemd:\n"
+     "\tdh_installsystemd --no-start tb-updater-dispvm.service\n"
+     "override_dh_installsystemd: export DH_OPTIONS = --restart-after-upgrade\n"),
+    ## The override defined twice / with a target-specific variable after the colon.
+    ("override_dh_installsystemd:\n"
+     "\tdh_installsystemd --no-start tb-updater-dispvm.service\n"
+     "override_dh_installsystemd: SOMEVAR = x\n"),
+])
+def test_check_dispvm_refuses_unmodeled_makefile(rules):
+    ## Modeling make's conditionals, variables, continuations and comment rules
+    ## is the parser-reinvention this check avoids: anything but a plain bare
+    ## override of simple dh_installsystemd lines is refused, not interpreted.
     problems = _check_dispvm_no_start(rules)
     assert any(p.startswith("unparseable:") for p in problems), problems
 

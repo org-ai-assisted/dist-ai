@@ -87,10 +87,12 @@ def is_allowed(base, allow):
     (e.g. --allow firmware-logo matches '43-installed-firmware-logo.png'), never a
     raw substring: a bare substring is fail-OPEN -- '' or '.' is a substring of every
     basename, so it would silently exempt EVERY frame and pass a run that checked
-    nothing. An empty value never matches (fail-closed)."""
+    nothing. A token with no alphanumeric character (so '', '.', '-') is not a real
+    frame name and matches NOTHING -- otherwise '.' would still match a stem ending
+    in '-.' (e.g. 'shot-..png'). Fail-closed."""
     stem = os.path.splitext(base)[0]
     for name in allow:
-        if not name:
+        if not any(c.isalnum() for c in name):
             continue
         if stem == name or stem.endswith("-" + name):
             return True

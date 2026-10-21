@@ -84,10 +84,14 @@ expect_rc "--allow excludes the named frames"   0 --allow white --allow black --
 ## --allow matches a dash-delimited suffix token of the stem ('11-power-on-first-frame').
 expect_rc "--allow matches a dash-suffix token"  0 --allow power-on-first-frame "${workdir}/sfx/11-power-on-first-frame.png"
 
-## FAIL-OPEN guards: a bare substring match would let '' or '.' (a substring of EVERY
-## basename) exempt everything and pass a run that checked nothing. Both must still flag.
+## FAIL-OPEN guards: a token with no alphanumeric char ('' / '.' / '-') is not a real
+## frame name and must exempt NOTHING -- else a bare '.' matches a stem ending in '-.'.
 expect_rc "--allow '' exempts nothing (not fail-open)"   1 --allow '' "${workdir}/white.png"
 expect_rc "--allow . exempts nothing (not fail-open)"    1 --allow . "${workdir}/white.png"
+expect_rc "--allow - exempts nothing (not fail-open)"    1 --allow - "${workdir}/white.png"
+## A blank frame whose stem ends in '-.' must NOT be exempted by a bare '.' token.
+"${magick_bin}" -size 64x48 xc:black "${workdir}/sfx/shot-..png"
+expect_rc "--allow . does not match a '-.'-stem frame"   1 --allow . "${workdir}/sfx/shot-..png"
 
 ## CANARY: a detector that flagged EVERYTHING would fail the two NOT-flagged cases above;
 ## one that flagged NOTHING would fail the three flagged cases. Both are asserted, so the

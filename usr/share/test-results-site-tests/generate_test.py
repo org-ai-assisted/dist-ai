@@ -570,6 +570,20 @@ run_generator(plane, goldens, approvals_path, site2)
 out2 = os.path.join(site2, "automated-test-results")
 check("regeneration is byte-identical (deterministic)", tree_identical(out1, out2))
 
+## Stale-artifact cleanup: a '<shot>-golden.webp' is written only while a shot is CHANGED;
+## once the shot becomes MATCH the generator stops emitting it. A file left in the run dir
+## from a prior generate must be REMOVED on regenerate -- else the asset check flags it
+## orphaned and blocks the publish. Plant one in a MATCH run's committed dir, regenerate over
+## the SAME out_root, and assert it is gone while the run's real output is rebuilt.
+stale_run = os.path.join(out1, "kicksecure-lxqt-18-2-3-5-1")
+stale_golden = os.path.join(stale_run, "kicksecure-lxqt__calamares-install-golden.webp")
+with open(stale_golden, "wb") as handle:
+    handle.write(b"stale-golden-from-a-prior-generate")
+run_generator(plane, goldens, approvals_path, site1)
+check("stale per-run -golden.webp removed on regenerate", not os.path.exists(stale_golden))
+check("regenerated MATCH run still rebuilt its page",
+      os.path.isfile(os.path.join(stale_run, "index.html")))
+
 import shutil  # noqa: E402
 
 shutil.rmtree(work, ignore_errors=True)

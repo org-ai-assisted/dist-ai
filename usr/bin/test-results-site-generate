@@ -270,6 +270,15 @@ def process_run(run_dir, result, run_id, out_root, goldens_dir, approvals, mask_
     lane = run["lane"]
     page_dir = os.path.join(out_root, run_id)
 
+    ## Rebuild the run dir from scratch: drop stale artifacts a prior generate wrote but
+    ## this one no longer emits -- e.g. a '<shot>-golden.webp' is written ONLY while a shot
+    ## is CHANGED (for the side-by-side); once it becomes MATCH/approved the golden is not
+    ## re-emitted, and the lingering committed file is then flagged orphaned by the asset
+    ## check and blocks the publish. The dir is fully generator-owned. Skip a symlink (match
+    ## prune(): never rmtree THROUGH one).
+    if os.path.isdir(page_dir) and not os.path.islink(page_dir):
+        shutil.rmtree(page_dir)
+
     shots = []
     buckets = []
     for step in result["steps"]:
