@@ -1130,15 +1130,24 @@ main() {
       snap 66 checks-complete
    fi
 
-   ## Gate: a degenerate (all-white/all-black) milestone frame is a capture BUG -- a broken
-   ## state card (dm-text-to-png) or an unpainted UI frame -- not a passing run. The inherently
-   ## transient host-side boot frames (no compositor to quiesce, captured between display modes)
-   ## are allow-listed; every other milestone must carry content.
+   ## Gate ONLY the state CARDS (story_card -> dm-text-to-png): those are rendered text and
+   ## MUST carry content -- a blank card is a real render bug (e.g. the ImageMagick '#111111'
+   ## -fill quirk that produced all-white cards). Host-side SCREENSHOTS are deliberately NOT
+   ## gated: a GUESTCTL IDisplay grab legitimately catches an all-black frame at any
+   ## mode-transition (firmware splash, GRUB, kernel/live boot, LUKS prompt, the quiesce round
+   ## trip, a mid-launch or powered-off VM), so gating every snap false-FAILs a SUCCESSFUL run.
    if [ -n "${shot_dir}" ]; then
-      "${IMAGE_BLANK_CHECK:-image-blank-check}" \
-         --allow power-on-first-frame --allow live-kernel-boot --allow live-desktop-ready \
-         "${shot_dir}" \
-         || die "${FAIL_RC}" "degenerate (blank) milestone screenshot(s); see image-blank-check output"
+      local card card_shot card_shots=()
+      for card in vm-defined firmware-state vm-stopped-iso-detached mok-cert-enrolled failure-vm-state; do
+         for card_shot in "${shot_dir}"/*-"${card}".png; do
+            ## A non-matching glob stays literal -> the -e test drops it (no nullglob needed).
+            [ -e "${card_shot}" ] && card_shots+=("${card_shot}")
+         done
+      done
+      if [ "${#card_shots[@]}" -gt 0 ]; then
+         "${IMAGE_BLANK_CHECK:-image-blank-check}" "${card_shots[@]}" \
+            || die "${FAIL_RC}" "a state card rendered blank (dm-text-to-png); see image-blank-check output"
+      fi
    fi
 
    printf '%s\n' "${me}: PASS -- R3 (install completes + LUKS unlock) and R4 (boot installed)"

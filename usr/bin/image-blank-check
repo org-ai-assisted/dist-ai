@@ -34,29 +34,37 @@ def classify(path, max_colors, near, frac):
     """Return a short reason string if PATH is degenerate, else None."""
     with Image.open(path) as im:
         im = im.convert("RGB")
-        pixels = im.getdata()
         total = im.width * im.height
         if total == 0:
             return "empty image (0 px)"
         extrema = im.getextrema()
         uniform = all(mn == mx for mn, mx in extrema)
-        ## Dominant colour + its share, and the count of distinct colours. getcolors(None)
-        ## never caps the palette, so a content-rich frame reports thousands and passes.
-        colors = im.getcolors(maxcolors=total)
-        colors.sort(reverse=True)
-        dom_count, dom_rgb = colors[0]
-        distinct = len(colors)
-        dom_frac = dom_count / total
-    near_black = all(c <= near for c in dom_rgb)
-    near_white = all(c >= 255 - near for c in dom_rgb)
-    if uniform and near_black:
-        return "uniform black"
-    if uniform and near_white:
-        return "uniform white"
-    if distinct <= max_colors and dom_frac >= frac and (near_black or near_white):
-        shade = "black" if near_black else "white"
+        ## getcolors(maxcolors=N) returns None the moment the palette exceeds N, so a
+        ## content-rich frame short-circuits here -- no full per-pixel histogram is built,
+        ## bounding time + memory on large frames. We only care whether the frame is
+        ## near a SINGLE colour (<= max_colors distinct).
+        colors = im.getcolors(maxcolors=max_colors)
+
+    def near_bw(rgb):
+        return all(c <= near for c in rgb), all(c >= 255 - near for c in rgb)
+
+    if uniform:
+        is_black, is_white = near_bw(tuple(mn for mn, _mx in extrema))
+        if is_black:
+            return "uniform black"
+        if is_white:
+            return "uniform white"
+        return None
+    ## More than max_colors distinct colours -> real content, never near-blank.
+    if colors is None:
+        return None
+    dom_count, dom_rgb = max(colors)
+    is_black, is_white = near_bw(dom_rgb)
+    dom_frac = dom_count / total
+    if dom_frac >= frac and (is_black or is_white):
+        shade = "black" if is_black else "white"
         return ("near-blank %s (%.2f%% one colour, %d distinct)"
-                % (shade, dom_frac * 100.0, distinct))
+                % (shade, dom_frac * 100.0, len(colors)))
     return None
 
 
