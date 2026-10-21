@@ -486,6 +486,19 @@ _select_src(_ed, 0, len(_ed.source()))
 _ed.keyPressEvent(key_ev(Qt.Key.Key_C, mods=_CTRL, text='\x03'))
 eq(_cb.text(), 'ex' + CYR_A + 'mple',
    'Ctrl+C puts the reviewed source on the clipboard (look-alike kept), not a badge')
+# a selection sitting INSIDE one wide badge must copy that badge's source char, NOT ""
+# -- nearest-snap mapped both endpoints to the same index -> empty slice -> the copy
+# CLOBBERED the clipboard with "". floor/ceil cover the touched cell instead.
+_ed.set_mode('detail')
+_ed.set_source_revealed('paypa' + CYR_A + '.com')   # CYR_A -> a wide <U+0430 ...> badge
+_bstart = _ed._offset(5)                              # badge (source index 5) doc span
+_cur = _ed.textCursor()
+_cur.setPosition(_bstart + 2)                         # strictly inside the badge
+_cur.setPosition(_bstart + 5, QTextCursor.MoveMode.KeepAnchor)
+_ed.setTextCursor(_cur)
+ok(_ed.textCursor().hasSelection(), 'precondition: a sub-badge selection is set')
+eq(_ed.createMimeDataFromSelection().text(), CYR_A,
+   'a selection inside one badge copies that badge source char, not "" (no clipboard clobber)')
 
 # paste INTO the box is re-sanitized; a None mime source inserts nothing
 _ed.set_source('a')
