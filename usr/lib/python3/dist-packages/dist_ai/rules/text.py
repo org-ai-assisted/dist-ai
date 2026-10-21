@@ -142,12 +142,14 @@ class Confusables(Rule):
 class TrailingWhitespace(Rule):
     """Trailing space/tab before end-of-line. Scoped to text files (matching the
     gate's is_text). CR and a final no-newline are preserved (the lookahead never
-    consumes them)."""
+    consumes them). A .patch/.diff is exempt: its trailing blanks are significant
+    (a blank context line is a single space) and stripping them corrupts it."""
 
     id = "trailing-whitespace"
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.data is not None and ctx.is_text
+        return (super().applies(ctx) and ctx.data is not None and ctx.is_text
+                and not ctx.is_diff)
 
     def detect(self, ctx):
         data = ctx.data

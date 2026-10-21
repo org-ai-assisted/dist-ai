@@ -744,4 +744,36 @@ else
    note_fail "R-062 did not drop the rejecting '--'"
 fi
 
+## --- 12: a .patch/.diff is NOT whitespace-rewritten (significant blanks) -----
+## A unified diff's blank CONTEXT line is a single space and a line's trailing
+## blanks can be the very change encoded; stripping either makes the patch no
+## longer apply. The whitespace fixers (R-001 trailing + the pre-commit batch's
+## trailing-whitespace/end-of-file/BOM) must leave such a file byte-identical.
+## Canary: the fixture genuinely CONTAINS trailing blanks, so an exemption that
+## merely no-op'd on a clean file would not prove anything.
+for ext in patch diff ; do
+   f="${test_dir}/sample.${ext}"
+   printf '%s\n' '--- a/x' '+++ b/x' '@@ -1,3 +1,3 @@' ' ctx' ' ' '-old   ' '+new' >"${f}"
+   if ! has_trailing_ws "${f}" ; then
+      note_fail ".${ext} fixture not dirty -- canary would let a no-op exemption pass"
+   fi
+   before="$(cksum < "${f}")"
+   run_fix "${f}" >/dev/null 2>&1
+   if [ "$(cksum < "${f}")" = "${before}" ] && has_trailing_ws "${f}" ; then
+      note_pass ".${ext} left byte-identical (significant whitespace preserved)"
+   else
+      note_fail ".${ext} was whitespace-rewritten (patch corruption)"
+   fi
+done
+## Contrast: the SAME bytes in a .txt ARE stripped -- the exemption is scoped to
+## diff files, not a blanket no-op.
+f="${test_dir}/sample.txt"
+printf '%s\n' ' ctx' ' ' 'old   ' 'new' >"${f}"
+run_fix "${f}" >/dev/null 2>&1
+if ! has_trailing_ws "${f}" ; then
+   note_pass ".txt still has its trailing whitespace stripped (diff exemption scoped)"
+else
+   note_fail ".txt trailing whitespace survived -- exemption leaked to non-diff files"
+fi
+
 exit_gate

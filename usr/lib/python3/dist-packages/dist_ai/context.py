@@ -44,6 +44,18 @@ TEXT_BASENAMES = ("Dockerfile", "Makefile", "COPYING", "README", "LICENSE")
 TEXT_MIME_NEEDLES = ("text/", "x-shellscript", "x-python", "json", "xml",
                      "yaml", "toml", "charset=us-ascii", "charset=utf-8")
 
+## A unified diff is text, but its whitespace is SEMANTICALLY significant: a blank
+## context line is a single leading space, and a line's trailing blanks may be the
+## very change the patch encodes. Stripping either corrupts the patch so it no
+## longer applies. The whitespace-MUTATING rules/fixers (trailing-whitespace,
+## end-of-file, byte-order-marker) skip these; detect-only checks and the secret
+## scanners still run.
+DIFF_EXTS = (".patch", ".diff")
+
+
+def is_diff_file(path):
+    return path.lower().endswith(DIFF_EXTS)
+
 
 def _matches(path, patterns):
     base = os.path.basename(path)
@@ -240,6 +252,12 @@ class FileContext:
             return False
         return (out.returncode == 0
                 and out.stdout.rstrip("\n").endswith(": binary: set"))
+
+    @property
+    def is_diff(self):
+        """A unified-diff file (.patch/.diff) whose whitespace is significant --
+        the whitespace-mutating text rules must not rewrite it (see DIFF_EXTS)."""
+        return is_diff_file(self.path)
 
     @property
     def is_text(self):
