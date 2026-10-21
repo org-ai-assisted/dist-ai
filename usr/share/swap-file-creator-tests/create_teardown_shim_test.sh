@@ -42,6 +42,8 @@
 ##       (swapon --show exits nonzero) keeps the enabled swap and skips the
 ##       check -- it must NOT tear down healthy swap; only a verified wrong
 ##       size rolls back, which is (J).
+##   (M) do_stop fail-closed on a non-absolute SWAPFILE: a relative path is
+##       refused before any file op (never safe-rm's a CWD file).
 ##
 ## A missing REQUIRED dependency (subject, helper-scripts) is a HARD FAIL.
 
@@ -381,6 +383,20 @@ TRACE="${trace}" FAKE_FSTYPE=ext4 FAKE_SWAPON_LIST="" FAKE_SWAPON_SHOW="" SWAPON
 check "(L) do_start SUCCEEDS (size-probe failure tolerated)" "${rc}" "0"
 check "(L) swap KEPT: enabling swapon reached"               "$(traced '^swapon ' && printf '%s' y || printf '%s' n)" "y"
 check "(L) NO rollback swapoff (healthy swap not torn down)" "$(traced '^swapoff ' && printf '%s' y || printf '%s' n)" "n"
+
+## --- (M) do_stop must REJECT a non-absolute SWAPFILE (fail closed). do_stop
+## safe-rm's the configured path and runs independently as the unit's ExecStop,
+## so a relative value (misconfig) must be refused before any file op -- never
+## safe-rm a path in the service's CWD. do_start already validated absoluteness;
+## the old do_stop had no guard and returned 0 on a relative path. ---
+trace="${work}/trace-m"
+true > "${trace}"
+rc=0
+TRACE="${trace}" FAKE_SWAPON_LIST="" \
+   DRIVE_SWAPFILE="relative-swapfile" PATH="${bindir}:${PATH}" \
+   bash "${drive}" stop >/dev/null 2>&1 || rc=$?
+check "(M) do_stop FAILS (nonzero) on a non-absolute SWAPFILE" "${rc}" "1"
+check "(M) safe-rm NOT reached (guard precedes file ops)"      "$(traced '^safe-rm ' && printf '%s' y || printf '%s' n)" "n"
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then

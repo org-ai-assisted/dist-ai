@@ -23,6 +23,17 @@
 ## 'exit 0 when no args', must behave identically under the probe and the real path).
 ## Namespaced so the sourced subject (which may define its own 'mode') cannot clobber it.
 __probe_mode="${1:-}"
+
+## Snapshot the trap state to a FILE before sourcing. A '$(trap -p)' command
+## substitution runs in a subshell that RESETS non-ignore traps (so it would
+## MISS a leaked EXIT/ERR trap) yet INHERITS ignore traps (so it FALSE-fails on
+## a benign inherited 'SIGHUP' ignore under nohup/daemon/CI, aborting the whole
+## unit suite). A redirect runs in THIS shell, capturing the real state; the
+## post-source compare then flags only a trap the SUBJECT installed.
+__probe_traps_before="$(mktemp)"
+__probe_traps_after="$(mktemp)"
+trap -p > "${__probe_traps_before}"
+
 set --
 # shellcheck disable=SC1090,SC1091,SC2154  # SUBJECT: the swap-file-creator path, from the env
 source "${SUBJECT}"
@@ -54,11 +65,16 @@ for __opt in errexit nounset pipefail errtrace; do
 done
 
 ## No ERR/EXIT (or other) trap may have leaked -- a top-level 'trap ... EXIT'
-## would hijack the caller's exit.
-if [ -n "$(trap -p)" ]; then
-   printf '%s\n' "LEAK: a trap is installed after source" >&2
+## would hijack the caller's exit. Compare against the pre-source snapshot so
+## only a trap the SUBJECT installed counts; traps inherited from the parent
+## (e.g. a SIGHUP ignore) are in both files and cancel out.
+trap -p > "${__probe_traps_after}"
+if ! cmp -s "${__probe_traps_before}" "${__probe_traps_after}"; then
+   printf '%s\n' "LEAK: a trap was installed after source" >&2
+   safe-rm --force -- "${__probe_traps_before}" "${__probe_traps_after}"
    exit 1
 fi
+safe-rm --force -- "${__probe_traps_before}" "${__probe_traps_after}"
 
 ## If sourcing (or the call) enabled errexit, this 'false' aborts (exit 1);
 ## otherwise 'true' yields exit 0.
