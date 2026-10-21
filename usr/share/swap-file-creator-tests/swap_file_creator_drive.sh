@@ -34,6 +34,14 @@ DO_PRE_CHECK="${DRIVE_DO_PRE_CHECK:-no}"
 HIBERNATION='no'
 VERBOSE='yes'
 
+## Install the SAME ERR trap main() installs, when a case needs to exercise the
+## production error_handler path (e.g. the post-enable rollback on an ERR-driven
+## failure, which only fires under the trap). Off by default so the other cases
+## observe raw do_start / do_stop return codes.
+if [ "${DRIVE_INSTALL_ERR_TRAP:-no}" = 'yes' ]; then
+   trap error_handler ERR
+fi
+
 case "${1:-}" in
    start)
       do_start

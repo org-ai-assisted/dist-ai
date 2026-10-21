@@ -17,7 +17,7 @@
 ##       (never rounded to 0G for a sub-GiB target), and plain fallocate / mkswap
 ##       are NOT.
 ##   (C) teardown safety (P0): swapoff FAILS -> do_stop must NOT remove the
-##       still-active swap file.
+##       still-active swap file, AND must return nonzero (fail loud, #7).
 ##   (D) teardown success: swapoff OK -> do_stop removes the file (safe-rm),
 ##       after swapoff.
 ##   (E) df -P: free space is read from the right column even when a long mapper
@@ -32,6 +32,15 @@
 ##   (I) restart idempotency: the existing managed swap file's bytes are
 ##       credited (do_stop reclaims them), so a restart on a full-ish disk is
 ##       not falsely blocked.
+##   (J) #8 rollback: a post-enable failure (size self-check mismatch) must
+##       swapoff the swap do_start just enabled, not leave a mis-sized active
+##       swap behind the failure.
+##   (K) #7 abort-before-overwrite: do_stop could not deactivate an existing
+##       active swap (swapoff fails) -> do_start must bail BEFORE fallocate,
+##       never format a possibly-live swap file.
+##   (L) #8 rollback via the production ERR trap: a post-enable command failure
+##       (swapon --show enumeration) under the trap main() installs rolls the
+##       just-enabled swap back (the complement of (J)'s explicit exit path).
 ##
 ## A missing REQUIRED dependency (subject, helper-scripts) is a HARD FAIL.
 
@@ -166,7 +175,7 @@ cat > "${bindir}/swapon" <<'EOF'
 #!/bin/bash
 case "$*" in
    "")       printf '%s\n' "${FAKE_SWAPON_LIST:-}"; exit "${SWAPON_LIST_RC:-0}" ;;
-   *--show*) printf '%s\n' "${FAKE_SWAPON_SHOW:-}" ;;
+   *--show*) printf '%s\n' "${FAKE_SWAPON_SHOW:-}"; exit "${SWAPON_SHOW_RC:-0}" ;;
    *)        printf 'swapon %s\n' "$*" >> "${TRACE}" ;;
 esac
 exit 0
@@ -213,7 +222,9 @@ check "(B) btrfs size never '0G' (sub-GiB regression)" "$(traced '0G' && printf 
 check "(B) plain fallocate NOT used on btrfs"     "$(traced '^fallocate ' && printf '%s' y || printf '%s' n)" "n"
 check "(B) plain mkswap NOT used on btrfs"        "$(traced '^mkswap ' && printf '%s' y || printf '%s' n)"    "n"
 
-## --- (C) teardown safety: swapoff fails -> no remove ---
+## --- (C) teardown safety: swapoff fails -> no remove, and FAIL LOUD (#7). The
+## old code kept the file but returned 0, so a service stop falsely succeeded
+## and do_start proceeded unsafely. do_stop must now return nonzero. ---
 trace="${work}/trace-c"
 true > "${trace}"
 true > "${SWAPFILE}"
@@ -221,7 +232,7 @@ rc=0
 TRACE="${trace}" SWAPOFF_RC=32 FAKE_SWAPON_LIST="${SWAPFILE} file 1024M" \
    DRIVE_SWAPFILE="${SWAPFILE}" PATH="${bindir}:${PATH}" \
    bash "${drive}" stop >/dev/null 2>&1 || rc=$?
-check "(C) do_stop returns 0 despite swapoff fail" "${rc}" "0"
+check "(C) do_stop fails (nonzero) on unconfirmed swapoff" "${rc}" "1"
 check "(C) swapoff was attempted"                  "$(traced '^swapoff ' && printf '%s' y || printf '%s' n)" "y"
 check "(C) safe-rm NOT called after swapoff fail"  "$(traced '^safe-rm ' && printf '%s' y || printf '%s' n)" "n"
 check "(C) swap file still present"                "$([ -e "${SWAPFILE}" ] && printf '%s' y || printf '%s' n)" "y"
@@ -275,7 +286,7 @@ rc=0
 TRACE="${trace}" SWAPON_LIST_RC=1 SWAPOFF_RC=32 FAKE_SWAPON_LIST="" \
    DRIVE_SWAPFILE="${SWAPFILE}" PATH="${bindir}:${PATH}" \
    bash "${drive}" stop >/dev/null 2>&1 || rc=$?
-check "(G) do_stop returns 0 on enumeration failure"   "${rc}" "0"
+check "(G) do_stop fails (nonzero) on enumeration+swapoff failure" "${rc}" "1"
 check "(G) swapoff attempted (empty list not trusted)" "$(traced '^swapoff ' && printf '%s' y || printf '%s' n)" "y"
 check "(G) safe-rm NOT called (fail closed)"           "$(traced '^safe-rm ' && printf '%s' y || printf '%s' n)" "n"
 check "(G) swap file still present"                    "$([ -e "${SWAPFILE}" ] && printf '%s' y || printf '%s' n)" "y"
@@ -313,6 +324,56 @@ TRACE="${trace}" FAKE_FSTYPE=ext4 FAKE_SWAPON_LIST="" FAKE_SWAPON_SHOW="${SWAPFI
    bash "${drive}" start >/dev/null 2>&1 || rc=$?
 check "(I) do_start succeeds (existing 7 GiB credited)"  "${rc}" "0"
 check "(I) fallocate reached (restart not falsely blocked)" "$(traced '^fallocate ' && printf '%s' y || printf '%s' n)" "y"
+
+## --- (J) #8: a post-enable failure rolls the swap back. swapon enables
+## successfully, but the size self-check sees the kernel-reported size (1 GiB)
+## far below the 5 GiB target, so do_start must swapoff (roll back) the swap it
+## just enabled before failing -- not leave a mis-sized active swap behind. No
+## existing file (no do_stop swapoff), so the ONLY swapoff is the rollback. Old
+## code logged the mismatch and exited WITHOUT any swapoff. ---
+trace="${work}/trace-j"
+true > "${trace}"
+safe-rm --force -- "${SWAPFILE}"
+rc=0
+TRACE="${trace}" FAKE_FSTYPE=ext4 FAKE_SWAPON_LIST="" FAKE_SWAPON_SHOW="${SWAPFILE} 1G" \
+   DRIVE_SWAPFILE="${SWAPFILE}" DRIVE_SIZE_MB=5120 DRIVE_DO_PRE_CHECK=no PATH="${bindir}:${PATH}" \
+   bash "${drive}" start >/dev/null 2>&1 || rc=$?
+check "(J) do_start FAILS (size self-check mismatch)"   "${rc}" "1"
+check "(J) rollback swapoff called after failed check"  "$(traced '^swapoff ' && printf '%s' y || printf '%s' n)" "y"
+
+## --- (K) #7: do_start must ABORT before overwriting a swap it could not
+## deactivate. The existing managed file is an ACTIVE swap and swapoff fails, so
+## do_stop returns nonzero; do_start must bail BEFORE fallocate rather than
+## format a possibly-live swap file. Old code ignored do_stop's result and
+## proceeded to fallocate (overwriting a still-active swap). ---
+trace="${work}/trace-k"
+true > "${trace}"
+true > "${SWAPFILE}"
+rc=0
+TRACE="${trace}" FAKE_FSTYPE=ext4 SWAPOFF_RC=32 FAKE_SWAPON_LIST="${SWAPFILE} file 1024M" \
+   FAKE_SWAPON_SHOW="${SWAPFILE} 5G" \
+   DRIVE_SWAPFILE="${SWAPFILE}" DRIVE_SIZE_MB=5120 DRIVE_DO_PRE_CHECK=no PATH="${bindir}:${PATH}" \
+   bash "${drive}" start >/dev/null 2>&1 || rc=$?
+check "(K) do_start FAILS (could not deactivate active swap)" "${rc}" "1"
+check "(K) fallocate NOT reached (no overwrite of live swap)" "$(traced '^fallocate ' && printf '%s' y || printf '%s' n)" "n"
+check "(K) swapoff was attempted"                             "$(traced '^swapoff ' && printf '%s' y || printf '%s' n)" "y"
+
+## --- (L) #8 via the production ERR trap: a post-enable command failure (the
+## 'swapon --show' enumeration returns nonzero) under the SAME ERR trap main()
+## installs must roll back the swap do_start just enabled. Exercises
+## error_handler's rollback path -- the explicit size-check path is (J). No
+## existing file (no do_stop swapoff), so the only swapoff is the rollback. Old
+## error_handler had no rollback, so swap stayed active after the failure. ---
+trace="${work}/trace-l"
+true > "${trace}"
+safe-rm --force -- "${SWAPFILE}"
+rc=0
+TRACE="${trace}" FAKE_FSTYPE=ext4 FAKE_SWAPON_LIST="" FAKE_SWAPON_SHOW="" SWAPON_SHOW_RC=1 \
+   DRIVE_INSTALL_ERR_TRAP=yes \
+   DRIVE_SWAPFILE="${SWAPFILE}" DRIVE_SIZE_MB=5120 DRIVE_DO_PRE_CHECK=no PATH="${bindir}:${PATH}" \
+   bash "${drive}" start >/dev/null 2>&1 || rc=$?
+check "(L) do_start FAILS (post-enable enumeration failure)" "${rc}" "1"
+check "(L) ERR-trap rollback swapoff called"                 "$(traced '^swapoff ' && printf '%s' y || printf '%s' n)" "y"
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
