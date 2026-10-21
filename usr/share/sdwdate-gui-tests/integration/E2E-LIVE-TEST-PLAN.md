@@ -12,8 +12,8 @@ AI-Assisted
 The automated lanes verify everything that runs without a real Qubes install:
 
 - `sdwdate-gui-tests` (unit, offscreen) -- client event loop, wire protocol,
-  menu/RPC wiring, config parse, reconnect backoff, the bash glue functions
-  (proxy connect, enabled-check, proxy-role); 100% python line coverage.
+  menu/RPC wiring, config parse, the fixed-delay reconnect, the bash glue
+  functions (proxy connect-check, proxy-role); 100% python line coverage.
 - `sdwdate-gui-tests-fuzz` -- randomized/malformed wire input, no-crash +
   registration invariants.
 - `sdwdate-gui-tests-integration` -- the real tray icon on a headless X11
@@ -21,66 +21,74 @@ The automated lanes verify everything that runs without a real Qubes install:
   menu; the Wayland menu opt-out).
 
 What NONE of those can reach: the cross-qube qrexec round-trip through the
-static `sdwdate-gui.Connect` socket service, a connector VM appearing and
-disappearing on its own schedule, and the menu actions firing real RPC into a
-real client VM. That needs live qubes, so it is an operator-driven plan with
-exact commands and pass criteria.
+`sdwdate-gui.ConnectCheck` + `sdwdate-gui.Connect` socket services, a connector
+VM appearing and disappearing on its own schedule, and the menu actions firing
+real RPC into a real client VM. That needs live qubes, so it is an
+operator-driven plan with exact commands and pass criteria.
 
 These are DISRUPTIVE steps (they stop/restart time sync and power VMs off and
 on). Run them on a test session, not while the machine is doing real work.
 
 ## The architecture under test
 
-- The gateway exposes its running server's UNIX socket as a native qrexec
-  SOCKET service via `/etc/qubes-rpc/sdwdate-gui.Connect` ->
-  `/run/user/<uid>/sdwdate-gui/sdwdate-gui-server.socket`. The symlink is
-  created ONCE at boot by `sdwdate-gui-qubes-connect-setup.service` (a root
-  one-shot, not a poll loop), which resolves `<uid>` from the boot mode:
-  `user` (uid 1000) normally, `sysmaint` (uid 1001) in a sysmaint session.
-  There is NO continuous endpoint-maintainer and NO ConnectCheck responder.
+- On the gateway, `sdwdate-gui-qubes-proxy-helper.service` waits for the running
+  server's UNIX socket (`/run/user/<uid>/sdwdate-gui/sdwdate-gui-server.socket`,
+  the default user's uid) and symlinks it to `/run/qubes-rpc/sdwdate-gui.Connect`.
+  The gateway also answers `sdwdate-gui.ConnectCheck`, which BLOCKS gateway-side
+  (polling its own `/run/qubes-rpc/sdwdate-gui.Connect` once a second) until that
+  endpoint is a live socket, then returns `y`; it returns `q` ("will not become
+  available") when the gateway is disabled or is not configured to run the
+  server.
 - The workstation client connects to its local systemd socket, which
   socket-activates `sdwdate-gui-qubes-proxy`; the proxy execs
-  `qrexec-client-vm <gateway> sdwdate-gui.Connect` and bridges stdio.
-- A down or disabled gateway has no server socket, so `sdwdate-gui.Connect`
-  fails fast (qrexec exit 125). The client reconnects with CAPPED EXPONENTIAL
-  BACKOFF (1s doubling to 60s), so a persistently-unavailable gateway is retried
-  at most ~1/minute -- there is no responder to block gateway-side, the backoff
-  is what prevents a dom0 policy-log flood.
+  `qrexec-client-vm <gateway> sdwdate-gui.ConnectCheck` and, ONLY on a `y`,
+  `qrexec-client-vm <gateway> sdwdate-gui.Connect` to bridge stdio.
+- A gateway whose server is merely still starting does NOT flood dom0: the
+  single ConnectCheck qrexec call stays open and BLOCKS on the gateway side, so
+  the workstation is not making a call per second. On a `q` (disabled /
+  non-server gateway, or an unreachable one where the qrexec call fails), the
+  proxy drops `/run/sdwdate-gui/qubes-gateway-server-disabled` and the client
+  GIVES UP (its next main_loop pass sees the flag and exits). The client's
+  `asyncio.sleep(1)` is only a brief fixed pause between a dropped CONNECTED
+  session and the next attempt, NOT a capped-exponential backoff and NOT a
+  gateway-poll loop.
 - `disable=true` on any VM makes `sdwdate-gui.service`'s ExecCondition skip the
-  unit, so neither server nor client starts. To a workstation a disabled gateway
-  is indistinguishable from a down one and is handled identically (backoff).
+  unit, so neither server nor client starts. A disabled gateway answers
+  ConnectCheck with `q`, so the workstation gives up rather than retrying.
 
 ## Topology and roles
 
-- `sys-whonix` -- the Whonix GATEWAY. Runs the sdwdate-gui SERVER tray app and,
-  at boot, the `sdwdate-gui-qubes-connect-setup` one-shot that creates the
-  `/etc/qubes-rpc/sdwdate-gui.Connect` symlink for the active boot mode's uid.
+- `sys-whonix` -- the Whonix GATEWAY. Runs the sdwdate-gui SERVER tray app and
+  `sdwdate-gui-qubes-proxy-helper.service`, which waits for the server socket and
+  symlinks it to `/run/qubes-rpc/sdwdate-gui.Connect`, plus the
+  `sdwdate-gui.ConnectCheck` qrexec responder.
 - A WORKSTATION connector VM (e.g. `anon-whonix`) -- runs the sdwdate-gui CLIENT
   plus the proxy services (`sdwdate-gui-qubes-proxy` via the socket unit,
   `sdwdate-gui-qubes-proxy-helper`). It reaches the gateway over
-  `sdwdate-gui.Connect`.
+  `sdwdate-gui.ConnectCheck` then `sdwdate-gui.Connect`.
 - A second connector VM -- to exercise multiple clients and independent up/down
   timing.
 - `dom0` -- observation only: the qrexec policy decisions are logged here.
 
 ## Observation points (open these first, keep them running)
 
-- O1 dom0 policy log (the bug surface -- Connect retry spam):
+- O1 dom0 policy log (the bug surface -- ConnectCheck/Connect retry spam):
 
       # in dom0
       sudo journalctl -f | grep -i 'sdwdate-gui'
 
-  Healthy: at most a handful of `sdwdate-gui.Connect` lines around an actual
-  connect, and on a down/disabled gateway a SLOWING trickle (1s, 2s, 4s ... out
-  to ~1/min), NOT ~1 line/second/qube. A steady per-second stream is the
-  regression.
+  Healthy: at most a handful of `sdwdate-gui.ConnectCheck` / `sdwdate-gui.Connect`
+  lines around an actual connect. A server that is merely starting holds ONE
+  open ConnectCheck call (blocked gateway-side), not a line per second; a
+  disabled gateway answers `q` once and the client gives up. A steady
+  per-second stream is the regression.
 
 - O2 gateway Connect endpoint + server socket:
 
       # in sys-whonix
-      systemctl status sdwdate-gui-qubes-connect-setup.service   # one-shot, boot
-      ls -l /etc/qubes-rpc/sdwdate-gui.Connect          # symlink -> the server socket
-      ## normal session: /run/user/1000/...; sysmaint session: /run/user/1001/...
+      systemctl status sdwdate-gui-qubes-proxy-helper.service    # maintains the symlink
+      ls -l /run/qubes-rpc/sdwdate-gui.Connect          # symlink -> the server socket
+      ## symlink target tracks the running server: /run/user/<uid>/sdwdate-gui/...
       ls -l /run/user/*/sdwdate-gui/sdwdate-gui-server.socket    # only when server up
 
 - O3 gateway server log (the tray app; crash vs clean exit):
@@ -99,8 +107,9 @@ on). Run them on a test session, not while the machine is doing real work.
 
 ## Pass criteria (apply to every scenario)
 
-- P1 No dom0 Connect log flood (O1): on a down/disabled gateway the retry rate
-  BACKS OFF toward ~1/min; it never holds a sustained per-second stream.
+- P1 No dom0 qrexec log flood (O1): a starting gateway holds ONE open blocked
+  ConnectCheck call, a disabled gateway answers `q` once and the client gives
+  up; neither ever holds a sustained per-second ConnectCheck/Connect stream.
 - P2 The gateway server never exits except via the tray `&Exit` item, and when
   it does exit that way O3 shows `Exit requested via the tray menu; quitting.`
   (never a silent SystemExit, never a traceback).
@@ -108,15 +117,18 @@ on). Run them on a test session, not while the machine is doing real work.
   few seconds; every connector that goes down disappears and does not wedge the
   menu or the handshake.
 - P4 Connect/reconnect: a fresh connector against an up gateway connects within
-  a few seconds; after a gateway comes back up, a waiting connector reconnects
-  within the backoff cap (<= ~60s), not instantly and not never.
+  a few seconds; a connector whose ConnectCheck is blocked on a starting gateway
+  connects promptly once the server socket appears (the gateway-side block
+  releases), not instantly and not never.
 
 ## Scenario matrix
 
 Two independent dimensions, exercised in combination:
 
-- A. Gateway server state: (A1) server RUNNING vs (A2) server NOT running
-  (down, or `disable=true`).
+- A. Gateway server state: (A1) server RUNNING vs (A2) server NOT running.
+  Trixie splits A2: a gateway configured to run the server but still starting
+  BLOCKS ConnectCheck (client waits), whereas `disable=true` / not-a-server
+  answers `q` (client gives up).
 - B. Connector lifecycle timing relative to the server.
 
 | ID  | Gateway server | Connector action                                   | Expect |
@@ -133,22 +145,24 @@ Two independent dimensions, exercised in combination:
 | S10 | A2 (disabled)  | gateway `disable=true`; connectors up               | P1     |
 | S11 | A1 (sysmaint)  | gateway booted in sysmaint mode (GUI as uid 1001)   | P1,P3,P4 |
 
-### S1 -- client with no server (the flood regression, server-off arm)
+### S1 -- client with no server yet (the flood regression, server-starting arm)
 
-1. Ensure the gateway server is NOT running (O3 shows no process; O2 shows no
-   server socket, the static symlink dangling).
+1. Ensure the gateway server is NOT running but the gateway IS configured to run
+   it (`disable=false`, `run_server_in_qubes=true`): O3 shows no process; O2
+   shows no server socket and no `/run/qubes-rpc/sdwdate-gui.Connect` yet.
 2. Boot/keep a connector VM up; confirm its client + proxy start (O4).
 3. Watch O1 for 2-3 minutes.
-   Expected: the `sdwdate-gui.Connect` attempts SLOW DOWN (1s, 2s, 4s ... capped
-   at ~60s), never a sustained per-second stream (P1). This is the backoff doing
-   the flood-prevention the old ConnectCheck block used to.
+   Expected: ONE `sdwdate-gui.ConnectCheck` call that stays open, blocked
+   gateway-side waiting for the server socket -- never a sustained per-second
+   ConnectCheck/Connect stream (P1). The gateway-side block, not a client
+   backoff, is the flood-prevention.
 
 ### S2 -- connector already up when the server starts
 
-1. Connector up (S1 state, backed off).
+1. Connector up (S1 state, ConnectCheck blocked gateway-side).
 2. Start the gateway server (O3: `/usr/bin/sdwdate-gui`).
-3. The connector appears in the tray menu within one backoff interval (P3,P4).
-   Watch O1: a connect around the appear, then quiet (P1).
+3. The connector appears in the tray menu promptly once the blocked ConnectCheck
+   releases (P3,P4). Watch O1: a connect around the appear, then quiet (P1).
 
 ### S3 -- connector boots after the server is running
 
@@ -181,10 +195,10 @@ Two independent dimensions, exercised in combination:
 
 ### S7 -- late server start with connectors already waiting
 
-1. Connectors up, server NOT running (clients backed off, S1).
+1. Connectors up, server NOT running (clients blocked in ConnectCheck, S1).
 2. Start the gateway server.
-3. Each waiting connector reconnects within its backoff cap (<= ~60s) and
-   appears (P3,P4). O1: a connect per connector, then quiet (P1).
+3. Each waiting connector's blocked ConnectCheck releases and it reconnects and
+   appears promptly (P3,P4). O1: a connect per connector, then quiet (P1).
 
 ### S8 -- clean exit via the tray &Exit item
 
@@ -193,26 +207,29 @@ Two independent dimensions, exercised in combination:
    exact accidental trigger the crash fix addressed).
 3. O3 shows exactly `Exit requested via the tray menu; quitting.` and the
    process exits 0 -- no traceback, no silent SystemExit (P2).
-4. With the server now down, confirm the connectors back off (P1), not flood.
+4. With the server now down (but the gateway still enabled), confirm each
+   connector's ConnectCheck blocks gateway-side waiting for the socket to
+   return, not a flood (P1).
 
 ### S9 -- gateway server restarted under load
 
 1. Server running, connectors listed, handshakes settled.
 2. Exit the server (`&Exit`) and restart it (`/usr/bin/sdwdate-gui`). The server
-   unlinks and rebinds its socket at the same path; the static Connect symlink
-   is unchanged (O2).
-3. Live clients reconnect within a backoff interval and the menu re-populates
-   (P3,P4). O1: a connect burst around the restart, then quiet (P1).
+   unlinks and rebinds its socket at the same path; the proxy-helper re-points
+   `/run/qubes-rpc/sdwdate-gui.Connect` at the new socket (O2).
+3. Live clients reconnect once the endpoint is back (their fixed-delay retry
+   then a releasing ConnectCheck) and the menu re-populates (P3,P4). O1: a
+   connect burst around the restart, then quiet (P1).
 
 ### S11 -- gateway booted in sysmaint mode
 
 1. Boot the gateway in SYSMAINT mode (the GUI session runs as `sysmaint`,
    uid 1001). Start the server as sysmaint.
-2. O2: `sdwdate-gui-qubes-connect-setup.service` resolved the boot mode and
-   `/etc/qubes-rpc/sdwdate-gui.Connect` points at
-   `/run/user/1001/sdwdate-gui/sdwdate-gui-server.socket` (NOT 1000).
+2. O2: the proxy-helper points `/run/qubes-rpc/sdwdate-gui.Connect` at the
+   ACTUAL running server socket -- `/run/user/1001/sdwdate-gui/...` in a
+   sysmaint session, NOT a hardcoded `/run/user/1000/...`.
 3. A workstation connects and appears in the sysmaint-session tray (P3,P4);
-   O1 quiet (P1). This is the exact case a hardcoded-uid-1000 symlink would
+   O1 quiet (P1). This is the exact case a hardcoded-uid-1000 endpoint would
    silently break.
 
 ### S10 -- disabled gateway
@@ -220,9 +237,11 @@ Two independent dimensions, exercised in combination:
 1. Set `disable=true` in the gateway config and restart `sdwdate-gui.service`
    (its ExecCondition now skips it: O3 shows no server, O2 no server socket).
 2. Keep connectors up.
-3. The connectors back off exactly as in S1 (P1): a disabled gateway is
-   indistinguishable from a down one and must not flood dom0. Clear `disable`
-   and restart to confirm S7-style recovery.
+3. The gateway answers `sdwdate-gui.ConnectCheck` with `q`, so each connector's
+   proxy drops `/run/sdwdate-gui/qubes-gateway-server-disabled` and the client
+   GIVES UP -- O1 shows one ConnectCheck per connector, then silence, never a
+   flood (P1). Clear `disable` and restart the connectors to confirm S7-style
+   recovery (give-up is per-run: the flag lives in `/run`, cleared on reboot).
 
 ## Button / action coverage (run with at least one connector listed)
 
@@ -251,24 +270,26 @@ server handles the vanishing client gracefully, not a wedge.
 
 1. Exit the gateway server via `&Exit` (not kill) to validate P2 one last time.
 2. Restore each connector's normal power state.
-3. Confirm O1 is quiet and `/etc/qubes-rpc/sdwdate-gui.Connect` is present on
-   the gateway (created by the boot one-shot, independent of the tray app).
+3. Confirm O1 is quiet. With the server down, `/run/qubes-rpc/sdwdate-gui.Connect`
+   dangles (its target socket is gone); the proxy-helper re-points it when the
+   server is next up.
 
 ## Resume / automation notes
 
 - Unattended, no qubes: `sdwdate-gui-tests` (unit incl. the bash glue functions
-  and reconnect backoff), `sdwdate-gui-tests-fuzz` (wire + glue fuzz), and
-  `sdwdate-gui-tests-integration` (headless tray/menu). The reconnect-backoff
-  regression (no fixed-rate flood) and the gateway-arg/enabled-check branch
-  invariants are proven there; the handshake STATE MACHINE is model-checked by
-  `test_handshake_model.py` (the anti-flood "every retry passes through backoff"
-  invariant is exhaustive over the reachable state space).
-- There is NO headless e2e suite: the new design has no gateway-side maintainer
-  or responder to chain without a live qube. The cross-qube round-trip is proven
-  only here, operator-driven.
+  and the fixed-delay reconnect), `sdwdate-gui-tests-fuzz` (wire + glue fuzz),
+  and `sdwdate-gui-tests-integration` (headless tray/menu). The reconnect
+  control flow (give-up on the disabled flag, fixed-delay retry otherwise) and
+  the gateway-arg/connect-check branch invariants are proven there; the
+  handshake STATE MACHINE is model-checked by `test_handshake_model.py` (the
+  rate-limited-retry, give-up and liveness invariants are exhaustive over the
+  reachable state space).
+- There is NO headless e2e suite: the cross-qube ConnectCheck/Connect round-trip
+  cannot be chained without a live qube. It is proven only here,
+  operator-driven.
 - What stays OPERATOR-DRIVEN (needs a live Qubes host + dom0): the real qvm
   lifecycle (`qvm-start`/`qvm-shutdown`), the dom0 qrexec-policy flood
-  observation (O1), the real cross-qube qrexec round-trip through the static
-  socket service, and the live tray button actions firing RPC into real client
-  VMs. Each step above lists its exact command and O1-O4 observation point so a
-  dedicated test session can run it.
+  observation (O1), the real cross-qube qrexec round-trip through the
+  ConnectCheck/Connect socket services, and the live tray button actions firing
+  RPC into real client VMs. Each step above lists its exact command and O1-O4
+  observation point so a dedicated test session can run it.

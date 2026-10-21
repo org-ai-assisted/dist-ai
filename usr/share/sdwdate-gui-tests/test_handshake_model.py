@@ -14,43 +14,60 @@ and the proof must still pass.
 
 Correspondence to the implementation:
   * server down/up -- sdwdate-gui-server on the gateway: 'up' == its UNIX socket
-                    exists. The gateway Connect endpoint is a STATIC qrexec
-                    socket-service symlink to that socket, so there is no
-                    maintainer and no readiness responder to model.
-  * client idle/connecting/connected/backoff -- the workstation client +
+                    exists. sdwdate-gui-qubes-proxy-helper symlinks that running
+                    socket to the gateway's /run/qubes-rpc/sdwdate-gui.Connect
+                    qrexec endpoint.
+  * client idle/connecting/connected/retry/gaveup -- the workstation client +
       sdwdate-gui-qubes-proxy:
       idle       -> the client connects to its local systemd socket, which
                     socket-activates the proxy; the proxy calls
-                    sdwdate-gui.Connect over qrexec (modelled as 'connecting').
-      connecting -> on an up server the qrexec socket service bridges
-                    ('connected'); on a down/disabled gateway the call fails
-                    fast (qrexec exit 125), so the session drops ('backoff').
+                    sdwdate-gui.ConnectCheck over qrexec (modelled as
+                    'connecting').
+      connecting -> ConnectCheck BLOCKS on the gateway while an operational
+                    server is still starting, then returns 'y' and the proxy
+                    bridges sdwdate-gui.Connect ('connected'). On a disabled /
+                    non-server gateway it returns 'q' ("will not become
+                    available"), so the proxy drops the
+                    qubes-gateway-server-disabled flag and the client exits
+                    ('gaveup'). The client does NOT poll qrexec in a loop: the
+                    gateway side blocks, so a down/disabled gateway cannot be
+                    hammered into dom0's qrexec-policy log.
       connected  -> the bridge is up until the server drops.
-      backoff    -> the client sleeps a capped-exponential delay before
-                    retrying (idle). There is NO give-up state: a disabled
-                    gateway is indistinguishable from a down one, and both are
-                    retried, rate-limited by the backoff.
+      retry      -> a dropped CONNECTED session pauses a FIXED reconnect delay
+                    (asyncio.sleep in main_loop) before retrying (idle). This
+                    is the only reconnect path; it rate-limits the drop/retry
+                    cycle but is NOT a capped-exponential backoff.
+      gaveup     -> the client process exits (terminal): the disabled flag is
+                    set, so the next main_loop pass breaks out.
 
 One gateway-reachability dimension, constant per run:
   * reachable=True  -- an operational gateway (not disabled, runs the server):
-                       its socket may come up and down.
-  * reachable=False -- a disabled / non-server gateway: its socket NEVER comes
-                       up, so 'connected' is unreachable; the client retries
-                       forever (via backoff), never gives up.
+                       ConnectCheck answers, blocking until the server socket is
+                       up, so the client always eventually connects and NEVER
+                       gives up; the server may come up and down (restart).
+  * reachable=False -- a disabled / non-server / unreachable gateway:
+                       ConnectCheck returns 'q' (or the qrexec call fails), so
+                       'connected' is unreachable and the client gives up
+                       instead of retrying.
 
 Proved over both configs:
   * SAFETY         -- a client only BECOMES 'connected' from an up server; the
                       unreachable config never reaches 'connected'.
-  * ANTI-FLOOD     -- every retry passes through 'backoff': 'idle' is only ever
-                      re-entered from 'backoff', never directly from a failed
-                      'connecting' or a dropped 'connected'. This is what keeps
-                      a down/disabled gateway from being polled in a tight loop
-                      and flooding dom0's qrexec-policy log.
-  * NO DEADLOCK    -- every reachable state has a successor.
+  * RATE-LIMITED   -- every reconnect passes through 'retry': 'idle' is only
+                      re-entered from 'retry', never directly from a dropped
+                      'connected'. The client pauses a fixed delay between a
+                      drop and the next attempt rather than reconnecting in a
+                      tight loop.
+  * GIVE-UP        -- the unreachable config REACHES 'gaveup' (a disabled
+                      gateway is given up on, not retried forever); the
+                      reachable config never reaches 'gaveup' (an operational
+                      gateway is always waited out).
+  * NO DEADLOCK    -- every reachable NON-terminal state has a successor
+                      ('gaveup' is terminal by design: the client has exited).
   * LIVENESS       -- reachable config: 'connected' is reachable from every
                       reachable state (never permanently stuck) and reachable at
-                      all. unreachable config: 'idle' (a fresh attempt) is
-                      reachable from every state -- the client never gives up.
+                      all. unreachable config: 'gaveup' is reachable from every
+                      state -- the client always eventually gives up.
 """
 
 # pylint: disable=invalid-name
@@ -60,10 +77,14 @@ from collections import deque
 
 ## Component state vocabularies.
 SERVER = ("down", "up")
-CLIENT = ("idle", "connecting", "connected", "backoff")
+CLIENT = ("idle", "connecting", "connected", "retry", "gaveup")
 
 ## A protocol state is (server, client).
 INITIAL = ("down", "idle")
+
+## 'gaveup' models the client process having exited; it is terminal and has no
+## successor, so the no-deadlock proof exempts it.
+TERMINAL = "gaveup"
 
 ## The gateway-reachability configs.
 CONFIGS = (True, False)
@@ -72,35 +93,42 @@ CONFIGS = (True, False)
 def successors(state, reachable):
     """All states reachable in one step from `state`. The environment move (the
     server starting/stopping) is enabled only for a reachable gateway; the
-    client moves follow the reconnect loop. Guards here ARE the safety
+    client moves follow the connect loop. Guards here ARE the safety
     argument."""
     server, client = state
     nxt = set()
 
     ## Environment: an operational gateway's server may start or stop at any
-    ## time; a disabled / non-server gateway's server never comes up.
+    ## time; a disabled / non-server / unreachable gateway's server never comes
+    ## up.
     if reachable:
         nxt.add(("up" if server == "down" else "down", client))
 
-    ## Client reconnect loop. No give-up: a down and a disabled gateway are
-    ## indistinguishable and both are retried.
+    ## Client connect loop.
     if client == "idle":
-        ## Local socket activation -> proxy calls sdwdate-gui.Connect.
+        ## Local socket activation -> proxy calls sdwdate-gui.ConnectCheck.
         nxt.add((server, "connecting"))
     elif client == "connecting":
-        if server == "up":
-            nxt.add((server, "connected"))
+        if reachable:
+            ## ConnectCheck blocks until the server socket is up, then bridges.
+            ## While the server is down the client simply waits (no client move;
+            ## only the environment bringing the server up makes progress).
+            if server == "up":
+                nxt.add((server, "connected"))
         else:
-            ## No server socket -> qrexec Connect fails fast -> rate-limited
-            ## retry, never a direct re-attempt.
-            nxt.add((server, "backoff"))
-    elif client == "backoff":
-        ## After the capped-exponential sleep, retry from idle.
-        nxt.add((server, "idle"))
+            ## ConnectCheck returns 'q' (or the qrexec call fails): the gateway
+            ## will never serve, so the disabled flag is dropped and the client
+            ## exits. No tight retry loop.
+            nxt.add((server, "gaveup"))
     elif client == "connected":
-        ## A dropped server is noticed and reconnected THROUGH the backoff path.
+        ## A dropped server is noticed and reconnected THROUGH the fixed retry
+        ## delay.
         if server == "down":
-            nxt.add((server, "backoff"))
+            nxt.add((server, "retry"))
+    elif client == "retry":
+        ## After the fixed reconnect delay, retry from idle.
+        nxt.add((server, "idle"))
+    ## 'gaveup' is terminal: the client process has exited, no successor.
 
     nxt.discard(state)
     return nxt
@@ -209,26 +237,48 @@ class TestHandshakeModel(unittest.TestCase):
                     "unreachable gateway reached a 'connected' client",
                 )
 
-    def test_anti_flood_retry_passes_through_backoff(self) -> None:
-        """'idle' is only ever re-entered from 'backoff' -- every retry is
-        rate-limited, so a down/disabled gateway is never polled in a tight
-        loop that would flood dom0's qrexec-policy log."""
+    def test_rate_limited_retry_passes_through_delay(self) -> None:
+        """'idle' is only ever re-entered from 'retry' -- every reconnect is
+        preceded by the fixed delay, so a dropped session is not reconnected in
+        a tight loop."""
         for reachable in CONFIGS:
             _seen, edges = reachable_states(reachable)
             for src, succ in edges.items():
                 for dst in succ:
                     if dst[1] == "idle" and src[1] != "idle":
                         self.assertEqual(
-                            src[1], "backoff",
-                            f"retry re-entered 'idle' without backing off: "
+                            src[1], "retry",
+                            f"retry re-entered 'idle' without the delay: "
                             f"{src} -> {dst} (reachable={reachable})",
                         )
 
+    def test_give_up_only_on_unreachable_gateway(self) -> None:
+        """The unreachable config reaches 'gaveup' (a disabled gateway is given
+        up on); the reachable config never does (an operational gateway is
+        waited out)."""
+        seen_unreachable, _ = reachable_states(reachable=False)
+        self.assertTrue(
+            any(s[1] == TERMINAL for s in seen_unreachable),
+            "unreachable gateway never reached 'gaveup' (no give-up)",
+        )
+        seen_reachable, _ = reachable_states(reachable=True)
+        self.assertEqual(
+            {s for s in seen_reachable if s[1] == TERMINAL}, set(),
+            "reachable gateway wrongly gave up",
+        )
+
     def test_no_deadlock(self) -> None:
-        """Every reachable state has a successor, both configs."""
+        """Every reachable NON-terminal state has a successor, both configs;
+        'gaveup' is terminal by design."""
         for reachable in CONFIGS:
             seen, edges = reachable_states(reachable)
             for state in seen:
+                if state[1] == TERMINAL:
+                    self.assertEqual(
+                        edges[state], set(),
+                        f"terminal 'gaveup' has a successor at {state}",
+                    )
+                    continue
                 self.assertTrue(
                     edges[state],
                     f"deadlock (no successor) at {state}, "
@@ -247,15 +297,16 @@ class TestHandshakeModel(unittest.TestCase):
         )
         self.assertTrue(any(s[1] == "connected" for s in seen))
 
-    def test_unreachable_never_gives_up(self) -> None:
-        """Unreachable config: 'idle' (a fresh attempt) reachable from every
-        state -- the client retries forever and never gives up."""
+    def test_unreachable_always_gives_up(self) -> None:
+        """Unreachable config: 'gaveup' reachable from every state -- the client
+        always eventually gives up on a disabled gateway rather than retrying
+        forever."""
         seen, edges = reachable_states(reachable=False)
-        good = can_reach(edges, [s for s in seen if s[1] == "idle"])
+        good = can_reach(edges, [s for s in seen if s[1] == TERMINAL])
         stuck = seen - good
         self.assertEqual(
             stuck, set(),
-            f"client gets stuck (cannot retry) from: {stuck}",
+            f"client can never reach 'gaveup' from: {stuck}",
         )
 
 
@@ -312,8 +363,8 @@ class TestStrongFairnessLiveness(unittest.TestCase):
         no exit is a trap.
         """
         trap_graph = {
-            ("up", "idle"): {("up", "backoff")},
-            ("up", "backoff"): {("up", "idle")},
+            ("up", "idle"): {("up", "retry")},
+            ("up", "retry"): {("up", "idle")},
         }
         sccs = _strongly_connected_components(trap_graph)
         cyclic = [scc for scc in sccs if len(scc) >= 2]
