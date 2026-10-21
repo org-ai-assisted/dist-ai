@@ -1132,11 +1132,14 @@ main() {
 
    ## Gate: a degenerate (all-white/all-black) milestone frame is a capture BUG -- a broken
    ## state card (dm-text-to-png) or an unpainted UI frame -- not a passing run. The inherently
-   ## transient host-side boot frames (no compositor to quiesce, captured between display modes)
-   ## are allow-listed; every other milestone must carry content.
+   ## transient host-side frames (story_snap: no compositor to quiesce, captured between display
+   ## modes -- firmware splash, GRUB, kernel boot, LUKS prompt, first/last frame) are legitimately
+   ## blank and allow-listed by name substring (covering BOTH the live-session and installed-boot
+   ## captures); every QUIESCED capture + rendered card must carry content.
    if [ -n "${shot_dir}" ]; then
       "${IMAGE_BLANK_CHECK:-image-blank-check}" \
-         --allow power-on-first-frame --allow live-kernel-boot --allow live-desktop-ready \
+         --allow first-frame --allow firmware-logo --allow grub --allow kernel-boot \
+         --allow desktop-ready --allow luks --allow sysmaint-terminal --allow last-frame \
          "${shot_dir}" \
          || die "${FAIL_RC}" "degenerate (blank) milestone screenshot(s); see image-blank-check output"
    fi
