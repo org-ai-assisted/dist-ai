@@ -1,0 +1,114 @@
+#!/usr/bin/python3 -Bsu
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Shell-invocation guard.
+"exec" "bash" "-c" "printf '%s\n' '$0: ERROR: Do not execute this script with bash!' >&2; exit 1"
+
+"""Flag degenerate (blank) screenshots: an all-white or all-black frame, or one so
+close to it that it carries no content -- a broken capture (compositor not painted,
+headless firmware, a state card whose text failed to render). Exits non-zero when any
+flagged, so a release-test run that produced a blank milestone frame FAILS the run
+instead of silently publishing a black rectangle.
+
+Usage:
+  image-blank-check [--max-colors N] [--near D] [--frac F] [--allow NAME]... PATH...
+
+PATH is a PNG file or a directory (scanned for *.png, non-recursive). A frame is
+degenerate when it is uniform white/black, OR has <= --max-colors distinct colors AND
+its dominant color covers >= --frac of pixels AND that color is within --near of pure
+black or pure white on every channel. --allow excludes a shot whose basename contains
+NAME (for a frame that is legitimately blank by design -- use sparingly, and say why)."""
+
+import argparse
+import os
+import sys
+
+from PIL import Image
+
+
+def classify(path, max_colors, near, frac):
+    """Return a short reason string if PATH is degenerate, else None."""
+    with Image.open(path) as im:
+        im = im.convert("RGB")
+        pixels = im.getdata()
+        total = im.width * im.height
+        if total == 0:
+            return "empty image (0 px)"
+        extrema = im.getextrema()
+        uniform = all(mn == mx for mn, mx in extrema)
+        ## Dominant colour + its share, and the count of distinct colours. getcolors(None)
+        ## never caps the palette, so a content-rich frame reports thousands and passes.
+        colors = im.getcolors(maxcolors=total)
+        colors.sort(reverse=True)
+        dom_count, dom_rgb = colors[0]
+        distinct = len(colors)
+        dom_frac = dom_count / total
+    near_black = all(c <= near for c in dom_rgb)
+    near_white = all(c >= 255 - near for c in dom_rgb)
+    if uniform and near_black:
+        return "uniform black"
+    if uniform and near_white:
+        return "uniform white"
+    if distinct <= max_colors and dom_frac >= frac and (near_black or near_white):
+        shade = "black" if near_black else "white"
+        return ("near-blank %s (%.2f%% one colour, %d distinct)"
+                % (shade, dom_frac * 100.0, distinct))
+    return None
+
+
+def iter_pngs(paths):
+    for p in paths:
+        if os.path.isdir(p):
+            for name in sorted(os.listdir(p)):
+                if name.lower().endswith(".png"):
+                    yield os.path.join(p, name)
+        else:
+            yield p
+
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser(prog="image-blank-check", add_help=True)
+    parser.add_argument("--max-colors", type=int, default=8,
+                        help="a frame with more distinct colours than this is never "
+                             "near-blank (default 8)")
+    parser.add_argument("--near", type=int, default=6,
+                        help="how close (0-255) the dominant colour must be to pure "
+                             "black/white (default 6)")
+    parser.add_argument("--frac", type=float, default=0.98,
+                        help="dominant-colour share for near-blank (default 0.98)")
+    parser.add_argument("--allow", action="append", default=[],
+                        help="skip a shot whose basename contains this substring")
+    parser.add_argument("paths", nargs="+")
+    return parser.parse_args(argv[1:])
+
+
+def main(argv):
+    args = parse_args(argv)
+    flagged = []
+    checked = 0
+    for path in iter_pngs(args.paths):
+        base = os.path.basename(path)
+        if any(a in base for a in args.allow):
+            continue
+        checked += 1
+        try:
+            reason = classify(path, args.max_colors, args.near, args.frac)
+        except (OSError, ValueError) as exc:
+            ## An unreadable/corrupt frame is itself a bad capture -> flag it.
+            flagged.append((path, "unreadable: %s" % exc))
+            continue
+        if reason is not None:
+            flagged.append((path, reason))
+    for path, reason in flagged:
+        sys.stderr.write("image-blank-check: DEGENERATE %s -- %s\n" % (path, reason))
+    sys.stdout.write("image-blank-check: %d checked, %d degenerate\n"
+                     % (checked, len(flagged)))
+    return 1 if flagged else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

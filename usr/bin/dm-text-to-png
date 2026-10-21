@@ -45,5 +45,8 @@ fi
 ## label: renders the text verbatim (embedded newlines respected), auto-sizing to the content;
 ## a white border gives the card a margin. Monospace keeps the showvminfo key=value columns
 ## aligned. '%' is not expected in showvminfo output; a stray one would be a harmless glyph.
-"${magick_bin}" -background '#ffffff' -fill '#111111' -family 'monospace' -pointsize 14 \
+## FILL MUST be 'black'/'#000000', NOT a near-black hex ('#111111'/'#222222'): the latter
+## render the label BLANK on ImageMagick 7 (no text, no error -- a magick quirk), which is
+## exactly how the state cards came out all-white.
+"${magick_bin}" -background '#ffffff' -fill black -family 'monospace' -pointsize 14 \
    "label:${text}" -bordercolor '#ffffff' -border 18 "${out}"

@@ -126,13 +126,21 @@ probe_tmp_cleanup() { safe-rm --recursive --force -- "${probe_tmp}"; }
 trap probe_tmp_cleanup EXIT
 marker="${probe_tmp}/source-complete"
 
+## Do NOT swallow the probe's stderr: a leak reason (which trap/option leaked)
+## must surface, not be hidden behind an opaque gate failure.
 src_out=""
 src_rc=0
-src_out="$(SUBJECT="${subject}" SOURCE_COMPLETE_MARKER="${marker}" "${probe}" source 2>/dev/null)" || src_rc=$?
+src_out="$(SUBJECT="${subject}" SOURCE_COMPLETE_MARKER="${marker}" "${probe}" source)" || src_rc=$?
 check "isolated source does not enable errexit (no leak)"   "${src_rc}" "0"
-check "isolated source does not auto-run main"              "${src_out}" ""
 check "isolated source runs to completion (marker present)" \
    "$([ -f "${marker}" ] && printf '%s' yes || printf '%s' no)" "yes"
+## Auto-run check is meaningful ONLY once the probe completed (marker + rc 0):
+## on a premature exit src_out is empty and would FALSE-pass this emptiness test.
+if [ -f "${marker}" ] && [ "${src_rc}" = "0" ]; then
+   check "isolated source does not auto-run main"           "${src_out}" ""
+else
+   check "isolated source does not auto-run main"           "incomplete-probe" ""
+fi
 
 call_rc=0
 SUBJECT="${subject}" "${probe}" call >/dev/null 2>&1 || call_rc=$?
@@ -145,6 +153,15 @@ if [ "${fail}" -ne 0 ]; then
    printf '%s\n' "FATAL: subject at '${subject}' failed the source-ability isolation gate (src_rc=${src_rc}, auto-run='${src_out}', call_rc=${call_rc}, marker=$([ -f "${marker}" ] && printf '%s' present || printf '%s' absent)); refusing to source into the test process" >&2
    exit 1
 fi
+
+## Regression (bug-hunt finding): an inherited IGNORED signal (SIGHUP under
+## nohup / a daemon / some CI) must NOT make the probe false-fail. The old bare
+## '[ -n "$(trap -p)" ]' saw the inherited ignore and aborted, FATAL-ing the
+## whole suite (all unit tests skipped). Run the probe with SIGHUP ignored and
+## require a clean exit.
+sighup_rc=0
+( trap '' HUP; SUBJECT="${subject}" SOURCE_COMPLETE_MARKER="${probe_tmp}/sighup-marker" "${probe}" source ) >/dev/null 2>&1 || sighup_rc=$?
+check "source probe tolerates an inherited SIGHUP-ignore trap" "${sighup_rc}" "0"
 
 ## Source the REAL subject to obtain select_swap_backend (main() does not run:
 ## its was_executed guard is false when sourced). Clear positional args first so

@@ -920,9 +920,9 @@ main() {
    "${VBOXMANAGE}" startvm "${vm}" --type headless >/dev/null
    vm_started="true"
    story_snap 11 power-on-first-frame
-   ## Transient firmware splash (best-effort; brief and may be hidden headless).
-   sleep 2
-   story_snap 12 firmware-logo
+   ## No firmware-logo capture: a headless VM's firmware draws no splash, so the frame was
+   ## ALWAYS all-black. The firmware-state card (13) already records the firmware / Secure Boot
+   ## state, so nothing is lost.
    ## Select the install boot entry once GRUB is actually on screen (poll, not a
    ## fixed sleep that races the autoboot into the wrong session). The menu capture (20/21)
    ## is taken inside select_install_boot_entry, where the menu is known to be on screen.
@@ -939,6 +939,10 @@ main() {
    ## single most fragile step: a fullscreen terminal OCRs unreliably, so the old
    ## blind type had no verification at all).
    wait_ready 480
+   ## Brief settle: wait_ready returns when the compositor is UP, but the first paint can lag
+   ## (a frame grabbed mid-mode-switch is black). No guestcontrol yet, so snap()'s quiesce
+   ## cannot run here -- best-effort settle only; this frame stays allow-listed in the blank gate.
+   sleep 2
    story_snap 23 live-desktop-ready
    wait_guestcontrol_ready "${live_account}" 300 \
       || die "${FAIL_RC}" "guestcontrol (VBoxService) never came up in the live session"
@@ -1124,6 +1128,17 @@ main() {
       run_release_check_battery cal_exec cal_reboot_sysmaint cal_verify \
          || die "${FAIL_RC}" "release check ${RELEASE_CHECK_FAILED_NUM} (${RELEASE_CHECK_FAILED_REASON}) FAILED"
       snap 66 checks-complete
+   fi
+
+   ## Gate: a degenerate (all-white/all-black) milestone frame is a capture BUG -- a broken
+   ## state card (dm-text-to-png) or an unpainted UI frame -- not a passing run. The inherently
+   ## transient host-side boot frames (no compositor to quiesce, captured between display modes)
+   ## are allow-listed; every other milestone must carry content.
+   if [ -n "${shot_dir}" ]; then
+      "${IMAGE_BLANK_CHECK:-image-blank-check}" \
+         --allow power-on-first-frame --allow live-kernel-boot --allow live-desktop-ready \
+         "${shot_dir}" \
+         || die "${FAIL_RC}" "degenerate (blank) milestone screenshot(s); see image-blank-check output"
    fi
 
    printf '%s\n' "${me}: PASS -- R3 (install completes + LUKS unlock) and R4 (boot installed)"

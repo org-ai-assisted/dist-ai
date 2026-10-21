@@ -38,9 +38,12 @@
 ##   (K) #7 abort-before-overwrite: do_stop could not deactivate an existing
 ##       active swap (swapoff fails) -> do_start must bail BEFORE fallocate,
 ##       never format a possibly-live swap file.
-##   (L) #8 rollback via the production ERR trap: a post-enable command failure
-##       (swapon --show enumeration) under the trap main() installs rolls the
-##       just-enabled swap back (the complement of (J)'s explicit exit path).
+##   (L) edge-2 best-effort size check: a FAILED informational size probe
+##       (swapon --show exits nonzero) keeps the enabled swap and skips the
+##       check -- it must NOT tear down healthy swap; only a verified wrong
+##       size rolls back, which is (J).
+##   (M) do_stop fail-closed on a non-absolute SWAPFILE: a relative path is
+##       refused before any file op (never safe-rm's a CWD file).
 ##
 ## A missing REQUIRED dependency (subject, helper-scripts) is a HARD FAIL.
 
@@ -218,7 +221,11 @@ TRACE="${trace}" FAKE_FSTYPE=btrfs FAKE_SWAPON_LIST="" FAKE_SWAPON_SHOW="${SWAPF
 check "(B) do_start succeeds (btrfs, 512 MiB)"    "${rc}" "0"
 check "(B) btrfs mkswapfile used"                 "$(traced '^btrfs filesystem mkswapfile' && printf '%s' y || printf '%s' n)" "y"
 check "(B) btrfs size in bytes (536870912), not rounded G" "$(traced 'mkswapfile --size 536870912' && printf '%s' y || printf '%s' n)" "y"
-check "(B) btrfs size never '0G' (sub-GiB regression)" "$(traced '0G' && printf '%s' y || printf '%s' n)" "n"
+## Anchor to the mkswapfile size TOKEN, not a bare '0G': 'traced' greps the
+## whole trace and every line embeds the mktemp path ${work}, whose random
+## suffix can itself contain "0G" (false-FAIL ~1/430 runs). A G-suffixed size
+## after 'mkswapfile --size' is the sub-GiB rounding regression; a byte size is not.
+check "(B) btrfs size never G-suffixed (sub-GiB rounds to 0G)" "$(traced 'mkswapfile --size [0-9]*G' && printf '%s' y || printf '%s' n)" "n"
 check "(B) plain fallocate NOT used on btrfs"     "$(traced '^fallocate ' && printf '%s' y || printf '%s' n)" "n"
 check "(B) plain mkswap NOT used on btrfs"        "$(traced '^mkswap ' && printf '%s' y || printf '%s' n)"    "n"
 
@@ -358,12 +365,13 @@ check "(K) do_start FAILS (could not deactivate active swap)" "${rc}" "1"
 check "(K) fallocate NOT reached (no overwrite of live swap)" "$(traced '^fallocate ' && printf '%s' y || printf '%s' n)" "n"
 check "(K) swapoff was attempted"                             "$(traced '^swapoff ' && printf '%s' y || printf '%s' n)" "y"
 
-## --- (L) #8 via the production ERR trap: a post-enable command failure (the
-## 'swapon --show' enumeration returns nonzero) under the SAME ERR trap main()
-## installs must roll back the swap do_start just enabled. Exercises
-## error_handler's rollback path -- the explicit size-check path is (J). No
-## existing file (no do_stop swapoff), so the only swapoff is the rollback. Old
-## error_handler had no rollback, so swap stayed active after the failure. ---
+## --- (L) edge-2 best-effort size check: a FAILED informational size probe
+## must NOT tear down healthy swap. swapon enables OK but 'swapon --show' exits
+## nonzero, so the size self-check cannot run. do_start keeps the enabled swap
+## and SUCCEEDS (same policy as an unparseable unit), never rolling back -- even
+## with the production ERR trap installed, the '|| true' guard keeps it from
+## firing. No existing file (no do_stop swapoff), so ANY swapoff would be a
+## rollback. The pre-edge-2 code rolled the swap back here (swapoff + exit 1). ---
 trace="${work}/trace-l"
 true > "${trace}"
 safe-rm --force -- "${SWAPFILE}"
@@ -372,8 +380,23 @@ TRACE="${trace}" FAKE_FSTYPE=ext4 FAKE_SWAPON_LIST="" FAKE_SWAPON_SHOW="" SWAPON
    DRIVE_INSTALL_ERR_TRAP=yes \
    DRIVE_SWAPFILE="${SWAPFILE}" DRIVE_SIZE_MB=5120 DRIVE_DO_PRE_CHECK=no PATH="${bindir}:${PATH}" \
    bash "${drive}" start >/dev/null 2>&1 || rc=$?
-check "(L) do_start FAILS (post-enable enumeration failure)" "${rc}" "1"
-check "(L) ERR-trap rollback swapoff called"                 "$(traced '^swapoff ' && printf '%s' y || printf '%s' n)" "y"
+check "(L) do_start SUCCEEDS (size-probe failure tolerated)" "${rc}" "0"
+check "(L) swap KEPT: enabling swapon reached"               "$(traced '^swapon ' && printf '%s' y || printf '%s' n)" "y"
+check "(L) NO rollback swapoff (healthy swap not torn down)" "$(traced '^swapoff ' && printf '%s' y || printf '%s' n)" "n"
+
+## --- (M) do_stop must REJECT a non-absolute SWAPFILE (fail closed). do_stop
+## safe-rm's the configured path and runs independently as the unit's ExecStop,
+## so a relative value (misconfig) must be refused before any file op -- never
+## safe-rm a path in the service's CWD. do_start already validated absoluteness;
+## the old do_stop had no guard and returned 0 on a relative path. ---
+trace="${work}/trace-m"
+true > "${trace}"
+rc=0
+TRACE="${trace}" FAKE_SWAPON_LIST="" \
+   DRIVE_SWAPFILE="relative-swapfile" PATH="${bindir}:${PATH}" \
+   bash "${drive}" stop >/dev/null 2>&1 || rc=$?
+check "(M) do_stop FAILS (nonzero) on a non-absolute SWAPFILE" "${rc}" "1"
+check "(M) safe-rm NOT reached (guard precedes file ops)"      "$(traced '^safe-rm ' && printf '%s' y || printf '%s' n)" "n"
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then

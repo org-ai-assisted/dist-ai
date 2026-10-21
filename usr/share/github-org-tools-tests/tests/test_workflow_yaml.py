@@ -134,6 +134,12 @@ OWNER_GATE_LITERAL = "vars.CI_ENABLED_ORG_AI_ASSISTED == 'true'"
 ##   (clusterfuzzlite PR job): event==pull_request AND head-repo match.
 FORK_PR_HEAD_REPO = "github.event.pull_request.head.repo.full_name == github.repository"
 FORK_PR_GUARD_CLAUSE = FORK_PR_HEAD_REPO + " || github.event_name != 'pull_request'"
+## STRICTER variant used by the org reusables: !startsWith(..., 'pull_request') excludes
+## BOTH pull_request AND pull_request_target (the canonical '!= 'pull_request'' lets a fork
+## pull_request_target through -- see the W-009 docstring), so this form is safe where the
+## canonical one is not.
+FORK_PR_GUARD_CLAUSE_STRICT = (
+    FORK_PR_HEAD_REPO + " || !startsWith(github.event_name, 'pull_request')")
 FORK_PR_SAME_REPO_PR = "github.event_name == 'pull_request'"
 
 
@@ -553,7 +559,9 @@ def fork_pr_disjunct_is_safe(part):
 
       1. the canonical OR-guard clause FORK_PR_GUARD_CLAUSE
          ('head.repo... == github.repository || github.event_name !=
-         'pull_request''), ANDed into the disjunct; or
+         'pull_request''), or its STRICTER variant FORK_PR_GUARD_CLAUSE_STRICT
+         ('... || !startsWith(github.event_name, 'pull_request')', which also
+         excludes pull_request_target), ANDed into the disjunct; or
       2. the same-repo-PR-only AND form: event_name == 'pull_request' together
          with the head-repo match, and no 'github.event_name !=' negation; or
       3. a restriction to non-pull_request events by POSITIVE equality
@@ -569,7 +577,7 @@ def fork_pr_disjunct_is_safe(part):
     'pull_request'' is true on pull_request_target.
     """
     norm = normalize_condition(part)
-    if FORK_PR_GUARD_CLAUSE in norm:
+    if FORK_PR_GUARD_CLAUSE in norm or FORK_PR_GUARD_CLAUSE_STRICT in norm:
         return True
     if (FORK_PR_SAME_REPO_PR in norm and FORK_PR_HEAD_REPO in norm
             and 'github.event_name !=' not in norm):

@@ -122,6 +122,10 @@ check_case 'flag-guard-wrong-event' 'flag' 'a guard-shaped clause with the wrong
 
 ## The rule does not over-reach.
 check_case 'clean-guarded'     'clean' 'a reusable with the fork-PR guard passes'
+## The STRICTER '!startsWith(github.event_name, '\''pull_request'\'')' form excludes both
+## pull_request AND pull_request_target, so it is safe where the canonical '!= '\''pull_request'\''
+## is not. Must pass (it is the form the org reusables use).
+check_case 'clean-guarded-strict' 'clean' 'the !startsWith(...,pull_request) guard form passes'
 ## A schedule/workflow_dispatch-only job never sees a pull_request.
 check_case 'clean-non-pr'      'clean' 'a non-pull_request-only reusable job passes'
 ## The same-repo-PR-only AND form (event==pull_request && head-repo match) is safe.
