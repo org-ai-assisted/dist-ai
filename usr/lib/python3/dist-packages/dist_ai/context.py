@@ -68,6 +68,14 @@ TEXT_MIME_NEEDLES = ("text/", "x-shellscript", "x-python", "json", "xml",
 ## series list *.patch, git format-patch emits NNNN-*.patch. An extensionless or
 ## oddly-named patch is out of scope -- name it .patch/.diff; a DISABLED patch
 ## (.patch.disabled) is never applied, so stripping its whitespace is harmless.
+##
+## KNOWN GAP, accepted on purpose: an EXTENSIONLESS patch under debian/patches/ (e.g.
+## a dpkg-source auto-generated debian-changes-<ver>) is not detected and its trailing
+## whitespace would be stripped. This is the FAIL-SAFE direction (over-strip, never
+## silently disable the gate on real source) and is avoidable by naming it *.patch.
+## Do NOT "fix" it by re-adding a debian/patches/ path rule or a content sniff -- both
+## were tried and FALSE-exempt real source (a /home/debian/patches/* tree, prose that
+## embeds a hunk), which is a worse, silent gate hole.
 DIFF_EXTS = (".patch", ".diff")
 
 
