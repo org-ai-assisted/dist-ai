@@ -20,8 +20,10 @@ Usage:
 PATH is a PNG file or a directory (scanned for *.png, non-recursive). A frame is
 degenerate when it is uniform white/black, OR has <= --max-colors distinct colors AND
 its dominant color covers >= --frac of pixels AND that color is within --near of pure
-black or pure white on every channel. --allow excludes a shot whose basename contains
-NAME (for a frame that is legitimately blank by design -- use sparingly, and say why)."""
+black or pure white on every channel. --allow excludes a shot whose name equals NAME or
+whose stem ends with '-'+NAME (a dash-delimited suffix token, not a raw substring -- so
+'' or '.' cannot silently exempt everything); for a frame legitimately blank by design --
+use sparingly, and say why."""
 
 import argparse
 import os
@@ -78,6 +80,23 @@ def iter_pngs(paths):
             yield p
 
 
+def is_allowed(base, allow):
+    """Whether basename BASE is exempted by a --allow value.
+
+    Match the frame NAME as a whole or a dash-delimited suffix token of the stem
+    (e.g. --allow firmware-logo matches '43-installed-firmware-logo.png'), never a
+    raw substring: a bare substring is fail-OPEN -- '' or '.' is a substring of every
+    basename, so it would silently exempt EVERY frame and pass a run that checked
+    nothing. An empty value never matches (fail-closed)."""
+    stem = os.path.splitext(base)[0]
+    for name in allow:
+        if not name:
+            continue
+        if stem == name or stem.endswith("-" + name):
+            return True
+    return False
+
+
 def parse_args(argv):
     parser = argparse.ArgumentParser(prog="image-blank-check", add_help=True)
     parser.add_argument("--max-colors", type=int, default=8,
@@ -89,7 +108,9 @@ def parse_args(argv):
     parser.add_argument("--frac", type=float, default=0.98,
                         help="dominant-colour share for near-blank (default 0.98)")
     parser.add_argument("--allow", action="append", default=[],
-                        help="skip a shot whose basename contains this substring")
+                        help="skip a shot whose name equals this, or whose stem ends "
+                             "with '-'+this (a dash-delimited suffix token); an empty "
+                             "value never matches")
     parser.add_argument("paths", nargs="+")
     return parser.parse_args(argv[1:])
 
@@ -100,7 +121,7 @@ def main(argv):
     checked = 0
     for path in iter_pngs(args.paths):
         base = os.path.basename(path)
-        if any(a in base for a in args.allow):
+        if is_allowed(base, args.allow):
             continue
         checked += 1
         try:
