@@ -6,12 +6,12 @@
 """
 Mutation-killing regression tests for sdwdate_gui_client.
 
-Each pins a behavior cosmic-ray proved executed-but-unasserted: the reconnect
-backoff cap VALUE (not just the symbol), the inotify event routing to the right
-status handler, the frame-loop consumption of a zero-length message, the
-client-send length boundary, Tor-status de-duplication ordering, the exact
-inotify watch mask, and the anti-flood backoff-reset that must NOT fire on a
-sub-threshold session.
+Each pins a behavior cosmic-ray proved executed-but-unasserted: the
+status-message length cap, the inotify event routing to the right status
+handler, the frame-loop consumption of a zero-length message, the client-send
+length boundary, Tor-status de-duplication ordering, the exact inotify watch
+mask, and the main_loop exit-vs-reconnect OR-decision (each clause independently
+forces the clean exit).
 """
 
 # pylint: disable=wrong-import-position,invalid-name,protected-access
@@ -33,7 +33,7 @@ import pyinotify  # type: ignore  # noqa: E402  (subject present implies dep pre
 
 
 class _StopLoop(BaseException):
-    """Breaks main_loop's otherwise-infinite loop (see backoff test)."""
+    """Breaks main_loop's otherwise-infinite loop (see TestMainLoopExitPaths)."""
 
 
 class _LogCapture:
@@ -56,7 +56,7 @@ class _LogCapture:
 
 
 class TestClientConstants(unittest.TestCase):
-    """Backoff / cap constants pinned to literals."""
+    """Status-message length cap pinned to a literal."""
 
     def test_max_status_msg_len(self) -> None:
         self.assertEqual(client.MAX_STATUS_MSG_LEN, 1000)
@@ -253,10 +253,11 @@ class TestInotifyWatchMask(unittest.IsolatedAsyncioTestCase):
 class TestMainLoopExitPaths(unittest.IsolatedAsyncioTestCase):
     """main_loop's exit-vs-reconnect decision is an OR over three independent
     clauses: `not qubes`, `not do_reconnect`, `server_pid present`. Each must
-    independently force the clean exit; mutating any `or` to `and` (the
-    anti-flood regression) is caught by isolating that clause as the only true
-    one. The server_pid file is MOCKED so the real file in the test environment
-    cannot mask a clause."""
+    independently force the clean exit; mutating any `or` to `and` (an
+    exit-decision regression that would keep the client running when it should
+    give up) is caught by isolating that clause as the only true one. The
+    server_pid file is MOCKED so the real file in the test environment cannot
+    mask a clause."""
 
     def setUp(self) -> None:
         client.GlobalData.awaitable_tasks.clear()

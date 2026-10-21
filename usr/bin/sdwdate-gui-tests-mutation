@@ -8,7 +8,7 @@
 ## Targeted mutation-testing lane for sdwdate-gui's security-critical code (the
 ## sdwdate_gui_shared wire parser + printable/octal boundaries, the server's
 ## name-length / argument-count validation and RPC send framing, the client's
-## reconnect-backoff reset, Tor-status de-dup and inotify watch mask). Applies a
+## Tor-status de-dup and inotify watch mask). Applies a
 ## hand-picked set of high-value mutants to a COPY of the real package, runs the
 ## REAL killer suite for each, and asserts each mutant is KILLED. Nothing is written
 ## back to the source tree. TRUSTED TOOLING: needs an ai-review pass before a CI

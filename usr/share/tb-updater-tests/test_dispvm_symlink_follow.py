@@ -120,19 +120,18 @@ def _shell_commands(text):
     Per physical line: drop a trailing '# comment', then split on the command
     separators ';' '&&' '||' '|' so a flag check binds to the ONE command it
     governs. The regression this guards is a required flag moved onto a sibling
-    command on the same line --
-    'dh_installsystemd --no-start other.service; dh_installsystemd tb-updater-dispvm.service'
-    or 'true --no-canonicalize | mount --bind ...' -- which a line-wide token
-    check would miss.
+    command on the same line -- 'true --no-canonicalize | mount --bind ...' --
+    which a line-wide token check would miss. Used on the real dispvm bash SCRIPT
+    (its mount/chown lines); the debian/rules Makefile is handled separately by
+    _check_dispvm_no_start, not by this shell matcher.
 
     A SIMPLE separator match, NOT a shell parser. It deliberately does NOT model
     '&' backgrounding, redirections ('2>&1'), quoting, or backslash line
-    continuations: the real debian/rules and dispvm put each guarded
-    dh_installsystemd / mount call on its own line with none of these, so
-    handling them would be reinventing a bash parser (and splitting on '&' or
-    joining '\\'-continuations was shown to MIS-parse '2>&1' and a '# comment'
-    continuation). A guarded line written with those constructs is out of scope
-    -- caught by review, not by this matcher."""
+    continuations: the real dispvm script puts each guarded mount/chown call on
+    its own line with none of these, so handling them would be reinventing a bash
+    parser (and splitting on '&' or joining '\\'-continuations was shown to
+    MIS-parse '2>&1' and a '# comment' continuation). A guarded line written with
+    those constructs is out of scope -- caught by review, not by this matcher."""
     out = []
     for i, line in enumerate(text.splitlines()):
         code = line.split("#", 1)[0]
@@ -315,10 +314,198 @@ def test_preexisting_cache_is_owned_safely_not_aborted(tmp_path):
     )
 
 
+DISPVM_UNIT = "tb-updater-dispvm.service"
+
+## A recipe line this check cannot model: any shell separator / redirection,
+## any quote, any make or command substitution ('$'), or a backslash line
+## continuation. Such a line is REFUSED (reported), never silently passed --
+## honest scope beats a fragile Makefile/shell parser that lies.
+_COMPLEX_RECIPE = re.compile(r"""[;|&<>'"`$]|\\\s*$""")
+
+
+def _check_dispvm_no_start(rules_text):
+    """Problems (empty list => safe) with the dpkg start-guard for the dispvm
+    unit in a debian/rules Makefile. Security property: dpkg must never start or
+    restart tb-updater-dispvm.service mid-session (reopens the mount --bind
+    check-to-use race, CWE-59), so every dh_installsystemd call that governs the
+    unit must carry --no-start.
+
+    HONEST SCOPE, not a parser. It models ONLY the one shape the real rules use:
+    an 'override_dh_installsystemd:' target whose recipe is one simple
+    dh_installsystemd command per line. debian/rules is a Makefile, so a flat
+    shell split mis-reads it (a bare invocation, a quoted string, a make
+    assignment or '$(VAR)'); instead this verifies the override's recipe and
+    REFUSES -- reports a problem -- on anything it does not model: no override
+    (dh would auto-run dh_installsystemd and START the unit), a dh_installsystemd
+    outside that override (hook target / sequencer not modeled), or a recipe line
+    with a shell/quote/substitution/continuation construct. Nothing is faked
+    green: an unmodeled rules file fails loud for human review. It checks the
+    rules SOURCE, relying on make's 'an override replaces the auto call' rule --
+    it does not inspect the generated maintainer scripts.
+
+    Problems are category-prefixed ('missing-override', 'unparseable:',
+    'missing-no-start:', 'no-governing-invocation:') so a canary can assert the
+    exact failure mode."""
+    lines = rules_text.splitlines()
+    problems = []
+
+    ## The override target and the span of its recipe: the consecutive
+    ## TAB-indented lines right after it (a non-tab line ends the recipe).
+    override_idx = None
+    for i, line in enumerate(lines):
+        if re.match(r'override_dh_installsystemd\s*:', line):
+            override_idx = i
+            break
+    if override_idx is None:
+        return [f"missing-override: debian/rules has no "
+                f"'override_dh_installsystemd' target, so 'dh' auto-runs "
+                f"dh_installsystemd and STARTS {DISPVM_UNIT} (mount race, CWE-59)"]
+
+    recipe = []
+    recipe_span = set()
+    for i in range(override_idx + 1, len(lines)):
+        if not lines[i].startswith("\t"):
+            break
+        recipe.append((i, lines[i]))
+        recipe_span.add(i)
+
+    ## dh_installsystemd driven anywhere but the override -- a stray command or an
+    ## execute_before/after hook target -- means the dh sequencer handles systemd
+    ## in a way this check does not model: refuse, do not guess.
+    for i, line in enumerate(lines):
+        if re.match(r'execute_(?:before|after)_dh_installsystemd\s*:', line):
+            problems.append(f"unparseable: '{line.strip()}' hook target is not "
+                            f"modeled (dh sequencer)")
+        if i in recipe_span:
+            continue
+        if re.search(r'\bdh_installsystemd\b', line.split("#", 1)[0]):
+            problems.append(f"unparseable: 'dh_installsystemd' outside "
+                            f"override_dh_installsystemd (line {i + 1}: "
+                            f"{line.strip()!r}); dh sequencer not modeled")
+
+    governed_ok = 0
+    for i, line in recipe:
+        ## Strip the leading tab(s), a leading make recipe prefix ('-'/'@'/'+'),
+        ## and a trailing '# comment'.
+        code = re.sub(r'^[-@+]+', '', line.lstrip("\t")).split("#", 1)[0].strip()
+        if not code:
+            continue
+        if _COMPLEX_RECIPE.search(code):
+            problems.append(f"unparseable: override recipe line {i + 1} uses a "
+                            f"construct this check does not model ({code!r}); "
+                            f"write a simple 'dh_installsystemd ...' line")
+            continue
+        tokens = code.split()
+        ## First token must be exactly the command: a make assignment
+        ## ('dh_installsystemd_unit = ...') or another tool is not this call.
+        if tokens[0] != "dh_installsystemd":
+            continue
+        operands = [t for t in tokens[1:] if not t.startswith("-")]
+        options = [t for t in tokens[1:] if t.startswith("-")]
+        ## Governs the dispvm unit iff it names the unit OR is bare (no unit
+        ## operand -> debhelper processes ALL installed units, incl the dispvm one).
+        governs = (not operands) or (DISPVM_UNIT in operands)
+        if not governs:
+            continue
+        if "--no-start" not in options:
+            problems.append(f"missing-no-start: override recipe line {i + 1} "
+                            f"governs {DISPVM_UNIT} without --no-start ({code!r}); "
+                            f"dpkg would start/restart it mid-session (CWE-59)")
+            continue
+        governed_ok += 1
+
+    if not problems and governed_ok == 0:
+        problems.append(f"no-governing-invocation: no dh_installsystemd in "
+                        f"override_dh_installsystemd installs {DISPVM_UNIT} with "
+                        f"--no-start, so the unit is not pinned "
+                        f"enabled-but-not-started")
+    return problems
+
+
+## Real safe form (the shape of the shipped debian/rules): the dispvm unit pinned
+## --no-start, a second unguarded unit that does NOT govern the dispvm one.
+_SAFE_RULES = (
+    "#!/usr/bin/make -f\n"
+    "%:\n"
+    "\tdh $@\n"
+    "\n"
+    "override_dh_installsystemd:\n"
+    "\tdh_installsystemd --no-start tb-updater-dispvm.service\n"
+    "\tdh_installsystemd tb-updater-first-boot.service\n"
+)
+
+
+def test_check_dispvm_accepts_safe_forms():
+    ## Real shipped form, and a bare 'dh_installsystemd --no-start' (governs all
+    ## units incl the dispvm one, but carries --no-start).
+    assert _check_dispvm_no_start(_SAFE_RULES) == []
+    bare_ok = "override_dh_installsystemd:\n\tdh_installsystemd --no-start\n"
+    assert _check_dispvm_no_start(bare_ok) == []
+
+
+def test_check_dispvm_ignores_make_variable_assignment():
+    ## (d) FALSE-FAIL in the old flat split: a top-level make assignment whose
+    ## name begins 'dh_installsystemd' matched startswith() and was flagged as a
+    ## missing-no-start invocation. It is not a command -> must NOT be flagged.
+    rules = ("dh_installsystemd_unit = tb-updater-dispvm.service\n"
+             "override_dh_installsystemd:\n"
+             "\tdh_installsystemd --no-start tb-updater-dispvm.service\n")
+    assert _check_dispvm_no_start(rules) == []
+
+
+@pytest.mark.parametrize("recipe", [
+    ## (a) FALSE-PASS in the old flat split: a bare invocation (no unit operand)
+    ## carries no literal unit name, so the old filter ignored it although it
+    ## starts EVERY unit incl the dispvm one. Here beside a correctly-pinned line,
+    ## so the old check passed green while the bare call reopened the race.
+    "\tdh_installsystemd --no-start tb-updater-dispvm.service\n\tdh_installsystemd\n",
+    ## An explicit invocation missing the pin.
+    "\tdh_installsystemd tb-updater-dispvm.service\n",
+])
+def test_check_dispvm_flags_missing_no_start(recipe):
+    rules = "override_dh_installsystemd:\n" + recipe
+    problems = _check_dispvm_no_start(rules)
+    assert problems and all(p.startswith("missing-no-start:") for p in problems), problems
+
+
+@pytest.mark.parametrize("recipe", [
+    ## (c) a quoted echo of a fake invocation -- the old quote-blind split turned
+    ## the quoted string into a command.
+    "\techo '; dh_installsystemd --no-start tb-updater-dispvm.service'\n",
+    ## (b) a piped / separated second invocation on one physical line.
+    "\tdh_installsystemd --no-start tb-updater-dispvm.service | cat\n",
+    "\tdh_installsystemd --no-start tb-updater-dispvm.service; true\n",
+    ## make substitution and a redirection.
+    "\tdh_installsystemd --no-start $(DISPVM_UNIT)\n",
+    "\tdh_installsystemd --no-start tb-updater-dispvm.service > /dev/null\n",
+])
+def test_check_dispvm_refuses_complex_recipe_line(recipe):
+    rules = "override_dh_installsystemd:\n" + recipe
+    problems = _check_dispvm_no_start(rules)
+    assert problems and all(p.startswith("unparseable:") for p in problems), problems
+
+
+def test_check_dispvm_flags_missing_override():
+    problems = _check_dispvm_no_start("#!/usr/bin/make -f\n%:\n\tdh $@\n")
+    assert problems and all(p.startswith("missing-override") for p in problems), problems
+
+
+def test_check_dispvm_refuses_stray_invocation():
+    ## A dh_installsystemd outside the override (here an execute-after hook) means
+    ## the dh sequencer drives systemd handling this check does not model.
+    rules = ("override_dh_installsystemd:\n"
+             "\tdh_installsystemd --no-start tb-updater-dispvm.service\n"
+             "execute_after_dh_installsystemd:\n"
+             "\tdh_installsystemd tb-updater-dispvm.service\n")
+    problems = _check_dispvm_no_start(rules)
+    assert any(p.startswith("unparseable:") for p in problems), problems
+
+
 def test_dispvm_service_not_started_by_dpkg():
     """The mount TOCTOU is closed by running the service ONLY at boot (before any
     user/qrexec process). debian/rules must pin 'dh_installsystemd --no-start'
-    for tb-updater-dispvm.service so dpkg never starts/restarts it mid-session."""
+    for tb-updater-dispvm.service so dpkg never starts/restarts it mid-session.
+    Checked by _check_dispvm_no_start (honest-scope Makefile check)."""
     repo = os.environ.get("TB_UPDATER_REPO", "").strip()
     if not repo:
         pytest.skip("debian/rules is only available from a checkout (TB_UPDATER_REPO)")
@@ -327,29 +514,12 @@ def test_dispvm_service_not_started_by_dpkg():
         pytest.skip(f"debian/rules not found ({rules})")
     with open(rules, encoding="utf-8") as handle:
         text = handle.read()
-    ## Every dh_installsystemd invocation that names the dispvm unit, each as a
-    ## SINGLE shell command (_shell_commands isolates them past line
-    ## continuations, comments and command separators). Each must START with
-    ## 'dh_installsystemd' (not a comment, not a 'true --no-start | ...' command
-    ## whose flag sits elsewhere) so a bare mention cannot stand in for the call.
-    def _dispvm_installsystemd_cmds(rules_text):
-        return [cmd for _idx, cmd in _shell_commands(rules_text)
-                if cmd.startswith("dh_installsystemd")
-                and "tb-updater-dispvm.service" in cmd]
-
-    dispvm_cmds = _dispvm_installsystemd_cmds(text)
-    assert dispvm_cmds, (
-        "debian/rules must install tb-updater-dispvm.service via "
-        "dh_installsystemd (so the --no-start pin below has a command to bind to)"
-    )
-    ## EVERY dispvm invocation must carry --no-start: a single start/restart call
-    ## reopens the mount --bind check-to-use race (CWE-59) during a live session.
-    missing = [cmd for cmd in dispvm_cmds if "--no-start" not in cmd]
-    assert not missing, (
+    problems = _check_dispvm_no_start(text)
+    assert not problems, (
         "debian/rules must pin 'dh_installsystemd --no-start "
         "tb-updater-dispvm.service' so dpkg never starts/restarts the unit "
-        "during a live session (mount --bind check-to-use race, CWE-59); "
-        f"invocation without --no-start: {missing}"
+        "during a live session (mount --bind check-to-use race, CWE-59):\n"
+        + "\n".join(problems)
     )
 
 

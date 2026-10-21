@@ -53,6 +53,18 @@ command -v site-deploy >/dev/null 2>&1 || die "site-deploy not found"
 [ -d "${pages_repo}/.git" ] || die "not a git checkout: ${pages_repo}"
 [ -d "${pages_repo}/automated-test-results" ] || die "no automated-test-results/ in ${pages_repo}"
 
+## Serialize on the Pages repo. site-generate rewrites the WHOLE tree in ${pages_repo}
+## in place, while site-deploy's website-tests then DECODES every image there. Two runs at
+## once (the hourly timer overlapping a manual run, or a long run overrunning the next timer
+## tick) let one run's regenerate rewrite a file mid-decode in the other's gate -> a partial
+## read surfaces as a spurious "undecodable/corrupt image" that falsely blocks publish. Hold
+## an exclusive lock, keyed to the repo it protects, on a dedicated fd for the whole run (the
+## fd closes only at process exit) -- the safe path is the default, nothing to recall.
+lock_file="${pages_repo}/.git/test-results-deploy.lock"
+exec {lock_fd}>"${lock_file}" || die "could not open deploy lock: ${lock_file}"
+flock --timeout 3600 "${lock_fd}" \
+   || die "another test-results-deploy holds the Pages-repo lock (waited 3600s)"
+
 staging="$(mktemp --directory)"
 ## Registered in the EXIT trap so a failure at any step (read-tree / add / commit) cannot leak
 ## the private index or the message temp file.

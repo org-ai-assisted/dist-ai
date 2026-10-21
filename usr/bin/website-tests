@@ -146,7 +146,10 @@ add_root(){
          printf '%s\n' "website-tests: FATAL: site override '${given}' has no index.html (explicit-but-invalid checkout; refusing to silently test the default instead)" >&2
          exit 1
       fi
-   elif [ -f "${default}/index.html" ]; then
+   elif [ -z "${home_unset}" ] && [ -f "${default}/index.html" ]; then
+      ## Default fallback ONLY when HOME is set: under unset HOME the ${HOME}-rooted
+      ## default is a bogus absolute /private-sources/... path; a root-level checkout
+      ## there must NOT silently populate roots and bypass the home_unset FATAL below.
       roots+=( "${default}" )
    fi
 }
@@ -173,7 +176,8 @@ resolve_st_site(){
          printf '%s\n' "website-tests: FATAL: SECURE_TERMINAL_SITE_REPO override '${given}' has no comparison/shots (explicit-but-invalid checkout; refusing to silently test the default instead)" >&2
          exit 1
       fi
-   elif [ -d "${default}/comparison/shots" ]; then
+   elif [ -z "${home_unset}" ] && [ -d "${default}/comparison/shots" ]; then
+      ## Default ONLY when HOME is set (same bogus /private-sources/... hazard as add_root).
       st_site="${default}"
    fi
 }
