@@ -73,8 +73,11 @@ EOF
 done
 
 ## Run the real driver; it is EXPECTED to fail (stub pull exits 7 -> die).
+## Pin TEST_RESULTS_REMOTE so an ambient value cannot leak in and make the
+## "/var/www/results" assertion below non-hermetic (spurious pass/fail by env).
 rc=0
 PATH="${stubdir}:${PATH}" HOME="${workdir}" TEST_RESULTS_PAGES_REPO="${pages_repo}" \
+   TEST_RESULTS_REMOTE=/var/www/results \
    "${deploy}" >/dev/null 2>&1 || rc=$?
 
 ## CANARY: the stub must actually have been reached, or the assertions below are vacuous.

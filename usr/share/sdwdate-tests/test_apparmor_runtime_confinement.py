@@ -372,20 +372,54 @@ class SdwdateLeaprunPrivleapClientTest(unittest.TestCase):
     connect attempt catches it. FAILS on the old `deny /etc/passwd` profile."""
 
     def test_leaprun_connects_under_daemon_profile(self) -> None:
-        ## Any action name works: the client CONNECTS (and would print "Could not
-        ## connect") BEFORE privleapd validates the action, so the assertion holds
-        ## whether or not the action exists / authorizes the caller. aa-exec enters
-        ## the daemon profile on the leaprun exec (onexec, no x rule needed), as the
-        ## daemon's own 'leaprun rix' does; euid 0 -> connects to comm/0.
+        ## --check validates authorization and returns a definitive AUTHORIZED /
+        ## UNAUTHORIZED response WITHOUT running the action (deterministic, no side
+        ## effect). aa-exec enters the daemon profile on the leaprun exec (onexec,
+        ## no x rule needed), as the daemon's own 'leaprun rix' does; euid 0 ->
+        ## connects to comm/0.
         result = subprocess.run(
-            ['aa-exec', '-p', DAEMON_PATH, '--', _LEAPRUN, 'tor-bootstrap-check'],
+            ['aa-exec', '-p', DAEMON_PATH, '--', _LEAPRUN, '--check',
+             'tor-bootstrap-check'],
             capture_output=True, text=True, timeout=30)
         combined = result.stdout + result.stderr
+
+        ## (a) aa-exec must actually have LAUNCHED leaprun under the profile. A
+        ## failed exec (aa-exec error, binary missing/denied, python import denied)
+        ## produces NEITHER the connect-fail string NOR a privleapd response, so a
+        ## bare assertNotIn('Could not connect') would pass VACUOUSLY. 126/127 = an
+        ## exec failure; the 'aa-exec:' text catches a profile-apply failure.
+        self.assertNotIn(
+            'aa-exec:', combined,
+            'aa-exec could not launch leaprun under %s (got %r) -- the connection '
+            'test never ran.' % (DAEMON_PATH, combined))
+        self.assertNotIn(
+            result.returncode, (126, 127),
+            'leaprun failed to exec under %s (rc=%d; %r) -- the connection test '
+            'never ran.' % (DAEMON_PATH, result.returncode, combined))
+
+        ## (b) the connect-fail string must be ABSENT ...
         self.assertNotIn(
             'Could not connect to privleapd', combined,
             'leaprun could NOT connect to privleapd under the daemon profile '
             '(got %r); the profile likely denies /etc/passwd or /etc/nsswitch.conf, '
             "breaking leaprun's getpwuid() uid->comm-socket resolution." % combined)
+
+        ## ... AND positive privleapd-response evidence must be PRESENT: an exit
+        ## status alone is NOT proof of a connection. An AUTHORIZED or UNAUTHORIZED
+        ## check notice (both contain 'authorized to run action'), or a
+        ## response-handler diagnostic, can only appear AFTER leaprun reached
+        ## privleapd over comm/0.
+        connect_evidence = (
+            'authorized to run action',
+            'privleapd returned',
+            "privleapd didn't return",
+        )
+        self.assertTrue(
+            any(ev in combined for ev in connect_evidence),
+            'no positive evidence leaprun reached privleapd under the daemon '
+            'profile (got %r) -- a connection to comm/0 yields an AUTHORIZED/'
+            'UNAUTHORIZED notice; its absence means leaprun never connected '
+            '(possible vacuous pass).' % combined)
 
 
 ## A5: daemon -> privileged-child stacked signal-peer. The reapers kill with
