@@ -439,6 +439,54 @@ _ed.mousePressEvent(QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(0.0, 0.0),
 ok(not _ed.textCursor().hasSelection(),
    'a mouse press collapses the selection first (a drag-move cannot start)')
 
+# --- COPY-OUT REGRESSION: copy (Ctrl+C / Ctrl+Insert / X11 PRIMARY all route through
+# createMimeDataFromSelection) carries the REVIEWED SOURCE re-sanitized at the unicode
+# tier -- look-alikes kept VISIBLE, invisibles/bidi/control DROPPED -- exactly what
+# Deliver's Copy sends, NOT the rendered <U+XXXX>/box-stand-in badge text. FAILS on the
+# pre-fix code: native copy lifted the DISPLAY glyphs, so a look-alike copied as a badge
+# and the user's edits could not round-trip (the reported "my changes are missing").
+def _mime_text(ed, a, b):
+    _select_src(ed, a, b)
+    return ed.createMimeDataFromSelection().text()
+
+
+_ed.set_mode('detail')
+_ed.set_source('ex' + CYR_A + 'mple')
+eq(_mime_text(_ed, 0, len(_ed.source())), 'ex' + CYR_A + 'mple',
+   'copy-out keeps the look-alike VISIBLE (not a <U+XXXX> badge)')
+_ed.set_mode('box')                       # native copy used to lift the box stand-in glyph
+eq(_mime_text(_ed, 0, len(_ed.source())), 'ex' + CYR_A + 'mple',
+   'copy-out is mode-independent (box mode keeps the look-alike too, no stand-in)')
+_ed.set_mode('detail')
+_ed.set_source_revealed('a' + ZWSP + RTL + 'b')   # invisibles kept in _text as evidence
+eq(_mime_text(_ed, 0, len(_ed.source())), 'ab',
+   'copy-out drops invisibles/bidi (no exfil, no badge text) -- the unicode tier')
+_ed.set_source('keep' + CYR_A + 'DROP')
+eq(_mime_text(_ed, 4, 5), CYR_A, 'copy-out of a PARTIAL selection is exactly that source slice')
+# round-trips through the box: paste-back of the copied text equals the unicode-tier source
+_ed.set_source('ex' + CYR_A + 'mple')
+_clip = _mime_text(_ed, 0, len(_ed.source()))
+_ed_rt = RevealedEditor()
+_ed_rt.set_source('')
+_m_rt = QMimeData()
+_m_rt.setText(_clip)
+_ed_rt.insertFromMimeData(_m_rt)
+eq(_ed_rt.source(), 'ex' + CYR_A + 'mple', 'copy-out round-trips (paste-back == source)')
+# no selection -> the base path (empty mime), not a crash
+_cur = _ed.textCursor()
+_cur.clearSelection()
+_ed.setTextCursor(_cur)
+eq(_ed.createMimeDataFromSelection().text(), '',
+   'copy-out with no selection yields empty mime (base path)')
+# the real Ctrl+C key event lands the reviewed source (look-alike kept) on the clipboard
+_cb = QGuiApplication.clipboard()
+_cb.setText('SENTINEL')
+_ed.set_source('ex' + CYR_A + 'mple')
+_select_src(_ed, 0, len(_ed.source()))
+_ed.keyPressEvent(key_ev(Qt.Key.Key_C, mods=_CTRL, text='\x03'))
+eq(_cb.text(), 'ex' + CYR_A + 'mple',
+   'Ctrl+C puts the reviewed source on the clipboard (look-alike kept), not a badge')
+
 # paste INTO the box is re-sanitized; a None mime source inserts nothing
 _ed.set_source('a')
 _ed._pos = 1

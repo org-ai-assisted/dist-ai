@@ -70,6 +70,7 @@ notok() { fail_count=$(( fail_count + 1 )); printf '%s\n' "  NOT OK: $1" >&2; }
 ## Bind the fixture dir over /etc/profile.d inside the namespace and run the REAL
 ## generator; stdin /dev/null mirrors how systemd runs a generator.
 out="$(bwrap --bind / / --dev /dev --proc /proc \
+   --unsetenv TEST_EMIT_VAR \
    --ro-bind "${emit_dir}" /etc/profile.d \
    /usr/bin/bash "${subject}" </dev/null 2>/dev/null)" || out='<bwrap-run-failed>'
 

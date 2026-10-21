@@ -1,0 +1,148 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## style-ok: no-has -- standalone test harness; does not source helper-scripts.
+
+## Regression for the webcheck-lint HTML-validity gate HONESTY, i.e. the fix for the
+## false "every page malformed" signal: when html-tidy is absent/unexecutable in the
+## sandbox it exits 127/126, which the per-file loop used to read as a document error
+## for EVERY page -- masking the real fault (tidy not provisioned) behind 54 fake
+## "TIDY ERROR" lines, and blocking the publish with a lie about what failed.
+##
+## Drives the REAL usr/share/website-tests/webcheck-lint-built-tree.sh (no copy) with a
+## crafted PATH, so tidy's run outcome is controlled without a real sandbox. Asserts:
+##   - tidy ABSENT  -> FATAL exit 2, names the fix, and emits NO "TIDY ERROR in" line
+##   - tidy exits 127 mid-run -> FATAL exit 2, no per-file "TIDY ERROR in"
+##   - a GENUINE document error (tidy exit 2 + "Error:") still gates (exit 1, "TIDY ERROR")
+##   - a clean page passes (exit 0, "0 file(s) with errors")
+## The last two prove the honesty fix did not blind the gate to real errors.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+if [ -d "${script_dir}/../share/website-tests" ]; then
+   tests_dir="${script_dir}/../share/website-tests"
+else
+   tests_dir='/usr/share/website-tests'
+fi
+subject="${tests_dir}/webcheck-lint-built-tree.sh"
+[ -f "${subject}" ] || { printf '%s\n' "FATAL: subject not found: ${subject}" >&2; exit 1; }
+
+pass_count=0
+fail_count=0
+pass(){ printf '%s\n' "webcheck-lint-tidy-honesty-test: pass $1"; pass_count=$(( pass_count + 1 )); }
+fail(){ printf '%s\n' "webcheck-lint-tidy-honesty-test: FAIL $1" >&2; fail_count=$(( fail_count + 1 )); }
+## Match a line in the captured subject output ${out} (herestring, no pipe into grep -q).
+has_line(){ grep --quiet -- "$1" <<< "${out}"; }
+
+work="$(mktemp --directory)"
+cleanup(){
+   # shellcheck disable=SC2317  # invoked indirectly via the EXIT trap
+   safe-rm --recursive --force -- "${work}"
+}
+trap cleanup EXIT
+
+## A minimal "site" tree: one HTML page, no CSS (so the stylelint lane is a no-op and
+## needs no stub). The stylelint config path is passed but unused when no *.css exists.
+tree="${work}/tree"
+mkdir --parents -- "${tree}"
+printf '%s\n' '<!DOCTYPE html><html><head><title>t</title></head><body>x</body></html>' \
+   > "${tree}/page.html"
+sl_config="${work}/stylelint.config.json"
+printf '%s\n' '{}' > "${sl_config}"
+
+## A PATH that keeps the real coreutils (find/grep/printf...) but lets us place a stub
+## `tidy` -- or omit it entirely to simulate "not installed".
+stub_bin="${work}/bin"
+mkdir --parents -- "${stub_bin}"
+real_path="${PATH}"
+
+make_tidy_stub(){
+   ## $1 = exit code, $2 = stdout/stderr line to emit (optional).
+   cat > "${stub_bin}/tidy" <<STUB
+#!/bin/bash
+[ -n "${2:-}" ] && printf '%s\n' "${2:-}"
+exit ${1}
+STUB
+   chmod +x "${stub_bin}/tidy"
+}
+
+run_subject(){
+   ## Runs the real subject with the given PATH; captures combined output + rc.
+   local use_path="$1"
+   out=''
+   rc=0
+   out="$(PATH="${use_path}" bash "${subject}" "${tree}" "${sl_config}" 2>&1)" || rc=$?
+}
+
+## --- Case 1: tidy ABSENT (the bug) ------------------------------------------------
+## A deterministic tidy-free PATH: a dir holding ONLY the binaries the subject needs
+## (never tidy), used as the whole PATH. Must FATAL with the fix, never fake per-file
+## errors -- regardless of whether the host happens to have tidy installed.
+core_only="${work}/coreonly"
+mkdir --parents -- "${core_only}"
+for b in bash sh find grep printf sort cat mktemp rm chmod dirname readlink stylelint; do
+   src="$(command -v "${b}" || true)"
+   [ -n "${src}" ] && ln --symbolic --force -- "${src}" "${core_only}/${b}"
+done
+PATH="${core_only}" command -v tidy >/dev/null 2>&1 \
+   && { printf '%s\n' 'FATAL: test setup leaked tidy into the coreonly PATH' >&2; exit 1; }
+run_subject "${core_only}"
+if [ "${rc}" -eq 2 ] \
+   && has_line 'html-tidy not found' \
+   && has_line 'provision stylelint' \
+   && ! has_line 'TIDY ERROR in'; then
+   pass 'tidy absent -> FATAL exit 2, names the fix, no fake per-file TIDY ERROR'
+else
+   fail "tidy absent (rc=${rc})"
+   printf '%s\n' "${out}" | sed 's/^/    | /' >&2
+fi
+
+## --- Case 2: tidy present but exits 127 mid-run -----------------------------------
+make_tidy_stub 127 ''
+run_subject "${stub_bin}:${real_path}"
+if [ "${rc}" -eq 2 ] \
+   && has_line 'failed to run' \
+   && ! has_line 'TIDY ERROR in'; then
+   pass 'tidy exits 127 mid-run -> FATAL exit 2, no fake per-file TIDY ERROR'
+else
+   fail "tidy exit-127 mid-run (rc=${rc})"
+   printf '%s\n' "${out}" | sed 's/^/    | /' >&2
+fi
+
+## --- Case 3: a GENUINE document error still gates ---------------------------------
+make_tidy_stub 2 'line 1 column 1 - Error: something is malformed'
+run_subject "${stub_bin}:${real_path}"
+if [ "${rc}" -eq 1 ] \
+   && has_line 'TIDY ERROR in' \
+   && has_line '1 file(s) with errors'; then
+   pass 'genuine document error -> exit 1, TIDY ERROR reported (gate still bites)'
+else
+   fail "genuine document error (rc=${rc})"
+   printf '%s\n' "${out}" | sed 's/^/    | /' >&2
+fi
+
+## --- Case 4: a clean page passes --------------------------------------------------
+make_tidy_stub 0 ''
+run_subject "${stub_bin}:${real_path}"
+if [ "${rc}" -eq 0 ] \
+   && has_line '0 file(s) with errors' \
+   && ! has_line 'TIDY ERROR in'; then
+   pass 'clean page -> exit 0, no errors (no false positive)'
+else
+   fail "clean page (rc=${rc})"
+   printf '%s\n' "${out}" | sed 's/^/    | /' >&2
+fi
+
+printf '%s\n' "" "${pass_count} pass, ${fail_count} fail, 0 skip"
+[ "${fail_count}" -eq 0 ]

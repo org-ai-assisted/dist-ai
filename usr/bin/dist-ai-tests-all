@@ -184,6 +184,7 @@ core_suites=(
    unicode-show-tests-verify
    uwt-tests
    web-analyzer-tests
+   webcheck-lint-tidy-honesty-test
    website-tests
    website-tests-delegation-test
 )
