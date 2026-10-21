@@ -219,6 +219,53 @@ def run():
            'main_stdin --stream tags per line, byte-identical to whole-stream, '
            'keeps > & and the final newline-less line')
 
+        # --stream must FLUSH per line, not buffer until EOF (a long-running producer must
+        # see output before it closes stdin). A finite BytesIO cannot show this -- it is at
+        # EOF when inspected -- so drive a stdin whose readline() yields one line then EOF
+        # and records what was already emitted AT the moment EOF is first requested. A
+        # per-line flush has written the first line's tag by then; a buffer-until-EOF impl
+        # (reads all via .read(), ignoring --stream) never calls readline(), so the record
+        # stays None -- this FAILS on the old whole-stream code.
+        class _ProbeBuffer:
+            def __init__(self):
+                self._lines = [b'first\n', b'']     # second read == EOF
+                self._i = 0
+                self.emitted_before_eof = None
+                self.sink = io.BytesIO()
+
+            def readline(self):
+                line = self._lines[self._i]
+                self._i += 1
+                if line == b'':                      # EOF requested: snapshot output so far
+                    self.emitted_before_eof = self.sink.getvalue()
+                return line
+
+            def read(self):                          # whole-stream path (old impl)
+                return b''.join(self._lines)
+
+            def write(self, data):
+                return self.sink.write(data)
+
+            def flush(self):
+                pass
+
+        class _ProbeIO:
+            def __init__(self, buf):
+                self.buffer = buf
+
+        probe = _ProbeBuffer()
+        saved_stdin = sys.stdin
+        try:
+            sys.stdin = _ProbeIO(probe)
+            sys.stdout = _ProbeIO(probe)
+            rc_flush = unicode_tag.main_stdin(['--stream'])
+        finally:
+            sys.stdin = saved_stdin
+        sys.stdout = saved_out          # restore BEFORE ok() prints, else a FAIL line is swallowed
+        ok(rc_flush == 0 and probe.emitted_before_eof == b'first\n',
+           'main_stdin --stream flushes each line before requesting EOF '
+           '(true streaming, not buffer-until-EOF)')
+
         # A downstream pipe closing early (BrokenPipeError) exits 1, no traceback.
         class _BrokenBuffer:
             @staticmethod
