@@ -266,6 +266,36 @@ def run():
            'main_stdin --stream flushes each line before requesting EOF '
            '(true streaming, not buffer-until-EOF)')
 
+        # FAIL CLOSED on a write error (ENOSPC): an emit that cannot write all its bytes must
+        # exit 1, never a silent exit 0 with truncated output -- a downstream capture (qube-ctl
+        # fetch) would otherwise read a partial page as complete. /dev/full makes every write
+        # fail with ENOSPC. The explicit flush in _write_tagged surfaces the deferred error.
+        class _FullIO:
+            def __init__(self, buf):
+                self.buffer = buf
+
+        full_rc = None
+        full_err = ''
+        saved_stdin = sys.stdin
+        saved_err = sys.stderr
+        full_buf = open('/dev/full', 'wb')
+        try:
+            sys.stdin = io.TextIOWrapper(io.BytesIO(b'\r' * 100), encoding='utf-8')
+            sys.stdout = _FullIO(full_buf)
+            sys.stderr = io.StringIO()
+            full_rc = unicode_tag.main_stdin([])
+            full_err = sys.stderr.getvalue()
+        finally:
+            sys.stdin = saved_stdin
+            sys.stderr = saved_err
+            try:
+                full_buf.close()
+            except OSError:
+                pass
+        sys.stdout = saved_out          # restore BEFORE ok() prints, else a FAIL line is swallowed
+        ok(full_rc == 1 and 'unicode-tag:' in full_err,
+           'whole-stream emit FAILS CLOSED on a write error (ENOSPC), not a silent exit 0')
+
         # A downstream pipe closing early (BrokenPipeError) exits 1, no traceback.
         class _BrokenBuffer:
             @staticmethod
@@ -280,6 +310,81 @@ def run():
         sys.stdout = saved_out          # restore BEFORE ok() prints
         ok(broken_rc == 1,
            'a closed output pipe exits 1 (BrokenPipeError), no traceback')
+
+        # --stream: a closed output pipe (BrokenPipeError on write) exits 1.
+        class _StreamSrc:
+            def __init__(self):
+                self._lines = [b'x\n', b'']
+                self._i = 0
+
+            def readline(self):
+                line = self._lines[self._i]
+                self._i += 1
+                return line
+
+        class _StreamIn:
+            buffer = _StreamSrc()
+
+        saved_stdin = sys.stdin
+        try:
+            sys.stdin = _StreamIn()
+            sys.stdout = _BrokenOut()
+            stream_broken_rc = unicode_tag.main_stdin(['--stream'])
+        finally:
+            sys.stdin = saved_stdin
+        sys.stdout = saved_out
+        ok(stream_broken_rc == 1,
+           '--stream: a closed output pipe exits 1 (BrokenPipeError)')
+
+        # --stream: an unreadable stdin (readline raises OSError) exits 1 cleanly.
+        class _BadReadlineBuffer:
+            @staticmethod
+            def readline():
+                raise IsADirectoryError(21, 'Is a directory')
+
+        class _BadReadlineIn:
+            buffer = _BadReadlineBuffer()
+
+        saved_stdin = sys.stdin
+        saved_err = sys.stderr
+        try:
+            sys.stdin = _BadReadlineIn()
+            sys.stderr = io.StringIO()
+            stream_bad_rc = unicode_tag.main_stdin(['--stream'])
+            stream_bad_err = sys.stderr.getvalue()
+        finally:
+            sys.stdin = saved_stdin
+            sys.stderr = saved_err
+        sys.stdout = saved_out
+        ok(stream_bad_rc == 1 and 'unicode-tag:' in stream_bad_err,
+           '--stream: an unreadable stdin exits 1 cleanly (OSError)')
+
+        # --json: a write error (ENOSPC) fails closed (exit 1), not a silent truncated reply.
+        class _FullText:
+            @staticmethod
+            def write(_s):
+                raise OSError(28, 'No space left on device')
+
+            @staticmethod
+            def flush():
+                pass
+
+        saved_stdin = sys.stdin
+        saved_err = sys.stderr
+        try:
+            sys.stdin = io.TextIOWrapper(
+                io.BytesIO(json.dumps({unicode_tag.JSON_REQUEST_KEY: 'x'}).encode('ascii')),
+                encoding='utf-8')
+            sys.stdout = _FullText()
+            sys.stderr = io.StringIO()
+            json_full_rc = unicode_tag.main_stdin(['--json'])
+            json_full_err = sys.stderr.getvalue()
+        finally:
+            sys.stdin = saved_stdin
+            sys.stderr = saved_err
+        sys.stdout = saved_out
+        ok(json_full_rc == 1 and 'unicode-tag:' in json_full_err,
+           '--json: a write error fails closed (exit 1), not a truncated reply')
     finally:
         sys.stdout = saved_out
 
