@@ -8,9 +8,19 @@ Concrete unit tests + a light randomized fuzz for kloak's pure/testable
 functions. Compiled and run by test_kloak_verification.py against the REAL
 src/kloak.c (reusing kloak's KLOAK_FUZZING seam -- no kloak source change), then
 linked with the wayland-scanner protocol code and the wayland/libinput/libevdev/
-xkbcommon libraries exactly as kloak itself links. The Wayland/libinput code is
-dead here (never called), so no compositor or input device is needed at runtime;
-only the pure logic is exercised.
+xkbcommon libraries exactly as kloak itself links. No compositor or input device
+is needed: the pure logic is called directly, and the one Wayland handler
+exercised (kb_handle_keymap, below) runs in a forked child over a plain fd, not
+a live connection.
+
+Also here:
+  * unit_kb_handle_keymap -- regression for the compositor-controlled keymap-fd
+    SIGBUS (Whonix/kloak#24): a forked child proves a short fd is rejected with a
+    clean exit, not a fault.
+  * characterize_open_bugs_24 -- executable documentation of the KNOWN-OPEN
+    upstream bugs referred to the maintainer (cross-overlap screen touch, and the
+    br_corner_x-as-width global-space bug): each pins the current behavior so a
+    fix trips the test.
 
 Complements kloak_cbmc.c: CBMC proves the invariants hold for ALL inputs in the
 operating envelope; these assert the concrete, human-meaningful values and edges
@@ -22,6 +32,7 @@ operating envelope; these assert the concrete, human-meaningful values and edges
 #include <assert.h>
 #include <stdint.h>
 #include <string.h>
+#include <sys/wait.h>
 
 static int checks = 0;
 #define CHECK(cond) do { assert(cond); ++checks; } while (0)
@@ -265,6 +276,105 @@ static void unit_randname(void)
     }
 }
 
+/* How a kb_handle_keymap child process ended. */
+enum km_outcome { KM_EXIT0, KM_EXIT1, KM_SIGNALED, KM_OTHER };
+
+/* Run kb_handle_keymap in a forked child against a backing fd of `fd_len` bytes
+ * (written from `content`, or truncated to that length when `content` is NULL)
+ * but a compositor-declared `size`, with `old_map` as the previously-seen map.
+ * Returns how the child terminated. A short fd (`size` > `fd_len`) makes the
+ * mmap+memchr read pages past end-of-file; without the fstat guard that faults
+ * with SIGBUS, with it the function exits(1) cleanly. */
+static enum km_outcome run_keymap_child(const char *content, size_t fd_len,
+                                        uint32_t size, const char *old_map)
+{
+    char tmpl[] = "/tmp/kloak_km_XXXXXX";
+    int fd;
+    pid_t pid;
+    int status = 0;
+
+    fd = mkstemp(tmpl);
+    assert(fd >= 0);
+    assert(unlink(tmpl) == 0);
+    if (content != NULL) {
+        assert(write(fd, content, fd_len) == (ssize_t)fd_len);
+    } else {
+        assert(ftruncate(fd, (off_t)fd_len) == 0);
+    }
+
+    pid = fork();
+    assert(pid >= 0);
+    if (pid == 0) {
+        struct disp_state st = { 0 };
+        st.old_kb_map_shm = (char *)old_map;
+        /* The FATAL path writes to stderr; keep the test output clean. */
+        (void)!freopen("/dev/null", "w", stderr);
+        kb_handle_keymap(&st, NULL, WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1, fd, size);
+        _exit(0);
+    }
+    assert(close(fd) == 0);
+    assert(waitpid(pid, &status, 0) == pid);
+    if (WIFSIGNALED(status)) {
+        return KM_SIGNALED;
+    }
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+        return KM_EXIT0;
+    }
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 1) {
+        return KM_EXIT1;
+    }
+    return KM_OTHER;
+}
+
+/* Regression for the keymap-fd SIGBUS bug (Whonix/kloak#24 third-pass item A):
+ * `size` and `fd` both come from the compositor, so a `size` larger than the
+ * backing fd must be rejected BEFORE mmap/memchr read past end-of-file. The
+ * fstat guard turns the SIGBUS into a clean FATAL exit. */
+static void unit_kb_handle_keymap(void)
+{
+    /* Zero-length fd, size 4096: every mapped page is past EOF. Guard present
+     * -> clean exit(1); absent -> KM_SIGNALED (SIGBUS). */
+    CHECK(run_keymap_child(NULL, 0, 4096, NULL) == KM_EXIT1);
+
+    /* Adequate fd whose content equals the previous map: the function takes the
+     * "same map" early return and completes without faulting. */
+    CHECK(run_keymap_child("xkb", 4, 4, "xkb") == KM_EXIT0);
+
+    /* Adequate fd with no NUL terminator in `size` bytes: the existing
+     * malicious-keymap guard exits(1) (no SIGBUS). */
+    CHECK(run_keymap_child("abcd", 4, 4, NULL) == KM_EXIT1);
+}
+
+/* CHARACTERIZATION of KNOWN-OPEN upstream bugs (Whonix/kloak#24 third pass),
+ * referred to the maintainer as non-localized. Each CHECK pins the CURRENT
+ * (incorrect) behavior: it catches a regression AND trips when the bug is fixed
+ * (then flip to the commented correct assertion). These document the open
+ * defect in executable form -- they do NOT endorse the behavior. */
+static void characterize_open_bugs_24(void)
+{
+    struct output_geometry cross_a = geom(0, 400, 1920, 1080);
+    struct output_geometry cross_b = geom(420, 0, 1080, 1920);
+    struct output_geometry off_a = geom(100, 0, 1920, 1080);
+    struct output_geometry off_b = geom(2020, 0, 1920, 1080);
+    struct disp_state local = { 0 };
+
+    /* Item D: check_screen_touch tests only corner-containment, so a cross/plus
+     * overlap (these two overlap over x[420,1500) y[400,1480)) is wrongly seen
+     * as non-touching. Correct when fixed:
+     *   CHECK(check_screen_touch(cross_a, cross_b)); */
+    CHECK(!check_screen_touch(cross_a, cross_b));
+
+    /* Item F: recalc_global_space stores global_space_width = br_corner_x (the
+     * right-edge coordinate), not the span br_corner_x - ul_corner_x. With the
+     * leftmost output at x=100 the width is overstated by 100. Correct when
+     * fixed: CHECK(local.global_space_width == 3840); */
+    local.output_geometries[0] = &off_a;
+    local.output_geometries[1] = &off_b;
+    recalc_global_space(&local);
+    CHECK(local.global_space_width == 3940);
+    CHECK(local.pointer_space_x == 100);
+}
+
 int main(void)
 {
     unit_lookup_keycode();
@@ -279,6 +389,8 @@ int main(void)
     unit_coord_space();
     unit_parse_esc_key_str();
     unit_randname();
+    unit_kb_handle_keymap();
+    characterize_open_bugs_24();
     printf("kloak harness: all assertions passed (%d checks)\n", checks);
     return 0;
 }
