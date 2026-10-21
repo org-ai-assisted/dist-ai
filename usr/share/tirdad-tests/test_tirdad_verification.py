@@ -58,8 +58,11 @@ def _src_dir() -> str:
     if repo:
         return os.path.join(repo, 'module')
     for candidate in sorted(glob.glob('/usr/src/tirdad-*')) + ['/usr/src/tirdad']:
-        if os.path.exists(os.path.join(candidate, 'tirdad.c')):
-            return candidate
+        ## DKMS ships the source under module/ (tirdad-dkms.install:
+        ## 'module/* usr/src/tirdad-0.1/module'); the bare candidate is the fallback.
+        for source_dir in (os.path.join(candidate, 'module'), candidate):
+            if os.path.isfile(os.path.join(source_dir, 'tirdad.c')):
+                return source_dir
     return os.path.join(repo if repo else '/', 'module')
 
 

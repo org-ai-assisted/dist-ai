@@ -107,6 +107,36 @@ rc_of() {
    printf '%s' "${rc}"
 }
 
+## Verify source-ability in ISOLATION before sourcing into THIS process. A subject that
+## 'exit's during sourcing would otherwise exit the test here with success and ZERO
+## assertions (an early 'exit 0' is indistinguishable from a clean source by rc+stdout
+## alone). The probe writes a completion marker ONLY after sourcing runs to the end;
+## require it (plus no-leak / no-auto-run) before the direct source below.
+probe_tmp="$(mktemp --directory)"
+# shellcheck disable=SC2317  # reached via the EXIT trap
+probe_tmp_cleanup() { safe-rm --recursive --force -- "${probe_tmp}"; }
+trap probe_tmp_cleanup EXIT
+marker="${probe_tmp}/source-complete"
+
+src_out=""
+src_rc=0
+src_out="$(SUBJECT="${subject}" SOURCE_COMPLETE_MARKER="${marker}" "${probe}" source 2>/dev/null)" || src_rc=$?
+check "isolated source does not enable errexit (no leak)"   "${src_rc}" "0"
+check "isolated source does not auto-run main"              "${src_out}" ""
+check "isolated source runs to completion (marker present)" \
+   "$([ -f "${marker}" ] && printf '%s' yes || printf '%s' no)" "yes"
+
+call_rc=0
+SUBJECT="${subject}" "${probe}" call >/dev/null 2>&1 || call_rc=$?
+check "calling select_swap_backend stays pure (no leak)" "${call_rc}" "0"
+
+## FATAL if the isolation gate did not pass: refuse to source a subject that exits or
+## leaks into this process (a silent false green), fail loud instead.
+if [ "${src_rc}" -ne 0 ] || [ ! -f "${marker}" ]; then
+   printf '%s\n' "FATAL: subject at '${subject}' did not source cleanly to completion (rc=${src_rc}); refusing to source into the test process" >&2
+   exit 1
+fi
+
 ## Source the REAL subject to obtain select_swap_backend (main() does not run:
 ## its was_executed guard is false when sourced). Clear positional args first so
 ## no forwarded arg can reach a dispatch in the sourced script.
@@ -192,19 +222,10 @@ check "header + partition skipped, file row matched" "$(swapon_record_for "${tbl
 dup=$'/var/swapfile 1G\n/var/swapfile 2G'
 check "duplicate exact row -> last wins"    "$(swapon_record_for "${dup}" /var/swapfile)"     "/var/swapfile 2G"
 
-## --- (8) source-ability contract: no auto-run, no option/trap leak, defined ---
+## --- (8) source-ability contract: functions defined in THIS process after source ---
+## (no-auto-run / no-leak / completion were proven by the isolation gate above.)
 check "main defined after source"                 "$(declare -F main >/dev/null && printf '%s' yes || printf '%s' no)" "yes"
 check "select_swap_backend defined after source"  "$(declare -F select_swap_backend >/dev/null && printf '%s' yes || printf '%s' no)" "yes"
-
-src_out=""
-src_rc=0
-src_out="$(SUBJECT="${subject}" "${probe}" source 2>/dev/null)" || src_rc=$?
-check "sourcing does not enable errexit (no leak)" "${src_rc}" "0"
-check "sourcing does not auto-run main"            "${src_out}" ""
-
-call_rc=0
-SUBJECT="${subject}" "${probe}" call >/dev/null 2>&1 || call_rc=$?
-check "calling select_swap_backend stays pure (no leak)" "${call_rc}" "0"
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then

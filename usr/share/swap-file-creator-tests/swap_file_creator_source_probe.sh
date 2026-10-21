@@ -58,3 +58,11 @@ fi
 ## otherwise 'true' yields exit 0.
 false
 true
+
+## Positive completion marker: written ONLY after sourcing (and the optional call) ran
+## to the end with no early exit. Its ABSENCE lets the caller tell a clean source from
+## a subject that 'exit 0's mid-source -- both give rc 0 and empty stdout, so rc/stdout
+## alone cannot distinguish them.
+if [ -n "${SOURCE_COMPLETE_MARKER:-}" ]; then
+   true > "${SOURCE_COMPLETE_MARKER}"
+fi

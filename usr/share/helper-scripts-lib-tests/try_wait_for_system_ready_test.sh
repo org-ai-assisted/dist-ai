@@ -77,6 +77,8 @@ trap cleanup EXIT
 
 probe_log="${work_dir}/leaprun-calls"
 export LEAPRUN_PROBE_LOG="${probe_log}"
+timeout_arg_log="${work_dir}/timeout-args"
+export TIMEOUT_ARG_LOG="${timeout_arg_log}"
 
 ## Stub 'leaprun' executable, modelling 'leaprun system-ready-check':
 ##  - logs one line per call (count survives across the timeout/exec boundary);
@@ -110,11 +112,33 @@ fi
 [ "${out}" = 'running' ]
 STUB
 chmod 0755 "${leaprun_stub}"
+
+## Stub 'timeout' wrapper: records the DURATION arg, then execs the REAL timeout.
+## The subject calls 'timeout --kill-after=3 <probe_this> leaprun ...', so the first
+## non-option token is the per-probe timeout. Lets the test assert the CONFIGURED
+## system_ready_probe_timeout is actually passed (not merely a wall-clock band). The
+## real path is resolved before work_dir is prepended to PATH, so exec never recurses.
+real_timeout="$(type -P timeout)"
+timeout_stub="${work_dir}/timeout"
+cat >"${timeout_stub}" <<STUB
+#!/bin/bash
+dur=''
+for arg in "\$@"; do
+   case "\${arg}" in
+      -*) ;;
+      *) dur="\${arg}"; break ;;
+   esac
+done
+printf '%s\n' "\${dur}" >>"\${TIMEOUT_ARG_LOG}"
+exec "${real_timeout}" "\$@"
+STUB
+chmod 0755 "${timeout_stub}"
 export PATH="${work_dir}:${PATH}"
 
 ## Reset per-case stub state to known defaults.
 reset_stub() {
    true >"${probe_log}"
+   true >"${timeout_arg_log}"
    export LEAPRUN_FAKE_RESULT=''
    export LEAPRUN_FAKE_DELAY='0'
    export LEAPRUN_READY_ON_CALL='0'
@@ -244,6 +268,24 @@ if [ "${rc}" = '0' ] && [ "${probe_calls}" -ge 1 ] && [ "${elapsed}" -ge 1 ] && 
    pass "hung probe bounded by configured timeout -> exit 0 in ${elapsed}s (${probe_calls} probes)"
 else
    fail "probe-timeout -> rc=${rc}, elapsed=${elapsed}s, probes=${probe_calls} (want 0, >=1, 1..3)"
+fi
+
+## Configured per-probe timeout is passed through verbatim. With max_seconds >
+## probe_timeout the remaining-budget clamp (probe_this=min(probe_timeout,remaining))
+## does not apply, so the recorded 'timeout' DURATION must equal the configured 2 --
+## 'running' exits after one probe. Regression: a subject ignoring
+## system_ready_probe_timeout (hardcoded literal) records a different value.
+reset_stub
+export LEAPRUN_FAKE_RESULT='running'
+rc=0
+system_ready_wait_max_seconds=5 system_ready_probe_timeout=2 \
+   try_wait_for_system_ready || rc="$?"
+recorded_timeout="$(head -n1 "${timeout_arg_log}")"
+probe_calls="$(wc -l <"${probe_log}")"
+if [ "${rc}" = '0' ] && [ "${probe_calls}" = '1' ] && [ "${recorded_timeout}" = '2' ]; then
+   pass "configured probe timeout passed through -> 'timeout ${recorded_timeout}' (1 probe)"
+else
+   fail "configured timeout -> rc=${rc}, probes=${probe_calls}, timeout-arg='${recorded_timeout}' (want 0, 1, 2)"
 fi
 
 ## Errexit contract: main() calls this under 'set -o errexit', so a never-ready

@@ -918,12 +918,17 @@ def test_cross_file_numbering_contract():
     assert 'systemcheck' in cal[8], cal[8]
 
 
-def _release_check_cmd(num):
+def _release_check_cmd(num, firmware=None):
     ## Exercise the REAL bash command-builder (release_check_cmd) by sourcing
     ## release-checks.bsh, so the test tracks the single source, not a reimplementation.
+    ## firmware -> RELEASE_CHECK_FIRMWARE, the caller context a firmware-gated mask reads;
+    ## set it so the no-masking canary actually exercises that branch.
+    env = dict(os.environ)
+    if firmware is not None:
+        env['RELEASE_CHECK_FIRMWARE'] = firmware
     script = f'source "{RELEASE_CHECKS_BSH}"; release_check_cmd {int(num)}'
     out = subprocess.run(['bash', '-c', script],
-                         capture_output=True, text=True, check=True)
+                         capture_output=True, text=True, check=True, env=env)
     return out.stdout
 
 
@@ -931,10 +936,13 @@ def test_release_check8_no_firmware_masking():
     ## check 8 (systemcheck) runs the IDENTICAL command on every firmware -- no
     ## --ignore-failed-unit masking. Under efi-secureboot the MOK enrolls cleanly and
     ## the DKMS-signed modules (tirdad, GA) load, so a vboxadd/module failure MUST fail
-    ## check 8, never be tolerated. Canary: re-adding a firmware-gated ignore fails here.
+    ## check 8, never be tolerated. The dropped mask gated on
+    ## RELEASE_CHECK_FIRMWARE=efi-secureboot, so the canary asserts UNDER that firmware
+    ## -- a run leaving it unset would not trip a re-added gate.
     base = _release_check_cmds()[8]
-    assert '--ignore-failed-unit' not in _release_check_cmd(8), _release_check_cmd(8)
-    assert _release_check_cmd(8) == base, _release_check_cmd(8)
+    cmd = _release_check_cmd(8, firmware='efi-secureboot')
+    assert '--ignore-failed-unit' not in cmd, cmd
+    assert cmd == base, cmd
 
 
 ## --- backend selection (--backend {auto,qemu,vbox}) ---------------------------
