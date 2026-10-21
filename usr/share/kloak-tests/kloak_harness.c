@@ -375,6 +375,29 @@ static void characterize_open_bugs_24(void)
     CHECK(local.pointer_space_x == 100);
 }
 
+/* Regression for the inotify/startup "event"-prefix loose match
+ * (Whonix/kloak#41, CodeRabbit outside-diff): only canonical "event<N>" evdev
+ * nodes (what udev creates) must be grabbed; a bare "event" or an
+ * "event"-prefixed non-device name (e.g. "eventfoo") must be ignored. */
+static void unit_is_event_device_name(void)
+{
+    /* canonical nodes attach */
+    CHECK(is_event_device_name("event0"));
+    CHECK(is_event_device_name("event1"));
+    CHECK(is_event_device_name("event10"));
+    CHECK(is_event_device_name("event2147483647"));
+    /* "event"-prefixed non-devices are ignored */
+    CHECK(!is_event_device_name("event"));     /* no numeric suffix */
+    CHECK(!is_event_device_name("eventfoo"));  /* the reported case */
+    CHECK(!is_event_device_name("event0a"));   /* trailing non-digit */
+    CHECK(!is_event_device_name("event1.0"));
+    /* unrelated and degenerate names */
+    CHECK(!is_event_device_name("mouse0"));
+    CHECK(!is_event_device_name("js0"));
+    CHECK(!is_event_device_name("eve"));
+    CHECK(!is_event_device_name(""));
+}
+
 int main(void)
 {
     unit_lookup_keycode();
@@ -390,6 +413,7 @@ int main(void)
     unit_parse_esc_key_str();
     unit_randname();
     unit_kb_handle_keymap();
+    unit_is_event_device_name();
     characterize_open_bugs_24();
     printf("kloak harness: all assertions passed (%d checks)\n", checks);
     return 0;
