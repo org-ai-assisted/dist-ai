@@ -16,9 +16,10 @@
 ##   (B) btrfs branch: 'btrfs filesystem mkswapfile' is used with a BYTE size
 ##       (never rounded to 0G for a sub-GiB target), and plain fallocate / mkswap
 ##       are NOT.
-##   (C) teardown safety (P0): swapoff FAILS -> do_stop must NOT shred or remove
-##       the still-active swap file.
-##   (D) teardown success: swapoff OK + SHRED_ON_STOP=yes -> shred then safe-rm.
+##   (C) teardown safety (P0): swapoff FAILS -> do_stop must NOT remove the
+##       still-active swap file.
+##   (D) teardown success: swapoff OK -> do_stop removes the file (safe-rm),
+##       after swapoff.
 ##   (E) df -P: free space is read from the right column even when a long mapper
 ##       device name would wrap non-POSIX df output.
 ##   (F) exact swap-record match: a sibling "<file>-old" active swap does not
@@ -103,7 +104,7 @@ mkdir --parents -- "${bindir}"
 
 ## Simple recorders: append "<name> <args>" to the trace (read $TRACE at run
 ## time) and succeed.
-for name in fallocate mkswap btrfs shred chown chmod safe-rm; do
+for name in fallocate mkswap btrfs chown chmod safe-rm; do
    cat > "${bindir}/${name}" <<EOF
 #!/bin/bash
 printf '%s %s\n' "${name}" "\$*" >> "\${TRACE}"
@@ -196,32 +197,30 @@ check "(B) btrfs size never '0G' (sub-GiB regression)" "$(traced '0G' && printf 
 check "(B) plain fallocate NOT used on btrfs"     "$(traced '^fallocate ' && printf '%s' y || printf '%s' n)" "n"
 check "(B) plain mkswap NOT used on btrfs"        "$(traced '^mkswap ' && printf '%s' y || printf '%s' n)"    "n"
 
-## --- (C) teardown safety: swapoff fails -> no shred, no remove ---
+## --- (C) teardown safety: swapoff fails -> no remove ---
 trace="${work}/trace-c"
 true > "${trace}"
 true > "${SWAPFILE}"
 rc=0
 TRACE="${trace}" SWAPOFF_RC=32 FAKE_SWAPON_LIST="${SWAPFILE} file 1024M" \
-   DRIVE_SWAPFILE="${SWAPFILE}" DRIVE_SHRED_ON_STOP=yes PATH="${bindir}:${PATH}" \
+   DRIVE_SWAPFILE="${SWAPFILE}" PATH="${bindir}:${PATH}" \
    bash "${drive}" stop >/dev/null 2>&1 || rc=$?
 check "(C) do_stop returns 0 despite swapoff fail" "${rc}" "0"
 check "(C) swapoff was attempted"                  "$(traced '^swapoff ' && printf '%s' y || printf '%s' n)" "y"
-check "(C) shred NOT called after swapoff fail"    "$(traced '^shred ' && printf '%s' y || printf '%s' n)"   "n"
 check "(C) safe-rm NOT called after swapoff fail"  "$(traced '^safe-rm ' && printf '%s' y || printf '%s' n)" "n"
 check "(C) swap file still present"                "$([ -e "${SWAPFILE}" ] && printf '%s' y || printf '%s' n)" "y"
 
-## --- (D) teardown success: swapoff ok + SHRED_ON_STOP=yes -> shred then safe-rm ---
+## --- (D) teardown success: swapoff ok -> do_stop removes the file via safe-rm ---
 trace="${work}/trace-d"
 true > "${trace}"
 true > "${SWAPFILE}"
 rc=0
 TRACE="${trace}" SWAPOFF_RC=0 FAKE_SWAPON_LIST="${SWAPFILE} file 1024M" \
-   DRIVE_SWAPFILE="${SWAPFILE}" DRIVE_SHRED_ON_STOP=yes PATH="${bindir}:${PATH}" \
+   DRIVE_SWAPFILE="${SWAPFILE}" PATH="${bindir}:${PATH}" \
    bash "${drive}" stop >/dev/null 2>&1 || rc=$?
 check "(D) do_stop returns 0"               "${rc}" "0"
-check "(D) shred called"                    "$(traced '^shred ' && printf '%s' y || printf '%s' n)"   "y"
-check "(D) safe-rm called"                  "$(traced '^safe-rm ' && printf '%s' y || printf '%s' n)" "y"
-check "(D) shred before safe-rm"            "$(ordered_before '^shred ' '^safe-rm ' && printf '%s' y || printf '%s' n)" "y"
+check "(D) safe-rm called (file removed)"   "$(traced '^safe-rm ' && printf '%s' y || printf '%s' n)" "y"
+check "(D) swapoff before safe-rm"          "$(ordered_before '^swapoff ' '^safe-rm ' && printf '%s' y || printf '%s' n)" "y"
 
 ## --- (E) df -P: free space read correctly despite a wrapping long device name.
 ## The df shim wraps WITHOUT -P (free then reads 0), so a 5 GiB swap would fail

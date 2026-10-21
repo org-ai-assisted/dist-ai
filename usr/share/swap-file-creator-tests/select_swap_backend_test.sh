@@ -16,7 +16,7 @@
 ##  (3) swap_fits_free_disk() / (4) swap_size_self_check_ok(): the disk-space
 ##      and post-swapon size-check comparisons, both boundaries.
 ##  (5) swapfile_path_is_absolute(): absolute-path validation.
-##  (6) swap_safe_to_remove(): the P0 teardown gate -- shred/remove only when
+##  (6) swap_safe_to_remove(): the P0 teardown gate -- remove only when
 ##      swapoff succeeded (rc 0); refuse for any non-zero / empty code.
 ##  (7) Sourcing the REAL script does NOT auto-run main(), leaks no strict-mode
 ##      option and no trap, and the functions are defined. Probed by the
@@ -212,7 +212,7 @@ check "/var/swapfile is absolute"   "$(rc_of swapfile_path_is_absolute /var/swap
 check "relative path rejected"      "$(rc_of swapfile_path_is_absolute var/swapfile)"  "1"
 check "empty path rejected"         "$(rc_of swapfile_path_is_absolute '')"            "1"
 
-## --- (6) swap_safe_to_remove: shred/remove ONLY when swapoff succeeded (P0) ---
+## --- (6) swap_safe_to_remove: remove ONLY when swapoff succeeded (P0) ---
 check "swapoff rc 0 -> safe to remove"        "$(rc_of swap_safe_to_remove 0)"  "0"
 check "swapoff rc 1 -> NOT safe (keep file)"  "$(rc_of swap_safe_to_remove 1)"  "1"
 check "swapoff rc 32 -> NOT safe"             "$(rc_of swap_safe_to_remove 32)" "1"
