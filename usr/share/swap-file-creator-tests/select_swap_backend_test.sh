@@ -158,11 +158,19 @@ fi
 
 ## --- (1) decision table: select_swap_backend <do_pre_check> <virt> <luks_ok> ---
 
-## DO_PRE_CHECK opt-out short-circuits before virt/luks are consulted.
-check "pre-check off -> proceed (ignores xen+no-luks)" "$(select_swap_backend no xen no)" "proceed"
-check "pre-check off, empty virt+luks -> proceed"      "$(select_swap_backend no '' '')"  "proceed"
-check "pre-check empty string (not 'yes') -> proceed"  "$(select_swap_backend '' xen no)" "proceed"
-check "pre-check arbitrary (not 'yes') -> proceed"     "$(select_swap_backend maybe xen no)" "proceed"
+## DO_PRE_CHECK opt-out: ONLY exact 'no' disables the gate (short-circuits
+## before virt/luks are consulted).
+check "pre-check 'no' -> proceed (ignores xen+no-luks)" "$(select_swap_backend no xen no)" "proceed"
+check "pre-check 'no', empty virt+luks -> proceed"      "$(select_swap_backend no '' '')"  "proceed"
+
+## SECURITY (fail closed): any value OTHER than exact 'no' keeps the gate ON. A
+## 'YES' typo / wrong case / trailing space / empty / arbitrary string must NOT
+## disable the LUKS+xen checks and silently allow plaintext swap.
+check "pre-check empty string keeps gate on (xen) -> skip-xen"        "$(select_swap_backend '' xen no)"      "skip-xen"
+check "pre-check 'maybe' keeps gate on (xen) -> skip-xen"             "$(select_swap_backend maybe xen no)"   "skip-xen"
+check "pre-check 'YES' typo keeps gate on, no luks -> skip-no-luks"   "$(select_swap_backend YES '' no)"      "skip-no-luks"
+check "pre-check 'yes ' trailing space keeps gate on -> skip-no-luks" "$(select_swap_backend 'yes ' '' no)"   "skip-no-luks"
+check "pre-check 'Yes' keeps gate on, luks ok -> proceed"             "$(select_swap_backend Yes '' yes)"     "proceed"
 
 ## xen wins over everything else under the gate (Qubes: host manages swap).
 check "xen, luks yes -> skip-xen"       "$(select_swap_backend yes xen yes)"     "skip-xen"

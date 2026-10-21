@@ -24,6 +24,9 @@
 ##       device name would wrap non-POSIX df output.
 ##   (F) exact swap-record match: a sibling "<file>-old" active swap does not
 ##       make do_stop swapoff our (inactive) file.
+##   (G) teardown fail-closed: a FAILED swap enumeration cannot prove the file
+##       inactive, so do_stop must swapoff and remove ONLY on success -- never
+##       remove an unproven, possibly-active file on an empty/failed listing.
 ##
 ## A missing REQUIRED dependency (subject, helper-scripts) is a HARD FAIL.
 
@@ -149,7 +152,7 @@ EOF
 cat > "${bindir}/swapon" <<'EOF'
 #!/bin/bash
 case "$*" in
-   "")       printf '%s\n' "${FAKE_SWAPON_LIST:-}" ;;
+   "")       printf '%s\n' "${FAKE_SWAPON_LIST:-}"; exit "${SWAPON_LIST_RC:-0}" ;;
    *--show*) printf '%s\n' "${FAKE_SWAPON_SHOW:-}" ;;
    *)        printf 'swapon %s\n' "$*" >> "${TRACE}" ;;
 esac
@@ -241,11 +244,28 @@ true > "${trace}"
 true > "${SWAPFILE}"
 rc=0
 TRACE="${trace}" SWAPOFF_RC=0 FAKE_SWAPON_LIST="${SWAPFILE}-old file 8G" \
-   DRIVE_SWAPFILE="${SWAPFILE}" DRIVE_SHRED_ON_STOP=no PATH="${bindir}:${PATH}" \
+   DRIVE_SWAPFILE="${SWAPFILE}" PATH="${bindir}:${PATH}" \
    bash "${drive}" stop >/dev/null 2>&1 || rc=$?
 check "(F) do_stop returns 0"                        "${rc}" "0"
 check "(F) sibling active -> our swapoff NOT called" "$(traced '^swapoff ' && printf '%s' y || printf '%s' n)" "n"
 check "(F) our inactive file removed"                "$(traced '^safe-rm ' && printf '%s' y || printf '%s' n)" "y"
+
+## --- (G) teardown fail-closed on a FAILED swap enumeration. 'swapon' (listing)
+## exits non-zero, so do_stop cannot prove the file inactive: it must attempt
+## swapoff and remove ONLY on success. Here swapoff also fails, so the
+## (possibly active) file must be KEPT. Old code read the empty listing as
+## "not active", skipped swapoff, and safe-rm'd it -> fail open. ---
+trace="${work}/trace-g"
+true > "${trace}"
+true > "${SWAPFILE}"
+rc=0
+TRACE="${trace}" SWAPON_LIST_RC=1 SWAPOFF_RC=32 FAKE_SWAPON_LIST="" \
+   DRIVE_SWAPFILE="${SWAPFILE}" PATH="${bindir}:${PATH}" \
+   bash "${drive}" stop >/dev/null 2>&1 || rc=$?
+check "(G) do_stop returns 0 on enumeration failure"   "${rc}" "0"
+check "(G) swapoff attempted (empty list not trusted)" "$(traced '^swapoff ' && printf '%s' y || printf '%s' n)" "y"
+check "(G) safe-rm NOT called (fail closed)"           "$(traced '^safe-rm ' && printf '%s' y || printf '%s' n)" "n"
+check "(G) swap file still present"                    "$([ -e "${SWAPFILE}" ] && printf '%s' y || printf '%s' n)" "y"
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
