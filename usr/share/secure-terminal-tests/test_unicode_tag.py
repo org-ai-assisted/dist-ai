@@ -291,6 +291,9 @@ def run():
             try:
                 full_buf.close()
             except OSError:
+                ## best-effort cleanup: full_buf is a deliberately-broken _FullIO
+                ## (ENOSPC simulation), so close() may raise -- full_rc/full_err are
+                ## already captured, so a close failure here is irrelevant to the test.
                 pass
         sys.stdout = saved_out          # restore BEFORE ok() prints, else a FAIL line is swallowed
         ok(full_rc == 1 and 'unicode-tag:' in full_err,
