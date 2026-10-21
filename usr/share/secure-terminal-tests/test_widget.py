@@ -6038,6 +6038,16 @@ eq(_QGA3.clipboard().text(), 'git dd\n', 'copy stripped puts ASCII only (homogly
 cp.selectAll(); cp.copy(); cp.dispatch_pending_copy('unicode')
 eq(_QGA3.clipboard().text(), 'git ' + chr(0x0430) + 'dd\n',
    'copy with unicode keeps the printable homoglyph')
+# a DELIVERED copy also publishes to the PRIMARY selection, so a MIDDLE-CLICK paste
+# yields the reviewed text -- not the terminal's own ASCII-stripped mouse-selection
+# (_publish_primary). Pre-fix _set_clipboard wrote only the Ctrl+V clipboard, so PRIMARY
+# kept the original selection and a middle-click pasted it, dropping the review's edits.
+from PyQt6.QtGui import QClipboard as _QClip3                # noqa: E402
+if _QGA3.clipboard().supportsSelection():
+    _QGA3.clipboard().setText('PRIMARY-SENTINEL', _QClip3.Mode.Selection)
+    cp.selectAll(); cp.copy(); cp.dispatch_pending_copy('unicode')
+    eq(_QGA3.clipboard().text(_QClip3.Mode.Selection), 'git ' + chr(0x0430) + 'dd\n',
+       'copy-out publishes the reviewed text to PRIMARY (middle-click paste gets the edits)')
 # reject -> the clipboard is left untouched
 _QGA3.clipboard().setText('KEEP'); cp.selectAll(); cp.copy()
 cp.dispatch_pending_copy('reject')
