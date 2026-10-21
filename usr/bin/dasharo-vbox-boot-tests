@@ -1,0 +1,125 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## End-to-end regression lane for the Dasharo-in-VirtualBox port: a patched
+## VirtualBox (DevEFI CorebootRom + DevACPI SLP_EN fixes, org-ai-assisted/virtualbox)
+## boots a coreboot + UefiPayloadPkg ROM (org-ai-assisted/dasharo) to an interactive
+## UEFI shell, and `reset -s` powers the VM off via a clean ACPI S5.
+##
+## Opt-in: registered in dist-ai-tests-all's e2e_suites (CI runs --core only, so
+## this never gates PRs), and SKIPs unless the boot environment is present -- the
+## patched non-hardened VBox build (run as root for /dev/vboxdrv) plus the ROM.
+## Provide them via the environment:
+##   DASHARO_COREBOOT_ROM   path to the coreboot + UefiPayloadPkg ROM (required to boot)
+##   DASHARO_VBOX_BIN       dir holding the patched VBoxManage (else PATH)
+##
+## The pure helpers (argument building, serial / VBox.log assertions) are unit
+## tested on every invocation, including the SKIP paths, so the logic is exercised
+## in the generic CI container even though the boot itself cannot run there.
+##
+## Exit codes (dist-ai-tests-all contract): 0 PASS, 77 SKIP (no ROM / no bootable
+## VBox here), else FAIL.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+SKIP=77
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d "${script_dir}/../share/dasharo-vbox-boot-tests" ]; then
+   tests_dir="${script_dir}/../share/dasharo-vbox-boot-tests"
+else
+   tests_dir='/usr/share/dasharo-vbox-boot-tests'
+fi
+
+## Pure-logic unit tests first: they run on every invocation (CI included) and a
+## failure here is a real FAIL, not a SKIP. python3-pytest is a hard dependency of
+## this package, so an absent pytest is a broken install, not a reason to skip.
+## style-ok: allow-python-interpreter -- python3 -c dep probe
+if ! python3 -c 'import pytest' 2>/dev/null; then
+   printf '%s\n' "dasharo-vbox-boot-tests: python3-pytest is missing; the unit tests cannot run. FAIL." >&2
+   exit 1
+fi
+python3 -m pytest -q "${tests_dir}"/test_*.py
+
+## SKIP when there is no ROM to boot: this lane only runs on a host that has a
+## built coreboot + UefiPayloadPkg ROM, never in the generic trixie-slim CI
+## container. The DevEFI+DevACPI-patched VirtualBox is an opt-in target.
+rom="${DASHARO_COREBOOT_ROM:-}"
+if [ -z "${rom}" ]; then
+   printf '%s\n' "dasharo-vbox-boot-tests: DASHARO_COREBOOT_ROM unset; no ROM to boot. SKIP." >&2
+   ## style-ok: allow-skip: no coreboot ROM supplied -- an opt-in boot target
+   exit "${SKIP}"
+fi
+
+## The patched VBoxManage is a non-default, opt-in build; its absence means this
+## host cannot run the boot test, not that the test failed.
+vbox_bin="${DASHARO_VBOX_BIN:-}"
+## A DASHARO_VBOX_BIN that holds no VBoxManage falls through to PATH.
+if [ -n "${vbox_bin}" ] && [ ! -x "${vbox_bin}/VBoxManage" ]; then
+   vbox_bin=''
+fi
+if [ -z "${vbox_bin}" ] && ! type -P VBoxManage >/dev/null 2>&1; then
+   printf '%s\n' "dasharo-vbox-boot-tests: no VBoxManage (set DASHARO_VBOX_BIN to the patched build); cannot boot-test here. SKIP." >&2
+   ## style-ok: allow-skip: patched VirtualBox not present -- an opt-in boot target
+   exit "${SKIP}"
+fi
+
+## Drive the boot test, capturing the COM1 serial so a published result can attach
+## it. The driver returns 77 if the VirtualBox kernel driver is inaccessible (a
+## non-hardened source build needs root), which is an unbootable environment here,
+## not a failure.
+serial_log="$(mktemp)"
+cleanup() {
+   ## Reached only via the EXIT trap, which shellcheck does not trace (SC2317).
+   # shellcheck disable=SC2317
+   safe-rm --force -- "${serial_log}"
+}
+trap cleanup EXIT
+
+rc=0
+python3 "${tests_dir}/dasharo-vbox-boot-test" \
+   --vbox-bin "${vbox_bin}" --rom "${rom}" --serial-log "${serial_log}" "$@" || rc=$?
+
+## Opt-in: publish the verdict + serial capture to the automated-test-results
+## plane, so this lane shows on org-ai-assisted.github.io/automated-test-results/
+## next to the image boot tests (the existing test-results-deploy timer renders
+## the plane to the site). Enabled by DASHARO_VBOX_PUBLISH=1 or by setting
+## IMAGE_TEST_RESULTS_ROOT; needs root + the plane dir, and only for a real verdict
+## (0/1/2), never a 77 SKIP. Reuses the shared image-test publisher -- no second
+## result.json writer.
+if { [ "${DASHARO_VBOX_PUBLISH:-}" = '1' ] || [ -n "${IMAGE_TEST_RESULTS_ROOT:-}" ]; } \
+   && [ "${rc}" != "${SKIP}" ]; then
+   results_root="${IMAGE_TEST_RESULTS_ROOT:-/var/www/results}"
+   results_owner="${IMAGE_TEST_RESULTS_OWNER:-www-data}"
+   if [ -d "${results_root}" ] && [ "$(id -u)" = '0' ]; then
+      publisher="${script_dir}/../libexec/image-test/results-publish.bsh"
+      if [ ! -f "${publisher}" ]; then
+         publisher='/usr/libexec/image-test/results-publish.bsh'
+      fi
+      # shellcheck source=../libexec/image-test/results-publish.bsh
+      source "${publisher}"
+      image_test_results_publish \
+         "${results_root}" "${results_owner}" "dasharo-vbox-boot" \
+         "${SUDO_USER:-${USER:-root}}" "dasharo-vbox-boot" "${rc}" "" \
+         --lane "Dasharo coreboot + UEFI shell (VirtualBox)" \
+         --builder "dasharo-vbox-boot-test" --origin built \
+         --step-name "boot to UEFI shell + ACPI S5" \
+         --step-stderr-file "${serial_log}" \
+         || printf '%s\n' "dasharo-vbox-boot-tests: WARNING: results publish failed (verdict rc=${rc} preserved)." >&2
+   else
+      printf '%s\n' "dasharo-vbox-boot-tests: publish requested but no writable results plane / not root; skipping publish (verdict rc=${rc})." >&2
+   fi
+fi
+
+exit "${rc}"
