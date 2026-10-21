@@ -404,11 +404,18 @@ class SdwdateLeaprunPrivleapClientTest(unittest.TestCase):
             '(got %r); the profile likely denies /etc/passwd or /etc/nsswitch.conf, '
             "breaking leaprun's getpwuid() uid->comm-socket resolution." % combined)
 
-        ## ... AND positive privleapd-response evidence must be PRESENT: an exit
-        ## status alone is NOT proof of a connection. An AUTHORIZED or UNAUTHORIZED
-        ## check notice (both contain 'authorized to run action'), or a
-        ## response-handler diagnostic, can only appear AFTER leaprun reached
-        ## privleapd over comm/0.
+        ## ... AND positive privleapd-response evidence must be PRESENT (exit status
+        ## alone is NOT proof of a connection). The regression under test is the
+        ## getpwuid()->comm-socket resolution, i.e. the CONNECT. EVERY string below
+        ## is emitted by leaprun ONLY after it connected over comm/<uid> and read (or
+        ## tried to read) a reply, so any of them proves that resolution worked. A
+        ## protocol-error-after-connect is deliberately accepted: it still proves the
+        ## connect, and rejecting it would false-RED the apparmor fix on an unrelated
+        ## privleapd hiccup. In the healthy env the skip-guard requires, a --check run
+        ## deterministically yields the AUTHORIZED/UNAUTHORIZED notice ('authorized to
+        ## run action', from print_auth_notice); the rest are post-connect fallbacks
+        ## (handle_response / unexpected_msg_error). The connect-FAIL path exits via
+        ## generic_error('Could not connect ...') BEFORE any of these.
         connect_evidence = (
             'authorized to run action',
             'privleapd returned',
