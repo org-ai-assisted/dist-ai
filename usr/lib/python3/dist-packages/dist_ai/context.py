@@ -54,15 +54,32 @@ TEXT_MIME_NEEDLES = ("text/", "x-shellscript", "x-python", "json", "xml",
 ## carrying a confusable BLOCKS) but not auto-substituted (that would corrupt it).
 DIFF_EXTS = (".patch", ".diff")
 
+## A unified-diff hunk header -- the one structure shared by a plain diff, a git
+## format-patch/mbox patch, and a DEP-3 quilt patch, regardless of any mail/DEP-3
+## header above it. This is why detection sniffs CONTENT, not file(1)'s mime: file
+## types a format-patch as application/mbox and a long-header DEP-3 as text/plain,
+## so a mime check misses exactly the debian/patches shapes this must protect.
+_DIFF_HUNK_RE = re.compile(rb'(?m)^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@')
 
-def is_diff_file(path, mime=None):
-    """A unified diff, by extension (.patch/.diff) OR -- when MIME is given --
-    file(1)'s text/x-diff, which catches an extensionless debian/patches/* or a
-    renamed '.patch.disabled' the suffix alone misses. One source of truth for both
-    the DIFF_EXTS suffixes and the x-diff mime, shared by the engine and precommit."""
+
+def is_diff_file(path, data=None):
+    """A unified diff whose trailing whitespace is significant. Matched by
+    extension (.patch/.diff, case-insensitive) or, when DATA (bytes) is given, by a
+    unified-diff hunk header in the content -- so an extensionless debian/patches/*
+    or a renamed '.patch.disabled' is covered. A KNOWN text extension/basename is
+    classified by name (a real patch is not named .sh/.md/.txt), which keeps the
+    content sniff off ordinary source and bounds its one accepted false positive to
+    an odd-named/extensionless file that happens to embed a diff hunk. One source of
+    truth, shared by the engine (FileContext.is_diff) and precommit."""
     if path.lower().endswith(DIFF_EXTS):
         return True
-    return mime is not None and "x-diff" in mime
+    if data is None:
+        return False
+    base = os.path.basename(path)
+    _, ext = os.path.splitext(base)
+    if ext.lower() in TEXT_EXTS or base in TEXT_BASENAMES:
+        return False
+    return bool(_DIFF_HUNK_RE.search(data))
 
 
 def _matches(path, patterns):
@@ -115,8 +132,6 @@ class FileContext:
         self._tree = None
         self._tree_done = False
         self._binary = None
-        self._mime = None
-        self._mime_done = False
         self._comment_lines = None
         self._comment_lines_done = False
 
@@ -264,51 +279,36 @@ class FileContext:
                 and out.stdout.rstrip("\n").endswith(": binary: set"))
 
     @property
-    def mime(self):
-        """file(1)'s mime for this context's OWN bytes (via stdin), probed ONCE
-        and cached. Reading the content -- not the path on disk -- classifies a
-        staged / HEAD blob whose working-tree file diverged or was removed from
-        what is actually gated. '' when file is absent, there are no bytes, or the
-        probe errors. Feeds BOTH is_text and is_diff, so an extensionless file
-        costs a single subprocess, not one per question."""
-        if not self._mime_done:
-            self._mime = self._probe_mime()
-            self._mime_done = True
-        return self._mime
-
-    def _probe_mime(self):
-        if not model.have_on_path("file") or self.data is None:
-            return ""
-        try:
-            return subprocess.run(
-                ["file", "--brief", "--mime", "-"],
-                input=self.data, capture_output=True).stdout.decode(
-                    "utf-8", "replace")
-        except OSError:
-            return ""
-
-    @property
     def is_diff(self):
         """A unified diff whose TRAILING whitespace is significant -- the
         trailing-whitespace rule must not rewrite it, and R-001 must not
-        auto-substitute its non-ASCII. Matched by extension (.patch/.diff) or,
-        for an extensionless/odd-named file, file(1)'s text/x-diff. A known text
-        extension/basename settles the type by name, so no mime probe fires for a
-        plain .sh/.py."""
-        base = os.path.basename(self.path)
-        known_text = base in TEXT_BASENAMES or self.path.endswith(TEXT_EXTS)
-        return is_diff_file(self.path, None if known_text else self.mime)
+        auto-substitute its non-ASCII. Matched by extension (.patch/.diff) or, for
+        an extensionless/odd-named file, a unified-diff hunk header in the content
+        (see is_diff_file); a known text extension is classified by name."""
+        return is_diff_file(self.path, self.data)
 
     @property
     def is_text(self):
         """The trailing-whitespace scope: not binary, and either a known text
-        extension/basename or file(1) reports a text mime (see mime)."""
+        extension/basename or file(1) reports a text mime. The mime probe reads
+        the context's OWN bytes (via stdin), not the path on disk -- a staged /
+        HEAD blob whose working-tree file diverged or was removed must still be
+        classified from the content that is actually being gated."""
         if self.is_binary:
             return False
         base = os.path.basename(self.path)
         if base in TEXT_BASENAMES or self.path.endswith(TEXT_EXTS):
             return True
-        return any(needle in self.mime for needle in TEXT_MIME_NEEDLES)
+        if not model.have_on_path("file") or self.data is None:
+            return False
+        try:
+            mime = subprocess.run(
+                ["file", "--brief", "--mime", "-"],
+                input=self.data, capture_output=True).stdout.decode(
+                    "utf-8", "replace")
+        except OSError:
+            return False
+        return any(needle in mime for needle in TEXT_MIME_NEEDLES)
 
     ## --- parse ------------------------------------------------------------
 

@@ -227,28 +227,20 @@ def _is_text_file(base_cwd, content_cwd, path, source_rev):
 
 
 def _is_diff_file(content_cwd, path):
-    ## A diff by extension (.patch/.diff) needs no probe. A known text extension /
-    ## basename settles the type by name, so a plain .sh/.py never pays a 'file'
-    ## call. Otherwise probe the CONTENT (content_cwd = the blob mirror in a git
-    ## mode) for file(1)'s text/x-diff -- catching an extensionless debian/patches/*
-    ## or a renamed '.patch.disabled'. The extension/x-diff decision is shared with
-    ## the engine via context.is_diff_file (one source of truth).
+    ## A diff by extension (.patch/.diff) needs no read. Otherwise classify by
+    ## CONTENT via the shared context.is_diff_file (a unified-diff hunk header),
+    ## reading the gated bytes from content_cwd (the blob mirror in a git mode) --
+    ## catching an extensionless debian/patches/* or a renamed '.patch.disabled'.
+    ## One source of truth with the engine; a known text extension short-circuits
+    ## inside is_diff_file, so a plain .sh/.py is never mistaken for a diff.
     if context.is_diff_file(path):
         return True
-    base = os.path.basename(path)
-    _, ext = os.path.splitext(base)
-    if ext.lower() in _TEXT_EXT or base in _TEXT_NAME:
-        return False
-    if shutil.which("file") is None:
-        return False
     try:
-        mime = subprocess.run(
-            ["file", "--brief", "--mime", "--dereference", "--",
-             _abs(content_cwd, path)],
-            capture_output=True, text=True).stdout
+        with open(_abs(content_cwd, path), "rb") as handle:
+            data = handle.read()
     except OSError:
         return False
-    return context.is_diff_file(path, mime)
+    return context.is_diff_file(path, data)
 
 
 def _read_text(base_cwd, path):

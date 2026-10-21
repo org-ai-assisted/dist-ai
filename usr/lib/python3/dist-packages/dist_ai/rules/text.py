@@ -150,9 +150,9 @@ class Confusables(Rule):
 class TrailingWhitespace(Rule):
     """Trailing space/tab before end-of-line. Scoped to text files (matching the
     gate's is_text). CR and a final no-newline are preserved (the lookahead never
-    consumes them). A unified diff is exempt (by extension OR file(1) content, see
-    ctx.is_diff): its trailing blanks are significant (a blank context line is a
-    single space) and stripping them corrupts it."""
+    consumes them). A unified diff is exempt (by extension OR a diff hunk in the
+    content, see ctx.is_diff): its trailing blanks are significant (a blank context
+    line is a single space) and stripping them corrupts it."""
 
     id = "trailing-whitespace"
 

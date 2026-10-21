@@ -190,6 +190,35 @@ def run():
         ok(rc == 1 and 'unicode-tag:' in err,
            'main_stdin reports an unreadable stdin cleanly (rc=1)')
 
+        # main_stdin(['--stream']): per-line tagging with a per-line flush, for the
+        # qube-ctl display pipeline. Must be byte-IDENTICAL to the whole-stream path
+        # (\n and \t pass verbatim, no tag spans a newline), tag deceptive code points
+        # per line (CR, zero-width), keep honest '>' '&', and emit a final line that
+        # has no trailing newline.
+        stream_in = b'a>b&c\r\n\xe2\x80\x8bzero\nlast-no-nl'
+
+        def _run_stdin(argv):
+            saved_in = sys.stdin
+            try:
+                sys.stdin = io.TextIOWrapper(io.BytesIO(stream_in), encoding='utf-8')
+                sys.stdout = io.TextIOWrapper(io.BytesIO(), encoding='utf-8')
+                rc_local = unicode_tag.main_stdin(argv)
+                sys.stdout.flush()
+                return rc_local, sys.stdout.buffer.getvalue().decode('utf-8')
+            finally:
+                sys.stdin = saved_in
+
+        rc, streamed = _run_stdin(['--stream'])
+        _, whole = _run_stdin([])
+        sys.stdout = saved_out          # restore BEFORE ok() prints, else a FAIL line is swallowed
+        ok(rc == 0
+           and streamed == whole
+           and streamed == ('a>b&c[U+000D CARRIAGE RETURN]\n'
+                            '[U+200B ZERO WIDTH SPACE]zero\n'
+                            'last-no-nl'),
+           'main_stdin --stream tags per line, byte-identical to whole-stream, '
+           'keeps > & and the final newline-less line')
+
         # A downstream pipe closing early (BrokenPipeError) exits 1, no traceback.
         class _BrokenBuffer:
             @staticmethod

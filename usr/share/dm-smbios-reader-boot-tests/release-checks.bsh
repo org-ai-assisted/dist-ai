@@ -75,7 +75,9 @@ declare -A RELEASE_CHECK_CMD=(
    [4]='curl --silent --fail --max-time 30 --output /dev/null https://deb.debian.org'
    [8]='systemcheck --cli --ci'
    [2]='grep -q boot-role=sysmaint /proc/cmdline'
-   [3]='upgrade-nonroot'
+   ## --yes: non-interactive apt (forwarded to apt-get). Without it a pending
+   ## upgrade stalls at the [Y/n] prompt -> the check times out, never completing.
+   [3]='upgrade-nonroot --yes'
 )
 
 ## Per-consumer check exclusions. A check that a SPECIFIC gate's transport cannot run
