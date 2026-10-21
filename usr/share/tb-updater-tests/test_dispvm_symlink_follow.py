@@ -544,11 +544,11 @@ def test_check_dispvm_refuses_complex_recipe_line(recipe):
     "\tdh_installsystemd --name --no-start tb-updater-dispvm.service\n",
     ## A '-p pkg' restriction with no unit operand still starts EVERY unit in the
     ## package incl the dispvm one; a classifier misreads 'pkg' as a unit operand.
-    "\tdh_installsystemd --no-start tb-updater-dispvm.service\n"
-    "\tdh_installsystemd -p tb-updater\n",
+    ("\tdh_installsystemd --no-start tb-updater-dispvm.service\n"
+     "\tdh_installsystemd -p tb-updater\n"),
     ## '-X unit' excludes only the named unit; the dispvm unit is still started.
-    "\tdh_installsystemd --no-start tb-updater-dispvm.service\n"
-    "\tdh_installsystemd -X tb-updater-first-boot.service\n",
+    ("\tdh_installsystemd --no-start tb-updater-dispvm.service\n"
+     "\tdh_installsystemd -X tb-updater-first-boot.service\n"),
     ## '--restart-after-upgrade' restarts the unit on upgrade even with --no-start.
     "\tdh_installsystemd --no-start --restart-after-upgrade tb-updater-dispvm.service\n",
     ## An env prefix or an absolute path is still a real invocation debhelper runs.
@@ -568,27 +568,27 @@ def test_check_dispvm_refuses_unmodeled_invocation(recipe):
     ## (ai-review) A backslash continuation splitting the command name across
     ## lines ('dh_install\\' + 'systemd ...') -- make joins them into a real,
     ## unguarded call; a per-line token check would miss it.
-    "override_dh_installsystemd:\n"
-    "\tdh_installsystemd --no-start tb-updater-dispvm.service\n"
-    "\tdh_install\\\nsystemd tb-updater-dispvm.service\n",
+    ("override_dh_installsystemd:\n"
+     "\tdh_installsystemd --no-start tb-updater-dispvm.service\n"
+     "\tdh_install\\\nsystemd tb-updater-dispvm.service\n"),
     ## A '#' inside a shell word is NOT a comment to the shell, so make runs the
     ## separated second (unguarded) command after it.
-    "override_dh_installsystemd:\n"
-    "\tdh_installsystemd --no-start tb-updater-dispvm.service\n"
-    "\techo marker#x; dh_installsystemd tb-updater-dispvm.service\n",
+    ("override_dh_installsystemd:\n"
+     "\tdh_installsystemd --no-start tb-updater-dispvm.service\n"
+     "\techo marker#x; dh_installsystemd tb-updater-dispvm.service\n"),
     ## A Make conditional: the dead branch's override must not read as live (dh
     ## would then auto-run an unguarded dh_installsystemd).
-    "ifeq (1,0)\noverride_dh_installsystemd:\n"
-    "\tdh_installsystemd --no-start tb-updater-dispvm.service\nendif\n"
-    "%:\n\tdh $@\n",
+    ("ifeq (1,0)\noverride_dh_installsystemd:\n"
+     "\tdh_installsystemd --no-start tb-updater-dispvm.service\nendif\n"
+     "%:\n\tdh $@\n"),
     ## DH_OPTIONS injects '--restart-after-upgrade' into the otherwise-pinned call.
-    "override_dh_installsystemd:\n"
-    "\tdh_installsystemd --no-start tb-updater-dispvm.service\n"
-    "override_dh_installsystemd: export DH_OPTIONS = --restart-after-upgrade\n",
+    ("override_dh_installsystemd:\n"
+     "\tdh_installsystemd --no-start tb-updater-dispvm.service\n"
+     "override_dh_installsystemd: export DH_OPTIONS = --restart-after-upgrade\n"),
     ## The override defined twice / with a target-specific variable after the colon.
-    "override_dh_installsystemd:\n"
-    "\tdh_installsystemd --no-start tb-updater-dispvm.service\n"
-    "override_dh_installsystemd: SOMEVAR = x\n",
+    ("override_dh_installsystemd:\n"
+     "\tdh_installsystemd --no-start tb-updater-dispvm.service\n"
+     "override_dh_installsystemd: SOMEVAR = x\n"),
 ])
 def test_check_dispvm_refuses_unmodeled_makefile(rules):
     ## Modeling make's conditionals, variables, continuations and comment rules
