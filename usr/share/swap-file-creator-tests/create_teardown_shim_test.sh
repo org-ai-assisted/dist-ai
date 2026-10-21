@@ -27,6 +27,11 @@
 ##   (G) teardown fail-closed: a FAILED swap enumeration cannot prove the file
 ##       inactive, so do_stop must swapoff and remove ONLY on success -- never
 ##       remove an unproven, possibly-active file on an empty/failed listing.
+##   (H) byte-based free-space check REJECTS an over-large swap (no +2 GiB
+##       headroom added to available; no GiB truncation).
+##   (I) restart idempotency: the existing managed swap file's bytes are
+##       credited (do_stop reclaims them), so a restart on a full-ish disk is
+##       not falsely blocked.
 ##
 ## A missing REQUIRED dependency (subject, helper-scripts) is a HARD FAIL.
 
@@ -128,23 +133,31 @@ cat > "${bindir}/findmnt" <<'EOF'
 printf '%s\n' "${FAKE_FSTYPE:-ext4}"
 EOF
 
-## df: with -P (POSIX) emit one row per filesystem (ample space); WITHOUT -P,
-## simulate a long mapper device name wrapping onto its own line -- the exact
-## breakage that 'df -P' prevents, so a regression that drops -P misreads free
-## space as 0 and the sufficiency check wrongly rejects a larger swap.
+## df: ONE filesystem state in two unit formats, driven by byte knobs so the 1K
+## (sizing) read 'df -P' and the byte (free-check) read 'df -P --block-size=1'
+## AGREE. With -P (POSIX) emit one row per fs; WITHOUT -P simulate a long mapper
+## device name wrapping onto its own line -- the breakage 'df -P' prevents, so a
+## regression dropping -P from EITHER call misreads the column and the
+## sufficiency check wrongly rejects. FAKE_FREE_BYTES / FAKE_TOTAL_BYTES override
+## the (ample) defaults so a case can simulate a nearly-full disk.
 cat > "${bindir}/df" <<'EOF'
 #!/bin/bash
-case "$*" in
-   *-P*)
-      printf '%s\n' 'Filesystem 1K-blocks Used Available Use% Mounted'
-      printf '%s\n' '/dev/mapper/luks-root 104857600 1048576 103809024 1% /'
-      ;;
-   *)
-      printf '%s\n' 'Filesystem 1K-blocks Used Available Use% Mounted'
-      printf '%s\n' '/dev/mapper/luks-very-long-logical-volume-name'
-      printf '%s\n' '          104857600 1048576 103809024 1% /'
-      ;;
-esac
+total_bytes="${FAKE_TOTAL_BYTES:-107374182400}"
+free_bytes="${FAKE_FREE_BYTES:-106300440576}"
+used_bytes=$(( total_bytes - free_bytes ))
+if [[ "$*" == *--block-size=1* ]]; then
+   hdr='1B-blocks'; t="${total_bytes}"; u="${used_bytes}"; a="${free_bytes}"
+else
+   hdr='1K-blocks'; t=$(( total_bytes / 1024 )); u=$(( used_bytes / 1024 )); a=$(( free_bytes / 1024 ))
+fi
+if [[ "$*" == *-P* ]]; then
+   printf '%s\n' "Filesystem ${hdr} Used Available Use% Mounted"
+   printf '%s\n' "/dev/mapper/luks-root ${t} ${u} ${a} 1% /"
+else
+   printf '%s\n' "Filesystem ${hdr} Used Available Use% Mounted"
+   printf '%s\n' '/dev/mapper/luks-very-long-logical-volume-name'
+   printf '%s\n' "          ${t} ${u} ${a} 1% /"
+fi
 EOF
 
 ## swapon: no args -> the "active swaps" listing (do_stop); --show -> the
@@ -266,6 +279,40 @@ check "(G) do_stop returns 0 on enumeration failure"   "${rc}" "0"
 check "(G) swapoff attempted (empty list not trusted)" "$(traced '^swapoff ' && printf '%s' y || printf '%s' n)" "y"
 check "(G) safe-rm NOT called (fail closed)"           "$(traced '^safe-rm ' && printf '%s' y || printf '%s' n)" "n"
 check "(G) swap file still present"                    "$([ -e "${SWAPFILE}" ] && printf '%s' y || printf '%s' n)" "y"
+
+## --- (H) #9/#10: byte-based sufficiency REJECTS an over-large swap. Only 3 GiB
+## free, no existing file to credit; a 4 GiB target (+2 GiB headroom = 6 GiB
+## required) does not fit, so do_start must bail BEFORE fallocate. The old
+## GiB-truncated check added the +2 headroom to AVAILABLE, so it approved a 4
+## GiB swap into 3 GiB free. ---
+trace="${work}/trace-h"
+true > "${trace}"
+true > "${SWAPFILE}"
+rc=0
+free3g=$(( 3 * 1024 * 1024 * 1024 ))
+TRACE="${trace}" FAKE_FSTYPE=ext4 FAKE_SWAPON_LIST="" FAKE_SWAPON_SHOW="${SWAPFILE} 4G" \
+   FAKE_FREE_BYTES="${free3g}" \
+   DRIVE_SWAPFILE="${SWAPFILE}" DRIVE_SIZE_MB=4096 DRIVE_DO_PRE_CHECK=no PATH="${bindir}:${PATH}" \
+   bash "${drive}" start >/dev/null 2>&1 || rc=$?
+check "(H) do_start FAILS (4 GiB swap, only 3 GiB free)" "${rc}" "1"
+check "(H) fallocate NOT reached (rejected pre-alloc)"   "$(traced '^fallocate ' && printf '%s' y || printf '%s' n)" "n"
+
+## --- (I) #11: restart idempotency. Only 1 GiB raw free, but the existing
+## managed swap file is 7 GiB (sparse) and do_stop reclaims it before
+## allocation, so a 5 GiB target (+2 GiB headroom = 7 GiB) fits the 8 GiB
+## effective free -> do_start must REACH fallocate. Old code ignored the
+## existing file and falsely failed on the 1 GiB raw free. ---
+trace="${work}/trace-i"
+true > "${trace}"
+truncate --size 7G "${SWAPFILE}"
+rc=0
+free1g=$(( 1 * 1024 * 1024 * 1024 ))
+TRACE="${trace}" FAKE_FSTYPE=ext4 FAKE_SWAPON_LIST="" FAKE_SWAPON_SHOW="${SWAPFILE} 5G" \
+   FAKE_FREE_BYTES="${free1g}" \
+   DRIVE_SWAPFILE="${SWAPFILE}" DRIVE_SIZE_MB=5120 DRIVE_DO_PRE_CHECK=no PATH="${bindir}:${PATH}" \
+   bash "${drive}" start >/dev/null 2>&1 || rc=$?
+check "(I) do_start succeeds (existing 7 GiB credited)"  "${rc}" "0"
+check "(I) fallocate reached (restart not falsely blocked)" "$(traced '^fallocate ' && printf '%s' y || printf '%s' n)" "y"
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
