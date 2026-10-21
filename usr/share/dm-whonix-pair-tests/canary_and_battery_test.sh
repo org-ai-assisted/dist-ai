@@ -135,6 +135,7 @@ set_counts 0 0
 rc=0; ( canary_gateway_pcap ) >/dev/null 2>&1 || rc=$?
 check "canary blind capture (pcap empty of traffic) -> SETUP_RC(${SETUP_RC}), inconclusive not a leak" "$([ "${rc}" = "${SETUP_RC}" ] && printf '%s' "0" || printf '%s' "1")"
 
+set_counts 7 0   ## traffic present, 0 leak: a removed [ -s ] guard would fall through to a PASS, not the zero-traffic SETUP -- so this case truly tests the missing-file guard
 nictrace_pcap="${work}/does-not-exist"
 rc=0; ( canary_gateway_pcap ) >/dev/null 2>&1 || rc=$?
 check "canary missing pcap -> SETUP_RC(${SETUP_RC}), inconclusive not a leak (fail-closed, no false no-leak)" "$([ "${rc}" = "${SETUP_RC}" ] && printf '%s' "0" || printf '%s' "1")"
