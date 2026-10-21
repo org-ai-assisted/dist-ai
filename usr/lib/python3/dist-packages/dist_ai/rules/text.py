@@ -106,7 +106,10 @@ def _substitution_edits(data, table, rule_id):
 class Confusables(Rule):
     """R-001: a non-ASCII byte. fix() substitutes the known confusable set (and,
     in prose/markup only, smart quotes + dash entities); any other non-ASCII is
-    left for a human, so detect() still reports it."""
+    left for a human, so detect() still reports it. A unified diff is never
+    auto-substituted -- its non-ASCII (e.g. an NBSP on a context/'-'/'+' line) may
+    be the very bytes the patch encodes, so detect() BLOCKS it for a human
+    instead."""
 
     id = "R-001"
     waiver_tag = "allow-non-ascii"
@@ -126,6 +129,11 @@ class Confusables(Rule):
                 _line_of_byte(data, match.start()))
 
     def fix(self, ctx):
+        ## A diff's non-ASCII may be the change the patch encodes; substituting it
+        ## silently corrupts the patch (and detect() would then see nothing left),
+        ## so decline -- detect() still BLOCKS it, leaving the call to a human.
+        if ctx.is_diff:
+            return
         ## A confusable substitution rewrites decoded text; a file that does not
         ## decode as UTF-8 cannot be fixed here -- detect() still blocks it.
         if ctx.source is None:
@@ -142,8 +150,9 @@ class Confusables(Rule):
 class TrailingWhitespace(Rule):
     """Trailing space/tab before end-of-line. Scoped to text files (matching the
     gate's is_text). CR and a final no-newline are preserved (the lookahead never
-    consumes them). A .patch/.diff is exempt: its trailing blanks are significant
-    (a blank context line is a single space) and stripping them corrupts it."""
+    consumes them). A unified diff is exempt (by extension OR file(1) content, see
+    ctx.is_diff): its trailing blanks are significant (a blank context line is a
+    single space) and stripping them corrupts it."""
 
     id = "trailing-whitespace"
 

@@ -52,7 +52,7 @@ if [ ! -x "${GATE}" ]; then
    GATE='/usr/bin/dist-ai-style'
 fi
 
-for prereq in python3 git safe-rm shellcheck ; do
+for prereq in python3 git safe-rm shellcheck file ; do
    if ! type -P "${prereq}" >/dev/null 2>&1 ; then
       printf '%s\n' "FATAL: '${prereq}' not on PATH; this test cannot run." >&2
       exit 1
@@ -744,11 +744,12 @@ else
    note_fail "R-062 did not drop the rejecting '--'"
 fi
 
-## --- 12: a .patch/.diff is NOT whitespace-rewritten (significant blanks) -----
+## --- 12: a .patch/.diff is NOT TRAILING-whitespace-rewritten (significant blanks)
 ## A unified diff's blank CONTEXT line is a single space and a line's trailing
 ## blanks can be the very change encoded; stripping either makes the patch no
-## longer apply. The whitespace fixers (R-001 trailing + the pre-commit batch's
-## trailing-whitespace/end-of-file/BOM) must leave such a file byte-identical.
+## longer apply. The TRAILING-whitespace rule (engine, file mode here) must leave
+## such a file byte-identical. (end-of-file/BOM are NOT exempt -- blocks 15-16;
+## this fixture already ends in a newline with no BOM, so it stays byte-identical.)
 ## Canary: the fixture genuinely CONTAINS trailing blanks, so an exemption that
 ## merely no-op'd on a clean file would not prove anything.
 for ext in patch diff ; do
@@ -774,6 +775,117 @@ if ! has_trailing_ws "${f}" ; then
    note_pass ".txt still has its trailing whitespace stripped (diff exemption scoped)"
 else
    note_fail ".txt trailing whitespace survived -- exemption leaked to non-diff files"
+fi
+
+## --- 13: R-001 does NOT auto-substitute non-ASCII inside a .patch (corruption) -
+## NBSP (U+00A0) is in the confusable table, so fix() would rewrite it to a plain
+## space -- silently corrupting a diff whose NBSP is the encoded change, after
+## which detect() sees no residual non-ASCII and the patch passes. fix() must
+## DECLINE on a diff and leave R-001's detect() to BLOCK it (a human decides).
+## Canary: the old fixer substitutes the NBSP, changing the file.
+f="${test_dir}/nbsp.patch"
+printf '%s\n' '--- a/x' '+++ b/x' '@@ -1 +1 @@' '-old' '+new'$'\302\240''val' >"${f}"
+if ! has_non_ascii "${f}" ; then
+   note_fail "nbsp.patch fixture not dirty -- canary would let a no-op pass"
+fi
+before="$(cksum < "${f}")"
+run_fix "${f}" >/dev/null 2>&1
+if [ "$(cksum < "${f}")" = "${before}" ] && has_non_ascii "${f}" ; then
+   note_pass "R-001 left the .patch NBSP byte-identical (not auto-substituted)"
+else
+   note_fail "R-001 substituted non-ASCII inside a .patch (patch corruption)"
+fi
+nbsp_check="$( "${STYLE}" --check "${f}" 2>&1 )" || true
+if grep --quiet --fixed-strings 'R-001' <<< "${nbsp_check}" ; then
+   note_pass "R-001 still BLOCKS the non-ASCII .patch (detect fires)"
+else
+   note_fail "R-001 failed to block a non-ASCII .patch (silent pass)"
+fi
+
+## --- 14: a CONTENT-typed diff (extensionless / odd suffix) is trailing-ws exempt
+## is_diff_file is no longer extension-only: file(1) types an extensionless
+## debian/patches/* or a renamed '.patch.disabled' as text/x-diff, so the
+## trailing-whitespace rule leaves it byte-identical. Canary: old (extension-only)
+## detection strips the significant blanks.
+for name in '0001-change' 'feature.patch.disabled' ; do
+   f="${test_dir}/${name}"
+   printf '%s\n' '--- a/x' '+++ b/x' '@@ -1,3 +1,3 @@' ' ctx' ' ' '-old   ' '+new' >"${f}"
+   if ! has_trailing_ws "${f}" ; then
+      note_fail "${name} fixture not dirty -- canary would let a no-op exemption pass"
+   fi
+   before="$(cksum < "${f}")"
+   run_fix "${f}" >/dev/null 2>&1
+   if [ "$(cksum < "${f}")" = "${before}" ] && has_trailing_ws "${f}" ; then
+      note_pass "${name}: content-typed diff left byte-identical (trailing ws preserved)"
+   else
+      note_fail "${name}: content-typed diff was whitespace-rewritten (patch corruption)"
+   fi
+done
+
+## --- 15: end-of-file + BOM fixers DO act on a diff (over-broad exemption reverted)
+## Appending a final newline or stripping a leading BOM only makes a patch MORE
+## applicable, so these two are NOT diff-exempt (only trailing-whitespace is). In a
+## fresh repo (isolated range) the gate must REPORT each fixer against the .patch.
+## Canary: the over-broad exemption made the gate silent on both.
+eofrepo="${test_dir}/eofrepo"
+mkdir --parents -- "${eofrepo}"
+git -c init.defaultBranch=master -c core.hooksPath=/dev/null init --quiet -- "${eofrepo}"
+git -C "${eofrepo}" -c core.hooksPath=/dev/null \
+   -c user.name=test -c user.email=test@example.com \
+   commit --quiet --allow-empty --message "base"
+eof_base="$(git -C "${eofrepo}" rev-parse HEAD)"
+## (a) a .patch with NO final newline
+printf '%s\n' '--- a/x' '+++ b/x' '@@ -1 +1 @@' '-old' >"${eofrepo}/nonewline.patch"
+printf '%s' '+new' >>"${eofrepo}/nonewline.patch"
+## (b) a .patch with a leading UTF-8 BOM
+printf '%s' $'\357\273\277' >"${eofrepo}/bom.patch"
+printf '%s\n' '--- a/x' '+++ b/x' '@@ -1 +1 @@' '-old' '+new' >>"${eofrepo}/bom.patch"
+git -C "${eofrepo}" -c core.hooksPath=/dev/null add --all
+git -C "${eofrepo}" -c core.hooksPath=/dev/null \
+   -c user.name=test -c user.email=test@example.com \
+   commit --quiet --message "diffs needing eof + bom"
+eof_out="$( cd -- "${eofrepo}" && "${GATE}" --check --range "${eof_base}" 2>&1 )" || true
+if grep --quiet --fixed-strings 'end-of-file-fixer' <<< "${eof_out}" ; then
+   note_pass "end-of-file-fixer acts on a .patch missing a final newline (not exempt)"
+else
+   note_fail "end-of-file-fixer still exempts a .patch (EOF exemption not reverted)"
+fi
+if grep --quiet --fixed-strings 'fix-byte-order-marker' <<< "${eof_out}" ; then
+   note_pass "fix-byte-order-marker acts on a .patch with a leading BOM (not exempt)"
+else
+   note_fail "fix-byte-order-marker still exempts a .patch (BOM exemption not reverted)"
+fi
+
+## --- 16: a CONTENT-typed diff is trailing-ws exempt in the BATCH too (precommit)
+## The precommit side has its OWN mime probe, separate from the engine's. An
+## extensionless diff carrying trailing blanks must be exempt there as well: NO
+## trailing-whitespace finding (engine rule OR the fixer hook) names it. A control
+## .sh with trailing ws IN THE SAME range IS flagged -- proving the gate's
+## trailing-ws detection is live, so the diff's absence is real exemption, not a
+## range that checked nothing. Canary: extension-only detection flagged the diff.
+wsrepo="${test_dir}/wsrepo"
+mkdir --parents -- "${wsrepo}"
+git -c init.defaultBranch=master -c core.hooksPath=/dev/null init --quiet -- "${wsrepo}"
+git -C "${wsrepo}" -c core.hooksPath=/dev/null \
+   -c user.name=test -c user.email=test@example.com \
+   commit --quiet --allow-empty --message "base"
+ws_base="$(git -C "${wsrepo}" rev-parse HEAD)"
+printf '%s\n' '--- a/x' '+++ b/x' '@@ -1,3 +1,3 @@' ' ctx' ' ' '-old   ' '+new' >"${wsrepo}/0001-change"
+printf '%s\n' '#!/bin/bash' 'x=1   ' >"${wsrepo}/control.sh"
+if ! has_trailing_ws "${wsrepo}/0001-change" ; then
+   note_fail "0001-change fixture not dirty -- canary would let a no-op exemption pass"
+fi
+git -C "${wsrepo}" -c core.hooksPath=/dev/null add --all
+git -C "${wsrepo}" -c core.hooksPath=/dev/null \
+   -c user.name=test -c user.email=test@example.com \
+   commit --quiet --message "extensionless diff + control .sh with trailing ws"
+ws_out="$( cd -- "${wsrepo}" && "${GATE}" --check --range "${ws_base}" 2>&1 )" || true
+ws_diff_flag="$( grep 'trailing-whitespace' <<< "${ws_out}" | grep --fixed-strings '0001-change' || true )"
+ws_ctrl_flag="$( grep 'trailing-whitespace' <<< "${ws_out}" | grep --fixed-strings 'control.sh' || true )"
+if [ -z "${ws_diff_flag}" ] && [ -n "${ws_ctrl_flag}" ] ; then
+   note_pass "batch: content-typed diff exempt from trailing-ws, control .sh still flagged"
+else
+   note_fail "batch trailing-ws wrong (diff flag='${ws_diff_flag}', control flag='${ws_ctrl_flag}')"
 fi
 
 exit_gate
