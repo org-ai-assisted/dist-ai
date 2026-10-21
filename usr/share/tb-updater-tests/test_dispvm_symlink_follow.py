@@ -330,18 +330,21 @@ def _check_dispvm_no_start(rules_text):
     check-to-use race, CWE-59), so every dh_installsystemd call that governs the
     unit must carry --no-start.
 
-    HONEST SCOPE, not a parser. It models ONLY the one shape the real rules use:
-    an 'override_dh_installsystemd:' target whose recipe is one simple
-    dh_installsystemd command per line. debian/rules is a Makefile, so a flat
-    shell split mis-reads it (a bare invocation, a quoted string, a make
-    assignment or '$(VAR)'); instead this verifies the override's recipe and
-    REFUSES -- reports a problem -- on anything it does not model: no override
-    (dh would auto-run dh_installsystemd and START the unit), a dh_installsystemd
-    outside that override (hook target / sequencer not modeled), or a recipe line
-    with a shell/quote/substitution/continuation construct. Nothing is faked
-    green: an unmodeled rules file fails loud for human review. It checks the
-    rules SOURCE, relying on make's 'an override replaces the auto call' rule --
-    it does not inspect the generated maintainer scripts.
+    HONEST SCOPE, not a parser. It BLESSES exactly one invocation shape -- an
+    'override_dh_installsystemd:' target whose recipe lines are each
+    'dh_installsystemd [--no-start] <unit>...' (command token exactly
+    'dh_installsystemd', every argument either '--no-start' or a plain unit
+    name) -- and REFUSES everything else rather than model debhelper's option
+    grammar or make/shell syntax. Refused (reported, never silently passed): no
+    override (dh auto-runs dh_installsystemd and STARTS the unit); a
+    dh_installsystemd outside the override (hook target / sequencer); a recipe
+    line with a quote, separator, substitution or continuation; and any
+    dh_installsystemd call carrying an env/path prefix or an unmodeled option
+    ('--name X', '-p pkg', '-X unit', '--restart-after-upgrade' -- each can start
+    the unit or hide the flag as its argument). Nothing is faked green: an
+    unmodeled rules file fails loud for human review. It checks the rules SOURCE
+    under make's 'an override replaces the auto call' rule, not the generated
+    maintainer scripts.
 
     Problems are category-prefixed ('missing-override', 'unparseable:',
     'missing-no-start:', 'no-governing-invocation:') so a canary can assert the
@@ -383,6 +386,10 @@ def _check_dispvm_no_start(rules_text):
                             f"override_dh_installsystemd (line {i + 1}: "
                             f"{line.strip()!r}); dh sequencer not modeled")
 
+    ## A plain unit-name operand (debhelper matches the installed unit FILE name,
+    ## e.g. 'tb-updater-dispvm.service'); never starts with '-'.
+    unit_re = re.compile(r'^[A-Za-z0-9@._][A-Za-z0-9@._-]*$')
+
     governed_ok = 0
     for i, line in recipe:
         ## Strip the leading tab(s), a leading make recipe prefix ('-'/'@'/'+'),
@@ -390,24 +397,35 @@ def _check_dispvm_no_start(rules_text):
         code = re.sub(r'^[-@+]+', '', line.lstrip("\t")).split("#", 1)[0].strip()
         if not code:
             continue
+        if not re.search(r'\bdh_installsystemd\b', code):
+            continue  # an unrelated command in the override recipe
         if _COMPLEX_RECIPE.search(code):
             problems.append(f"unparseable: override recipe line {i + 1} uses a "
                             f"construct this check does not model ({code!r}); "
-                            f"write a simple 'dh_installsystemd ...' line")
+                            f"write a plain 'dh_installsystemd [--no-start] <unit>...'")
             continue
         tokens = code.split()
-        ## First token must be exactly the command: a make assignment
-        ## ('dh_installsystemd_unit = ...') or another tool is not this call.
-        if tokens[0] != "dh_installsystemd":
+        ## BLESSED shape only: command token exactly 'dh_installsystemd', every
+        ## argument '--no-start' or a plain unit name. REFUSE anything else -- an
+        ## env/path prefix ('FOO=1 dh_...', '/usr/bin/dh_...') or a value-taking /
+        ## unmodeled option ('--name X' swallows --no-start, '-p pkg' / '-X unit'
+        ## still start the dispvm unit, '--restart-after-upgrade' restarts it).
+        ## Classifying these would reinvent debhelper's option parser; refuse.
+        if (tokens[0] != "dh_installsystemd"
+                or any(t != "--no-start" and not unit_re.match(t)
+                       for t in tokens[1:])):
+            problems.append(f"unparseable: override recipe line {i + 1} is a "
+                            f"dh_installsystemd call in a form this check does not "
+                            f"model ({code!r}); write a plain "
+                            f"'dh_installsystemd [--no-start] <unit>...'")
             continue
-        operands = [t for t in tokens[1:] if not t.startswith("-")]
-        options = [t for t in tokens[1:] if t.startswith("-")]
+        units = [t for t in tokens[1:] if t != "--no-start"]
         ## Governs the dispvm unit iff it names the unit OR is bare (no unit
         ## operand -> debhelper processes ALL installed units, incl the dispvm one).
-        governs = (not operands) or (DISPVM_UNIT in operands)
+        governs = (not units) or (DISPVM_UNIT in units)
         if not governs:
             continue
-        if "--no-start" not in options:
+        if "--no-start" not in tokens[1:]:
             problems.append(f"missing-no-start: override recipe line {i + 1} "
                             f"governs {DISPVM_UNIT} without --no-start ({code!r}); "
                             f"dpkg would start/restart it mid-session (CWE-59)")
@@ -483,6 +501,33 @@ def test_check_dispvm_refuses_complex_recipe_line(recipe):
     rules = "override_dh_installsystemd:\n" + recipe
     problems = _check_dispvm_no_start(rules)
     assert problems and all(p.startswith("unparseable:") for p in problems), problems
+
+
+@pytest.mark.parametrize("recipe", [
+    ## '--name' takes an argument, so Getopt binds '--no-start' as its value and
+    ## the call has NO real --no-start (verified against debhelper 13.24.2); a
+    ## classifier that counted '--no-start' as a flag would false-pass.
+    "\tdh_installsystemd --name --no-start tb-updater-dispvm.service\n",
+    ## A '-p pkg' restriction with no unit operand still starts EVERY unit in the
+    ## package incl the dispvm one; a classifier misreads 'pkg' as a unit operand.
+    "\tdh_installsystemd --no-start tb-updater-dispvm.service\n"
+    "\tdh_installsystemd -p tb-updater\n",
+    ## '-X unit' excludes only the named unit; the dispvm unit is still started.
+    "\tdh_installsystemd --no-start tb-updater-dispvm.service\n"
+    "\tdh_installsystemd -X tb-updater-first-boot.service\n",
+    ## '--restart-after-upgrade' restarts the unit on upgrade even with --no-start.
+    "\tdh_installsystemd --no-start --restart-after-upgrade tb-updater-dispvm.service\n",
+    ## An env prefix or an absolute path is still a real invocation debhelper runs.
+    "\tFOO=1 dh_installsystemd tb-updater-dispvm.service\n",
+    "\t/usr/bin/dh_installsystemd tb-updater-dispvm.service\n",
+])
+def test_check_dispvm_refuses_unmodeled_invocation(recipe):
+    ## Modeling debhelper's option grammar is the parser-reinvention this check
+    ## avoids: any dh_installsystemd call outside the blessed
+    ## 'dh_installsystemd [--no-start] <unit>...' shape is refused, not classified.
+    rules = "override_dh_installsystemd:\n" + recipe
+    problems = _check_dispvm_no_start(rules)
+    assert any(p.startswith("unparseable:") for p in problems), problems
 
 
 def test_check_dispvm_flags_missing_override():
