@@ -18,6 +18,11 @@
 ## Exit: 0 no leak and select_swap_backend is defined; 1 sourcing or the call
 ## enabled errexit (leak); 3 select_swap_backend is undefined.
 
+## Clear positional args BEFORE sourcing, exactly as the caller test does, so the
+## subject sees the same ${#} here as in the real source (a subject gated on $#, e.g.
+## 'exit 0 when no args', must behave identically under the probe and the real path).
+mode="${1:-}"
+set --
 # shellcheck disable=SC1090,SC1091,SC2154  # SUBJECT: the swap-file-creator path, from the env
 source "${SUBJECT}"
 
@@ -25,7 +30,7 @@ if ! declare -F select_swap_backend >/dev/null ; then
    exit 3
 fi
 
-if [ "${1:-}" = "call" ]; then
+if [ "${mode}" = "call" ]; then
    select_swap_backend no '' '' >/dev/null 2>&1 || true
 fi
 

@@ -29,6 +29,7 @@ environment bug (FATAL), not a skip. Only a missing subject skips.
 
 import glob
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -57,7 +58,12 @@ def _src_dir() -> str:
     repo = os.environ.get('TIRDAD_REPO', '').strip()
     if repo:
         return os.path.join(repo, 'module')
-    for candidate in sorted(glob.glob('/usr/src/tirdad-*')) + ['/usr/src/tirdad']:
+    ## Newest DKMS version first: numeric-component order (plain sort would rank
+    ## tirdad-0.10 below tirdad-0.9), so CBMC proves the version that will be built.
+    def ver_key(path):
+        return [int(n) for n in re.findall(r'\d+', os.path.basename(path))]
+    for candidate in sorted(glob.glob('/usr/src/tirdad-*'), key=ver_key, reverse=True) \
+            + ['/usr/src/tirdad']:
         ## DKMS ships the source under module/ (tirdad-dkms.install:
         ## 'module/* usr/src/tirdad-0.1/module'); the bare candidate is the fallback.
         for source_dir in (os.path.join(candidate, 'module'), candidate):

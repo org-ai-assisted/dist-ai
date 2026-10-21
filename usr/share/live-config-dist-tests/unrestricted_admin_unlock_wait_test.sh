@@ -76,9 +76,10 @@ assert_code_absent() {
    fi
 }
 
-## Match the call as a whole command token, so a near-miss rename
-## (try_wait_for_system_ready_extra) cannot satisfy the "wait is called" contract.
-fn_call='(^|[^[:alnum:]_])try_wait_for_system_ready([^[:alnum:]_]|$)'
+## Match the call at COMMAND position (line start, after indentation), so neither a
+## near-miss rename (try_wait_for_system_ready_extra) nor an assignment value
+## (foo=try_wait_for_system_ready) satisfies the "wait is called" contract.
+fn_call='^[[:space:]]*try_wait_for_system_ready([^[:alnum:]_]|$)'
 
 assert_code_present 'source .*/try-wait-for-system-ready' 'sources the sanctioned helper-scripts system-ready wait'
 assert_code_present "${fn_call}" 'calls the system-ready wait before elevating (via leaprun system-ready-check, not --user, not systemctl start)'

@@ -113,24 +113,30 @@ fi
 STUB
 chmod 0755 "${leaprun_stub}"
 
-## Stub 'timeout' wrapper: records the DURATION arg, then execs the REAL timeout.
-## The subject calls 'timeout --kill-after=3 <probe_this> leaprun ...', so the first
-## non-option token is the per-probe timeout. Lets the test assert the CONFIGURED
-## system_ready_probe_timeout is actually passed (not merely a wall-clock band). The
+## Stub 'timeout' wrapper: records the DURATION operand, then execs the REAL timeout.
+## Parses GNU timeout's '[OPTION]... DURATION COMMAND' grammar -- skipping options AND
+## the separate operand of -k/--kill-after and -s/--signal (so 'timeout -k 3 2 ...'
+## records 2, the duration, not 3) -- so the test asserts the CONFIGURED
+## system_ready_probe_timeout is actually passed, not merely a wall-clock band. The
 ## real path is resolved before work_dir is prepended to PATH, so exec never recurses.
 real_timeout="$(type -P timeout)"
 timeout_stub="${work_dir}/timeout"
 cat >"${timeout_stub}" <<STUB
 #!/bin/bash
+args=("\$@")
 dur=''
-for arg in "\$@"; do
-   case "\${arg}" in
-      -*) ;;
-      *) dur="\${arg}"; break ;;
+i=0
+while [ "\${i}" -lt "\${#args[@]}" ]; do
+   case "\${args[\${i}]}" in
+      --kill-after=*|--signal=*) i=\$(( i + 1 )) ;;
+      -k|--kill-after|-s|--signal) i=\$(( i + 2 )) ;;
+      --) dur="\${args[\$(( i + 1 ))]}"; break ;;
+      -*) i=\$(( i + 1 )) ;;
+      *) dur="\${args[\${i}]}"; break ;;
    esac
 done
 printf '%s\n' "\${dur}" >>"\${TIMEOUT_ARG_LOG}"
-exec "${real_timeout}" "\$@"
+exec "${real_timeout}" "\${args[@]}"
 STUB
 chmod 0755 "${timeout_stub}"
 export PATH="${work_dir}:${PATH}"

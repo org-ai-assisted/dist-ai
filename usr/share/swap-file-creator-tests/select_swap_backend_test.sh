@@ -110,8 +110,12 @@ rc_of() {
 ## Verify source-ability in ISOLATION before sourcing into THIS process. A subject that
 ## 'exit's during sourcing would otherwise exit the test here with success and ZERO
 ## assertions (an early 'exit 0' is indistinguishable from a clean source by rc+stdout
-## alone). The probe writes a completion marker ONLY after sourcing runs to the end;
-## require it (plus no-leak / no-auto-run) before the direct source below.
+## alone). The probe writes a completion marker ONLY after sourcing runs to the end,
+## and (like the real source below) clears positional args first, so a subject gated on
+## $# cannot behave one way under the probe and another under the real source. Require
+## the marker (plus no-leak / no-auto-run) before sourcing. Scope: this guards an
+## accidental exit-on-source REGRESSION in the trusted project subject, not a subject
+## that deliberately forges the marker (it cannot, being the project's own script).
 probe_tmp="$(mktemp --directory)"
 # shellcheck disable=SC2317  # reached via the EXIT trap
 probe_tmp_cleanup() { safe-rm --recursive --force -- "${probe_tmp}"; }
