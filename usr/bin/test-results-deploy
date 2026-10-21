@@ -67,7 +67,9 @@ cleanup() {
 trap cleanup EXIT
 
 printf '%s\n' "${me}: pulling results plane from ${target}:${results_remote}"
-sandbox --target "${target}" pull "${results_remote}" "${staging}/results" \
+## --allow-system-path: the results plane lives under /var/www (nginx webroot, world-readable)
+## by design; sandbox pull refuses a system path unless the read is declared deliberate.
+sandbox --target "${target}" pull --allow-system-path "${results_remote}" "${staging}/results" \
    || die "pull of ${results_remote} from ${target} failed"
 [ -d "${staging}/results" ] || die "pull produced no results tree"
 

@@ -264,8 +264,9 @@ class SdwdateProfileFileAccessCanaryTest(unittest.TestCase):
     files outside it. Every deny file MUST exist, so a refusal is EACCES
     (mediated) not ENOENT (vacuous). The deny targets are chosen from the actual
     profile rules: url_to_unixtime's abstraction denies @{HOME}/**, /tmp/** and
-    @{PROC}/**; the daemon profile denies /etc/passwd; the minimal sclockadj
-    profile denies everything but its own binary. Catches a transition landing in
+    @{PROC}/**; the daemon profile READS /etc/passwd (leaprun uid resolution --
+    see SdwdateLeaprunPrivleapClientTest) but is denied /etc/shadow; the minimal
+    sclockadj profile denies everything but its own binary. Catches a landing in
     the wrong (broader) label AND a complain profile (which would permit a deny).
     """
 
@@ -287,8 +288,13 @@ class SdwdateProfileFileAccessCanaryTest(unittest.TestCase):
                 'deny': ['/proc/1/stat', home_deny, tmp_deny],
             },
             DAEMON_PATH: {
-                'allow': daemon_allow,
-                'deny': ['/etc/passwd'],
+                ## passwd/nsswitch MUST be readable: leaprun (the privleap client
+                ## the daemon drives) getpwuid()'s its own euid to find
+                ## /run/privleapd/comm/<uid>; denying them makes leaprun abort
+                ## "Could not connect to privleapd" -> no time sync. shadow stays
+                ## denied, so the EACCES proof is still non-vacuous + enforcing.
+                'allow': daemon_allow + ['/etc/passwd', '/etc/nsswitch.conf'],
+                'deny': ['/etc/shadow'],
             },
         }
 
@@ -333,6 +339,53 @@ class SdwdateProfileFileAccessCanaryTest(unittest.TestCase):
                         '%s read of out-of-set %s returned %r; expected EACCES '
                         '(OK = NOT confined / complain mode; ENOENT = deny-file '
                         'missing = vacuous)' % (profile, deny, verdict))
+
+
+## A7: leaprun (privleap client) must CONNECT under the enforced daemon profile.
+_LEAPRUN = shutil.which('leaprun') or '/usr/bin/leaprun'
+_PRIVLEAP_COMM_DIR = '/run/privleapd/comm'
+
+
+def _leaprun_skip_reason() -> str:
+    base = _skip_reason()
+    if base:
+        return base
+    if not os.path.exists(_LEAPRUN):
+        return 'leaprun not installed'
+    if not os.path.isdir(_PRIVLEAP_COMM_DIR):
+        return 'privleapd not running (no %s)' % _PRIVLEAP_COMM_DIR
+    return ''
+
+
+@unittest.skipIf(_leaprun_skip_reason(),
+                 ## style-ok: allow-skip: needs an enforcing host + root + loaded
+                 ## profiles + a running privleapd (absent in CI / the dev VM).
+                 'leaprun-under-profile regression not testable here: '
+                 + _leaprun_skip_reason())
+class SdwdateLeaprunPrivleapClientTest(unittest.TestCase):
+    """Regression: leaprun must CONNECT to privleapd under the enforced daemon
+    profile. The daemon drives leaprun for every tor/anondate check; leaprun
+    getpwuid()'s its own euid to locate /run/privleapd/comm/<uid>, so a
+    passwd/nsswitch deny makes that lookup fail and leaprun aborts "Could not
+    connect to privleapd" -- sdwdate then never syncs time and systemcheck's Tor
+    check hangs (>300s). The deny is SILENT (no audit line), so only a live
+    connect attempt catches it. FAILS on the old `deny /etc/passwd` profile."""
+
+    def test_leaprun_connects_under_daemon_profile(self) -> None:
+        ## Any action name works: the client CONNECTS (and would print "Could not
+        ## connect") BEFORE privleapd validates the action, so the assertion holds
+        ## whether or not the action exists / authorizes the caller. aa-exec enters
+        ## the daemon profile on the leaprun exec (onexec, no x rule needed), as the
+        ## daemon's own 'leaprun rix' does; euid 0 -> connects to comm/0.
+        result = subprocess.run(
+            ['aa-exec', '-p', DAEMON_PATH, '--', _LEAPRUN, 'tor-bootstrap-check'],
+            capture_output=True, text=True, timeout=30)
+        combined = result.stdout + result.stderr
+        self.assertNotIn(
+            'Could not connect to privleapd', combined,
+            'leaprun could NOT connect to privleapd under the daemon profile '
+            '(got %r); the profile likely denies /etc/passwd or /etc/nsswitch.conf, '
+            "breaking leaprun's getpwuid() uid->comm-socket resolution." % combined)
 
 
 ## A5: daemon -> privileged-child stacked signal-peer. The reapers kill with

@@ -16,13 +16,22 @@
 ##   (B) btrfs branch: 'btrfs filesystem mkswapfile' is used with a BYTE size
 ##       (never rounded to 0G for a sub-GiB target), and plain fallocate / mkswap
 ##       are NOT.
-##   (C) teardown safety (P0): swapoff FAILS -> do_stop must NOT shred or remove
-##       the still-active swap file.
-##   (D) teardown success: swapoff OK + SHRED_ON_STOP=yes -> shred then safe-rm.
+##   (C) teardown safety (P0): swapoff FAILS -> do_stop must NOT remove the
+##       still-active swap file.
+##   (D) teardown success: swapoff OK -> do_stop removes the file (safe-rm),
+##       after swapoff.
 ##   (E) df -P: free space is read from the right column even when a long mapper
 ##       device name would wrap non-POSIX df output.
 ##   (F) exact swap-record match: a sibling "<file>-old" active swap does not
 ##       make do_stop swapoff our (inactive) file.
+##   (G) teardown fail-closed: a FAILED swap enumeration cannot prove the file
+##       inactive, so do_stop must swapoff and remove ONLY on success -- never
+##       remove an unproven, possibly-active file on an empty/failed listing.
+##   (H) byte-based free-space check REJECTS an over-large swap (no +2 GiB
+##       headroom added to available; no GiB truncation).
+##   (I) restart idempotency: the existing managed swap file's bytes are
+##       credited (do_stop reclaims them), so a restart on a full-ish disk is
+##       not falsely blocked.
 ##
 ## A missing REQUIRED dependency (subject, helper-scripts) is a HARD FAIL.
 
@@ -103,7 +112,7 @@ mkdir --parents -- "${bindir}"
 
 ## Simple recorders: append "<name> <args>" to the trace (read $TRACE at run
 ## time) and succeed.
-for name in fallocate mkswap btrfs shred chown chmod safe-rm; do
+for name in fallocate mkswap btrfs chown chmod safe-rm; do
    cat > "${bindir}/${name}" <<EOF
 #!/bin/bash
 printf '%s %s\n' "${name}" "\$*" >> "\${TRACE}"
@@ -124,23 +133,31 @@ cat > "${bindir}/findmnt" <<'EOF'
 printf '%s\n' "${FAKE_FSTYPE:-ext4}"
 EOF
 
-## df: with -P (POSIX) emit one row per filesystem (ample space); WITHOUT -P,
-## simulate a long mapper device name wrapping onto its own line -- the exact
-## breakage that 'df -P' prevents, so a regression that drops -P misreads free
-## space as 0 and the sufficiency check wrongly rejects a larger swap.
+## df: ONE filesystem state in two unit formats, driven by byte knobs so the 1K
+## (sizing) read 'df -P' and the byte (free-check) read 'df -P --block-size=1'
+## AGREE. With -P (POSIX) emit one row per fs; WITHOUT -P simulate a long mapper
+## device name wrapping onto its own line -- the breakage 'df -P' prevents, so a
+## regression dropping -P from EITHER call misreads the column and the
+## sufficiency check wrongly rejects. FAKE_FREE_BYTES / FAKE_TOTAL_BYTES override
+## the (ample) defaults so a case can simulate a nearly-full disk.
 cat > "${bindir}/df" <<'EOF'
 #!/bin/bash
-case "$*" in
-   *-P*)
-      printf '%s\n' 'Filesystem 1K-blocks Used Available Use% Mounted'
-      printf '%s\n' '/dev/mapper/luks-root 104857600 1048576 103809024 1% /'
-      ;;
-   *)
-      printf '%s\n' 'Filesystem 1K-blocks Used Available Use% Mounted'
-      printf '%s\n' '/dev/mapper/luks-very-long-logical-volume-name'
-      printf '%s\n' '          104857600 1048576 103809024 1% /'
-      ;;
-esac
+total_bytes="${FAKE_TOTAL_BYTES:-107374182400}"
+free_bytes="${FAKE_FREE_BYTES:-106300440576}"
+used_bytes=$(( total_bytes - free_bytes ))
+if [[ "$*" == *--block-size=1* ]]; then
+   hdr='1B-blocks'; t="${total_bytes}"; u="${used_bytes}"; a="${free_bytes}"
+else
+   hdr='1K-blocks'; t=$(( total_bytes / 1024 )); u=$(( used_bytes / 1024 )); a=$(( free_bytes / 1024 ))
+fi
+if [[ "$*" == *-P* ]]; then
+   printf '%s\n' "Filesystem ${hdr} Used Available Use% Mounted"
+   printf '%s\n' "/dev/mapper/luks-root ${t} ${u} ${a} 1% /"
+else
+   printf '%s\n' "Filesystem ${hdr} Used Available Use% Mounted"
+   printf '%s\n' '/dev/mapper/luks-very-long-logical-volume-name'
+   printf '%s\n' "          ${t} ${u} ${a} 1% /"
+fi
 EOF
 
 ## swapon: no args -> the "active swaps" listing (do_stop); --show -> the
@@ -148,7 +165,7 @@ EOF
 cat > "${bindir}/swapon" <<'EOF'
 #!/bin/bash
 case "$*" in
-   "")       printf '%s\n' "${FAKE_SWAPON_LIST:-}" ;;
+   "")       printf '%s\n' "${FAKE_SWAPON_LIST:-}"; exit "${SWAPON_LIST_RC:-0}" ;;
    *--show*) printf '%s\n' "${FAKE_SWAPON_SHOW:-}" ;;
    *)        printf 'swapon %s\n' "$*" >> "${TRACE}" ;;
 esac
@@ -196,32 +213,30 @@ check "(B) btrfs size never '0G' (sub-GiB regression)" "$(traced '0G' && printf 
 check "(B) plain fallocate NOT used on btrfs"     "$(traced '^fallocate ' && printf '%s' y || printf '%s' n)" "n"
 check "(B) plain mkswap NOT used on btrfs"        "$(traced '^mkswap ' && printf '%s' y || printf '%s' n)"    "n"
 
-## --- (C) teardown safety: swapoff fails -> no shred, no remove ---
+## --- (C) teardown safety: swapoff fails -> no remove ---
 trace="${work}/trace-c"
 true > "${trace}"
 true > "${SWAPFILE}"
 rc=0
 TRACE="${trace}" SWAPOFF_RC=32 FAKE_SWAPON_LIST="${SWAPFILE} file 1024M" \
-   DRIVE_SWAPFILE="${SWAPFILE}" DRIVE_SHRED_ON_STOP=yes PATH="${bindir}:${PATH}" \
+   DRIVE_SWAPFILE="${SWAPFILE}" PATH="${bindir}:${PATH}" \
    bash "${drive}" stop >/dev/null 2>&1 || rc=$?
 check "(C) do_stop returns 0 despite swapoff fail" "${rc}" "0"
 check "(C) swapoff was attempted"                  "$(traced '^swapoff ' && printf '%s' y || printf '%s' n)" "y"
-check "(C) shred NOT called after swapoff fail"    "$(traced '^shred ' && printf '%s' y || printf '%s' n)"   "n"
 check "(C) safe-rm NOT called after swapoff fail"  "$(traced '^safe-rm ' && printf '%s' y || printf '%s' n)" "n"
 check "(C) swap file still present"                "$([ -e "${SWAPFILE}" ] && printf '%s' y || printf '%s' n)" "y"
 
-## --- (D) teardown success: swapoff ok + SHRED_ON_STOP=yes -> shred then safe-rm ---
+## --- (D) teardown success: swapoff ok -> do_stop removes the file via safe-rm ---
 trace="${work}/trace-d"
 true > "${trace}"
 true > "${SWAPFILE}"
 rc=0
 TRACE="${trace}" SWAPOFF_RC=0 FAKE_SWAPON_LIST="${SWAPFILE} file 1024M" \
-   DRIVE_SWAPFILE="${SWAPFILE}" DRIVE_SHRED_ON_STOP=yes PATH="${bindir}:${PATH}" \
+   DRIVE_SWAPFILE="${SWAPFILE}" PATH="${bindir}:${PATH}" \
    bash "${drive}" stop >/dev/null 2>&1 || rc=$?
 check "(D) do_stop returns 0"               "${rc}" "0"
-check "(D) shred called"                    "$(traced '^shred ' && printf '%s' y || printf '%s' n)"   "y"
-check "(D) safe-rm called"                  "$(traced '^safe-rm ' && printf '%s' y || printf '%s' n)" "y"
-check "(D) shred before safe-rm"            "$(ordered_before '^shred ' '^safe-rm ' && printf '%s' y || printf '%s' n)" "y"
+check "(D) safe-rm called (file removed)"   "$(traced '^safe-rm ' && printf '%s' y || printf '%s' n)" "y"
+check "(D) swapoff before safe-rm"          "$(ordered_before '^swapoff ' '^safe-rm ' && printf '%s' y || printf '%s' n)" "y"
 
 ## --- (E) df -P: free space read correctly despite a wrapping long device name.
 ## The df shim wraps WITHOUT -P (free then reads 0), so a 5 GiB swap would fail
@@ -242,11 +257,62 @@ true > "${trace}"
 true > "${SWAPFILE}"
 rc=0
 TRACE="${trace}" SWAPOFF_RC=0 FAKE_SWAPON_LIST="${SWAPFILE}-old file 8G" \
-   DRIVE_SWAPFILE="${SWAPFILE}" DRIVE_SHRED_ON_STOP=no PATH="${bindir}:${PATH}" \
+   DRIVE_SWAPFILE="${SWAPFILE}" PATH="${bindir}:${PATH}" \
    bash "${drive}" stop >/dev/null 2>&1 || rc=$?
 check "(F) do_stop returns 0"                        "${rc}" "0"
 check "(F) sibling active -> our swapoff NOT called" "$(traced '^swapoff ' && printf '%s' y || printf '%s' n)" "n"
 check "(F) our inactive file removed"                "$(traced '^safe-rm ' && printf '%s' y || printf '%s' n)" "y"
+
+## --- (G) teardown fail-closed on a FAILED swap enumeration. 'swapon' (listing)
+## exits non-zero, so do_stop cannot prove the file inactive: it must attempt
+## swapoff and remove ONLY on success. Here swapoff also fails, so the
+## (possibly active) file must be KEPT. Old code read the empty listing as
+## "not active", skipped swapoff, and safe-rm'd it -> fail open. ---
+trace="${work}/trace-g"
+true > "${trace}"
+true > "${SWAPFILE}"
+rc=0
+TRACE="${trace}" SWAPON_LIST_RC=1 SWAPOFF_RC=32 FAKE_SWAPON_LIST="" \
+   DRIVE_SWAPFILE="${SWAPFILE}" PATH="${bindir}:${PATH}" \
+   bash "${drive}" stop >/dev/null 2>&1 || rc=$?
+check "(G) do_stop returns 0 on enumeration failure"   "${rc}" "0"
+check "(G) swapoff attempted (empty list not trusted)" "$(traced '^swapoff ' && printf '%s' y || printf '%s' n)" "y"
+check "(G) safe-rm NOT called (fail closed)"           "$(traced '^safe-rm ' && printf '%s' y || printf '%s' n)" "n"
+check "(G) swap file still present"                    "$([ -e "${SWAPFILE}" ] && printf '%s' y || printf '%s' n)" "y"
+
+## --- (H) #9/#10: byte-based sufficiency REJECTS an over-large swap. Only 3 GiB
+## free, no existing file to credit; a 4 GiB target (+2 GiB headroom = 6 GiB
+## required) does not fit, so do_start must bail BEFORE fallocate. The old
+## GiB-truncated check added the +2 headroom to AVAILABLE, so it approved a 4
+## GiB swap into 3 GiB free. ---
+trace="${work}/trace-h"
+true > "${trace}"
+true > "${SWAPFILE}"
+rc=0
+free3g=$(( 3 * 1024 * 1024 * 1024 ))
+TRACE="${trace}" FAKE_FSTYPE=ext4 FAKE_SWAPON_LIST="" FAKE_SWAPON_SHOW="${SWAPFILE} 4G" \
+   FAKE_FREE_BYTES="${free3g}" \
+   DRIVE_SWAPFILE="${SWAPFILE}" DRIVE_SIZE_MB=4096 DRIVE_DO_PRE_CHECK=no PATH="${bindir}:${PATH}" \
+   bash "${drive}" start >/dev/null 2>&1 || rc=$?
+check "(H) do_start FAILS (4 GiB swap, only 3 GiB free)" "${rc}" "1"
+check "(H) fallocate NOT reached (rejected pre-alloc)"   "$(traced '^fallocate ' && printf '%s' y || printf '%s' n)" "n"
+
+## --- (I) #11: restart idempotency. Only 1 GiB raw free, but the existing
+## managed swap file is 7 GiB (sparse) and do_stop reclaims it before
+## allocation, so a 5 GiB target (+2 GiB headroom = 7 GiB) fits the 8 GiB
+## effective free -> do_start must REACH fallocate. Old code ignored the
+## existing file and falsely failed on the 1 GiB raw free. ---
+trace="${work}/trace-i"
+true > "${trace}"
+truncate --size 7G "${SWAPFILE}"
+rc=0
+free1g=$(( 1 * 1024 * 1024 * 1024 ))
+TRACE="${trace}" FAKE_FSTYPE=ext4 FAKE_SWAPON_LIST="" FAKE_SWAPON_SHOW="${SWAPFILE} 5G" \
+   FAKE_FREE_BYTES="${free1g}" \
+   DRIVE_SWAPFILE="${SWAPFILE}" DRIVE_SIZE_MB=5120 DRIVE_DO_PRE_CHECK=no PATH="${bindir}:${PATH}" \
+   bash "${drive}" start >/dev/null 2>&1 || rc=$?
+check "(I) do_start succeeds (existing 7 GiB credited)"  "${rc}" "0"
+check "(I) fallocate reached (restart not falsely blocked)" "$(traced '^fallocate ' && printf '%s' y || printf '%s' n)" "y"
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then

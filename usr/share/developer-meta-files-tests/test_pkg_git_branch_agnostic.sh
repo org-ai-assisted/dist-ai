@@ -110,6 +110,8 @@ run_guard() {
       ## Consumed by the extracted function's error path via eval below.
       # shellcheck disable=SC2034
       batch_current_package_reponame='testrepo'
+      ## Hermetic: empty-flag cases test default-unset, not an inherited value.
+      unset pkg_git_branch_agnostic
       [ -z "${flag}" ] || export pkg_git_branch_agnostic="${flag}"
       eval "${func_text}"
       pkg_git_check_current_branch >/dev/null 2>&1

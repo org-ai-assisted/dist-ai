@@ -16,7 +16,7 @@
 ##  (3) swap_fits_free_disk() / (4) swap_size_self_check_ok(): the disk-space
 ##      and post-swapon size-check comparisons, both boundaries.
 ##  (5) swapfile_path_is_absolute(): absolute-path validation.
-##  (6) swap_safe_to_remove(): the P0 teardown gate -- shred/remove only when
+##  (6) swap_safe_to_remove(): the P0 teardown gate -- remove only when
 ##      swapoff succeeded (rc 0); refuse for any non-zero / empty code.
 ##  (7) Sourcing the REAL script does NOT auto-run main(), leaks no strict-mode
 ##      option and no trap, and the functions are defined. Probed by the
@@ -107,6 +107,43 @@ rc_of() {
    printf '%s' "${rc}"
 }
 
+## Verify source-ability in ISOLATION before sourcing into THIS process. A subject that
+## 'exit's during sourcing would otherwise exit the test here with success and ZERO
+## assertions (an early 'exit 0' is indistinguishable from a clean source by rc+stdout
+## alone). The probe writes a completion marker ONLY after sourcing runs to the end,
+## and (like the real source below) clears positional args first, so a subject gated on
+## $# cannot behave one way under the probe and another under the real source. Require
+## the marker (plus no-leak / no-auto-run) before sourcing. Scope: this guards an
+## accidental exit-on-source / leak / auto-run REGRESSION in the trusted project subject.
+## It does NOT sandbox a hostile subject (a crafted top-level side effect, a forged marker,
+## or a subject that overwrites test internals is out of scope -- the subject is the
+## project's own script, not an adversary).
+probe_tmp="$(mktemp --directory)"
+# shellcheck disable=SC2317  # reached via the EXIT trap
+probe_tmp_cleanup() { safe-rm --recursive --force -- "${probe_tmp}"; }
+trap probe_tmp_cleanup EXIT
+marker="${probe_tmp}/source-complete"
+
+src_out=""
+src_rc=0
+src_out="$(SUBJECT="${subject}" SOURCE_COMPLETE_MARKER="${marker}" "${probe}" source 2>/dev/null)" || src_rc=$?
+check "isolated source does not enable errexit (no leak)"   "${src_rc}" "0"
+check "isolated source does not auto-run main"              "${src_out}" ""
+check "isolated source runs to completion (marker present)" \
+   "$([ -f "${marker}" ] && printf '%s' yes || printf '%s' no)" "yes"
+
+call_rc=0
+SUBJECT="${subject}" "${probe}" call >/dev/null 2>&1 || call_rc=$?
+check "calling select_swap_backend stays pure (no leak)" "${call_rc}" "0"
+
+## FATAL if ANY isolation check failed (exit-on-source, errexit/trap leak, auto-run main,
+## or impure call): refuse to source a subject that would corrupt this process (a silent
+## false green), fail loud instead. 'fail' here reflects only the four checks above.
+if [ "${fail}" -ne 0 ]; then
+   printf '%s\n' "FATAL: subject at '${subject}' failed the source-ability isolation gate (src_rc=${src_rc}, auto-run='${src_out}', call_rc=${call_rc}, marker=$([ -f "${marker}" ] && printf '%s' present || printf '%s' absent)); refusing to source into the test process" >&2
+   exit 1
+fi
+
 ## Source the REAL subject to obtain select_swap_backend (main() does not run:
 ## its was_executed guard is false when sourced). Clear positional args first so
 ## no forwarded arg can reach a dispatch in the sourced script.
@@ -121,11 +158,19 @@ fi
 
 ## --- (1) decision table: select_swap_backend <do_pre_check> <virt> <luks_ok> ---
 
-## DO_PRE_CHECK opt-out short-circuits before virt/luks are consulted.
-check "pre-check off -> proceed (ignores xen+no-luks)" "$(select_swap_backend no xen no)" "proceed"
-check "pre-check off, empty virt+luks -> proceed"      "$(select_swap_backend no '' '')"  "proceed"
-check "pre-check empty string (not 'yes') -> proceed"  "$(select_swap_backend '' xen no)" "proceed"
-check "pre-check arbitrary (not 'yes') -> proceed"     "$(select_swap_backend maybe xen no)" "proceed"
+## DO_PRE_CHECK opt-out: ONLY exact 'no' disables the gate (short-circuits
+## before virt/luks are consulted).
+check "pre-check 'no' -> proceed (ignores xen+no-luks)" "$(select_swap_backend no xen no)" "proceed"
+check "pre-check 'no', empty virt+luks -> proceed"      "$(select_swap_backend no '' '')"  "proceed"
+
+## SECURITY (fail closed): any value OTHER than exact 'no' keeps the gate ON. A
+## 'YES' typo / wrong case / trailing space / empty / arbitrary string must NOT
+## disable the LUKS+xen checks and silently allow plaintext swap.
+check "pre-check empty string keeps gate on (xen) -> skip-xen"        "$(select_swap_backend '' xen no)"      "skip-xen"
+check "pre-check 'maybe' keeps gate on (xen) -> skip-xen"             "$(select_swap_backend maybe xen no)"   "skip-xen"
+check "pre-check 'YES' typo keeps gate on, no luks -> skip-no-luks"   "$(select_swap_backend YES '' no)"      "skip-no-luks"
+check "pre-check 'yes ' trailing space keeps gate on -> skip-no-luks" "$(select_swap_backend 'yes ' '' no)"   "skip-no-luks"
+check "pre-check 'Yes' keeps gate on, luks ok -> proceed"             "$(select_swap_backend Yes '' yes)"     "proceed"
 
 ## xen wins over everything else under the gate (Qubes: host manages swap).
 check "xen, luks yes -> skip-xen"       "$(select_swap_backend yes xen yes)"     "skip-xen"
@@ -175,7 +220,7 @@ check "/var/swapfile is absolute"   "$(rc_of swapfile_path_is_absolute /var/swap
 check "relative path rejected"      "$(rc_of swapfile_path_is_absolute var/swapfile)"  "1"
 check "empty path rejected"         "$(rc_of swapfile_path_is_absolute '')"            "1"
 
-## --- (6) swap_safe_to_remove: shred/remove ONLY when swapoff succeeded (P0) ---
+## --- (6) swap_safe_to_remove: remove ONLY when swapoff succeeded (P0) ---
 check "swapoff rc 0 -> safe to remove"        "$(rc_of swap_safe_to_remove 0)"  "0"
 check "swapoff rc 1 -> NOT safe (keep file)"  "$(rc_of swap_safe_to_remove 1)"  "1"
 check "swapoff rc 32 -> NOT safe"             "$(rc_of swap_safe_to_remove 32)" "1"
@@ -192,19 +237,10 @@ check "header + partition skipped, file row matched" "$(swapon_record_for "${tbl
 dup=$'/var/swapfile 1G\n/var/swapfile 2G'
 check "duplicate exact row -> last wins"    "$(swapon_record_for "${dup}" /var/swapfile)"     "/var/swapfile 2G"
 
-## --- (8) source-ability contract: no auto-run, no option/trap leak, defined ---
+## --- (8) source-ability contract: functions defined in THIS process after source ---
+## (no-auto-run / no-leak / completion were proven by the isolation gate above.)
 check "main defined after source"                 "$(declare -F main >/dev/null && printf '%s' yes || printf '%s' no)" "yes"
 check "select_swap_backend defined after source"  "$(declare -F select_swap_backend >/dev/null && printf '%s' yes || printf '%s' no)" "yes"
-
-src_out=""
-src_rc=0
-src_out="$(SUBJECT="${subject}" "${probe}" source 2>/dev/null)" || src_rc=$?
-check "sourcing does not enable errexit (no leak)" "${src_rc}" "0"
-check "sourcing does not auto-run main"            "${src_out}" ""
-
-call_rc=0
-SUBJECT="${subject}" "${probe}" call >/dev/null 2>&1 || call_rc=$?
-check "calling select_swap_backend stays pure (no leak)" "${call_rc}" "0"
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then

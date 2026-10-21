@@ -21,9 +21,11 @@ the real kloak.c / kloak.h beside them (no source copy):
     lookup_keycode, check_point_in_area, check_screen_touch, traverse_line,
     parse_uint31/32_arg, get_ticks_from_scroll_accum, the coordinate-space
     conversions) plus a randomized bound check of random_between over the REAL
-    /dev/urandom. gcc-compiled and linked with the protocol code + the
-    wayland/libinput/libevdev/xkbcommon libraries exactly as kloak links; the
-    Wayland/libinput code is dead (never called), so no compositor is needed.
+    /dev/urandom, a forked-child regression for the keymap-fd SIGBUS
+    (kb_handle_keymap), and characterization of the known-open audit bugs
+    referred upstream. gcc-compiled and linked with the protocol code + the
+    wayland/libinput/libevdev/xkbcommon libraries exactly as kloak links; no
+    compositor is needed (the keymap handler is driven over a plain fd).
   * kloak_cbmc.c -- CBMC proofs that every verify_* is free of ALL standard UB
     (CBMC 6.x enables signed/unsigned/pointer/float overflow, conversion, nan,
     bounds, pointer, div-by-zero by default) for EVERY input in kloak's real

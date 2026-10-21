@@ -22,6 +22,7 @@ import shutil
 import subprocess
 import tempfile
 
+from dist_ai import context
 from dist_ai import model
 
 ## Anchored per-file waiver: a sourced fragment legitimately carries a shebang
@@ -223,6 +224,31 @@ def _is_text_file(base_cwd, content_cwd, path, source_rev):
     except OSError:
         return False
     return any(token in mime for token in _TEXT_MIME)
+
+
+def _is_diff_file(content_cwd, path):
+    ## A diff by extension (.patch/.diff) needs no probe. A known text extension /
+    ## basename settles the type by name, so a plain .sh/.py never pays a 'file'
+    ## call. Otherwise probe the CONTENT (content_cwd = the blob mirror in a git
+    ## mode) for file(1)'s text/x-diff -- catching an extensionless debian/patches/*
+    ## or a renamed '.patch.disabled'. The extension/x-diff decision is shared with
+    ## the engine via context.is_diff_file (one source of truth).
+    if context.is_diff_file(path):
+        return True
+    base = os.path.basename(path)
+    _, ext = os.path.splitext(base)
+    if ext.lower() in _TEXT_EXT or base in _TEXT_NAME:
+        return False
+    if shutil.which("file") is None:
+        return False
+    try:
+        mime = subprocess.run(
+            ["file", "--brief", "--mime", "--dereference", "--",
+             _abs(content_cwd, path)],
+            capture_output=True, text=True).stdout
+    except OSError:
+        return False
+    return context.is_diff_file(path, mime)
 
 
 def _read_text(base_cwd, path):
@@ -550,9 +576,18 @@ def _run_batch(paths, base_ref, staged_mode, base_cwd, content_cwd, source_rev,
     yield from _run_hook("detect-aws-credentials",
                          ["--allow-missing-credentials"], scan, content_cwd)
     yield from _run_hook("detect-private-key", [], scan, content_cwd)
+    ## Only the trailing-whitespace fixer skips a diff: its trailing blanks are
+    ## significant (a blank context line is a single space), so stripping them
+    ## corrupts the patch. end-of-file + byte-order-marker still run on the full
+    ## list -- adding a final newline or stripping a leading BOM only makes a patch
+    ## MORE applicable. A diff is matched by extension OR file(1) content (see
+    ## _is_diff_file), so an extensionless debian/patches/* is covered too.
+    text_fixable = [path for path in text
+                    if not _is_diff_file(content_cwd, path)]
     yield from _run_fixer("fix-byte-order-marker", text, content_cwd, apply)
     yield from _run_fixer("end-of-file-fixer", text, content_cwd, apply)
-    yield from _run_fixer("trailing-whitespace-fixer", text, content_cwd, apply)
+    yield from _run_fixer(
+        "trailing-whitespace-fixer", text_fixable, content_cwd, apply)
     yield from _run_hook("mixed-line-ending", ["--fix=no"], text, content_cwd)
 
     ## check-shebang-scripts-are-executable: exempt a sourced fragment (waiver)

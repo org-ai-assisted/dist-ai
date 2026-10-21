@@ -76,15 +76,23 @@ assert_code_absent() {
    fi
 }
 
+## Whole-word match for the call: catches the realistic regression -- an accidental
+## DROP or underscore-suffixed RENAME (try_wait_for_system_ready_extra) of the call in
+## our own install-host -- while still matching every real call form (bare, env-prefixed,
+## if-wrapped). This is a STATIC contract over trusted code, NOT an adversarial
+## grep-evasion gate: a crafted same-named assignment, function definition, or hyphenated
+## command would also match, and that is out of scope -- do not grow it into a bash parser.
+fn_call='(^|[^[:alnum:]_])try_wait_for_system_ready([^[:alnum:]_]|$)'
+
 assert_code_present 'source .*/try-wait-for-system-ready' 'sources the sanctioned helper-scripts system-ready wait'
-assert_code_present 'try_wait_for_system_ready' 'calls the system-ready wait before elevating (via leaprun system-ready-check, not --user, not systemctl start)'
+assert_code_present "${fn_call}" 'calls the system-ready wait before elevating (via leaprun system-ready-check, not --user, not systemctl start)'
 assert_code_present 'boot-role=unrestricted-admin' 'the unlock wait is gated on the unrestricted-admin boot-role'
 assert_code_absent 'elevate_deadline' 'the superseded 180s busy-poll band-aid is gone'
 assert_code_absent 'systemctl --user' 'the --user readiness variant is not used for a system unit'
 
 ## Ordering: the readiness wait must run BEFORE the pkexec/sudo elevation assert, otherwise it
 ## cannot prevent the race it exists to close.
-call_line="$(code_lines 'try_wait_for_system_ready' | head -n1 | cut -d: -f1)"
+call_line="$(code_lines "${fn_call}" | head -n1 | cut -d: -f1)"
 assert_line="$(grep -nF -- "[ -x '/usr/bin/pkexec' ]" "${subject}" | head -n1 | cut -d: -f1 || true)"
 if [ -n "${call_line}" ] && [ -n "${assert_line}" ] && [ "${call_line}" -lt "${assert_line}" ]; then
    printf '%s\n' "ok: readiness wait (line ${call_line}) precedes the elevation assert (line ${assert_line})"

@@ -18,6 +18,12 @@
 ## Exit: 0 no leak and select_swap_backend is defined; 1 sourcing or the call
 ## enabled errexit (leak); 3 select_swap_backend is undefined.
 
+## Clear positional args BEFORE sourcing, exactly as the caller test does, so the
+## subject sees the same ${#} here as in the real source (a subject gated on $#, e.g.
+## 'exit 0 when no args', must behave identically under the probe and the real path).
+## Namespaced so the sourced subject (which may define its own 'mode') cannot clobber it.
+__probe_mode="${1:-}"
+set --
 # shellcheck disable=SC1090,SC1091,SC2154  # SUBJECT: the swap-file-creator path, from the env
 source "${SUBJECT}"
 
@@ -25,7 +31,7 @@ if ! declare -F select_swap_backend >/dev/null ; then
    exit 3
 fi
 
-if [ "${1:-}" = "call" ]; then
+if [ "${__probe_mode}" = "call" ]; then
    select_swap_backend no '' '' >/dev/null 2>&1 || true
 fi
 
@@ -58,3 +64,11 @@ fi
 ## otherwise 'true' yields exit 0.
 false
 true
+
+## Positive completion marker: written ONLY after sourcing (and the optional call) ran
+## to the end with no early exit. Its ABSENCE lets the caller tell a clean source from
+## a subject that 'exit 0's mid-source -- both give rc 0 and empty stdout, so rc/stdout
+## alone cannot distinguish them.
+if [ -n "${SOURCE_COMPLETE_MARKER:-}" ]; then
+   true > "${SOURCE_COMPLETE_MARKER}"
+fi
