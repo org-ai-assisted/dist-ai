@@ -16,6 +16,8 @@
 ##  (3) swap_fits_free_disk() / (4) swap_size_self_check_ok(): the disk-space
 ##      and post-swapon size-check comparisons, both boundaries.
 ##  (5) swapfile_path_is_absolute(): absolute-path validation.
+##  (5b) swapfile_parent_dir(): parent directory, mapping a root-level file's
+##      empty parent to "/" so a valid "/swapfile" is accepted, not rejected.
 ##  (6) swap_safe_to_remove(): the P0 teardown gate -- remove only when
 ##      swapoff succeeded (rc 0); refuse for any non-zero / empty code.
 ##  (7) Sourcing the REAL script does NOT auto-run main(), leaks no strict-mode
@@ -219,6 +221,13 @@ check "3 >= 4 fails"             "$(rc_of swap_size_self_check_ok 3 4)" "1"
 check "/var/swapfile is absolute"   "$(rc_of swapfile_path_is_absolute /var/swapfile)" "0"
 check "relative path rejected"      "$(rc_of swapfile_path_is_absolute var/swapfile)"  "1"
 check "empty path rejected"         "$(rc_of swapfile_path_is_absolute '')"            "1"
+
+## --- (5b) swapfile_parent_dir: a root-level file's parent is "/", not "" --
+## "${SWAPFILE%/*}" yields "" for "/swapfile", so the old inline form made
+## do_start reject a valid root-level path with 'folder does not exist' (#12). ---
+check "/swapfile -> / (root-level, not empty)" "$(swapfile_parent_dir /swapfile)"     "/"
+check "/var/swapfile -> /var"                  "$(swapfile_parent_dir /var/swapfile)" "/var"
+check "/a/b/c -> /a/b (nested)"                "$(swapfile_parent_dir /a/b/c)"        "/a/b"
 
 ## --- (6) swap_safe_to_remove: remove ONLY when swapoff succeeded (P0) ---
 check "swapoff rc 0 -> safe to remove"        "$(rc_of swap_safe_to_remove 0)"  "0"

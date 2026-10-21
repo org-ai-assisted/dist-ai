@@ -802,52 +802,49 @@ else
    note_fail "R-001 failed to block a non-ASCII .patch (silent pass)"
 fi
 
-## --- 14: a patch detected by NAME/LOCATION (not a .patch suffix) is trailing-ws exempt
-## is_diff_file is no longer extension-only: an extensionless quilt patch under
-## debian/patches/ and a renamed '.patch.disabled' are patches by name/location, in
-## ANY diff format, so the trailing-whitespace rule leaves them byte-identical.
-## Detection is name/location, NOT content: a content heuristic leaks both ways
-## (file(1) mimes a format-patch as mbox; a hunk sniff misses context/combined/
-## rename-only diffs and false-exempts prose). Canary: extension-only detection
-## strips the significant blanks.
-mkdir --parents -- "${test_dir}/debian/patches"
-for f in "${test_dir}/debian/patches/0001-change" "${test_dir}/feature.patch.disabled" ; do
-   printf '%s\n' '--- a/x' '+++ b/x' '@@ -1,3 +1,3 @@' ' ctx' ' ' '-old   ' '+new' >"${f}"
-   if ! has_trailing_ws "${f}" ; then
-      note_fail "$(basename -- "${f}") fixture not dirty -- canary would let a no-op pass"
-   fi
-   before="$(cksum < "${f}")"
-   run_fix "${f}" >/dev/null 2>&1
-   if [ "$(cksum < "${f}")" = "${before}" ] && has_trailing_ws "${f}" ; then
-      note_pass "$(basename -- "${f}"): located/named patch left byte-identical"
-   else
-      note_fail "$(basename -- "${f}"): located/named patch whitespace-rewritten (corruption)"
-   fi
-done
-## Format-independent: a CONTEXT diff (diff -c, no '@@' hunk) under debian/patches/ is
-## exempt by location, where a hunk-header sniff would miss it and strip its blanks.
-f="${test_dir}/debian/patches/0003-context"
-printf '%s\n' '*** a/x' '--- b/x' '***************' '*** 1,3 ****' '  keep' '  ' \
-   '! end   ' '--- 1,3 ----' '  keep' '  ' '! END   ' >"${f}"
+## --- 14: diff detection is EXTENSION-ONLY -- robust where every heuristic leaks
+## The .patch/.diff extension is the one unambiguous signal. A git format-patch is an
+## mbox to file(1), yet NAMED *.patch its significant trailing blanks survive (an
+## extension beats a content heuristic that mimes it as mbox). And a false-exempt is
+## worse than a gap -- it silently disables the gate on real source -- so a name that
+## merely CONTAINS '.patch.'/'.diff.' (monkey.patch.py, security.patch.md) and a
+## debian/patches/ metadata file (series) are NOT patches and MUST still be cleaned.
+f="${test_dir}/0001-change.patch"
+printf '%s\n' \
+   'From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001' \
+   'Subject: [PATCH] keep trailing blanks' '' '---' ' x | 2 +-' '' \
+   'diff --git a/x b/x' '--- a/x' '+++ b/x' '@@ -1,3 +1,3 @@' ' ctx' ' ' '-old   ' '+new' >"${f}"
+if ! has_trailing_ws "${f}" ; then
+   note_fail "format-patch fixture not dirty -- canary would let a no-op pass"
+fi
 before="$(cksum < "${f}")"
 run_fix "${f}" >/dev/null 2>&1
 if [ "$(cksum < "${f}")" = "${before}" ] && has_trailing_ws "${f}" ; then
-   note_pass "context diff (no '@@') under debian/patches/ left byte-identical (location wins)"
+   note_pass "format-patch named *.patch left byte-identical (extension beats mbox mime)"
 else
-   note_fail "context diff whitespace-rewritten (name/location detection regressed)"
+   note_fail "*.patch format-patch whitespace-rewritten (patch corruption)"
 fi
-## Contrast: a plain text file that merely EMBEDS a diff is NOT a patch by name/location,
-## so trailing ws IS cleaned -- no content false-positive (a .md and an extensionless
-## 'notes', neither under debian/patches/, both still stripped).
-for f in "${test_dir}/embeds-diff.md" "${test_dir}/notes" ; do
-   printf '%s\n' 'prose   ' 'Example patch:' '--- a/x' '+++ b/x' '@@ -1 +1 @@' '-a' '+b   ' >"${f}"
-   run_fix "${f}" >/dev/null 2>&1
-   if ! has_trailing_ws "${f}" ; then
-      note_pass "$(basename -- "${f}") embedding a diff still has trailing ws stripped (no false exempt)"
-   else
-      note_fail "$(basename -- "${f}") trailing ws survived -- detection leaked onto a non-patch"
-   fi
-done
+## A '.patch.'/'.diff.' INFIX must NOT exempt real source -- else the gate is silently
+## disabled on it. A .md whose name embeds '.patch.' still gets trailing ws stripped.
+f="${test_dir}/security.patch.md"
+printf '%s\n' '# Notes   ' 'prose' >"${f}"
+run_fix "${f}" >/dev/null 2>&1
+if ! has_trailing_ws "${f}" ; then
+   note_pass "a '.patch.' infix name is NOT a patch -- trailing ws stripped (no false exempt)"
+else
+   note_fail "'.patch.' infix falsely exempted a non-patch (gate disabled on real source)"
+fi
+## A debian/patches/ metadata file is not a patch either: 'series' must be cleaned,
+## proving detection does not exempt by location.
+mkdir --parents -- "${test_dir}/debian/patches"
+f="${test_dir}/debian/patches/series"
+printf '%s\n' '0001-change.patch   ' 'other.patch' >"${f}"
+run_fix "${f}" >/dev/null 2>&1
+if ! has_trailing_ws "${f}" ; then
+   note_pass "debian/patches/series is NOT a patch -- trailing ws stripped (no location exempt)"
+else
+   note_fail "debian/patches/ location falsely exempted 'series' (gate disabled by path)"
+fi
 
 ## --- 15: end-of-file + BOM fixers DO act on a diff (over-broad exemption reverted)
 ## Appending a final newline or stripping a leading BOM only makes a patch MORE
@@ -883,35 +880,35 @@ else
    note_fail "fix-byte-order-marker still exempts a .patch (BOM exemption not reverted)"
 fi
 
-## --- 16: a located patch is trailing-ws exempt in the BATCH too (precommit path)
-## precommit shares context.is_diff_file (name/location), so an extensionless patch
-## under debian/patches/ must be exempt in the batch as well: NO trailing-whitespace
-## finding (engine rule OR the fixer hook) names it. A control .sh with trailing ws
-## IN THE SAME range IS flagged -- proving the gate's trailing-ws detection is live,
-## so the patch's absence is real exemption, not a range that checked nothing.
-## Canary: extension-only detection flagged the patch.
+## --- 16: a .patch is trailing-ws exempt in the BATCH too (precommit path)
+## precommit shares context.is_diff_file (extension), so a committed *.patch must be
+## exempt in the batch as well: NO trailing-whitespace finding (engine rule OR the
+## fixer hook) names it. A control .sh with trailing ws IN THE SAME range IS flagged
+## -- proving the gate's trailing-ws detection is live, so the patch's absence is
+## real exemption, not a range that checked nothing. Canary: pre-exemption code
+## flagged the patch too.
 wsrepo="${test_dir}/wsrepo"
-mkdir --parents -- "${wsrepo}/debian/patches"
+mkdir --parents -- "${wsrepo}"
 git -c init.defaultBranch=master -c core.hooksPath=/dev/null init --quiet -- "${wsrepo}"
 git -C "${wsrepo}" -c core.hooksPath=/dev/null \
    -c user.name=test -c user.email=test@example.com \
    commit --quiet --allow-empty --message "base"
 ws_base="$(git -C "${wsrepo}" rev-parse HEAD)"
 printf '%s\n' '--- a/x' '+++ b/x' '@@ -1,3 +1,3 @@' ' ctx' ' ' '-old   ' '+new' \
-   >"${wsrepo}/debian/patches/0001-change"
+   >"${wsrepo}/0001-change.patch"
 printf '%s\n' '#!/bin/bash' 'x=1   ' >"${wsrepo}/control.sh"
-if ! has_trailing_ws "${wsrepo}/debian/patches/0001-change" ; then
-   note_fail "0001-change fixture not dirty -- canary would let a no-op exemption pass"
+if ! has_trailing_ws "${wsrepo}/0001-change.patch" ; then
+   note_fail "0001-change.patch fixture not dirty -- canary would let a no-op exemption pass"
 fi
 git -C "${wsrepo}" -c core.hooksPath=/dev/null add --all
 git -C "${wsrepo}" -c core.hooksPath=/dev/null \
    -c user.name=test -c user.email=test@example.com \
-   commit --quiet --message "located patch + control .sh with trailing ws"
+   commit --quiet --message "patch + control .sh with trailing ws"
 ws_out="$( cd -- "${wsrepo}" && "${GATE}" --check --range "${ws_base}" 2>&1 )" || true
-ws_diff_flag="$( grep 'trailing-whitespace' <<< "${ws_out}" | grep --fixed-strings '0001-change' || true )"
+ws_diff_flag="$( grep 'trailing-whitespace' <<< "${ws_out}" | grep --fixed-strings '0001-change.patch' || true )"
 ws_ctrl_flag="$( grep 'trailing-whitespace' <<< "${ws_out}" | grep --fixed-strings 'control.sh' || true )"
 if [ -z "${ws_diff_flag}" ] && [ -n "${ws_ctrl_flag}" ] ; then
-   note_pass "batch: located patch exempt from trailing-ws, control .sh still flagged"
+   note_pass "batch: .patch exempt from trailing-ws, control .sh still flagged"
 else
    note_fail "batch trailing-ws wrong (diff flag='${ws_diff_flag}', control flag='${ws_ctrl_flag}')"
 fi

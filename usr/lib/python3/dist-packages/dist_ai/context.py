@@ -52,27 +52,39 @@ TEXT_MIME_NEEDLES = ("text/", "x-shellscript", "x-python", "json", "xml",
 ## stripped BOM only makes a patch MORE applicable); detect-only checks and the
 ## secret scanners always run.
 ##
-## Detection is by NAME/LOCATION, not content. Every content heuristic leaks both
-## ways: file(1)'s mime types a format-patch as application/mbox and a long-header
-## DEP-3 as text/plain (missed), and a hunk-header sniff misses rename-only, context
-## (diff -c) and combined (@@@) diffs while false-exempting prose that merely embeds
-## a hunk line. A committed patch is instead identified reliably, in ANY diff format,
-## by a .patch/.diff extension, a '.patch.'/'.diff.' infix (a renamed/disabled patch
-## like '.patch.disabled'), or the conventional debian/patches/ location. A patch
-## kept elsewhere under an opaque name is out of scope -- name it .patch/.diff.
+## Detection is by the .patch/.diff EXTENSION, and ONLY that -- deliberately. Every
+## richer heuristic was shown to leak BOTH ways, which is worse than the gap it
+## fills: a false positive silently DISABLES trailing-ws + R-001 on ordinary source.
+##   - content (file(1) mime): types a format-patch as application/mbox and a
+##     long-header DEP-3 as text/plain, so it MISSES real patches.
+##   - content (a hunk-header sniff): misses rename-only / context (diff -c) /
+##     combined (@@@) diffs, and FALSE-exempts prose that embeds a hunk line.
+##   - name '.patch.'/'.diff.' infix: FALSE-exempts real source (monkey.patch.py,
+##     deploy.patch.sh, security.patch.md).
+##   - a debian/patches/ path: FALSE-exempts series/README and anything under an
+##     unrelated .../debian/patches/... absolute path, and MISSES a patch addressed
+##     by a relative spelling that omits the prefix.
+## The extension is the one unambiguous signal, and real patches carry it: quilt
+## series list *.patch, git format-patch emits NNNN-*.patch. An extensionless or
+## oddly-named patch is out of scope -- name it .patch/.diff; a DISABLED patch
+## (.patch.disabled) is never applied, so stripping its whitespace is harmless.
+##
+## KNOWN GAP, accepted on purpose: an EXTENSIONLESS patch under debian/patches/ (e.g.
+## a dpkg-source auto-generated debian-changes-<ver>) is not detected and its trailing
+## whitespace would be stripped. This is the FAIL-SAFE direction (over-strip, never
+## silently disable the gate on real source) and is avoidable by naming it *.patch.
+## Do NOT "fix" it by re-adding a debian/patches/ path rule or a content sniff -- both
+## were tried and FALSE-exempt real source (a /home/debian/patches/* tree, prose that
+## embeds a hunk), which is a worse, silent gate hole.
 DIFF_EXTS = (".patch", ".diff")
-_PATCH_DIR_RE = re.compile(r'(?:^|/)debian/patches/')
 
 
 def is_diff_file(path):
-    """True for a committed patch, by name/location (see DIFF_EXTS comment). Pure
-    path classification -- one source of truth, shared by the engine
-    (FileContext.is_diff) and precommit, identical on both so neither can disagree."""
-    low = path.lower()
-    base = os.path.basename(low)
-    return (low.endswith(DIFF_EXTS)
-            or ".patch." in base or ".diff." in base
-            or bool(_PATCH_DIR_RE.search(low)))
+    """True for a committed patch, by .patch/.diff extension only (see DIFF_EXTS
+    comment for why nothing richer). Pure, case-insensitive path classification --
+    one source of truth, shared identically by the engine (FileContext.is_diff) and
+    precommit, and independent of the caller's path spelling."""
+    return path.lower().endswith(DIFF_EXTS)
 
 
 def _matches(path, patterns):
@@ -273,10 +285,9 @@ class FileContext:
 
     @property
     def is_diff(self):
-        """A committed patch whose trailing whitespace is significant -- the
+        """A .patch/.diff file whose trailing whitespace is significant -- the
         trailing-whitespace rule must not rewrite it, and R-001 must not
-        auto-substitute its non-ASCII. Identified by name/location (see
-        is_diff_file)."""
+        auto-substitute its non-ASCII. Identified by extension (see is_diff_file)."""
         return is_diff_file(self.path)
 
     @property

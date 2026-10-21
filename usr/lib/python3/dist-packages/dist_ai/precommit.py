@@ -551,12 +551,11 @@ def _run_batch(paths, base_ref, staged_mode, base_cwd, content_cwd, source_rev,
     yield from _run_hook("detect-aws-credentials",
                          ["--allow-missing-credentials"], scan, content_cwd)
     yield from _run_hook("detect-private-key", [], scan, content_cwd)
-    ## Only the trailing-whitespace fixer skips a diff: its trailing blanks are
-    ## significant (a blank context line is a single space), so stripping them
-    ## corrupts the patch. end-of-file + byte-order-marker still run on the full
-    ## list -- adding a final newline or stripping a leading BOM only makes a patch
-    ## MORE applicable. A diff is identified by name/location (context.is_diff_file),
-    ## so an extensionless debian/patches/* and a '.patch.disabled' are covered too.
+    ## Only the trailing-whitespace fixer skips a .patch/.diff: its trailing blanks
+    ## are significant (a blank context line is a single space), so stripping them
+    ## corrupts the patch. end-of-file + byte-order-marker still run on the full list
+    ## -- adding a final newline or stripping a leading BOM only makes a patch MORE
+    ## applicable. Detection is the shared context.is_diff_file (extension only).
     text_fixable = [path for path in text
                     if not context.is_diff_file(path)]
     yield from _run_fixer("fix-byte-order-marker", text, content_cwd, apply)
