@@ -109,12 +109,14 @@ if { [ "${DASHARO_VBOX_PUBLISH:-}" = '1' ] || [ -n "${IMAGE_TEST_RESULTS_ROOT:-}
       fi
       # shellcheck source=../libexec/image-test/results-publish.bsh
       source "${publisher}"
+      ## lane / step-name must be label-safe ([A-Za-z0-9._-]); the publisher
+      ## rejects spaces and punctuation (it writes them as root).
       image_test_results_publish \
          "${results_root}" "${results_owner}" "dasharo-vbox-boot" \
          "${SUDO_USER:-${USER:-root}}" "dasharo-vbox-boot" "${rc}" "" \
-         --lane "Dasharo coreboot + UEFI shell (VirtualBox)" \
+         --lane "dasharo-coreboot-uefi-vbox" \
          --builder "dasharo-vbox-boot-test" --origin built \
-         --step-name "boot to UEFI shell + ACPI S5" \
+         --step-name "boot-uefi-shell-and-acpi-s5" \
          --step-stderr-file "${serial_log}" \
          || printf '%s\n' "dasharo-vbox-boot-tests: WARNING: results publish failed (verdict rc=${rc} preserved)." >&2
    else
