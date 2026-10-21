@@ -151,7 +151,9 @@ def reachable_states(reachable):
 
 def can_reach(edges, targets):
     """Set of states from which any state in `targets` is reachable."""
-    reverse = {s: set() for s in edges}
+    reverse: dict[tuple[str, str], set[tuple[str, str]]] = {
+        s: set() for s in edges
+    }
     for src, succ in edges.items():
         for dst in succ:
             reverse.setdefault(dst, set()).add(src)
