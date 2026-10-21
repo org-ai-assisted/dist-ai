@@ -803,10 +803,12 @@ else
 fi
 
 ## --- 14: a CONTENT-typed diff (extensionless / odd suffix) is trailing-ws exempt
-## is_diff_file is no longer extension-only: file(1) types an extensionless
-## debian/patches/* or a renamed '.patch.disabled' as text/x-diff, so the
-## trailing-whitespace rule leaves it byte-identical. Canary: old (extension-only)
-## detection strips the significant blanks.
+## is_diff_file is no longer extension-only: an extensionless debian/patches/* or a
+## renamed '.patch.disabled' is detected by a unified-diff HUNK HEADER in the
+## content, so the trailing-whitespace rule leaves it byte-identical. Content, not
+## file(1)'s mime: file types a format-patch as application/mbox and a long-header
+## DEP-3 as text/plain, so a mime check would MISS exactly these. Canary: old
+## (extension-only, or mime-only) detection strips the significant blanks.
 for name in '0001-change' 'feature.patch.disabled' ; do
    f="${test_dir}/${name}"
    printf '%s\n' '--- a/x' '+++ b/x' '@@ -1,3 +1,3 @@' ' ctx' ' ' '-old   ' '+new' >"${f}"
@@ -821,6 +823,32 @@ for name in '0001-change' 'feature.patch.disabled' ; do
       note_fail "${name}: content-typed diff was whitespace-rewritten (patch corruption)"
    fi
 done
+## A git format-patch is an mbox to file(1) (application/mbox, NOT text/x-diff) -- the
+## hunk-header sniff catches it where a mime check cannot. Significant trailing blanks
+## on its '-' line must survive. Canary RED on the mime-based detector.
+f="${test_dir}/0002-format-patch"
+printf '%s\n' \
+   'From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001' \
+   'From: Test <test@example.com>' 'Subject: [PATCH] keep trailing blanks' '' '---' \
+   ' x | 2 +-' '' 'diff --git a/x b/x' '--- a/x' '+++ b/x' '@@ -1,3 +1,3 @@' \
+   ' ctx' ' ' '-old   ' '+new' >"${f}"
+before="$(cksum < "${f}")"
+run_fix "${f}" >/dev/null 2>&1
+if [ "$(cksum < "${f}")" = "${before}" ] && has_trailing_ws "${f}" ; then
+   note_pass "format-patch (mbox mime) detected via hunk header, left byte-identical"
+else
+   note_fail "format-patch whitespace-rewritten (mime miss -- hunk sniff regressed)"
+fi
+## Contrast: a KNOWN text extension is classified by name, so the content sniff never
+## leaks onto ordinary source -- a .md that merely embeds a diff hunk IS still cleaned.
+f="${test_dir}/embeds-diff.md"
+printf '%s\n' '# Doc   ' 'Example patch:' '@@ -1 +1 @@' '-a' '+b' >"${f}"
+run_fix "${f}" >/dev/null 2>&1
+if ! has_trailing_ws "${f}" ; then
+   note_pass ".md embedding a diff hunk still has trailing ws stripped (named-type wins)"
+else
+   note_fail ".md trailing ws survived -- content sniff leaked onto a named text file"
+fi
 
 ## --- 15: end-of-file + BOM fixers DO act on a diff (over-broad exemption reverted)
 ## Appending a final newline or stripping a leading BOM only makes a patch MORE
