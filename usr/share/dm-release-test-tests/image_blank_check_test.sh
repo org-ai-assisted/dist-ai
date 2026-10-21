@@ -50,6 +50,10 @@ trap cleanup EXIT
 "${magick_bin}" -size 80x60 plasma: "${workdir}/rich.png"
 ## Dark-but-real: a dim gradient, many distinct shades -> must NOT flag.
 "${magick_bin}" -size 80x60 "gradient:#000000-#303040" "${workdir}/dark_real.png"
+## A blank frame named 'NN-<token>' to exercise the dash-delimited --allow suffix match.
+## In its own subdir so the one-level ${workdir} scans above are unaffected.
+mkdir -- "${workdir}/sfx"
+"${magick_bin}" -size 64x48 xc:black "${workdir}/sfx/11-power-on-first-frame.png"
 
 pass=0
 fail=0
@@ -75,8 +79,15 @@ expect_rc "content-rich frame is NOT flagged"   0 "${workdir}/rich.png"
 expect_rc "dark-but-real frame is NOT flagged"  0 "${workdir}/dark_real.png"
 ## Directory scan: a dir containing any degenerate frame fails.
 expect_rc "a dir with a blank frame fails"      1 "${workdir}"
-## --allow excludes a by-design-blank frame by basename substring.
+## --allow excludes a by-design-blank frame by exact name.
 expect_rc "--allow excludes the named frames"   0 --allow white --allow black --allow near_blank "${workdir}"
+## --allow matches a dash-delimited suffix token of the stem ('11-power-on-first-frame').
+expect_rc "--allow matches a dash-suffix token"  0 --allow power-on-first-frame "${workdir}/sfx/11-power-on-first-frame.png"
+
+## FAIL-OPEN guards: a bare substring match would let '' or '.' (a substring of EVERY
+## basename) exempt everything and pass a run that checked nothing. Both must still flag.
+expect_rc "--allow '' exempts nothing (not fail-open)"   1 --allow '' "${workdir}/white.png"
+expect_rc "--allow . exempts nothing (not fail-open)"    1 --allow . "${workdir}/white.png"
 
 ## CANARY: a detector that flagged EVERYTHING would fail the two NOT-flagged cases above;
 ## one that flagged NOTHING would fail the three flagged cases. Both are asserted, so the

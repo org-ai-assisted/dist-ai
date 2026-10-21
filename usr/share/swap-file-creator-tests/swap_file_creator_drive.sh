@@ -32,7 +32,9 @@ SWAPFILE="${DRIVE_SWAPFILE}"
 SWAP_FILE_SIZE_CUSTOM_MB="${DRIVE_SIZE_MB:-1024}"
 DO_PRE_CHECK="${DRIVE_DO_PRE_CHECK:-no}"
 HIBERNATION='no'
-VERBOSE='yes'
+## Overridable so a case can force log()'s 'printf | systemd-cat' branch
+## (VERBOSE=no) to exercise the logger-abort path; default quiet-for-the-test.
+VERBOSE="${DRIVE_VERBOSE:-yes}"
 
 ## Install the SAME ERR trap main() installs, when a case needs to exercise the
 ## production error_handler path (e.g. the post-enable rollback on an ERR-driven

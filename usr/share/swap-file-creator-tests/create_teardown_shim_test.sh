@@ -44,6 +44,13 @@
 ##       size rolls back, which is (J).
 ##   (M) do_stop fail-closed on a non-absolute SWAPFILE: a relative path is
 ##       refused before any file op (never safe-rm's a CWD file).
+##   (N) safe-rm failure surfaces LOUD: do_start calls do_stop as 'if ! do_stop'
+##       (errexit suppressed), so an unchecked safe-rm failure would be swallowed
+##       and do_start would recreate swap over the undeleted file -- do_stop must
+##       return nonzero and do_start must abort before fallocate.
+##   (O) a failing logger must not abort a critical path: log()'s
+##       'printf | systemd-cat' pipeline (systemd-cat failing under pipefail)
+##       must not fire the ERR trap before the rollback swapoff runs.
 ##
 ## A missing REQUIRED dependency (subject, helper-scripts) is a HARD FAIL.
 
@@ -124,7 +131,7 @@ mkdir --parents -- "${bindir}"
 
 ## Simple recorders: append "<name> <args>" to the trace (read $TRACE at run
 ## time) and succeed.
-for name in fallocate mkswap btrfs chown chmod safe-rm; do
+for name in fallocate mkswap btrfs chown chmod; do
    cat > "${bindir}/${name}" <<EOF
 #!/bin/bash
 printf '%s %s\n' "${name}" "\$*" >> "\${TRACE}"
@@ -182,6 +189,26 @@ case "$*" in
    *)        printf 'swapon %s\n' "$*" >> "${TRACE}" ;;
 esac
 exit 0
+EOF
+
+## safe-rm: record, then exit with the caller-selected code (default 0). A
+## nonzero SAFE_RM_RC simulates a removal that FAILED (e.g. immutable attr,
+## EROFS) so a case can prove do_stop surfaces that failure instead of
+## swallowing it under the errexit-suppressed 'if ! do_stop' call.
+cat > "${bindir}/safe-rm" <<'EOF'
+#!/bin/bash
+printf 'safe-rm %s\n' "$*" >> "${TRACE}"
+exit "${SAFE_RM_RC:-0}"
+EOF
+
+## systemd-cat: consume stdin, then exit with the caller-selected code. A
+## nonzero SYSTEMD_CAT_RC simulates journald unavailable, so a case can prove
+## log()'s 'printf | systemd-cat' pipeline cannot abort the program (ERR trap)
+## before a critical action such as the rollback swapoff.
+cat > "${bindir}/systemd-cat" <<'EOF'
+#!/bin/bash
+cat >/dev/null 2>&1 || true
+exit "${SYSTEMD_CAT_RC:-0}"
 EOF
 
 chmod +x -- "${bindir}"/*
@@ -397,6 +424,46 @@ TRACE="${trace}" FAKE_SWAPON_LIST="" \
    bash "${drive}" stop >/dev/null 2>&1 || rc=$?
 check "(M) do_stop FAILS (nonzero) on a non-absolute SWAPFILE" "${rc}" "1"
 check "(M) safe-rm NOT reached (guard precedes file ops)"      "$(traced '^safe-rm ' && printf '%s' y || printf '%s' n)" "n"
+
+## --- (N) safe-rm failure must be LOUD even inside 'if ! do_stop'. do_start
+## calls do_stop as 'if ! do_stop', which DISABLES errexit for the whole
+## function, so an unchecked 'safe-rm' failure (line 295) would fall through to
+## 'return 0': do_stop would falsely report success and do_start would recreate
+## swap over the undeleted (wrong-size) file. The existing file is proven
+## INACTIVE (empty listing lists it absent), so do_stop reaches safe-rm; safe-rm
+## fails. do_start must ABORT before fallocate. Old code proceeded to fallocate
+## (do_stop returned 0 despite the failed remove). ---
+trace="${work}/trace-n"
+true > "${trace}"
+true > "${SWAPFILE}"
+rc=0
+TRACE="${trace}" FAKE_FSTYPE=ext4 FAKE_SWAPON_LIST="" SAFE_RM_RC=1 \
+   FAKE_SWAPON_SHOW="${SWAPFILE} 1024M" \
+   DRIVE_SWAPFILE="${SWAPFILE}" DRIVE_SIZE_MB=1024 DRIVE_DO_PRE_CHECK=no PATH="${bindir}:${PATH}" \
+   bash "${drive}" start >/dev/null 2>&1 || rc=$?
+check "(N) do_start FAILS when safe-rm of the old file fails" "${rc}" "1"
+check "(N) safe-rm was attempted (reached removal)"           "$(traced '^safe-rm ' && printf '%s' y || printf '%s' n)" "y"
+check "(N) fallocate NOT reached (do_stop failure not swallowed)" "$(traced '^fallocate ' && printf '%s' y || printf '%s' n)" "n"
+
+## --- (O) a failing logger must NOT abort a critical path. log() ends with
+## 'return 0' but pipes through systemd-cat; under pipefail+errexit+errtrace a
+## systemd-cat failure would fire the ERR trap on that pipeline BEFORE the
+## return, killing do_start mid-rollback (swap_rollback logs before it swapoffs).
+## This drives the (J) size-mismatch rollback with VERBOSE=no (log hits the
+## systemd-cat branch), systemd-cat failing, and the production ERR trap
+## installed: the rollback swapoff must STILL run. Old code (unguarded pipeline)
+## aborted via error_handler before any rollback swapoff. ---
+trace="${work}/trace-o"
+true > "${trace}"
+safe-rm --force -- "${SWAPFILE}"
+rc=0
+TRACE="${trace}" FAKE_FSTYPE=ext4 FAKE_SWAPON_LIST="" FAKE_SWAPON_SHOW="${SWAPFILE} 1G" \
+   DRIVE_VERBOSE=no SYSTEMD_CAT_RC=1 DRIVE_INSTALL_ERR_TRAP=yes \
+   DRIVE_SWAPFILE="${SWAPFILE}" DRIVE_SIZE_MB=5120 DRIVE_DO_PRE_CHECK=no PATH="${bindir}:${PATH}" \
+   bash "${drive}" start >/dev/null 2>&1 || rc=$?
+check "(O) do_start FAILS (size mismatch)"                     "${rc}" "1"
+check "(O) enabling swapon reached despite failing logger"     "$(traced '^swapon ' && printf '%s' y || printf '%s' n)" "y"
+check "(O) rollback swapoff STILL called though systemd-cat fails" "$(traced '^swapoff ' && printf '%s' y || printf '%s' n)" "y"
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
