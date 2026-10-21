@@ -26,11 +26,18 @@
 ##   * an epoch version (3:1.0-2): reprepro reports the full version, so the
 ##     function matches it verbatim -- published at 3:1.0-2 -> skip, absent -> rebuild
 ##     (a false epoch-strip would look for 1.0-2 and miss it);
+##   * a near-but-different published version (e.g. 1x0-1 vs 1.0-1) -> rebuild: the
+##     version is matched literally, not version-blind and not as a regex (so the
+##     '.' does not match the 'x');
 ##   * multi-binary source: EVERY binary must be published, so a missing one -> rebuild;
 ##   * an arch-dependent binary ('any') is required under the TARGET arch, not a
 ##     different one;
 ##   * control parsing robustness: a stanza with Architecture BEFORE Package is
 ##     still parsed (grep-dctrl, field-order safe), so its missing binary rebuilds;
+##   * a trailing CR on a field (CRLF control) does not read a missing binary as
+##     present: the CR is stripped and the package rebuilds;
+##   * a folded (continuation-line) Architecture field is parsed per token (the
+##     tab-joined value word-splits), so a published target still skips;
 ##   * a hash FAILURE ('nohash' sentinel) forces a rebuild, never compared like a digest.
 ## Plus a structural guard that the removed reprepro published-VERSION path (a
 ## different, deleted function) stays gone and dm_package_needs_rebuild takes two
@@ -174,8 +181,11 @@ pkg_dir="${workdir}/src"
 mkdir --parents -- "${pkg_dir}/debian"
 printf '%s\n' 'payload one' > "${pkg_dir}/file_a"
 printf '%s\n' 'payload two' > "${pkg_dir}/file_b"
+## Policy 5.2: the source stanza and the binary stanza are separated by a blank
+## line (a merged stanza is not a valid control file).
 cat > "${pkg_dir}/debian/control" <<'CONTROL'
 Source: testpkg
+
 Package: testpkg
 Architecture: all
 Description: fixture package
@@ -291,6 +301,80 @@ if [ "$(needs_rebuild)" -eq 0 ]; then
 else
    fail "epoch version: not published must rebuild, but was skipped"
 fi
+
+## --- published VERSION is matched VERBATIM (regex-dot / version-blind canary) -
+## The pool version is compared literally (a quoted =~ segment), so a near-but-
+## different published version must force a rebuild. '1x0-1' also traps an
+## UNQUOTED regex, where the '.' in '1.0-1' would match the 'x'. Record the hash
+## first so the version mismatch is the ONLY possible rebuild trigger.
+unpublish_all
+cat > "${pkg_dir}/debian/control" <<'CONTROL'
+Source: testpkg
+
+Package: testpkg
+Architecture: all
+Description: fixture package
+ Fixture.
+CONTROL
+write_changelog '1.0-1'
+record_now
+publish testpkg amd64 '1x0-1'
+if [ "$(needs_rebuild)" -eq 0 ]; then
+   pass "pool version 1x0-1 vs source 1.0-1 -> rebuild (verbatim match, regex dot does not apply)"
+else
+   fail "a near-but-different pool version was accepted; a stale binary was skipped"
+fi
+unpublish_all
+
+## --- a trailing CR in debian/control must not defeat the artifact check -------
+## A CRLF-edited control yields 'Architecture: all\r' from grep-dctrl. If the CR
+## is not stripped, the 'all' fast-path and the arch-wildcard check both miss, the
+## stanza is treated as covering NO target, reprepro is never queried, and an
+## UNPUBLISHED binary reads as present -> false skip -> stale binary. Empty pool +
+## matching hash + CR must still rebuild.
+unpublish_all
+cr=$'\r'
+{
+   printf '%s\n' 'Source: testpkg'
+   printf '%s\n' ''
+   printf '%s\n' 'Package: testpkg'
+   printf '%s\n' "Architecture: all${cr}"
+   printf '%s\n' 'Description: a'
+   printf '%s\n' ' a'
+} > "${pkg_dir}/debian/control"
+write_changelog '4.0-1'
+record_now
+if [ "$(needs_rebuild)" -eq 0 ]; then
+   pass "trailing CR on Architecture + empty pool -> rebuild (CR stripped, missing binary detected)"
+else
+   fail "a trailing CR made an unpublished binary read as present (false skip, ships stale binary)"
+fi
+unpublish_all
+
+## --- a folded (continuation-line) Architecture field parses per token --------
+## grep-dctrl joins a folded field with a TAB and the arch match word-splits it.
+## Stripping only CR (not every control char) leaves that structural TAB intact;
+## a guard that rejected the TAB would force a spurious rebuild of a legitimately
+## published package. Assert the published target still skips.
+unpublish_all
+cat > "${pkg_dir}/debian/control" <<'CONTROL'
+Source: testpkg
+
+Package: testpkg
+Architecture: amd64
+ i386
+Description: fixture folded arch
+ Folded.
+CONTROL
+write_changelog '4.1-1'
+record_now
+publish testpkg amd64
+if [ "$(needs_rebuild)" -eq 1 ]; then
+   pass "folded Architecture field (TAB-joined) parses per token -> published target skips"
+else
+   fail "a folded Architecture field forced a spurious rebuild (structural TAB mishandled)"
+fi
+unpublish_all
 
 ## --- multi-binary: EVERY produced binary must be published ------------------
 unpublish_all
