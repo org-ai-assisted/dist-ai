@@ -213,6 +213,9 @@ def run():
     # 11. STATIC_IMAGE_ALLOWLIST exempts a basename.
     with tempfile.TemporaryDirectory() as root:
         _write(root, 'index.html', _page % '<img src="/gnu-logo.png">')
+        # `check_site` here is the CORE module dist_ai.webcheck.site (see
+        # _load_check_site), so this rebinds the global the checks read live --
+        # NOT the inert CLI-shim mirror in usr/share/website-tests/check_site.py.
         saved = check_site.STATIC_IMAGE_ALLOWLIST
         try:
             check_site.STATIC_IMAGE_ALLOWLIST = frozenset({'gnu-logo.png'})
