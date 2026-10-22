@@ -44,16 +44,24 @@ die() {
    exit 1
 }
 
-## Resolve the generator as THIS script's SIBLING, not by PATH -- so a checkout run uses the
-## checkout generator, never the (possibly stale) installed /usr/bin copy. Falls back to PATH
-## only if no sibling exists (e.g. an odd install layout).
+## Resolve the generator AND site-deploy as THIS script's SIBLINGS, not by PATH -- so a checkout
+## run uses the checkout tools, never the (possibly stale) installed /usr/bin copy. This matters
+## for site-deploy too: run unattended (a systemd unit's PATH lacks ~/.local/bin), a bare
+## `site-deploy` resolves to a stale /usr/bin copy missing the single-gate push, so its push
+## re-triggers the pre-push hook's duplicate website-tests run -- whose minutes hold the push SSH
+## open until GitHub idle-closes it, failing the publish. Fall back to PATH only if no sibling.
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 generate="${script_dir}/test-results-site-generate"
 [ -x "${generate}" ] || generate="test-results-site-generate"
+site_deploy="${TEST_RESULTS_SITE_DEPLOY:-}"
+if [ -z "${site_deploy}" ]; then
+   site_deploy="${script_dir}/site-deploy"
+   [ -x "${site_deploy}" ] || site_deploy="site-deploy"
+fi
 
 command -v sandbox >/dev/null 2>&1 || die "sandbox not found"
 command -v "${generate}" >/dev/null 2>&1 || die "test-results-site-generate not found"
-command -v site-deploy >/dev/null 2>&1 || die "site-deploy not found"
+command -v "${site_deploy}" >/dev/null 2>&1 || die "site-deploy not found"
 [ -d "${pages_repo}/.git" ] || die "not a git checkout: ${pages_repo}"
 [ -d "${pages_repo}/automated-test-results" ] || die "no automated-test-results/ in ${pages_repo}"
 
@@ -145,5 +153,5 @@ if [ -n "${remote_tip}" ] && [ "${remote_tip}" = "$(git rev-parse HEAD)" ]; then
 fi
 
 printf '%s\n' "${me}: publishing via site-deploy"
-site-deploy || die "site-deploy failed (results committed locally; not published)"
+"${site_deploy}" || die "site-deploy failed (results committed locally; not published)"
 printf '%s\n' "${me}: deployed."

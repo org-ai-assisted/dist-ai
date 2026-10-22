@@ -85,15 +85,31 @@ fi
 exit 0
 STUB
 chmod +x -- "${bin}/sandbox"
-cat > "${bin}/site-deploy" <<STUB
+## The REAL site-deploy stub lives OFF PATH, reached only via the sibling-resolution seam. A
+## TRIPWIRE site-deploy sits ON PATH: the driver must sibling-resolve (via the seam here), never
+## fall through to a PATH copy -- that was the live bug (a stale /usr/bin site-deploy, PATH-found
+## under systemd, double-gated the push). If the tripwire fires, resolution regressed to PATH.
+seam_dir="${work}/seam"
+mkdir --parents -- "${seam_dir}"
+path_tripwire="${work}/path-site-deploy.called"
+cat > "${seam_dir}/site-deploy" <<STUB
 #!/bin/bash
 printf '%s\n' "called" >> "${site_marker}"
+exit 0
+STUB
+chmod +x -- "${seam_dir}/site-deploy"
+cat > "${bin}/site-deploy" <<STUB
+#!/bin/bash
+printf '%s\n' "PATH-RESOLVED" >> "${path_tripwire}"
 exit 0
 STUB
 chmod +x -- "${bin}/site-deploy"
 
 run_driver() {
+   ## TEST_RESULTS_SITE_DEPLOY points the driver at the seam stub (off PATH); the driver
+   ## sibling-resolves site-deploy and honors this override, never a stale PATH copy.
    PATH="${bin}:${PATH}" HOME="${work}" SOURCE_DATE_EPOCH=1700000000 \
+   TEST_RESULTS_SITE_DEPLOY="${seam_dir}/site-deploy" \
    TEST_RESULTS_DEPLOY_TARGET='stub' TEST_RESULTS_PAGES_REPO="${pages}" \
    TEST_RESULTS_REMOTE='/var/www/results' \
       "${deploy}" 2>&1 || true
@@ -112,6 +128,13 @@ site_calls="$(cat -- "${site_marker}" 2>/dev/null || true)"
 check "run 1 committed + published the generated site" "${out1}" "deployed"
 check "run 2 hit the no-change branch (recovery, not commit path)" "${out2}" "no results changes"
 check "run 2 PUBLISHED the unpushed backlog via site-deploy" "${site_calls}" "called"
+if [ -e "${path_tripwire}" ]; then
+   printf '%s\n' "FAIL: driver resolved site-deploy via PATH (stale-copy regression), not the sibling/seam" >&2
+   fail=$((fail + 1))
+else
+   printf '%s\n' "PASS: driver did NOT fall through to a PATH site-deploy (sibling-resolved)"
+   pass=$((pass + 1))
+fi
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 [ "${fail}" -eq 0 ]
