@@ -7,19 +7,31 @@
 
 """
 Rendered-layout guard for the GitHub Pages sites: load every page in a real
-browser at phone/tablet widths and assert three things the static suite cannot
-see because they depend on layout and the computed cascade:
+browser and assert the things the static suite cannot see because they depend on
+layout and the computed cascade:
   - no horizontal body overflow at 320/390/768px (a wide table or code block
     must scroll inside its own container, never widen the body);
   - the sticky header stays a compact single bar at 390px (<= HEADER_MAX_PX),
     not a stack of rows that eats the phone viewport;
   - every rendered text node clears WCAG AA contrast against its effective
-    background (catches low contrast from any source, not only :root tokens).
+    background, in BOTH the light AND the prefers-color-scheme:dark palette
+    (catches low contrast from any source, not only :root tokens);
+  - no content box spills its own text past its padding edge (per-element
+    overflow -- the body-overflow check cannot see an in-box spill);
+  - no <img> is broken (404/decode-fail: blank, and not a console error) or
+    rendered at a ratio that distorts its intrinsic aspect ratio;
+  - the header items do not overlap across a width sweep.
 
-This needs a real browser (Playwright + chromium), so unlike check_site.py it is
-NOT pure/static. It SKIPs (exit 77) cleanly when Playwright or the chromium engine
+Geometry audits (overflow / element-overflow / broken-image / aspect) run on EVERY engine
+in WEBCHECK_BROWSERS (default `chromium`; the sandbox adds firefox/webkit where
+provisioned), because layout is where the engines diverge. The color + header +
+text-resize audits are engine-independent and run on the primary (chromium) only.
+
+This needs a real browser (Playwright), so unlike check_site.py it is NOT
+pure/static. It SKIPs (exit 77) cleanly when Playwright or every requested engine
 is unavailable, so the static suite still runs everywhere; where a browser IS
-present (CI, the sandbox) it gates the layout.
+present (CI, the sandbox) it gates the layout. A requested engine that fails to
+launch while another engine runs is a loud failure, not a silent skip.
 
 Sites are served over HTTP (not file://) so absolute asset paths resolve and
 images load -- a broken image renders at its width attribute and would be a false
@@ -204,6 +216,126 @@ _HEADER_OVERLAP_JS = r"""
 """
 
 
+# Browser engines to render under. chromium is the default and the PRIMARY
+# (color/DOM-math audits run on it ONLY, engine-independent); geometry audits
+# (overflow, overlap, truncation, aspect) run on EVERY listed engine, because
+# layout is where WebKit/Gecko diverge from Blink. WEBCHECK_BROWSERS is a
+# space/comma list; the sandbox driver sets it to the engines it provisioned.
+def _browsers_from_env() -> list[str]:
+    raw = os.environ.get('WEBCHECK_BROWSERS', 'chromium')
+    names = [n for n in raw.replace(',', ' ').split() if n]
+    # chromium stays the primary: keep it first, dedup preserving order.
+    ordered, seen = [], set()
+    for n in (['chromium'] + names if 'chromium' in names else names):
+        if n not in seen:
+            seen.add(n)
+            ordered.append(n)
+    return ordered or ['chromium']
+
+
+# Contrast must hold in BOTH color schemes: the sites ship a
+# @media (prefers-color-scheme: dark) palette that the light-only render never
+# exercises. The color math is engine-independent, so this runs on the primary
+# engine only, once per scheme.
+COLOR_SCHEMES = ('light', 'dark')
+
+# Per-ELEMENT content overflow: a content box laid out wider than its padding
+# box (scrollWidth > clientWidth) -- text spilling past the box's right edge even
+# when the PAGE itself does not scroll (the body-overflow check cannot see this).
+# Ported from mw-static-generator/tools/check-mobile-overflow.py's _ELEMENT_OVERFLOW_JS
+# (validated 0 false-positives on a live sweep); this module is the CANONICAL home
+# so the two consumers cannot drift -- the wiki tool should import it from here.
+# SCOPE is the family-site content boxes (the wiki tool passes its own classes);
+# the FP-avoidance is engine-general, not scope-specific:
+#   - only overflow-x:visible (the default) spills OUT; hidden/clip/auto/scroll
+#     are not a visible spill, so measuring scrollWidth there is a false positive;
+#   - a by-design scroll surface (pre/table/code viewport) is exempt;
+#   - an overflow caused ONLY by an out-of-flow (absolute/fixed) descendant is not
+#     a spill and is ignored.
+# NOT flagged: the generic body-wide element-OVERLAP heuristic -- an inline element
+# wrapped across lines has a bounding box spanning both lines, so two adjacent
+# wrapped links read as "overlapping" to box math though they do not. That class
+# is high-false-positive (AI-reviewer ranked) and deliberately omitted; the sound
+# header-overlap sweep (flex/block items, no inline wrap) stays.
+_ELEMENT_OVERFLOW_SCOPE = (".issue, .pcard, .inst, .ibody, .lead, .kv, .catdesc, .toc, "
+                           ".info-box, .mbox")
+_ELEMENT_OVERFLOW_EXEMPT = "pre, table, .term, .copybox, .code-select, .viewport"
+_ELEMENT_OVERFLOW_JS = r"""
+(cfg) => {
+  var SCOPE = cfg.scope, EXEMPT_ANCESTOR = cfg.exempt;
+  var hits = [], seen = new Set();
+  Array.prototype.forEach.call(document.querySelectorAll(SCOPE), function (el) {
+    if (seen.has(el)) return;
+    var cs = getComputedStyle(el);
+    if (cs.display === 'none' || cs.visibility === 'hidden') return;
+    if (el.getClientRects().length === 0) return;
+    if (cs.overflowX !== 'visible') return;
+    if (el.closest(EXEMPT_ANCESTOR)) return;
+    var over = el.scrollWidth - el.clientWidth;
+    if (over <= 1) return;
+    var pb = el.getBoundingClientRect();
+    var inflow = Array.prototype.some.call(el.querySelectorAll('*'), function (c) {
+      var ccs = getComputedStyle(c);
+      if (ccs.position === 'absolute' || ccs.position === 'fixed') return false;
+      return c.getBoundingClientRect().right > pb.right - parseFloat(cs.paddingRight || 0)
+             - parseFloat(cs.borderRightWidth || 0) + 1;
+    });
+    if (!inflow) return;
+    seen.add(el);
+    var s = el.tagName.toLowerCase();
+    var cls = (el.getAttribute('class') || '').trim();
+    if (cls) { s += '.' + cls.split(/\s+/).slice(0, 3).join('.'); }
+    hits.push(s + ' overflows ' + Math.round(over) + 'px: ' +
+      JSON.stringify((el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 45)));
+  });
+  return hits.slice(0, 8);
+}
+"""
+
+# Broken / zero-dimension images: an <img> that 404'd or failed to decode renders
+# blank. A FAILED image subresource is NOT a JS console error or CSP violation, so
+# the console gate misses it -- a real gap. Ported from the same wiki tool;
+# `complete && naturalWidth===0` is the reliable broken signal. No loading=lazy
+# position skip: `complete` is ALREADY false for any not-yet-loaded (incl. lazy,
+# incl. display:none-never-fetched) image, so a position skip only mis-skipped
+# BROKEN lazy images the browser HAD loaded past ~1.5 viewports -- a false pass,
+# and these sites' result galleries are lazy (dev1238, grok ai-review, 61d6c25).
+_BROKEN_IMG_JS = r"""
+() => {
+  var out = [];
+  Array.prototype.forEach.call(document.querySelectorAll('img'), function (img) {
+    if (img.complete && img.naturalWidth === 0) {
+      out.push(((img.currentSrc || img.getAttribute('src') || '(inline)').slice(-60)) +
+        (img.alt ? ' alt=' + JSON.stringify(img.alt.slice(0, 30)) : ''));
+    }
+  });
+  return out.slice(0, 12);
+}
+"""
+
+# Image aspect-ratio audit: a rendered <img> whose box ratio diverges from the
+# file's intrinsic ratio is stretched/squashed. Tolerance is generous (5%) so a
+# sub-pixel rounding never trips it; tiny icons and not-yet-loaded images are
+# skipped (natural dims 0).
+_ASPECT_TOLERANCE = 0.05
+_ASPECT_JS = r"""
+(tol) => {
+  const out = [];
+  for (const img of document.querySelectorAll('img')) {
+    const nw = img.naturalWidth, nh = img.naturalHeight;
+    const r = img.getBoundingClientRect();
+    if (!nw || !nh || r.width < 2 || r.height < 2) continue;
+    const natural = nw / nh, rendered = r.width / r.height;
+    if (Math.abs(rendered - natural) / natural > tol) {
+      out.push((img.getAttribute('src') || '(inline)').slice(0, 50) +
+        ' natural ' + nw + 'x' + nh + ' -> rendered ' +
+        Math.round(r.width) + 'x' + Math.round(r.height));
+    }
+  }
+  return out.slice(0, 6);
+}
+"""
+
 def _skip(msg: str) -> NoReturn:
     sys.stderr.write('website-mobile-tests: SKIP (%s)\n' % msg)
     raise SystemExit(77)
@@ -311,13 +443,33 @@ def main():
             entry = docroots.setdefault(root, {'mounts': {}, 'urls': []})
             entry['urls'] += _page_urls(root, '')
 
+    browsers = _browsers_from_env()
+    primary = browsers[0]
     failures = 0
     checked = 0
     with sync_playwright() as pw:
-        try:
-            browser = pw.chromium.launch()
-        except Exception as exc:                # noqa: BLE001 -- engine not installed
-            _skip('chromium engine unavailable: %s' % exc)
+        # Launch every requested engine. An engine that will not launch is a
+        # whole-lane SKIP (77) ONLY when NO engine launched (no browser at all);
+        # a requested engine that fails while another already runs is a
+        # provisioning bug for an EXPLICIT request -> a loud failure, never a
+        # silent green (mirrors the runner's explicit-but-invalid rule).
+        engines: list[tuple[str, Any]] = []
+        for name in browsers:
+            launcher = getattr(pw, name, None)
+            if launcher is None:
+                if not engines and name == browsers[-1]:
+                    _skip('unknown browser engine(s): %s' % ' '.join(browsers))
+                sys.stderr.write('FAIL: requested browser engine %r unknown\n' % name)
+                failures += 1
+                continue
+            try:
+                engines.append((name, launcher.launch()))
+            except Exception as exc:            # noqa: BLE001 -- engine not installed
+                if not engines and name == browsers[-1]:
+                    _skip('no browser engine available (%s): %s' % (' '.join(browsers), exc))
+                sys.stderr.write('FAIL: requested browser engine %r unavailable: %s\n'
+                                 % (name, exc))
+                failures += 1
         for docroot, entry in docroots.items():
             handler = functools.partial(_MountHandler, directory=docroot)
             httpd = _MountingTCPServer(('127.0.0.1', 0), handler)
@@ -326,30 +478,53 @@ def main():
             httpd.daemon_threads = True
             threading.Thread(target=httpd.serve_forever, daemon=True).start()
             try:
-                for url in sorted(set(entry['urls'])):
-                    checked += 1
-                    base = 'http://127.0.0.1:%d%s' % (port, url)
-                    for width in OVERFLOW_WIDTHS:
-                        page = browser.new_page(viewport={'width': width, 'height': 844})
-                        try:
-                            resp = page.goto(base)
-                            if resp is not None and resp.status >= 400:
-                                failures += 1
-                                sys.stderr.write('FAIL %s: served %d (not a real page)\n'
-                                                 % (url, resp.status))
-                                break
-                            page.wait_for_timeout(400)
-                            sw = page.evaluate('document.documentElement.scrollWidth')
-                            iw = page.evaluate('window.innerWidth')
-                            if sw > iw + 1:
-                                off = page.evaluate(_OVERFLOW_JS, width)
-                                failures += 1
-                                sys.stderr.write(
-                                    'FAIL %s: horizontal overflow at %dpx '
-                                    '(scrollWidth=%d); widest: %s\n'
-                                    % (url, width, sw, off))
-                            # Header budget + contrast: once, at the phone width.
-                            if width == VIEWPORT:
+                for engine_name, browser in engines:
+                    is_primary = engine_name == primary
+                    tag = '' if is_primary else ' [%s]' % engine_name
+                    for url in sorted(set(entry['urls'])):
+                        if is_primary:
+                            checked += 1
+                        base = 'http://127.0.0.1:%d%s' % (port, url)
+                        for width in OVERFLOW_WIDTHS:
+                            page = browser.new_page(viewport={'width': width, 'height': 844})
+                            try:
+                                resp = page.goto(base)
+                                if resp is not None and resp.status >= 400:
+                                    failures += 1
+                                    sys.stderr.write('FAIL %s%s: served %d (not a real page)\n'
+                                                     % (url, tag, resp.status))
+                                    break
+                                page.wait_for_timeout(400)
+                                sw = page.evaluate('document.documentElement.scrollWidth')
+                                iw = page.evaluate('window.innerWidth')
+                                if sw > iw + 1:
+                                    off = page.evaluate(_OVERFLOW_JS, width)
+                                    failures += 1
+                                    sys.stderr.write(
+                                        'FAIL %s%s: horizontal overflow at %dpx '
+                                        '(scrollWidth=%d); widest: %s\n'
+                                        % (url, tag, width, sw, off))
+                                if width != VIEWPORT:
+                                    continue
+                                # VIEWPORT-width audits. Geometry (element-overflow
+                                # / broken-image / aspect) runs on EVERY engine;
+                                # color + header + text-resize on the primary only.
+                                eo_cfg = {'scope': _ELEMENT_OVERFLOW_SCOPE,
+                                          'exempt': _ELEMENT_OVERFLOW_EXEMPT}
+                                for msg in page.evaluate(_ELEMENT_OVERFLOW_JS, eo_cfg):
+                                    failures += 1
+                                    sys.stderr.write('FAIL %s%s: element overflow: %s\n'
+                                                     % (url, tag, msg))
+                                for msg in page.evaluate(_BROKEN_IMG_JS):
+                                    failures += 1
+                                    sys.stderr.write('FAIL %s%s: broken image: %s\n'
+                                                     % (url, tag, msg))
+                                for msg in page.evaluate(_ASPECT_JS, _ASPECT_TOLERANCE):
+                                    failures += 1
+                                    sys.stderr.write('FAIL %s%s: image aspect-ratio distorted: %s\n'
+                                                     % (url, tag, msg))
+                                if not is_primary:
+                                    continue
                                 hh = page.evaluate(_HEADER_JS)
                                 if hh is not None and hh > HEADER_MAX_PX:
                                     failures += 1
@@ -361,30 +536,50 @@ def main():
                                     failures += 1
                                     sys.stderr.write(
                                         'FAIL %s: text contrast %s:1 (need %s:1) '
-                                        '<%s class=%r> %r\n'
+                                        '<%s class=%r> %r (light)\n'
                                         % (url, item['cr'], item['need'],
                                            item['tag'].lower(), item['cls'], item['text']))
+                            finally:
+                                page.close()
+                        # Dark-scheme contrast: the prefers-color-scheme palette
+                        # the light render never exercises. Primary engine only.
+                        if is_primary:
+                            dpage = browser.new_page(viewport={'width': VIEWPORT, 'height': 844},
+                                                     color_scheme='dark')
+                            try:
+                                resp = dpage.goto(base)
+                                if resp is None or resp.status < 400:
+                                    dpage.wait_for_timeout(400)
+                                    for item in dpage.evaluate(_CONTRAST_JS):
+                                        failures += 1
+                                        sys.stderr.write(
+                                            'FAIL %s: text contrast %s:1 (need %s:1) '
+                                            '<%s class=%r> %r (dark)\n'
+                                            % (url, item['cr'], item['need'],
+                                               item['tag'].lower(), item['cls'], item['text']))
+                            finally:
+                                dpage.close()
+                    # Header-overlap sweep (per engine): the header is uniform
+                    # across a site's pages, so check the index across a range of
+                    # widths where the brand / status / toggle crowd each other.
+                    for width in HEADER_SWEEP_WIDTHS:
+                        page = browser.new_page(viewport={'width': width, 'height': 800})
+                        try:
+                            resp = page.goto('http://127.0.0.1:%d/' % port)
+                            if resp is not None and resp.status >= 400:
+                                continue
+                            page.wait_for_timeout(150)
+                            for msg in page.evaluate(_HEADER_OVERLAP_JS, _ICON_TEXT_MIN_GAP):
+                                failures += 1
+                                sys.stderr.write('FAIL /%s header at %dpx: %s\n'
+                                                 % (tag, width, msg))
                         finally:
                             page.close()
-                # Header-overlap sweep: the header is uniform across a site's
-                # pages, so check the index across a range of widths where the
-                # brand / status / toggle crowd each other.
-                for width in HEADER_SWEEP_WIDTHS:
-                    page = browser.new_page(viewport={'width': width, 'height': 800})
-                    try:
-                        resp = page.goto('http://127.0.0.1:%d/' % port)
-                        if resp is not None and resp.status >= 400:
-                            continue
-                        page.wait_for_timeout(150)
-                        for msg in page.evaluate(_HEADER_OVERLAP_JS, _ICON_TEXT_MIN_GAP):
-                            failures += 1
-                            sys.stderr.write('FAIL / header at %dpx: %s\n' % (width, msg))
-                    finally:
-                        page.close()
             finally:
                 httpd.shutdown()
                 httpd.server_close()
-        browser.close()
+        for _name, browser in engines:
+            browser.close()
 
     if checked == 0:
         _skip('no pages served (subsite parents absent?)')
@@ -392,9 +587,12 @@ def main():
         sys.stdout.write('website-mobile-tests: %d failure(s) across %d pages\n'
                          % (failures, checked))
         return 1
-    sys.stdout.write('website-mobile-tests: %d pages clean -- no overflow at %s px, '
-                     'header <=%dpx, WCAG-AA text contrast, no header overlap %s px\n'
-                     % (checked, '/'.join(str(w) for w in OVERFLOW_WIDTHS), HEADER_MAX_PX,
+    sys.stdout.write('website-mobile-tests: %d pages clean on [%s] -- no overflow at %s px, '
+                     'header <=%dpx, WCAG-AA text contrast (%s), no element spill, '
+                     'no broken images, image aspect ratios kept, no header overlap %s px\n'
+                     % (checked, ' '.join(browsers),
+                        '/'.join(str(w) for w in OVERFLOW_WIDTHS), HEADER_MAX_PX,
+                        '+'.join(COLOR_SCHEMES),
                         '/'.join(str(w) for w in HEADER_SWEEP_WIDTHS)))
     return 0
 

@@ -510,6 +510,46 @@ def run():
     check('check_no_inline_script invoked from main()',
           'check_no_inline_script(root, failures)' in main_body)
 
+    # check_fouc: a render-blocking stylesheet in <head> is clean; an onload-swap
+    # stylesheet link and a stylesheet in <body> flash unstyled content.
+    def _fouc_failures(root):
+        failures: list[str] = []
+        check_site.check_fouc(root, failures)
+        return failures
+
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               '<!doctype html><html><head><title>t</title>'
+               '<link rel="stylesheet" href="/style.css"></head><body>x</body></html>')
+        check('render-blocking <head> stylesheet passes',
+              _fouc_failures(root) == [], repr(_fouc_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        # The media="print" onload="this.media='all'" async-apply trick.
+        _write(root, 'index.html',
+               '<!doctype html><html><head><title>t</title>'
+               '<link rel="stylesheet" href="/s.css" media="print" '
+               'onload="this.media=\'all\'"></head><body>x</body></html>')
+        check('onload-swap stylesheet flagged (FOUC)',
+              any('onload handler' in f for f in _fouc_failures(root)),
+              repr(_fouc_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               '<!doctype html><html><head><title>t</title></head>'
+               '<body><link rel="stylesheet" href="/late.css">x</body></html>')
+        check('stylesheet in <body> flagged (FOUC)',
+              any('in <body>' in f for f in _fouc_failures(root)),
+              repr(_fouc_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        # A non-stylesheet link with onload (e.g. rel=preload) is not this gate's
+        # concern -- must NOT be flagged as a stylesheet FOUC.
+        _write(root, 'index.html',
+               '<!doctype html><html><head><title>t</title>'
+               '<link rel="icon" href="/favicon.svg"></head><body>x</body></html>')
+        check('non-stylesheet link not flagged',
+              _fouc_failures(root) == [], repr(_fouc_failures(root)))
+    check('check_fouc invoked from main()',
+          'check_fouc(root, failures)' in main_body)
+
     # check_links: a '..'-traversal target that escapes the site root is a BROKEN
     # link (it would 404 on the deployed site), never validated against some
     # unrelated real file that happens to exist on the test host.
