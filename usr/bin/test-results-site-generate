@@ -565,6 +565,8 @@ def store_cached_view(cache_dir, run_id, fingerprint, view, out_root):
             handle.write(payload)
         os.replace(tmp, os.path.join(cache_dir, run_id + ".json"))
     except (OSError, TypeError, ValueError):
+        ## Best-effort cache write: a failure only forfeits the next run's
+        ## incremental speedup, never the correctness of this run's output.
         pass
 
 
