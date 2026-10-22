@@ -676,9 +676,7 @@ cal_reboot_sysmaint() {
 ## VT that never rendered (a uniform frame) is a failure, so a sparse login is never false-flagged.
 vt_console_lane() {
    [ -n "${shot_dir}" ] || return 0
-   ## Clear any stale VT grabs first so a REUSED shot_dir cannot satisfy the post-lane gate with a
-   ## prior run's files -- the gate requires each capture to come from THIS run.
-   safe-rm --force -- "${shot_dir}"/*-vt-*.png 2>/dev/null || true
+   clear_stale_vt_captures "${shot_dir}"
    local tty_user="${VT_LOGIN_USER:-user}"
    printf '%s\n' "${me}: VT console lane (tty switch / login / logout / back to graphical)"
    ## Ctrl+Alt+F2 -> a text-console getty. The LXQt graphical session is on tty7 (verified on
@@ -701,6 +699,31 @@ vt_console_lane() {
    "${GUESTCTL}" "${vm}" chord ctrl alt f7 >/dev/null 2>&1 || true
    sleep 3
    story_snap 73 vt-graphical-restored
+}
+
+clear_stale_vt_captures() {
+   ## Clear stale VT grabs so a REUSED shot_dir cannot satisfy the post-lane gate with a
+   ## prior run's files -- the gate requires each capture to come from THIS run.
+   safe-rm --force -- "$1"/*-vt-*.png 2>/dev/null || true
+}
+
+## REQUIRE each expected VT capture in shot_dir ($1) -- story_snap is best-effort, so an
+## empty/partial set must not silently SKIP the gate (a false green). Match is THIS run's file
+## (clear_stale_vt_captures ran first). Then gate UNIFORM-ONLY: a sparse console login is never a
+## false-positive all-black, yet a truly-blank VT grab (the terminal never rendered) fails the run.
+require_vt_captures() {
+   local shot_dir="$1" vt_name vt_cand vt_shot vt_shots=()
+   for vt_name in vt-switched vt-logged-in vt-logged-out vt-graphical-restored; do
+      vt_shot=""
+      for vt_cand in "${shot_dir}"/*-"${vt_name}".png; do
+         [ -e "${vt_cand}" ] && vt_shot="${vt_cand}"
+      done
+      [ -n "${vt_shot}" ] \
+         || die "${FAIL_RC}" "VT console capture '${vt_name}' is missing (the virtual-terminal lane failed to screenshot)"
+      vt_shots+=("${vt_shot}")
+   done
+   "${IMAGE_BLANK_CHECK:-image-blank-check}" --uniform-only "${vt_shots[@]}" \
+      || die "${FAIL_RC}" "a VT console grab was blank (the virtual terminal never rendered); see image-blank-check output"
 }
 
 parse_args() {
@@ -1188,24 +1211,9 @@ main() {
             || die "${FAIL_RC}" "a state card rendered blank (dm-text-to-png); see image-blank-check output"
       fi
       ## VT console grabs (produced only when the --checks lane ran): framebuffer snaps, NOT the
-      ## dense-card gate above. REQUIRE each expected capture -- story_snap is best-effort, so an
-      ## empty/partial set must not silently SKIP the gate (that is a false green); vt_console_lane
-      ## cleared stale grabs first, so a match is THIS run's file. Then gate UNIFORM-ONLY: a sparse
-      ## console login is never a false-positive all-black, yet a truly-blank VT grab (the terminal
-      ## never rendered) fails the run.
+      ## dense-card gate above -- require_vt_captures gates them UNIFORM-ONLY.
       if [ "${checks}" = 'true' ]; then
-         local vt_name vt_cand vt_shot vt_shots=()
-         for vt_name in vt-switched vt-logged-in vt-logged-out vt-graphical-restored; do
-            vt_shot=""
-            for vt_cand in "${shot_dir}"/*-"${vt_name}".png; do
-               [ -e "${vt_cand}" ] && vt_shot="${vt_cand}"
-            done
-            [ -n "${vt_shot}" ] \
-               || die "${FAIL_RC}" "VT console capture '${vt_name}' is missing (the virtual-terminal lane failed to screenshot)"
-            vt_shots+=("${vt_shot}")
-         done
-         "${IMAGE_BLANK_CHECK:-image-blank-check}" --uniform-only "${vt_shots[@]}" \
-            || die "${FAIL_RC}" "a VT console grab was blank (the virtual terminal never rendered); see image-blank-check output"
+         require_vt_captures "${shot_dir}"
       fi
    fi
 
