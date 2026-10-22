@@ -66,3 +66,24 @@ framebuffer. Each patch script is idempotent.
   `mode`, `connect -r`), screenshot. A working build shows handle `55: ConsoleOut
   SimpleTextOut ... GraphicsOutput` and the UEFI shell rendered on the framebuffer
   (not black). `screenshotpng` "Unsupported resolution 0x0" = framebuffer not up.
+- Firmware boot is FAST (~seconds to the shell). The host MUST drain COM1 from
+  power-on: the firmware floods the 16550, and an undrained host UART blocks the
+  guest (THRE poll) and wedges the boot before the GOP comes up (0x0 forever).
+
+## Status / known gaps
+
+- DONE: graphics (GOP on the VBox linear framebuffer, firmware renders) + ACPI S5
+  (`reset -s` powers off). The lane verifies both.
+- OPEN -- OS boot THROUGH the firmware does NOT work yet. Attaching a Kicksecure
+  disk (SATA/AHCI) and booting: the UefiPayload reaches its own UEFI shell instead
+  of booting the disk (serial: "Booting from COREBOOT region" -> "Welcome to the
+  UEFI Shell!"; all framebuffer frames stay the shell). Likely the payload build
+  lacks an AHCI/NVMe block + the disk's EFI boot-option discovery, so BDS finds no
+  bootable device. Resume recipe (OVH, root, dm-vm-lock --class work): convert a
+  `~/derivative-binary/.../Kicksecure-LXQt-*.raw` to a throwaway VDI
+  (`VBoxManage convertfromraw ... --format VDI`), attach it SATA hdd to a
+  coreboot-firmware VM (the `build_coreboot_vm_plan` config + a SATA controller),
+  drain COM1, screenshot for ~5 min. Fix: add the block/AHCI driver + boot-option
+  refresh to the UefiPayload build (coreboot `.config` payload options / edk2 DSC),
+  then re-run. The scratch script `os-boot.sh` captured in this session does the
+  convert+attach+drain+screenshot loop.
