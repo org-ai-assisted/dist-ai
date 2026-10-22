@@ -898,6 +898,23 @@ def test_require_vboxmanage_absent_raises_setup(monkeypatch):
         M.require_vboxmanage()
 
 
+def test_require_vboxmanage_reads_global_at_call_time(monkeypatch):
+    ## Regression: require_vboxmanage() with no arg must read the CURRENT module
+    ## VBOXMANAGE, not a def-time default. A def-time default checks stock 'VBoxManage'
+    ## regardless, which EXISTS on a real VBox host -> the absent reassigned binary
+    ## wrongly passes (green here where VBoxManage is absent, red on a VBox host).
+    ## Host-independent: simulate a host where stock 'VBoxManage' IS installed.
+    import shutil
+    monkeypatch.setattr(M, 'VBOXMANAGE', 'sentinel-absent-vbm')
+    monkeypatch.setattr(
+        shutil, 'which',
+        lambda name: None if name == 'sentinel-absent-vbm' else '/usr/bin/' + name)
+    with pytest.raises(M.SetupError):
+        M.require_vboxmanage()
+    ## and an explicit present binary does NOT raise.
+    M.require_vboxmanage('/usr/bin/VBoxManage')
+
+
 def test_serial_up_without_vboxmanage_returns_setup(monkeypatch):
     monkeypatch.setattr(M, 'VBOXMANAGE', 'nonexistent-vboxmanage-xyz')
     args = types.SimpleNamespace(

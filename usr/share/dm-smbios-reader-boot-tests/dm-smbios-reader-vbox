@@ -869,12 +869,16 @@ class HwAccelError(SetupError):
     """The VM booted WITHOUT AMD-V/VT-x hardware acceleration."""
 
 
-def require_vboxmanage(vboxmanage=VBOXMANAGE):
+def require_vboxmanage(vboxmanage=None):
     """VBoxManage is a HARD dependency of every real run path -- loud SETUP if absent.
 
-    vboxmanage may be a PATH name or an absolute path (shutil.which resolves both),
-    so the firmware lane can require its patched source-built VBoxManage."""
+    vboxmanage=None reads the module VBOXMANAGE at CALL time, so a caller (or test)
+    that reassigns it is honored -- a def-time default would decouple it and check
+    stock 'VBoxManage' regardless, which on a real VBox host exists and wrongly
+    passes. The firmware lane passes its patched source build explicitly. shutil.which
+    resolves both a PATH name and an absolute path."""
     import shutil
+    vboxmanage = vboxmanage or VBOXMANAGE
     if shutil.which(vboxmanage) is None:
         raise SetupError(
             'VBoxManage (%s) not found -- the VBox backend requires VirtualBox'
