@@ -668,6 +668,41 @@ cal_reboot_sysmaint() {
    reboot_installed sysmaint
 }
 
+## VT (virtual terminal) console lane: on the booted installed desktop, switch to a text
+## console, log in at the getty, log out, and switch back to the graphical VT -- a milestone
+## screenshot at each step. Keyboard driven via vbox-ctl-local's `chord` (Ctrl+Alt+Fn) +
+## type-stdin. BEST-EFFORT per step (a VT hiccup must never fail a passing install); the grabs
+## are gated UNIFORM-ONLY in main -- a real console (sparse text on black) is legitimate, only a
+## VT that never rendered (a uniform frame) is a failure, so a sparse login is never false-flagged.
+vt_console_lane() {
+   [ -n "${shot_dir}" ] || return 0
+   local tty_user="${VT_LOGIN_USER:-user}"
+   printf '%s\n' "${me}: VT console lane (tty switch / login / logout / back to graphical)"
+   ## Ctrl+Alt+F2 -> text console (tty1 is the display-manager / graphical VT).
+   "${GUESTCTL}" "${vm}" chord ctrl alt f2 >/dev/null 2>&1 || true
+   sleep 3
+   story_snap 70 vt-switched
+   ## Log in: username <Enter>, then password <Enter>. type-stdin keeps the password out of
+   ## argv/proc (CWE-214); VT_LOGIN_PASSWORD overrides the installed account's default.
+   printf '%s' "${tty_user}" | "${GUESTCTL}" "${vm}" type-stdin >/dev/null 2>&1 || true
+   "${GUESTCTL}" "${vm}" chord enter >/dev/null 2>&1 || true
+   sleep 2
+   story_snap 71 vt-login-typed
+   printf '%s' "${VT_LOGIN_PASSWORD:-changeme}" | "${GUESTCTL}" "${vm}" type-stdin >/dev/null 2>&1 || true
+   "${GUESTCTL}" "${vm}" chord enter >/dev/null 2>&1 || true
+   sleep 3
+   story_snap 72 vt-logged-in
+   ## Log out of the console shell.
+   printf '%s' "exit" | "${GUESTCTL}" "${vm}" type-stdin >/dev/null 2>&1 || true
+   "${GUESTCTL}" "${vm}" chord enter >/dev/null 2>&1 || true
+   sleep 2
+   story_snap 73 vt-logged-out
+   ## Ctrl+Alt+F1 -> back to the graphical VT.
+   "${GUESTCTL}" "${vm}" chord ctrl alt f1 >/dev/null 2>&1 || true
+   sleep 3
+   story_snap 74 vt-graphical-restored
+}
+
 parse_args() {
    while [ "$#" -gt 0 ]; do
       case "$1" in
@@ -1128,6 +1163,8 @@ main() {
       run_release_check_battery cal_exec cal_reboot_sysmaint cal_verify \
          || die "${FAIL_RC}" "release check ${RELEASE_CHECK_FAILED_NUM} (${RELEASE_CHECK_FAILED_REASON}) FAILED"
       snap 66 checks-complete
+      ## Exercise a virtual terminal (switch / login / logout / back) on the booted desktop.
+      vt_console_lane
    fi
 
    ## Gate ONLY the state CARDS (story_card -> dm-text-to-png): those are rendered text and
@@ -1147,6 +1184,18 @@ main() {
       if [ "${#card_shots[@]}" -gt 0 ]; then
          "${IMAGE_BLANK_CHECK:-image-blank-check}" "${card_shots[@]}" \
             || die "${FAIL_RC}" "a state card rendered blank (dm-text-to-png); see image-blank-check output"
+      fi
+      ## VT console grabs are framebuffer snaps, so NOT the dense-card gate above. A real console
+      ## (login prompt / shell / restored desktop) always renders SOME content, but a VT that never
+      ## rendered is a uniform frame -- gate them UNIFORM-ONLY so a sparse console login is never a
+      ## false-positive all-black, yet a truly-blank VT grab still fails the run.
+      local vt_shot vt_shots=()
+      for vt_shot in "${shot_dir}"/*-vt-*.png; do
+         [ -e "${vt_shot}" ] && vt_shots+=("${vt_shot}")
+      done
+      if [ "${#vt_shots[@]}" -gt 0 ]; then
+         "${IMAGE_BLANK_CHECK:-image-blank-check}" --uniform-only "${vt_shots[@]}" \
+            || die "${FAIL_RC}" "a VT console grab was blank (the virtual terminal never rendered); see image-blank-check output"
       fi
    fi
 
