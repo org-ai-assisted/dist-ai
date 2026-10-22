@@ -34,8 +34,14 @@ import sys
 from PIL import Image
 
 
-def classify(path, max_colors, near, frac):
-    """Return a short reason string if PATH is degenerate, else None."""
+def classify(path, max_colors, near, frac, uniform_only=False):
+    """Return a short reason string if PATH is degenerate, else None.
+
+    uniform_only: flag ONLY a truly-uniform (single near-black/white colour) frame --
+    for gating a real framebuffer grab (a tty/console, a boot screen) where a frame
+    that is mostly black but carries sparse real content (a login prompt, a cursor,
+    a few log lines: 2+ colours) is LEGITIMATE and must not be a false positive. The
+    near-blank frac heuristic is skipped in this mode."""
     with Image.open(path) as im:
         im = im.convert("RGB")
         total = im.width * im.height
@@ -58,6 +64,10 @@ def classify(path, max_colors, near, frac):
             return "uniform black"
         if is_white:
             return "uniform white"
+        return None
+    ## uniform-only: a non-uniform frame has >=2 colours -> some content rendered -> not
+    ## degenerate here (a sparse tty login is not a false-positive all-black).
+    if uniform_only:
         return None
     ## More than max_colors distinct colours -> real content, never near-blank.
     if colors is None:
@@ -121,6 +131,10 @@ def parse_args(argv):
                         help="skip a shot whose name equals this, or whose stem ends "
                              "with '-'+this (a dash-delimited suffix token); an empty "
                              "value never matches")
+    parser.add_argument("--uniform-only", action="store_true",
+                        help="flag ONLY a truly-uniform (single near-black/white colour) "
+                             "frame; for gating a framebuffer grab (tty/console, boot "
+                             "screen) where sparse real content is legitimate")
     parser.add_argument("paths", nargs="+")
     return parser.parse_args(argv[1:])
 
@@ -135,7 +149,8 @@ def main(argv):
             continue
         checked += 1
         try:
-            reason = classify(path, args.max_colors, args.near, args.frac)
+            reason = classify(path, args.max_colors, args.near, args.frac,
+                               args.uniform_only)
         except (OSError, ValueError) as exc:
             ## An unreadable/corrupt frame is itself a bad capture -> flag it.
             flagged.append((path, "unreadable: %s" % exc))

@@ -105,6 +105,14 @@ expect_rc "content-rich dark terminal NOT flagged (webp)" 0 "${workdir}/extra/te
 ## webp support: an explicitly named blank webp, and a blank webp found by a directory scan.
 expect_rc "uniform-black webp is flagged"                1 "${workdir}/wdir/blank.webp"
 expect_rc "dir scan picks up a blank webp"               1 "${workdir}/wdir"
+## --uniform-only: gate a framebuffer grab (tty/console, boot screen) where sparse real content
+## is legitimate. Only a TRULY uniform (1-colour) frame is degenerate; a mostly-black frame
+## carrying a real prompt line (the 2-colour near_blank) must NOT be a false-positive all-black.
+expect_rc "uniform-only: uniform black is flagged"       1 --uniform-only "${workdir}/black.png"
+expect_rc "uniform-only: uniform white is flagged"       1 --uniform-only "${workdir}/white.png"
+## This same sparse frame IS flagged in default mode ("near-blank (99% black) is flagged"
+## above); --uniform-only is exactly what keeps a real tty login from false-positiving.
+expect_rc "uniform-only: sparse tty-like frame NOT flagged" 0 --uniform-only "${workdir}/near_blank.png"
 ## Directory scan: a dir containing any degenerate frame fails.
 expect_rc "a dir with a blank frame fails"      1 "${workdir}"
 ## --allow excludes a by-design-blank frame by exact name.
