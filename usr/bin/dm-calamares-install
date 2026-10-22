@@ -678,29 +678,26 @@ vt_console_lane() {
    [ -n "${shot_dir}" ] || return 0
    local tty_user="${VT_LOGIN_USER:-user}"
    printf '%s\n' "${me}: VT console lane (tty switch / login / logout / back to graphical)"
-   ## Ctrl+Alt+F2 -> text console (tty1 is the display-manager / graphical VT).
+   ## Ctrl+Alt+F2 -> a text-console getty. The LXQt graphical session is on tty7 (verified on
+   ## a live Kicksecure guest: tty1/3/5 are gettys, tty7 is X), so F2 reaches a text console.
    "${GUESTCTL}" "${vm}" chord ctrl alt f2 >/dev/null 2>&1 || true
    sleep 3
    story_snap 70 vt-switched
-   ## Log in: username <Enter>, then password <Enter>. type-stdin keeps the password out of
-   ## argv/proc (CWE-214); VT_LOGIN_PASSWORD overrides the installed account's default.
+   ## Kicksecure's console login is PASSWORDLESS by default: type the username + Enter, no
+   ## password prompt (verified on a live guest). VT_LOGIN_USER overrides the default account.
    printf '%s' "${tty_user}" | "${GUESTCTL}" "${vm}" type-stdin >/dev/null 2>&1 || true
    "${GUESTCTL}" "${vm}" chord enter >/dev/null 2>&1 || true
-   sleep 2
-   story_snap 71 vt-login-typed
-   printf '%s' "${VT_LOGIN_PASSWORD:-changeme}" | "${GUESTCTL}" "${vm}" type-stdin >/dev/null 2>&1 || true
-   "${GUESTCTL}" "${vm}" chord enter >/dev/null 2>&1 || true
    sleep 3
-   story_snap 72 vt-logged-in
-   ## Log out of the console shell.
+   story_snap 71 vt-logged-in
+   ## Log out of the console shell (back to the getty login prompt).
    printf '%s' "exit" | "${GUESTCTL}" "${vm}" type-stdin >/dev/null 2>&1 || true
    "${GUESTCTL}" "${vm}" chord enter >/dev/null 2>&1 || true
    sleep 2
-   story_snap 73 vt-logged-out
-   ## Ctrl+Alt+F1 -> back to the graphical VT.
-   "${GUESTCTL}" "${vm}" chord ctrl alt f1 >/dev/null 2>&1 || true
+   story_snap 72 vt-logged-out
+   ## Ctrl+Alt+F7 -> back to the graphical VT (where the LXQt desktop runs).
+   "${GUESTCTL}" "${vm}" chord ctrl alt f7 >/dev/null 2>&1 || true
    sleep 3
-   story_snap 74 vt-graphical-restored
+   story_snap 73 vt-graphical-restored
 }
 
 parse_args() {
@@ -1152,6 +1149,10 @@ main() {
    if [ "${checks}" = 'true' ]; then
       printf '%s\n' "${me}: release-critical checks on the installed system"
       wait_ready 300
+      ## Virtual-terminal lane on the ready desktop, BEFORE opening the check terminal and the
+      ## battery's sysmaint reboot -- so it runs independently of any later check outcome and
+      ## leaves the graphical session restored for the checks that follow.
+      vt_console_lane
       open_terminal
       snap 60 terminal-open
       ## Iterate the SINGLE shared check table (release-checks.bsh): cal_exec runs
@@ -1163,8 +1164,6 @@ main() {
       run_release_check_battery cal_exec cal_reboot_sysmaint cal_verify \
          || die "${FAIL_RC}" "release check ${RELEASE_CHECK_FAILED_NUM} (${RELEASE_CHECK_FAILED_REASON}) FAILED"
       snap 66 checks-complete
-      ## Exercise a virtual terminal (switch / login / logout / back) on the booted desktop.
-      vt_console_lane
    fi
 
    ## Gate ONLY the state CARDS (story_card -> dm-text-to-png): those are rendered text and
