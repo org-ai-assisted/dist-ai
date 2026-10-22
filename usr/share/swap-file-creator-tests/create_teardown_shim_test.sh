@@ -64,6 +64,8 @@
 ##   (T) #10 verbatim swap-record match: a sibling listing line with a '\c' escape
 ##       must not (via a 'printf %b' decode) hide an ACTIVE configured swap and let
 ##       do_stop delete a live swap without a swapoff.
+##   (V) size overflow: a digit string above signed 64-bit must be rejected, not
+##       wrapped by $((...)) back into the valid range (arbitrary-precision bc check).
 ##
 ## A missing REQUIRED dependency (subject, helper-scripts) is a HARD FAIL.
 
@@ -561,6 +563,22 @@ check "(T) do_stop FAILS (active swap, swapoff unconfirmed)" "${rc}" "1"
 check "(T) swapoff attempted (record matched verbatim)"      "$(traced '^swapoff ' && printf '%s' y || printf '%s' n)" "y"
 check "(T) safe-rm NOT called (live swap not deleted)"       "$(traced '^safe-rm ' && printf '%s' y || printf '%s' n)" "n"
 check "(T) swap file still present"                          "$([ -e "${SWAPFILE}" ] && printf '%s' y || printf '%s' n)" "y"
+
+## --- (V) size overflow must be rejected, not wrapped. A value above signed
+## 64-bit (2^64 + 2048) would wrap in $((10#...)) back to 2048 (a valid-looking
+## size) and proceed to destroy the old swap. The arbitrary-precision bc range
+## check rejects it before do_stop. Old code (shell-arithmetic range check only)
+## wrapped it into range and reached do_stop + fallocate. ---
+trace="${work}/trace-v"
+true > "${trace}"
+true > "${SWAPFILE}"
+rc=0
+TRACE="${trace}" FAKE_FSTYPE=ext4 FAKE_SWAPON_LIST="" \
+   DRIVE_SWAPFILE="${SWAPFILE}" DRIVE_SIZE_MB=18446744073709553664 DRIVE_DO_PRE_CHECK=no PATH="${bindir}:${PATH}" \
+   bash "${drive}" start >/dev/null 2>&1 || rc=$?
+check "(V) do_start FAILS (overflow size rejected, not wrapped)" "${rc}" "1"
+check "(V) safe-rm NOT reached (old swap not destroyed)"         "$(traced '^safe-rm ' && printf '%s' y || printf '%s' n)" "n"
+check "(V) fallocate NOT reached"                                "$(traced '^fallocate ' && printf '%s' y || printf '%s' n)" "n"
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
