@@ -1276,6 +1276,7 @@ def _firmware_snap(shot_dir, index, name, vmname, vboxmanage=VBOXMANAGE):
     try:
         _run(build_screenshot_argv(vmname, png, vboxmanage))
     except (subprocess.CalledProcessError, FileNotFoundError):
+        ## best-effort: a pre-init 0x0 framebuffer or a powered-off VM is not a failure.
         pass
 
 
@@ -1346,12 +1347,24 @@ def run_firmware_boot_test(args):
     sock = None
     connect_deadline = time.monotonic() + 15
     while time.monotonic() < connect_deadline and sock is None:
+        candidate = None
         try:
-            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            sock.connect(args.uart_socket)
+            candidate = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            candidate.connect(args.uart_socket)
+            sock = candidate
         except OSError:
-            sock = None
+            if candidate is not None:
+                candidate.close()  # do not leak the unconnected socket each retry
             time.sleep(0.5)
+
+    ## A COM1 socket that never appears is an environment fault, not a boot failure:
+    ## without the drain the firmware wedges, so fail fast (SETUP) rather than wait
+    ## out the whole --timeout and mis-report FAIL.
+    if sock is None:
+        print('dm-smbios-reader-vbox: SETUP -- COM1 socket %s never connected'
+              % (args.uart_socket,), file=sys.stderr)
+        _teardown_serial_vm(args.vm, args.uart_socket, vbm)
+        return SETUP_RC
 
     def _drain():
         sock.settimeout(0.5)
@@ -1362,14 +1375,13 @@ def run_firmware_boot_test(args):
                 continue
             except OSError:
                 break
-            if chunk:
-                with serial_lock:
-                    serial_chunks.append(chunk)
+            if not chunk:
+                break  # EOF: the VM closed COM1 (powered off) -- do not busy-spin
+            with serial_lock:
+                serial_chunks.append(chunk)
 
-    drainer = None
-    if sock is not None:
-        drainer = threading.Thread(target=_drain, daemon=True)
-        drainer.start()
+    drainer = threading.Thread(target=_drain, daemon=True)
+    drainer.start()
 
     def _serial_text():
         with serial_lock:
@@ -1409,6 +1421,7 @@ def run_firmware_boot_test(args):
                         sock.sendall(b'reset -s\r\n')
                         sent_reset = True
                     except OSError:
+                        ## COM1 dropped (VM already powering off) -- the S5 check still runs.
                         pass
             if sent_reset:
                 ## S5 shows in VBox.log (SLP_EN write) and the VM powers off itself.
@@ -1437,6 +1450,7 @@ def run_firmware_boot_test(args):
             try:
                 sock.close()
             except OSError:
+                ## already closed / reset by the VM power-off -- teardown continues.
                 pass
         _teardown_serial_vm(args.vm, args.uart_socket, vbm)
 

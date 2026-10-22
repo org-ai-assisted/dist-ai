@@ -35,7 +35,6 @@ shopt -s shift_verbose
 export LC_ALL=C
 
 SKIP=77
-SETUP_RC=2
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
@@ -110,14 +109,11 @@ python3 "${backend}" firmware \
    --uart-socket "${uart_socket}" --shot-dir "${shot_dir}" \
    --vboxmanage "${vboxmanage}" "$@" || rc=$?
 
-## The backend returns SETUP_RC (2) for an unbootable environment here -- no root for
-## /dev/vboxdrv, AMD-V held by KVM, or the patched VBox refusing power-on. That is the
-## same "cannot boot here, not a failure" state the lane SKIPs on, so map it to SKIP.
-if [ "${rc}" = "${SETUP_RC}" ]; then
-   printf '%s\n' "dasharo-vbox-boot-tests: backend reports an unbootable environment (rc=${rc}); cannot boot-test here. SKIP." >&2
-   ## style-ok: allow-skip: patched VBox cannot power on here (no root/AMD-V) -- opt-in boot target
-   exit "${SKIP}"
-fi
+## Any non-zero backend rc is a real FAIL here: the genuinely-optional cases (no ROM,
+## no patched VBox) already SKIP above, BEFORE the backend runs. A backend SETUP (2)
+## -- no root for /dev/vboxdrv, AMD-V held, a bad "$@" flag (argparse also exits 2) --
+## is a misconfiguration of an opt-in boot the operator asked for, not a skip. Never
+## map it to SKIP: that would hide an argparse usage error as a clean skip.
 
 ## Opt-in: publish the verdict + the milestone shot sequence to the automated-test-results
 ## plane, so this lane shows on org-ai-assisted.github.io/automated-test-results/ with the

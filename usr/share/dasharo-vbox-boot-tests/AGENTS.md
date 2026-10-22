@@ -1,8 +1,10 @@
 # dasharo-vbox firmware port (coreboot + UefiPayload in VirtualBox)
 
 Boots a coreboot.rom (UefiPayloadPkg) inside a patched VirtualBox 7.2.20 so the
-firmware renders GRAPHICALLY on the VBox framebuffer and an OS boots through it --
-the "firmware better than VBox's own EFI" goal. All work is on the OVH server.
+firmware renders GRAPHICALLY on the VBox framebuffer. The lane attaches no boot
+media: it verifies the interactive UEFI shell on COM1 and a clean ACPI S5, and
+captures the rendered framebuffer. Booting a full OS through the firmware is a
+separate experiment, not what this lane checks. All work is on the OVH server.
 
 ## Patched VirtualBox
 
