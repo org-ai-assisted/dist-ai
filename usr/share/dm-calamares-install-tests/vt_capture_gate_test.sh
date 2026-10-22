@@ -206,6 +206,23 @@ check "stale-clear removed every *-vt-*.png" "${got}"
 got=0; [ -e "${shots_e}/10-firmware-state.png" ] || got=1
 check "stale-clear kept the non-VT state card" "${got}"
 
+## --- Case F: a directory masquerading as a capture is rejected (-f, not -e) --------------------
+## clear_stale_vt_captures's safe-rm cannot remove a directory, and story_snap only writes files;
+## require_vt_captures must demand a regular file so a stray dir cannot false-green the gate.
+## CANARY: with [ -e ] a directory named like a grab satisfies the gate.
+shots_f="${work}/f"
+mkdir --parents -- "${shots_f}"
+for n in 71-vt-logged-in 72-vt-logged-out 73-vt-graphical-restored; do
+   touch -- "${shots_f}/${n}.png"
+done
+mkdir --parents -- "${shots_f}/70-vt-switched.png"
+rc=0
+out="$(require_vt_captures "${shots_f}" 2>&1)" || rc=$?
+got=0; [ "${rc}" -eq "${expected_rc}" ] || got=1
+check "a directory named like a capture is not accepted" "${got}"
+got=0; has 'vt-switched' "${out}" || got=1
+check "directory-capture message names the unsatisfied milestone" "${got}"
+
 printf '%s\n' "" "$(basename -- "$0"): ${pass} pass, ${fail} fail"
 [ "${fail}" -eq 0 ] || exit 1
 exit 0

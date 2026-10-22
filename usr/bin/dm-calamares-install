@@ -716,7 +716,9 @@ require_vt_captures() {
    for vt_name in vt-switched vt-logged-in vt-logged-out vt-graphical-restored; do
       vt_shot=""
       for vt_cand in "${shot_dir}"/*-"${vt_name}".png; do
-         [ -e "${vt_cand}" ] && vt_shot="${vt_cand}"
+         ## -f, not -e: a capture is a regular file. A literal non-match drops here, and a
+         ## directory named like a grab cannot masquerade as one (story_snap writes only files).
+         [ -f "${vt_cand}" ] && vt_shot="${vt_cand}"
       done
       [ -n "${vt_shot}" ] \
          || die "${FAIL_RC}" "VT console capture '${vt_name}' is missing (the virtual-terminal lane failed to screenshot)"
@@ -1202,8 +1204,9 @@ main() {
       local card card_shot card_shots=()
       for card in vm-defined firmware-state vm-stopped-iso-detached mok-cert-enrolled failure-vm-state; do
          for card_shot in "${shot_dir}"/*-"${card}".png; do
-            ## A non-matching glob stays literal -> the -e test drops it (no nullglob needed).
-            [ -e "${card_shot}" ] && card_shots+=("${card_shot}")
+            ## -f (regular file), not -e: a non-matching glob stays literal and drops here (no
+            ## nullglob needed), and a directory cannot masquerade as a rendered card.
+            [ -f "${card_shot}" ] && card_shots+=("${card_shot}")
          done
       done
       if [ "${#card_shots[@]}" -gt 0 ]; then
