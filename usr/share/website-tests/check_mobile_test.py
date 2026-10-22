@@ -125,6 +125,12 @@ def run():
           "color_scheme='dark'" in main_body and '(dark)' in main_body)
     check('multi-engine loop wired',
           '_browsers_from_env' in main_body and 'for engine_name, browser in engines' in main_body)
+    # Silent-skip regression: `primary` must be the first LAUNCHED engine, not
+    # browsers[0]. If chromium (browsers[0]) fails to launch but another engine
+    # runs, keying `primary`/`checked` off browsers[0] leaves checked==0 -> _skip(77),
+    # swallowing the launch failure as a SKIP. Must derive primary from `engines`.
+    check('primary is the first LAUNCHED engine (not browsers[0])',
+          'primary = engines[0][0]' in main_body and 'primary = browsers[0]' not in main_body)
 
     # 3b. Engine selection: default is chromium (primary), env overrides, dedup,
     #     and a launch-failure classification exists (loud when another engine ran).

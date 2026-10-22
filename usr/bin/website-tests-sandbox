@@ -67,6 +67,21 @@ export QUBE_CTL_TARGET
 ## safe path (all three provisioned) is the DEFAULT -- a missing engine is a loud
 ## failure in the lane, never a silent one-engine SKIP.
 : "${WEBCHECK_BROWSERS:=chromium firefox webkit}"
+## Accept comma OR space separators (mobile.py's _browsers_from_env does), else a
+## 'chromium,firefox' value would be ONE token here and falsely read as a missing
+## engine. Then ALLOWLIST every token: a stray value must never reach the compgen
+## glob re-parsed by the remote bash -lc (a '$(...)' token would execute there), and
+## an unknown engine must fail LOUD, not silently.
+WEBCHECK_BROWSERS="${WEBCHECK_BROWSERS//,/ }"
+for eng in ${WEBCHECK_BROWSERS}; do
+   case "${eng}" in
+      chromium|firefox|webkit)
+         ;;
+      *)
+         die "invalid engine '${eng}' in WEBCHECK_BROWSERS (allowed: chromium firefox webkit)"
+         ;;
+   esac
+done
 export WEBCHECK_BROWSERS
 
 ## Provisioned? The venv AND every requested engine must be present. Checking only the
@@ -88,7 +103,9 @@ engines_present(){
             pat='webkit-*'
             ;;
          *)
-            pat="${eng}-*"
+            ## Unreachable: WEBCHECK_BROWSERS is allowlisted at ingress. Defensive --
+            ## never embed a raw token into the remote compgen glob.
+            die "internal: unvalidated engine '${eng}' reached engines_present"
             ;;
       esac
       ## A matching engine dir in the Playwright browser cache is the tell.

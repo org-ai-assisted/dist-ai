@@ -444,7 +444,6 @@ def main():
             entry['urls'] += _page_urls(root, '')
 
     browsers = _browsers_from_env()
-    primary = browsers[0]
     failures = 0
     checked = 0
     with sync_playwright() as pw:
@@ -470,6 +469,13 @@ def main():
                 sys.stderr.write('FAIL: requested browser engine %r unavailable: %s\n'
                                  % (name, exc))
                 failures += 1
+        # Primary = the first engine that ACTUALLY launched (not browsers[0]). If the
+        # requested primary (chromium) failed but another engine runs, the color /
+        # header / dark audits must still run on SOME engine, and `checked` must be
+        # non-zero so the recorded launch failure surfaces as exit 1 -- NOT be zeroed
+        # into a _skip(77). Reaching here means at least one engine launched (an
+        # all-fail launch already raised _skip above).
+        primary = engines[0][0]
         for docroot, entry in docroots.items():
             handler = functools.partial(_MountHandler, directory=docroot)
             httpd = _MountingTCPServer(('127.0.0.1', 0), handler)

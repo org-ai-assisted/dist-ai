@@ -218,6 +218,33 @@ SBSTUB
    ## Restore clean fixtures.
    printf '%s\n' '#!/bin/bash' 'exit 0' > "${stub_dir}/sandbox"
    chmod +x -- "${stub_dir}/sandbox"
+
+   ## Scenario 7: WEBCHECK_BROWSERS is ALLOWLISTED + comma-normalized at ingress. An
+   ## injection / unknown token must die LOUD ("invalid engine") BEFORE any sandbox call
+   ## -- so a '$(...)' token never reaches the remote `bash -lc` compgen glob -- and must
+   ## NOT execute. A comma-separated value must be ACCEPTED (mobile.py accepts commas; the
+   ## driver must too, else a false "missing engine" provisioning failure). Fails on the
+   ## pre-allowlist driver (the '*' case embedded the raw token; split was space-only).
+   pwn="${stub_dir}/pwned"
+   safe-rm --force -- "${pwn}"
+   badout="${stub_dir}/bad.log"
+   env PATH="${stub_dir}:${PATH}" QUBE_CTL_TARGET='temp-claude' \
+       WEBCHECK_BROWSERS="\$(touch ${pwn})" \
+       "${wts}" "${roots[0]}" > "${badout}" 2>&1 || true
+   if grep --quiet 'invalid engine' -- "${badout}" && [ ! -e "${pwn}" ]; then
+      pass 'WEBCHECK_BROWSERS injection token rejected loud before any sandbox call'
+   else
+      fail 'WEBCHECK_BROWSERS injection token not rejected (allowlist missing / token executed)'
+   fi
+   commaout="${stub_dir}/comma.log"
+   env PATH="${stub_dir}:${PATH}" QUBE_CTL_TARGET='temp-claude' \
+       WEBCHECK_BROWSERS='chromium,firefox' \
+       "${wts}" "${roots[0]}" > "${commaout}" 2>&1 || true
+   if ! grep --quiet 'invalid engine' -- "${commaout}"; then
+      pass 'WEBCHECK_BROWSERS comma-separated value accepted (normalized, not a false failure)'
+   else
+      fail 'WEBCHECK_BROWSERS comma value wrongly rejected as an invalid engine'
+   fi
 else
    fail 'website-tests-sandbox not found for the target-default check'
 fi
