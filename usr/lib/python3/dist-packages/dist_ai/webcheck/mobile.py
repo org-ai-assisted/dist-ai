@@ -417,12 +417,16 @@ _ANCHOR_OCCLUSION_JS = r"""
   root.style.scrollBehavior = 'auto';           // force instant, synchronous scroll
   const headerBottom = () => {
     let b = 0;
+    const vw = window.innerWidth;
     for (const el of document.querySelectorAll('*')) {
       const s = getComputedStyle(el);
       if (s.position !== 'sticky' && s.position !== 'fixed') continue;
       if (s.visibility === 'hidden' || s.display === 'none' || parseFloat(s.opacity) === 0) continue;
       const r = el.getBoundingClientRect();
-      if (r.top <= 1 && r.width > 0 && r.height > 0 && r.bottom > b) b = r.bottom;
+      // A top HEADER BAR spans most of the width; a narrow full-height fixed SIDE
+      // RAIL (also top-pinned) must NOT be counted as the header band -- its height
+      // would mark every anchor occluded. Require >= half the viewport width.
+      if (r.top <= 1 && r.height > 0 && r.width >= vw * 0.5 && r.bottom > b) b = r.bottom;
     }
     return b;
   };
