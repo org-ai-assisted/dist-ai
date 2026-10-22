@@ -17,10 +17,12 @@ instead of silently publishing a black rectangle.
 Usage:
   image-blank-check [--max-colors N] [--near D] [--frac F] [--allow NAME]... PATH...
 
-PATH is a PNG file or a directory (scanned for *.png, non-recursive). A frame is
-degenerate when it is uniform white/black, OR has <= --max-colors distinct colors AND
-its dominant color covers >= --frac of pixels AND that color is within --near of pure
-black or pure white on every channel. --allow excludes a shot whose name equals NAME or
+PATH is a PNG/WEBP file or a directory (scanned for *.png and *.webp, non-recursive).
+A frame is degenerate when it is uniform white/black, OR has <= --max-colors distinct
+colors AND its dominant color covers >= --frac of pixels AND that color is within --near
+of pure black or pure white on every channel. The --max-colors gate is what keeps a
+content-rich dark frame (a grub menu, a boot console: hundreds of distinct colors, >90%
+black background) from being flagged -- a pixel-fraction rule alone would flag it. --allow excludes a shot whose name equals NAME or
 whose stem ends with '-'+NAME (a dash-delimited suffix token, not a raw substring -- so
 '' or '.' cannot silently exempt everything); for a frame legitimately blank by design --
 use sparingly, and say why."""
@@ -70,13 +72,17 @@ def classify(path, max_colors, near, frac):
     return None
 
 
-def iter_pngs(paths):
+IMAGE_EXTS = (".png", ".webp")
+
+
+def iter_images(paths):
     for p in paths:
         if os.path.isdir(p):
             for name in sorted(os.listdir(p)):
-                if name.lower().endswith(".png"):
+                if name.lower().endswith(IMAGE_EXTS):
                     yield os.path.join(p, name)
         else:
+            ## An explicitly named file is checked whatever its extension.
             yield p
 
 
@@ -107,8 +113,10 @@ def parse_args(argv):
     parser.add_argument("--near", type=int, default=6,
                         help="how close (0-255) the dominant colour must be to pure "
                              "black/white (default 6)")
-    parser.add_argument("--frac", type=float, default=0.98,
-                        help="dominant-colour share for near-blank (default 0.98)")
+    parser.add_argument("--frac", type=float, default=0.90,
+                        help="dominant-colour share for near-blank: a frame >= this one "
+                             "near-black/white colour (and <= --max-colors distinct) is "
+                             "degenerate (default 0.90)")
     parser.add_argument("--allow", action="append", default=[],
                         help="skip a shot whose name equals this, or whose stem ends "
                              "with '-'+this (a dash-delimited suffix token); an empty "
@@ -121,7 +129,7 @@ def main(argv):
     args = parse_args(argv)
     flagged = []
     checked = 0
-    for path in iter_pngs(args.paths):
+    for path in iter_images(args.paths):
         base = os.path.basename(path)
         if is_allowed(base, args.allow):
             continue

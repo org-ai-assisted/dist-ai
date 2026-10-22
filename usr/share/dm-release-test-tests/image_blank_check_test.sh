@@ -54,6 +54,24 @@ trap cleanup EXIT
 ## In its own subdir so the one-level ${workdir} scans above are unaffected.
 mkdir -- "${workdir}/sfx"
 "${magick_bin}" -size 64x48 xc:black "${workdir}/sfx/11-power-on-first-frame.png"
+## New standalone fixtures live in their own subdir so the one-level ${workdir} scans above
+## are unaffected (they are referenced by direct path, never by a dir scan).
+mkdir -- "${workdir}/extra"
+## ~92% white, 2 colours: a card the OLD 0.98 frac MISSED; the 0.90 default must catch it.
+## This is the regression for lowering --frac to 0.90 (fails on the pre-0.90 tool).
+"${magick_bin}" -size 100x100 xc:white -fill black -draw 'rectangle 0,0 99,7' "${workdir}/extra/white_92.png"
+## "Empty white plus systray redaction": a rendered state card whose text failed to draw --
+## a white frame carrying only the small black systray-redaction box. The real published bug.
+"${magick_bin}" -size 499x247 xc:white -fill black -draw 'rectangle 379,0 498,23' "${workdir}/extra/white_redaction.png"
+## Content-rich dark terminal (a failure-log Qterminal, a grub menu): >90% black yet hundreds
+## of distinct colours -> real content, must NOT flag. A plasma strip (many colours) over the
+## top ~8%, black below. Written as WEBP to also exercise webp decoding on a NOT-flagged frame.
+"${magick_bin}" -size 300x24 plasma: "${workdir}/extra/_strip.png"
+"${magick_bin}" "${workdir}/extra/_strip.png" -background black -gravity north -extent 300x300 "${workdir}/extra/term_dark.webp"
+## A uniform-black WEBP in its own dir: proves a webp is decoded AND a webp is picked up by a
+## directory scan (iter_images scans *.png and *.webp).
+mkdir -- "${workdir}/wdir"
+"${magick_bin}" -size 64x48 xc:black "${workdir}/wdir/blank.webp"
 
 pass=0
 fail=0
@@ -77,6 +95,16 @@ expect_rc "uniform black is flagged"            1 "${workdir}/black.png"
 expect_rc "near-blank (99% black) is flagged"   1 "${workdir}/near_blank.png"
 expect_rc "content-rich frame is NOT flagged"   0 "${workdir}/rich.png"
 expect_rc "dark-but-real frame is NOT flagged"  0 "${workdir}/dark_real.png"
+## 0.90 frac threshold: a 92%-white few-colour card is degenerate (old 0.98 missed it).
+expect_rc "92%-white few-colour card is flagged"         1 "${workdir}/extra/white_92.png"
+## The real bug: a white frame with only the systray-redaction box.
+expect_rc "white + systray-redaction card is flagged"    1 "${workdir}/extra/white_redaction.png"
+## CONTENT GATE canary: a >90%-black frame with real content (hundreds of colours) must NOT
+## flag -- the 0.90 rule is gated by --max-colors, so a terminal/grub screen stays safe.
+expect_rc "content-rich dark terminal NOT flagged (webp)" 0 "${workdir}/extra/term_dark.webp"
+## webp support: an explicitly named blank webp, and a blank webp found by a directory scan.
+expect_rc "uniform-black webp is flagged"                1 "${workdir}/wdir/blank.webp"
+expect_rc "dir scan picks up a blank webp"               1 "${workdir}/wdir"
 ## Directory scan: a dir containing any degenerate frame fails.
 expect_rc "a dir with a blank frame fails"      1 "${workdir}"
 ## --allow excludes a by-design-blank frame by exact name.
