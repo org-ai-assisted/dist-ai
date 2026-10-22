@@ -56,10 +56,12 @@ mkdir --parents -- "${pages_repo}/.git" "${pages_repo}/automated-test-results"
 stubdir="${workdir}/stub-bin"
 mkdir --parents -- "${stubdir}"
 argv_file="${workdir}/sandbox.argv"
+tmpdir_file="${workdir}/sandbox.tmpdir"
 
 cat > "${stubdir}/sandbox" <<EOF
 #!/bin/bash
 printf '%s\n' "\$@" > "${argv_file}"
+printf '%s\n' "\${TMPDIR:-unset}" > "${tmpdir_file}"
 exit 7
 EOF
 chmod +x -- "${stubdir}/sandbox"
@@ -97,6 +99,12 @@ check "pull targets the results plane" "${argv}" "/var/www/results"
 ## AND the .cache path are both new -- the old `mktemp --directory` had neither.
 check "staging is on the disk cache base, not the RAM tmpfs (F1)" \
    "${argv}" "/.cache/test-results-deploy/deploy."
+## The sandbox/qube-ctl pull stages its archive on TMPDIR before delivery, so TMPDIR itself must
+## point at disk -- redirecting only the destination still overflows the pull's free-space budget
+## on the small /tmp tmpfs. Assert the pull saw TMPDIR under the disk staging dir. Canary: the
+## pre-fix driver left TMPDIR at the ambient /tmp, so this substring was absent.
+check "sandbox pull sees TMPDIR on disk, not the tmpfs (F1 transport staging)" \
+   "$(cat -- "${tmpdir_file}" 2>/dev/null || true)" "/.cache/test-results-deploy/deploy."
 if [ -d "${workdir}/.cache/test-results-deploy" ]; then
    printf '%s\n' "PASS: staging base dir created on disk"
    pass=$((pass + 1))
