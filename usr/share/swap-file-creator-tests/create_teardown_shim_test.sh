@@ -69,6 +69,10 @@
 ##   (W) sparse free-space credit: a SPARSE existing file must be credited by its
 ##       ALLOCATED blocks (~0), not its apparent size, so the gate cannot approve a
 ##       swap that then fails to allocate after the old file is removed.
+##   (X) a zero safe-rm status does NOT prove removal: safe-rm FILTERS a protected
+##       operand and runs 'rm --force' with none left (exit 0), so do_stop must
+##       verify the file is gone and fail closed -- inside 'if ! do_stop', do_start
+##       must abort before fallocate rather than recreate swap over the undeleted file.
 ##
 ## A missing REQUIRED dependency (subject, helper-scripts) is a HARD FAIL.
 
@@ -209,14 +213,29 @@ esac
 exit 0
 EOF
 
-## safe-rm: record, then exit with the caller-selected code (default 0). A
-## nonzero SAFE_RM_RC simulates a removal that FAILED (e.g. immutable attr,
-## EROFS) so a case can prove do_stop surfaces that failure instead of
-## swallowing it under the errexit-suppressed 'if ! do_stop' call.
+## safe-rm: record, model the real removal, then exit with the caller-selected
+## code (default 0). On success it actually unlinks the operand(s) after '--', so
+## a "removed" case truly has the file gone. A nonzero SAFE_RM_RC simulates a
+## removal that FAILED (e.g. immutable attr, EROFS). SAFE_RM_SKIP=1 models
+## safe-rm FILTERING a protected operand: it exits 0 but removes NOTHING (real
+## safe-rm then execs 'rm --force' with no operands, which also exits 0), so a
+## zero status does NOT prove removal and do_stop must catch the still-present
+## file and fail closed.
 cat > "${bindir}/safe-rm" <<'EOF'
 #!/bin/bash
 printf 'safe-rm %s\n' "$*" >> "${TRACE}"
-exit "${SAFE_RM_RC:-0}"
+rc="${SAFE_RM_RC:-0}"
+if [ "${rc}" = 0 ] && [ "${SAFE_RM_SKIP:-0}" != 1 ]; then
+   operands=0
+   for arg in "$@"; do
+      if [ "${operands}" = 0 ]; then
+         [ "${arg}" = '--' ] && { operands=1; continue; }
+         case "${arg}" in -*) continue ;; esac
+      fi
+      rm -f -- "${arg}"
+   done
+fi
+exit "${rc}"
 EOF
 
 ## systemd-cat: consume stdin, then exit with the caller-selected code. A
@@ -619,6 +638,29 @@ TRACE="${trace}" FAKE_FSTYPE=ext4 FAKE_SWAPON_LIST="" FAKE_SWAPON_SHOW="${SWAPFI
 check "(W) do_start FAILS (sparse file credited by allocation, not apparent)" "${rc}" "1"
 check "(W) fallocate NOT reached"                           "$(traced '^fallocate ' && printf '%s' y || printf '%s' n)" "n"
 check "(W) safe-rm NOT reached (sparse file not destroyed)" "$(traced '^safe-rm ' && printf '%s' y || printf '%s' n)" "n"
+
+## --- (X) a zero safe-rm status is not proof of removal. safe-rm FILTERS a
+## protected operand (SWAPFILE listed in safe-rm config) and runs 'rm --force'
+## with no operands -> exit 0. The existing file is proven INACTIVE (empty
+## listing), so do_stop reaches safe-rm; SAFE_RM_SKIP models the filtered
+## (file-left-behind) exit-0. do_start calls 'if ! do_stop', so a do_stop that
+## trusts the zero status and returns 0 would recreate swap over the undeleted
+## file. do_stop must verify the path is gone and fail closed; do_start must
+## abort before fallocate. Old code returned 0 and reached fallocate. ---
+trace="${work}/trace-x"
+true > "${trace}"
+safe-rm --force -- "${SWAPFILE}"
+true > "${SWAPFILE}"
+rc=0
+TRACE="${trace}" FAKE_FSTYPE=ext4 FAKE_SWAPON_LIST="" SAFE_RM_SKIP=1 \
+   FAKE_SWAPON_SHOW="${SWAPFILE} 1024M" \
+   DRIVE_SWAPFILE="${SWAPFILE}" DRIVE_SIZE_MB=1024 DRIVE_DO_PRE_CHECK=no PATH="${bindir}:${PATH}" \
+   bash "${drive}" start >/dev/null 2>&1 || rc=$?
+check "(X) do_start FAILS when safe-rm leaves the file behind" "${rc}" "1"
+check "(X) safe-rm was attempted (reached removal)"            "$(traced '^safe-rm ' && printf '%s' y || printf '%s' n)" "y"
+check "(X) fallocate NOT reached (undeleted file not overwritten)" "$(traced '^fallocate ' && printf '%s' y || printf '%s' n)" "n"
+## Clean up the file SAFE_RM_SKIP deliberately left behind.
+safe-rm --force -- "${SWAPFILE}"
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
