@@ -123,6 +123,17 @@ def run():
     check('aspect-ratio gate wired', '_ASPECT_JS' in main_body)
     check('dark-scheme contrast wired',
           "color_scheme='dark'" in main_body and '(dark)' in main_body)
+    check('no-JS lane wired',
+          'java_script_enabled=False' in main_body and '_NOJS_JS' in main_body)
+    check('no-JS probes content + nav + layout',
+          'h1' in cm._NOJS_JS and 'navlinks' in cm._NOJS_JS
+          and 'textlen' in cm._NOJS_JS and 'overflow' in cm._NOJS_JS)
+    # Nav assertion is gated on a header/nav existing (a navless standalone view
+    # must not false-fail); the main() check must honour hasnav.
+    check('no-JS nav check gated on hasnav (no FP on navless pages)',
+          'hasnav' in cm._NOJS_JS and "nj['hasnav']" in main_body)
+    check('no-JS min-text threshold is a sane positive', cm._NOJS_MIN_TEXT >= 50,
+          repr(cm._NOJS_MIN_TEXT))
     check('multi-engine loop wired',
           '_browsers_from_env' in main_body and 'for engine_name, browser in engines' in main_body)
     # Silent-skip regression: `primary` must be the first LAUNCHED engine, not

@@ -20,6 +20,9 @@ layout and the computed cascade:
     overflow -- the body-overflow check cannot see an in-box spill);
   - no <img> is broken (404/decode-fail: blank, and not a console error) or
     rendered at a ratio that distorts its intrinsic aspect ratio;
+  - with JS DISABLED the core content (<h1> + body text), the nav, and the
+    layout still hold (progressive enhancement -- content/layout never gated
+    behind JS);
   - the header items do not overlap across a width sweep.
 
 Geometry audits (overflow / element-overflow / broken-image / aspect) run on EVERY engine
@@ -336,6 +339,50 @@ _ASPECT_JS = r"""
 }
 """
 
+# No-JS lane: these sites are static HTML with JS as pure enhancement (copy
+# button, hero animation, share). With scripting DISABLED the core content, the
+# nav, and the layout must still hold -- a page that gates its content or layout
+# behind JS is a progressive-enhancement failure (blank/broken without JS). The
+# gate asserts, per page at the phone width with JS off: the <h1> renders, a
+# minimum of visible body text is present (not a JS-injected shell), >=1 nav link
+# is reachable, and the body does not overflow sideways. Primary engine only
+# (JS-off behaviour is engine-independent). Minimum visible-text chars:
+_NOJS_MIN_TEXT = 200
+# Probed via page.evaluate, which runs through the automation protocol and still
+# executes when the PAGE's own scripting is disabled (verified in the sandbox).
+_NOJS_JS = r"""
+(vw) => {
+  const vis = (el) => {
+    if (!el) return false;
+    const s = getComputedStyle(el);
+    if (s.display === 'none' || s.visibility === 'hidden' || parseFloat(s.opacity) === 0)
+      return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  };
+  let textlen = 0;
+  const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  let n;
+  while ((n = w.nextNode())) {
+    const t = n.textContent.trim();
+    if (t && vis(n.parentElement)) textlen += t.length;
+  }
+  // Only hold the nav assertion when the page HAS a header/nav -- a standalone
+  // embed/demo view legitimately has none, and requiring a link there is a false
+  // positive. The real bug is a nav that EXISTS but whose links are JS-gated.
+  const hasnav = !!document.querySelector('header, nav');
+  const navlinks = [...document.querySelectorAll('header a, nav a')].filter(vis).length;
+  return {
+    h1: vis(document.querySelector('h1')),
+    textlen: textlen,
+    hasnav: hasnav,
+    navlinks: navlinks,
+    overflow: document.documentElement.scrollWidth > vw + 1
+             ? document.documentElement.scrollWidth : 0,
+  };
+}
+"""
+
 def _skip(msg: str) -> NoReturn:
     sys.stderr.write('website-mobile-tests: SKIP (%s)\n' % msg)
     raise SystemExit(77)
@@ -565,6 +612,42 @@ def main():
                                                item['tag'].lower(), item['cls'], item['text']))
                             finally:
                                 dpage.close()
+                            # No-JS: the page must render core content + nav +
+                            # layout with scripting disabled (progressive
+                            # enhancement). Separate page, JS off, phone width.
+                            npage = browser.new_page(viewport={'width': VIEWPORT, 'height': 844},
+                                                     java_script_enabled=False)
+                            try:
+                                # Wait for the parsed DOM, not the full `load`: an
+                                # image-heavy gallery can exceed the load timeout
+                                # with JS off, and the no-JS checks (content / nav /
+                                # structural layout) only need the DOM. Image-driven
+                                # overflow is already covered by the JS-on lane.
+                                resp = npage.goto(base, wait_until='domcontentloaded')
+                                if resp is None or resp.status < 400:
+                                    npage.wait_for_timeout(200)
+                                    nj = npage.evaluate(_NOJS_JS, VIEWPORT)
+                                    if not nj['h1']:
+                                        failures += 1
+                                        sys.stderr.write('FAIL %s: no visible <h1> with JS '
+                                                         'disabled (content gated behind JS?)\n' % url)
+                                    if nj['textlen'] < _NOJS_MIN_TEXT:
+                                        failures += 1
+                                        sys.stderr.write('FAIL %s: only %d visible text chars with '
+                                                         'JS disabled (need >=%d; JS-injected shell?)\n'
+                                                         % (url, nj['textlen'], _NOJS_MIN_TEXT))
+                                    if nj['hasnav'] and nj['navlinks'] < 1:
+                                        failures += 1
+                                        sys.stderr.write('FAIL %s: header/nav present but no '
+                                                         'reachable link with JS disabled '
+                                                         '(nav gated behind JS)\n' % url)
+                                    if nj['overflow']:
+                                        failures += 1
+                                        sys.stderr.write('FAIL %s: horizontal overflow with JS '
+                                                         'disabled (scrollWidth=%d)\n'
+                                                         % (url, nj['overflow']))
+                            finally:
+                                npage.close()
                     # Header-overlap sweep (per engine): the header is uniform
                     # across a site's pages, so check the index across a range of
                     # widths where the brand / status / toggle crowd each other.
@@ -595,7 +678,8 @@ def main():
         return 1
     sys.stdout.write('website-mobile-tests: %d pages clean on [%s] -- no overflow at %s px, '
                      'header <=%dpx, WCAG-AA text contrast (%s), no element spill, '
-                     'no broken images, image aspect ratios kept, no header overlap %s px\n'
+                     'no broken images, image aspect ratios kept, content holds with JS off, '
+                     'no header overlap %s px\n'
                      % (checked, ' '.join(browsers),
                         '/'.join(str(w) for w in OVERFLOW_WIDTHS), HEADER_MAX_PX,
                         '+'.join(COLOR_SCHEMES),
