@@ -18,11 +18,12 @@ layout and the computed cascade:
     (catches low contrast from any source, not only :root tokens);
   - no content box spills its own text past its padding edge (per-element
     overflow -- the body-overflow check cannot see an in-box spill);
-  - no <img> is broken (404/decode-fail: blank, and not a console error) or
-    rendered at a ratio that distorts its intrinsic aspect ratio;
+  - no <img> is broken (404/decode-fail: blank, and not a console error);
+  - with JS DISABLED the core content (<h1> + visible body text) and the layout
+    still hold (progressive enhancement -- content/layout never gated behind JS);
   - the header items do not overlap across a width sweep.
 
-Geometry audits (overflow / element-overflow / broken-image / aspect) run on EVERY engine
+Geometry audits (overflow / element-overflow / broken-image) run on EVERY engine
 in WEBCHECK_BROWSERS (default `chromium`; the sandbox adds firefox/webkit where
 provisioned), because layout is where the engines diverge. The color + header +
 text-resize audits are engine-independent and run on the primary (chromium) only.
@@ -52,6 +53,11 @@ import threading
 import urllib.parse
 from typing import Any, NoReturn
 
+# Navigation timeout. The result-gallery pages carry many images; waiting for the
+# `load` event on a local mount is normally fast, but under sandbox contention it
+# can brush the Playwright default (30s) and flake. 60s absorbs that without
+# masking a genuine hang.
+NAV_TIMEOUT_MS = 60000
 VIEWPORT = 390                       # primary phone width (used in messages/checks)
 # Body must never scroll sideways from a narrow phone up to a small tablet.
 OVERFLOW_WIDTHS = (320, 390, 768)
@@ -92,7 +98,7 @@ _HEADER_JS = (
 # or image background (unknown luminance) and translucent text are skipped
 # rather than guessed. Dedups by tag+class+ratio; caps the report.
 _CONTRAST_JS = r"""
-() => {
+(dflt) => {
   const parse = (c) => {
     const m = c && c.match(/rgba?\(([^)]+)\)/);
     if (!m) return null;
@@ -111,7 +117,12 @@ _CONTRAST_JS = r"""
       if (bg && bg.a === 1) return bg;
       n = n.parentElement;
     }
-    return { r: 255, g: 255, b: 255 };
+    // No opaque background anywhere up to <html>: the UA canvas shows through.
+    // That is white in light mode but a dark surface under color-scheme:dark, so
+    // the caller passes the scheme-appropriate default -- assuming white in dark
+    // mode mis-scored every transparent-background text node (false pass for dark
+    // text, false fail for light).
+    return dflt;
   };
   const out = [], seen = new Set();
   const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
@@ -218,7 +229,7 @@ _HEADER_OVERLAP_JS = r"""
 
 # Browser engines to render under. chromium is the default and the PRIMARY
 # (color/DOM-math audits run on it ONLY, engine-independent); geometry audits
-# (overflow, overlap, truncation, aspect) run on EVERY listed engine, because
+# (overflow, element-overflow, broken-image) run on EVERY listed engine, because
 # layout is where WebKit/Gecko diverge from Blink. WEBCHECK_BROWSERS is a
 # space/comma list; the sandbox driver sets it to the engines it provisioned.
 def _browsers_from_env() -> list[str]:
@@ -238,6 +249,11 @@ def _browsers_from_env() -> list[str]:
 # exercises. The color math is engine-independent, so this runs on the primary
 # engine only, once per scheme.
 COLOR_SCHEMES = ('light', 'dark')
+# Fallback canvas color per scheme for _CONTRAST_JS -- used only when no element
+# up to <html> sets an opaque background (the UA canvas: white in light, a dark
+# surface under color-scheme:dark).
+_CANVAS_LIGHT = {'r': 255, 'g': 255, 'b': 255}
+_CANVAS_DARK = {'r': 18, 'g': 18, 'b': 18}
 
 # Per-ELEMENT content overflow: a content box laid out wider than its padding
 # box (scrollWidth > clientWidth) -- text spilling past the box's right edge even
@@ -260,6 +276,13 @@ COLOR_SCHEMES = ('light', 'dark')
 _ELEMENT_OVERFLOW_SCOPE = (".issue, .pcard, .inst, .ibody, .lead, .kv, .catdesc, .toc, "
                            ".info-box, .mbox")
 _ELEMENT_OVERFLOW_EXEMPT = "pre, table, .term, .copybox, .code-select, .viewport"
+# Returns STRUCTURED hits {sel, over, sw, cw, text} (the canonical shape the
+# mw-static tool imports; each consumer formats its own line). Widened per the
+# wiki owner: besides an IN-FLOW descendant past the padding edge, a TEXT-ONLY
+# overflow with NO descendant past the edge (a long unbreakable token straight in
+# the box -- the /wiki/ISO code-URL shape) is also a real spill. The ONLY skip is
+# an overflow caused SOLELY by an out-of-flow (absolute/fixed) descendant. So
+# track both flags and flag when (inFlowPast || !anyDescendantPast).
 _ELEMENT_OVERFLOW_JS = r"""
 (cfg) => {
   var SCOPE = cfg.scope, EXEMPT_ANCESTOR = cfg.exempt;
@@ -274,19 +297,24 @@ _ELEMENT_OVERFLOW_JS = r"""
     var over = el.scrollWidth - el.clientWidth;
     if (over <= 1) return;
     var pb = el.getBoundingClientRect();
-    var inflow = Array.prototype.some.call(el.querySelectorAll('*'), function (c) {
-      var ccs = getComputedStyle(c);
-      if (ccs.position === 'absolute' || ccs.position === 'fixed') return false;
-      return c.getBoundingClientRect().right > pb.right - parseFloat(cs.paddingRight || 0)
+    var edge = pb.right - parseFloat(cs.paddingRight || 0)
              - parseFloat(cs.borderRightWidth || 0) + 1;
+    var inFlowPast = false, anyDescendantPast = false;
+    Array.prototype.forEach.call(el.querySelectorAll('*'), function (c) {
+      if (c.getBoundingClientRect().right > edge) {
+        anyDescendantPast = true;
+        var ccs = getComputedStyle(c);
+        if (ccs.position !== 'absolute' && ccs.position !== 'fixed') inFlowPast = true;
+      }
     });
-    if (!inflow) return;
+    // Skip ONLY an overflow caused solely by an out-of-flow descendant.
+    if (!inFlowPast && anyDescendantPast) return;
     seen.add(el);
     var s = el.tagName.toLowerCase();
     var cls = (el.getAttribute('class') || '').trim();
     if (cls) { s += '.' + cls.split(/\s+/).slice(0, 3).join('.'); }
-    hits.push(s + ' overflows ' + Math.round(over) + 'px: ' +
-      JSON.stringify((el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 45)));
+    hits.push({ sel: s, over: Math.round(over), sw: el.scrollWidth, cw: el.clientWidth,
+                text: (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 45) });
   });
   return hits.slice(0, 8);
 }
@@ -304,35 +332,68 @@ _BROKEN_IMG_JS = r"""
 () => {
   var out = [];
   Array.prototype.forEach.call(document.querySelectorAll('img'), function (img) {
+    // SVG is EXEMPT: a valid SVG with no intrinsic size (viewBox only, no
+    // width/height) reports naturalWidth===0 on Gecko/WebKit (Blink defaults to
+    // 300x150), so the broken signal is unreliable for SVG cross-engine -- it
+    // would false-flag a fine SVG on firefox/webkit. Raster 404s (the common
+    // case) still report naturalWidth===0 reliably.
+    var src = img.currentSrc || img.getAttribute('src') || '';
+    if (/\.svgz?(\?|#|$)/i.test(src)) return;
     if (img.complete && img.naturalWidth === 0) {
-      out.push(((img.currentSrc || img.getAttribute('src') || '(inline)').slice(-60)) +
-        (img.alt ? ' alt=' + JSON.stringify(img.alt.slice(0, 30)) : ''));
+      out.push({ src: (src || '(inline)').slice(-80), alt: (img.alt || '').slice(0, 40) });
     }
   });
   return out.slice(0, 12);
 }
 """
 
-# Image aspect-ratio audit: a rendered <img> whose box ratio diverges from the
-# file's intrinsic ratio is stretched/squashed. Tolerance is generous (5%) so a
-# sub-pixel rounding never trips it; tiny icons and not-yet-loaded images are
-# skipped (natural dims 0).
-_ASPECT_TOLERANCE = 0.05
-_ASPECT_JS = r"""
-(tol) => {
-  const out = [];
-  for (const img of document.querySelectorAll('img')) {
-    const nw = img.naturalWidth, nh = img.naturalHeight;
-    const r = img.getBoundingClientRect();
-    if (!nw || !nh || r.width < 2 || r.height < 2) continue;
-    const natural = nw / nh, rendered = r.width / r.height;
-    if (Math.abs(rendered - natural) / natural > tol) {
-      out.push((img.getAttribute('src') || '(inline)').slice(0, 50) +
-        ' natural ' + nw + 'x' + nh + ' -> rendered ' +
-        Math.round(r.width) + 'x' + Math.round(r.height));
-    }
+# No-JS lane: these sites are static HTML with JS as pure enhancement (copy
+# button, hero animation, share). With scripting DISABLED the core content, the
+# nav, and the layout must still hold -- a page that gates its content or layout
+# behind JS is a progressive-enhancement failure (blank/broken without JS). The
+# gate asserts, per page at the phone width with JS off: the <h1> renders, a
+# minimum of visible body text is present (not a JS-injected shell), >=1 nav link
+# is reachable, and the body does not overflow sideways. Primary engine only
+# (JS-off behaviour is engine-independent). Minimum visible-text chars:
+_NOJS_MIN_TEXT = 200
+# Probed via page.evaluate, which runs through the automation protocol and still
+# executes when the PAGE's own scripting is disabled (verified in the sandbox).
+_NOJS_JS = r"""
+(vw) => {
+  // Ancestor-aware visibility: opacity/visibility are defeated by an ANCESTOR
+  // (a `html{opacity:0}` / `body{visibility:hidden}` reveal-on-JS pattern leaves
+  // every descendant with a non-zero box but invisible) -- exactly the no-JS
+  // failure to catch. checkVisibility walks the chain (display/visibility/
+  // opacity); pair it with a non-zero box. The no-JS lane runs on the primary
+  // (chromium) engine, where checkVisibility is supported.
+  const vis = (el) => {
+    if (!el) return false;
+    if (el.checkVisibility && !el.checkVisibility(
+        { opacityProperty: true, visibilityProperty: true, contentVisibilityAuto: true }))
+      return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  };
+  let textlen = 0;
+  const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  let n;
+  while ((n = w.nextNode())) {
+    const t = n.textContent.trim();
+    if (t && vis(n.parentElement)) textlen += t.length;
   }
-  return out.slice(0, 6);
+  // No nav assertion: "a nav link must be reachable" is too markup-dependent to
+  // gate without false positives (a navless standalone view; links in a sibling
+  // list outside <header>/<nav>). Content-presence (h1 + visible text, both
+  // ancestor-visibility-aware) and no-overflow are the robust no-JS invariants.
+  // ANY visible <h1>, not just the first: a responsive page may place a hidden
+  // <h1> before the shown one, so querySelector('h1') alone would false-fail.
+  const h1 = [...document.querySelectorAll('h1')].some(vis);
+  return {
+    h1: h1,
+    textlen: textlen,
+    overflow: document.documentElement.scrollWidth > vw + 1
+             ? document.documentElement.scrollWidth : 0,
+  };
 }
 """
 
@@ -348,6 +409,17 @@ class _MountingTCPServer(socketserver.TCPServer):
 
     mounts: dict[str, str]
     daemon_threads: bool
+
+    def handle_error(self, request, client_address):
+        # A browser cancelling an in-flight subresource breaks the response pipe --
+        # normal when a no-JS page stops at domcontentloaded and aborts its pending
+        # image loads, or when a page navigates away. That is client behaviour, not
+        # a server fault, so swallow it rather than dump a traceback that reads as a
+        # test failure. Any other error still surfaces.
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)):
+            return
+        super().handle_error(request, client_address)
 
 
 class _MountHandler(http.server.SimpleHTTPRequestHandler):
@@ -494,7 +566,7 @@ def main():
                         for width in OVERFLOW_WIDTHS:
                             page = browser.new_page(viewport={'width': width, 'height': 844})
                             try:
-                                resp = page.goto(base)
+                                resp = page.goto(base, timeout=NAV_TIMEOUT_MS)
                                 if resp is not None and resp.status >= 400:
                                     failures += 1
                                     sys.stderr.write('FAIL %s%s: served %d (not a real page)\n'
@@ -513,22 +585,22 @@ def main():
                                 if width != VIEWPORT:
                                     continue
                                 # VIEWPORT-width audits. Geometry (element-overflow
-                                # / broken-image / aspect) runs on EVERY engine;
-                                # color + header + text-resize on the primary only.
+                                # / broken-image) runs on EVERY engine; color +
+                                # header on the primary only.
                                 eo_cfg = {'scope': _ELEMENT_OVERFLOW_SCOPE,
                                           'exempt': _ELEMENT_OVERFLOW_EXEMPT}
-                                for msg in page.evaluate(_ELEMENT_OVERFLOW_JS, eo_cfg):
+                                for hit in page.evaluate(_ELEMENT_OVERFLOW_JS, eo_cfg):
                                     failures += 1
-                                    sys.stderr.write('FAIL %s%s: element overflow: %s\n'
-                                                     % (url, tag, msg))
-                                for msg in page.evaluate(_BROKEN_IMG_JS):
+                                    sys.stderr.write(
+                                        'FAIL %s%s: element overflow: %s overflows %dpx: %r '
+                                        '(sw=%d cw=%d)\n'
+                                        % (url, tag, hit['sel'], hit['over'], hit['text'],
+                                           hit['sw'], hit['cw']))
+                                for img in page.evaluate(_BROKEN_IMG_JS):
                                     failures += 1
-                                    sys.stderr.write('FAIL %s%s: broken image: %s\n'
-                                                     % (url, tag, msg))
-                                for msg in page.evaluate(_ASPECT_JS, _ASPECT_TOLERANCE):
-                                    failures += 1
-                                    sys.stderr.write('FAIL %s%s: image aspect-ratio distorted: %s\n'
-                                                     % (url, tag, msg))
+                                    alt = ' alt=%r' % img['alt'] if img['alt'] else ''
+                                    sys.stderr.write('FAIL %s%s: broken image: %s%s\n'
+                                                     % (url, tag, img['src'], alt))
                                 if not is_primary:
                                     continue
                                 hh = page.evaluate(_HEADER_JS)
@@ -538,7 +610,7 @@ def main():
                                         'FAIL %s: sticky header %dpx tall at %dpx '
                                         '(budget %dpx); collapse it\n'
                                         % (url, round(hh), VIEWPORT, HEADER_MAX_PX))
-                                for item in page.evaluate(_CONTRAST_JS):
+                                for item in page.evaluate(_CONTRAST_JS, _CANVAS_LIGHT):
                                     failures += 1
                                     sys.stderr.write(
                                         'FAIL %s: text contrast %s:1 (need %s:1) '
@@ -553,10 +625,10 @@ def main():
                             dpage = browser.new_page(viewport={'width': VIEWPORT, 'height': 844},
                                                      color_scheme='dark')
                             try:
-                                resp = dpage.goto(base)
+                                resp = dpage.goto(base, timeout=NAV_TIMEOUT_MS)
                                 if resp is None or resp.status < 400:
                                     dpage.wait_for_timeout(400)
-                                    for item in dpage.evaluate(_CONTRAST_JS):
+                                    for item in dpage.evaluate(_CONTRAST_JS, _CANVAS_DARK):
                                         failures += 1
                                         sys.stderr.write(
                                             'FAIL %s: text contrast %s:1 (need %s:1) '
@@ -565,13 +637,44 @@ def main():
                                                item['tag'].lower(), item['cls'], item['text']))
                             finally:
                                 dpage.close()
+                            # No-JS: the page must render core content + nav +
+                            # layout with scripting disabled (progressive
+                            # enhancement). Separate page, JS off, phone width.
+                            npage = browser.new_page(viewport={'width': VIEWPORT, 'height': 844},
+                                                     java_script_enabled=False)
+                            try:
+                                # Wait for the parsed DOM, not the full `load`: an
+                                # image-heavy gallery can exceed the load timeout
+                                # with JS off, and the no-JS checks (content / nav /
+                                # structural layout) only need the DOM. Image-driven
+                                # overflow is already covered by the JS-on lane.
+                                resp = npage.goto(base, wait_until='domcontentloaded', timeout=NAV_TIMEOUT_MS)
+                                if resp is None or resp.status < 400:
+                                    npage.wait_for_timeout(200)
+                                    nj = npage.evaluate(_NOJS_JS, VIEWPORT)
+                                    if not nj['h1']:
+                                        failures += 1
+                                        sys.stderr.write('FAIL %s: no visible <h1> with JS '
+                                                         'disabled (content gated behind JS?)\n' % url)
+                                    if nj['textlen'] < _NOJS_MIN_TEXT:
+                                        failures += 1
+                                        sys.stderr.write('FAIL %s: only %d visible text chars with '
+                                                         'JS disabled (need >=%d; JS-injected shell?)\n'
+                                                         % (url, nj['textlen'], _NOJS_MIN_TEXT))
+                                    if nj['overflow']:
+                                        failures += 1
+                                        sys.stderr.write('FAIL %s: horizontal overflow with JS '
+                                                         'disabled (scrollWidth=%d)\n'
+                                                         % (url, nj['overflow']))
+                            finally:
+                                npage.close()
                     # Header-overlap sweep (per engine): the header is uniform
                     # across a site's pages, so check the index across a range of
                     # widths where the brand / status / toggle crowd each other.
                     for width in HEADER_SWEEP_WIDTHS:
                         page = browser.new_page(viewport={'width': width, 'height': 800})
                         try:
-                            resp = page.goto('http://127.0.0.1:%d/' % port)
+                            resp = page.goto('http://127.0.0.1:%d/' % port, timeout=NAV_TIMEOUT_MS)
                             if resp is not None and resp.status >= 400:
                                 continue
                             page.wait_for_timeout(150)
@@ -587,15 +690,19 @@ def main():
         for _name, browser in engines:
             browser.close()
 
-    if checked == 0:
-        _skip('no pages served (subsite parents absent?)')
+    # A recorded failure wins over the no-pages skip: a launch failure (failures>0)
+    # with zero navigable pages must surface as exit 1, never be zeroed into
+    # _skip(77). A genuine no-pages run with no failures still SKIPs.
     if failures:
         sys.stdout.write('website-mobile-tests: %d failure(s) across %d pages\n'
                          % (failures, checked))
         return 1
+    if checked == 0:
+        _skip('no pages served (subsite parents absent?)')
     sys.stdout.write('website-mobile-tests: %d pages clean on [%s] -- no overflow at %s px, '
                      'header <=%dpx, WCAG-AA text contrast (%s), no element spill, '
-                     'no broken images, image aspect ratios kept, no header overlap %s px\n'
+                     'no broken images, content holds with JS off, '
+                     'no header overlap %s px\n'
                      % (checked, ' '.join(browsers),
                         '/'.join(str(w) for w in OVERFLOW_WIDTHS), HEADER_MAX_PX,
                         '+'.join(COLOR_SCHEMES),

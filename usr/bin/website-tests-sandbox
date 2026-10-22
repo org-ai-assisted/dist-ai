@@ -73,7 +73,14 @@ export QUBE_CTL_TARGET
 ## glob re-parsed by the remote bash -lc (a '$(...)' token would execute there), and
 ## an unknown engine must fail LOUD, not silently.
 WEBCHECK_BROWSERS="${WEBCHECK_BROWSERS//,/ }"
-for eng in ${WEBCHECK_BROWSERS}; do
+## A comma/space-only value normalizes to zero engines: without this guard the
+## allowlist loop never runs, engines_present probes nothing and returns
+## "present", provisioning is skipped, and an EMPTY WEBCHECK_BROWSERS reaches the
+## lane -- which silently falls back to chromium and may then SKIP. Fail loud.
+read -r -a _wcb_engines <<< "${WEBCHECK_BROWSERS}"
+[ "${#_wcb_engines[@]}" -ge 1 ] \
+   || die "WEBCHECK_BROWSERS has no engine after normalization (allowed: chromium firefox webkit)"
+for eng in "${_wcb_engines[@]}"; do
    case "${eng}" in
       chromium|firefox|webkit)
          ;;
