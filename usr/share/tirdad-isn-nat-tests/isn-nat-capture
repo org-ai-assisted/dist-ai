@@ -1,0 +1,265 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Privileged capture engine for the tirdad TCP-ISN NAT test. For each networking
+## mode it measures the SYN ISN as the GUEST emits it versus the ISN on the HOST
+## wire, for the SAME connection, and checks the verdict against isn-nat-lib.bsh:
+##   libslirp (slirp4netns) == VirtualBox NAT family -> expect REGENERATED
+##   passt    (pasta)       == KVM default           -> expect REGENERATED
+##   routed   (veth + L3 forward) == Qubes-Whonix / bare metal / a home router's
+##            NAPT                                    -> expect PRESERVED
+##
+## The stacks are exercised faithfully: pasta IS passt's engine, slirp4netns IS
+## libslirp. Needs real root (host-side packet capture) and the stacks installed;
+## without them it exits 78 (SKIP:env-unmet). It is the opt-in half of the suite --
+## usr/bin/tirdad-isn-nat-tests gates it behind TIRDAD_ISN_NAT_TEST=1.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+## A fixed, uncommon loopback port for the throwaway sink.
+readonly PORT=53173
+
+script_dir="$( cd -- "$( dirname -- "$( readlink --canonicalize -- "$0" )" )" && pwd )"
+lib="${script_dir}/isn-nat-lib.bsh"
+if [ ! -r "${lib}" ]; then
+   lib='/usr/share/tirdad-isn-nat-tests/isn-nat-lib.bsh'
+fi
+exit_helper="${script_dir}/../dist-ai-tests-common/suite-exit.bash"
+if [ ! -r "${exit_helper}" ]; then
+   exit_helper='/usr/share/dist-ai-tests-common/suite-exit.bash'
+fi
+for helper_file in "${lib}" "${exit_helper}"; do
+   if [ ! -r "${helper_file}" ]; then
+      printf '%s\n' "FATAL: ${helper_file} not found (checkout or installed)" >&2
+      exit 1
+   fi
+done
+# shellcheck source=./isn-nat-lib.bsh
+source "${lib}"
+# shellcheck source=../dist-ai-tests-common/suite-exit.bash
+source "${exit_helper}"
+
+WORK=''
+bg_pids=()
+g_seq=''
+w_seq=''
+drop_user=''
+
+# shellcheck disable=SC2317  ## reached only via the EXIT trap
+cleanup() {
+   local pid
+   for pid in "${bg_pids[@]:-}"; do
+      if [ -n "${pid}" ]; then
+         kill "${pid}" 2>/dev/null || true
+      fi
+   done
+   ip netns delete isns 2>/dev/null || true
+   ip link delete veth0 2>/dev/null || true
+   if [ -n "${WORK}" ] && [ -d "${WORK}" ]; then
+      safe-rm --recursive --force -- "${WORK}" || true
+   fi
+   return 0
+}
+trap cleanup EXIT
+
+## Start a throwaway TCP sink; records its pid for cleanup.
+start_sink() {
+   local bind_addr="$1"
+   socat -u "TCP-LISTEN:${PORT},bind=${bind_addr},reuseaddr,fork" /dev/null \
+      >/dev/null 2>&1 &
+   bg_pids+=( "$!" )
+}
+
+## cap_slirp: libslirp via slirp4netns (== VirtualBox NAT family). 10.0.2.2 is
+## slirp's host-loopback alias, so the guest reaches the loopback sink through it.
+cap_slirp() {
+   local hcap nspid
+   start_sink '127.0.0.1'
+   sleep 0.3
+   timeout --kill-after=5 10 tcpdump --interface lo --no-promiscuous-mode -n -S -c 1 \
+      "(tcp[tcpflags] & (tcp-syn|tcp-ack)) == tcp-syn and dst port ${PORT}" \
+      >"${WORK}/slirp_wire.txt" 2>/dev/null &
+   hcap="$!"
+   bg_pids+=( "${hcap}" )
+   unshare --net -- sleep 25 &
+   nspid="$!"
+   bg_pids+=( "${nspid}" )
+   sleep 0.3
+   slirp4netns --configure --mtu=1500 "${nspid}" tap0 >/dev/null 2>&1 &
+   bg_pids+=( "$!" )
+   sleep 1.2
+   nsenter --net --target "${nspid}" -- bash -c "
+      timeout --kill-after=5 7 tcpdump --interface tap0 --no-promiscuous-mode -n -S -c 1 \
+         '(tcp[tcpflags] & (tcp-syn|tcp-ack)) == tcp-syn and dst port ${PORT}' \
+         >'${WORK}/slirp_guest.txt' 2>/dev/null &
+      sleep 0.6
+      timeout --kill-after=2 3 socat -u - 'TCP:10.0.2.2:${PORT}' </dev/null >/dev/null 2>&1 || true
+      sleep 1.2
+   "
+   wait "${hcap}" 2>/dev/null || true
+   g_seq="$( isn_seq_from_text <"${WORK}/slirp_guest.txt" )"
+   w_seq="$( isn_seq_from_text <"${WORK}/slirp_wire.txt" )"
+}
+
+## cap_pasta: passt via pasta (== KVM default). pasta must run UNPRIVILEGED (it
+## hangs as real root); its user namespace keeps the in-netns tcpdump's CAP_NET_RAW
+## ('-Z root' stops tcpdump dropping to an unmapped user). The guest SYN is read on
+## pasta's STDOUT to avoid the user-ns uid-map write barrier; pasta maps the default
+## gateway to the host, so the gateway address reaches the loopback sink.
+cap_pasta() {
+   local hcap guest_out
+   start_sink '127.0.0.1'
+   sleep 0.3
+   timeout --kill-after=5 15 tcpdump --interface lo --no-promiscuous-mode -n -S -c 1 \
+      "(tcp[tcpflags] & (tcp-syn|tcp-ack)) == tcp-syn and dst port ${PORT}" \
+      >"${WORK}/pasta_wire.txt" 2>/dev/null &
+   hcap="$!"
+   bg_pids+=( "${hcap}" )
+   sleep 0.3
+   guest_out="$( runuser -u "${drop_user}" -- timeout 20 pasta --config-net -- bash -c "
+      gw=\$( ip -4 route show default | awk '{print \$3; exit}' )
+      ( sleep 1.2; [ -n \"\${gw}\" ] && timeout --kill-after=2 3 socat -u - \"TCP:\${gw}:${PORT}\" </dev/null >/dev/null 2>&1 ) &
+      timeout --kill-after=5 6 tcpdump -Z root --interface any --no-promiscuous-mode -n -S -c 1 \
+         '(tcp[tcpflags] & (tcp-syn|tcp-ack)) == tcp-syn and dst port ${PORT}' 2>/dev/null
+      wait
+   " 2>/dev/null )" || true
+   wait "${hcap}" 2>/dev/null || true
+   g_seq="$( printf '%s\n' "${guest_out}" | isn_seq_from_text )"
+   w_seq="$( isn_seq_from_text <"${WORK}/pasta_wire.txt" )"
+}
+
+## cap_routed: a veth pair with the host forwarding at L3 (== Qubes-Whonix,
+## bare-metal Kicksecure, or a consumer router's NAPT). No TCP termination, so the
+## guest ISN reaches the host unchanged.
+cap_routed() {
+   local hcap
+   ip netns delete isns 2>/dev/null || true
+   ip link delete veth0 2>/dev/null || true
+   ip netns add isns
+   ip link add veth0 type veth peer name veth1
+   ip link set veth1 netns isns
+   ip address add 10.9.9.1/24 dev veth0
+   ip link set veth0 up
+   ip netns exec isns ip address add 10.9.9.2/24 dev veth1
+   ip netns exec isns ip link set veth1 up
+   ip netns exec isns ip link set lo up
+   ip netns exec isns ip route add default via 10.9.9.1
+   start_sink '10.9.9.1'
+   sleep 0.3
+   timeout --kill-after=5 10 tcpdump --interface veth0 --no-promiscuous-mode -n -S -c 1 \
+      "(tcp[tcpflags] & (tcp-syn|tcp-ack)) == tcp-syn and dst port ${PORT}" \
+      >"${WORK}/routed_wire.txt" 2>/dev/null &
+   hcap="$!"
+   bg_pids+=( "${hcap}" )
+   sleep 0.4
+   ip netns exec isns bash -c "
+      timeout --kill-after=5 7 tcpdump --interface veth1 --no-promiscuous-mode -n -S -c 1 \
+         '(tcp[tcpflags] & (tcp-syn|tcp-ack)) == tcp-syn and dst port ${PORT}' \
+         >'${WORK}/routed_guest.txt' 2>/dev/null &
+      sleep 0.8
+      timeout --kill-after=2 3 socat -u - 'TCP:10.9.9.1:${PORT}' </dev/null >/dev/null 2>&1 || true
+      sleep 1.2
+   "
+   wait "${hcap}" 2>/dev/null || true
+   ip netns delete isns 2>/dev/null || true
+   ip link delete veth0 2>/dev/null || true
+   g_seq="$( isn_seq_from_text <"${WORK}/routed_guest.txt" )"
+   w_seq="$( isn_seq_from_text <"${WORK}/routed_wire.txt" )"
+}
+
+require_env() {
+   local tool
+   if [ "$( id -u )" != '0' ]; then
+      result_skip_env_unmet "needs root for host-side packet capture"
+   fi
+   for tool in pasta slirp4netns tcpdump unshare nsenter ip socat runuser awk; do
+      if ! type -P "${tool}" >/dev/null 2>&1; then
+         result_skip_env_unmet "required tool '${tool}' is not installed"
+      fi
+   done
+   if ! id "${drop_user}" >/dev/null 2>&1; then
+      result_skip_env_unmet "unprivileged drop user '${drop_user}' does not exist"
+   fi
+}
+
+main() {
+   local mode_arg='all' modes=() mode rc fail=0 env_unmet=0
+   while [ "$#" -gt 0 ]; do
+      case "$1" in
+         --mode)
+            mode_arg="${2:-}"
+            shift 2
+            ;;
+         --mode=*)
+            mode_arg="${1#--mode=}"
+            shift
+            ;;
+         *)
+            printf '%s\n' "isn-nat-capture: unknown argument '$1'" >&2
+            exit 2
+            ;;
+      esac
+   done
+   case "${mode_arg}" in
+      all)
+         modes=( libslirp passt routed )
+         ;;
+      libslirp|passt|routed)
+         modes=( "${mode_arg}" )
+         ;;
+      *)
+         printf '%s\n' "isn-nat-capture: unknown mode '${mode_arg}'" >&2
+         exit 2
+         ;;
+   esac
+
+   ## pasta must drop out of root; prefer the invoking sudo user, else 'nobody'.
+   drop_user="${SUDO_USER:-}"
+   if [ -z "${drop_user}" ] || [ "${drop_user}" = 'root' ]; then
+      drop_user='nobody'
+   fi
+   require_env
+
+   WORK="$( mktemp --directory )"
+
+   for mode in "${modes[@]}"; do
+      g_seq=''
+      w_seq=''
+      case "${mode}" in
+         libslirp)
+            cap_slirp
+            ;;
+         passt)
+            cap_pasta
+            ;;
+         routed)
+            cap_routed
+            ;;
+      esac
+      if [ -z "${g_seq}" ] || [ -z "${w_seq}" ]; then
+         printf '%s\n' "mode=${mode} guest_isn=${g_seq:-none} wire_isn=${w_seq:-none} verdict=inconclusive (capture gap; cannot run here)"
+         env_unmet=$(( env_unmet + 1 ))
+         continue
+      fi
+      rc=0
+      isn_check "${mode}" "${g_seq}" "${w_seq}" || rc=$?
+      if [ "${rc}" -ne 0 ]; then
+         fail=$(( fail + 1 ))
+      fi
+   done
+
+   printf '%s\n' "tirdad-isn-nat capture: ${fail} fail, ${env_unmet} inconclusive of ${#modes[@]} mode(s)"
+   suite_exit "${fail}" '0' "${env_unmet}"
+}
+
+main "$@"

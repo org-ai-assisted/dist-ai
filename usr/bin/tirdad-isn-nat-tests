@@ -1,0 +1,62 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Opt-in e2e lane: does the host's user-mode NAT discard the guest's (tirdad's)
+## TCP ISN? Proves the premise behind "tirdad in a non-Qubes Whonix VM is bypassed"
+## -- libslirp (VirtualBox NAT) and passt (KVM default) re-originate the TCP
+## connection on a fresh host socket, so the wire ISN is the host's, while an L3
+## routed path (Qubes-Whonix, bare metal, a home router's NAPT) preserves it.
+##
+## Two parts:
+##   - the no-privilege parser/verdict unit test runs on EVERY invocation, so a
+##     regression in the comparison logic fails even in container CI;
+##   - the privileged three-stack capture is OPT-IN (TIRDAD_ISN_NAT_TEST=1) and
+##     needs real root + the stacks installed; absent either it SKIPs (78), so this
+##     lane never gates a PR (registered in dist-ai-tests-all's e2e_suites, and CI
+##     runs --core only).
+##
+## Exit codes (dist-ai-tests-all contract): 0 PASS, 1 FAIL, 78 SKIP:env-unmet.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+script_dir="$( dirname -- "$( readlink --canonicalize -- "$0" )" )"
+if [ -d "${script_dir}/../share/tirdad-isn-nat-tests" ]; then
+   tests_dir="${script_dir}/../share/tirdad-isn-nat-tests"
+else
+   tests_dir='/usr/share/tirdad-isn-nat-tests'
+fi
+exit_helper="${tests_dir}/../dist-ai-tests-common/suite-exit.bash"
+if [ ! -r "${exit_helper}" ]; then
+   exit_helper='/usr/share/dist-ai-tests-common/suite-exit.bash'
+fi
+if [ ! -r "${exit_helper}" ]; then
+   printf '%s\n' "FATAL: suite-exit.bash not found (checkout or installed)" >&2
+   exit 1
+fi
+# shellcheck source=../share/dist-ai-tests-common/suite-exit.bash
+source "${exit_helper}"
+
+## Always-on: the parser / verdict logic. A failure here is a real FAIL, not a
+## skip -- it runs with no privileges, so there is no environment excuse.
+bash "${tests_dir}/isn_nat_lib_test.sh"
+
+## The capture itself is opt-in: it needs real root and spins up network
+## namespaces + passt + slirp4netns, so it must be requested explicitly and never
+## runs in ordinary CI.
+if [ "${TIRDAD_ISN_NAT_TEST:-}" != '1' ]; then
+   ## style-ok: allow-skip: opt-in privileged capture; set TIRDAD_ISN_NAT_TEST=1 to run it
+   result_skip_env_unmet "opt-in: set TIRDAD_ISN_NAT_TEST=1 to run the privileged ISN capture"
+fi
+
+## The engine's exit code (0 PASS / 1 FAIL / 78 SKIP:env-unmet) is this suite's.
+"${tests_dir}/isn-nat-capture" "$@"

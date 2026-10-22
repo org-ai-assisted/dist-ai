@@ -1,0 +1,83 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Pure parse + verdict helpers for the tirdad TCP-ISN NAT test. Sourced by the
+## privileged capture engine (isn-nat-capture) AND by the no-privilege unit test
+## (isn_nat_lib_test.sh), so the comparison logic is exercised in CI even where
+## the capture itself cannot run.
+##
+## Premise under test: a user-mode NAT stack (libslirp = VirtualBox NAT family,
+## passt = KVM default) TERMINATES the guest TCP connection and opens a fresh host
+## socket, so the on-wire ISN is the host's -- the guest-chosen (tirdad) ISN is
+## discarded. A routed / L3-forwarding path (Qubes-Whonix, bare metal, a consumer
+## home router's NAPT) leaves the segment intact, so the guest ISN survives.
+##
+## Pure sourced-only fragment: functions only, no strict-mode preamble.
+## style-ok: no-strict -- sourced-only fragment
+
+## Read tcpdump '-S' output on stdin; print the first absolute SYN sequence number
+## (empty if none seen). '-S' prints the absolute sequence as 'seq <N>'.
+isn_seq_from_text() {
+   local line rest seq
+   while IFS= read -r line; do
+      case "${line}" in
+         *" seq "*)
+            rest="${line#*" seq "}"
+            seq="${rest%%[!0-9]*}"
+            if [ -n "${seq}" ]; then
+               printf '%s' "${seq}"
+               return 0
+            fi
+            ;;
+      esac
+   done
+   return 0
+}
+
+## isn_verdict <guest_seq> <wire_seq>: 'preserved' if equal, 'regenerated' if they
+## differ, 'inconclusive' if either is empty (a capture gap, not a verdict).
+isn_verdict() {
+   local guest="${1:-}" wire="${2:-}"
+   if [ -z "${guest}" ] || [ -z "${wire}" ]; then
+      printf '%s' 'inconclusive'
+      return 0
+   fi
+   if [ "${guest}" = "${wire}" ]; then
+      printf '%s' 'preserved'
+   else
+      printf '%s' 'regenerated'
+   fi
+}
+
+## isn_expected <mode>: the verdict a correct stack must produce for that mode.
+## Unknown mode returns non-zero.
+isn_expected() {
+   case "${1:-}" in
+      libslirp|passt)
+         printf '%s' 'regenerated'
+         ;;
+      routed)
+         printf '%s' 'preserved'
+         ;;
+      *)
+         return 1
+         ;;
+   esac
+}
+
+## isn_check <mode> <guest_seq> <wire_seq>: print the labelled result and return 0
+## iff the measured verdict matches the expected one for that mode.
+isn_check() {
+   local mode="${1:-}" guest="${2:-}" wire="${3:-}" verdict expected
+   verdict="$( isn_verdict "${guest}" "${wire}" )"
+   if ! expected="$( isn_expected "${mode}" )"; then
+      printf '%s\n' "isn_check: unknown mode '${mode}'" >&2
+      return 1
+   fi
+   printf '%s\n' "mode=${mode} guest_isn=${guest:-none} wire_isn=${wire:-none} verdict=${verdict} expected=${expected}"
+   [ "${verdict}" = "${expected}" ]
+}
