@@ -234,19 +234,39 @@ cap_routed() {
    w_seq="$( isn_seq_from_text <"${WORK}/routed_wire.txt" )"
 }
 
+## Require only the tools the SELECTED modes use, so e.g. '--mode routed' (ip +
+## nft + sysctl) does not skip env-unmet on a host without pasta/slirp4netns.
+## Shared: root + the host/guest tcpdump + the socat sink. drop_user is a passt-
+## only need (pasta must run unprivileged).
 require_env() {
-   local tool
+   local tool mode
+   local -a tools=( tcpdump socat )
    if [ "$( id -u )" != '0' ]; then
       result_skip_env_unmet "needs root for host-side packet capture"
    fi
-   for tool in pasta slirp4netns tcpdump unshare nsenter ip socat runuser awk nft sysctl; do
+   for mode in "$@"; do
+      case "${mode}" in
+         libslirp)
+            tools+=( slirp4netns unshare nsenter )
+            ;;
+         passt)
+            tools+=( pasta runuser ip awk )
+            ;;
+         routed)
+            tools+=( ip nft sysctl )
+            ;;
+      esac
+   done
+   for tool in "${tools[@]}"; do
       if ! type -P "${tool}" >/dev/null 2>&1; then
          result_skip_env_unmet "required tool '${tool}' is not installed"
       fi
    done
-   if ! id "${drop_user}" >/dev/null 2>&1; then
-      result_skip_env_unmet "unprivileged drop user '${drop_user}' does not exist"
-   fi
+   for mode in "$@"; do
+      if [ "${mode}" = 'passt' ] && ! id "${drop_user}" >/dev/null 2>&1; then
+         result_skip_env_unmet "unprivileged drop user '${drop_user}' does not exist"
+      fi
+   done
 }
 
 main() {
@@ -289,7 +309,7 @@ main() {
    if [ -z "${drop_user}" ] || [ "${drop_user}" = 'root' ]; then
       drop_user='nobody'
    fi
-   require_env
+   require_env "${modes[@]}"
 
    ## Per-run random port ties each capture to its own connection.
    PORT=$(( 20000 + RANDOM % 20000 ))

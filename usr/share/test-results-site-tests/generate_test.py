@@ -365,6 +365,11 @@ def read(path):
         return handle.read()
 
 
+def read_bytes(path):
+    with open(path, "rb") as handle:
+        return handle.read()
+
+
 def tree_identical(a, b):
     """True if two directory trees have identical file paths AND identical bytes."""
     cmp = filecmp.dircmp(a, b)
@@ -589,16 +594,16 @@ check("regeneration is byte-identical (deterministic)", tree_identical(out1, out
 a_webp = os.path.join(out1, "kicksecure-lxqt-18-2-3-5-1", "kicksecure-lxqt__calamares-install.webp")
 check("run A webp has a cache entry",
       os.path.isfile(os.path.join(cache_dir, "kicksecure-lxqt-18-2-3-5-1.json")))
-a_bytes = open(a_webp, "rb").read()
+a_bytes = read_bytes(a_webp)
 os.utime(a_webp, (EPOCH, EPOCH))
 run_generator(plane, goldens, approvals_path, site1, cache_dir=cache_dir)
 check("incremental re-run REUSED run A webp (not re-encoded)",
       int(os.stat(a_webp).st_mtime) == EPOCH)
-check("incremental re-run kept run A webp byte-identical", open(a_webp, "rb").read() == a_bytes)
+check("incremental re-run kept run A webp byte-identical", read_bytes(a_webp) == a_bytes)
 os.utime(a_webp, (EPOCH, EPOCH))
 run_generator(plane, goldens, approvals_path, site1, cache_dir=cache_dir, full_rebuild=True)
 check("--full-rebuild re-encoded run A webp", int(os.stat(a_webp).st_mtime) != EPOCH)
-check("--full-rebuild kept run A webp byte-identical", open(a_webp, "rb").read() == a_bytes)
+check("--full-rebuild kept run A webp byte-identical", read_bytes(a_webp) == a_bytes)
 
 ## Review-fix regressions (ai-review 2026-10-22): the incremental cache must never serve a stale
 ## green when a dependency drifts. Each starts from a warm, consistent cache for run A.
@@ -613,13 +618,13 @@ os.utime(a_webp, (EPOCH, EPOCH))
 run_generator(plane, goldens, approvals_path, site1, cache_dir=cache_dir)
 check("a corrupted cached webp is re-encoded, not reused",
       int(os.stat(a_webp).st_mtime) != EPOCH)
-check("a corrupted cached webp is restored to correct bytes", open(a_webp, "rb").read() == a_bytes)
+check("a corrupted cached webp is restored to correct bytes", read_bytes(a_webp) == a_bytes)
 
 ## A: changing an approved GOLDEN -- stored in a per-lane SUBDIR -- must invalidate the cache, or
 ## a run stays green against a golden it no longer matches. Canary: the pre-fix flat listdir
 ## hashed NO golden (they are all in subdirs), so a golden change left the fingerprint unchanged.
 golden_a = os.path.join(goldens, "kicksecure-lxqt", "calamares-install.webp")
-golden_bytes = open(golden_a, "rb").read()
+golden_bytes = read_bytes(golden_a)
 os.utime(a_webp, (EPOCH, EPOCH))
 with open(golden_a, "ab") as handle:
     handle.write(b"golden-drift")
