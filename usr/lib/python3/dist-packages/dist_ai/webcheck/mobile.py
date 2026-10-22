@@ -401,46 +401,61 @@ _NOJS_JS = r"""
 """
 
 # Anchor-under-sticky-header occlusion: with a sticky/fixed top header, navigating
-# to an in-page #anchor lands the target at viewport-top -- UNDER the header --
-# unless the target carries scroll-margin-top (or the scroll container carries
-# scroll-padding-top) >= the header height. These sites have a sticky header + many
-# #anchors + partial scroll-margin/padding, so a target missing the offset is a real
-# "sticky element covers content" bug. Checks each anchored target's EFFECTIVE offset
-# (max of its scroll-margin-top and the root scroll-padding-top) against the header
-# height. No sticky header -> no risk (returns []). Primary engine, phone width.
+# to an in-page #anchor can land the target UNDER the header unless scroll-margin /
+# scroll-padding push it clear. Rather than STATICALLY model fragment-scroll
+# positioning (root-vs-body scroll-padding, scroll-padding + scroll-margin
+# additivity, %-values, scroll-range clamping, :target timing -- all easy to get
+# wrong), MEASURE it: let the browser perform the real fragment navigation, then
+# read where the target actually lands relative to the header's bottom edge. The
+# engine does the hard part; we observe the result -- immune to the modelling
+# pitfalls. Header band = the bottom-most top-pinned VISIBLE sticky/fixed element
+# (stacked bars included). No sticky header -> no risk. Primary engine, phone width.
 _ANCHOR_OCCLUSION_JS = r"""
 () => {
-  let headerH = 0;
-  for (const el of document.querySelectorAll('*')) {
-    const s = getComputedStyle(el);
-    if (s.position === 'sticky' || s.position === 'fixed') {
+  const root = document.documentElement;
+  const prevBehavior = root.style.scrollBehavior;
+  root.style.scrollBehavior = 'auto';           // force instant, synchronous scroll
+  const headerBottom = () => {
+    let b = 0;
+    for (const el of document.querySelectorAll('*')) {
+      const s = getComputedStyle(el);
+      if (s.position !== 'sticky' && s.position !== 'fixed') continue;
+      if (s.visibility === 'hidden' || s.display === 'none' || parseFloat(s.opacity) === 0) continue;
       const r = el.getBoundingClientRect();
-      if (r.top <= 1 && r.width > 0 && r.height > headerH) headerH = r.height;
+      if (r.top <= 1 && r.width > 0 && r.height > 0 && r.bottom > b) b = r.bottom;
+    }
+    return b;
+  };
+  if (headerBottom() < 1) { root.style.scrollBehavior = prevBehavior; return []; }
+  // Fragment targets from every same-document link (covers "#x", "/#x",
+  // "index.html#x"); a cross-page fragment absent from THIS doc is skipped below.
+  const frags = [];
+  for (const a of document.querySelectorAll('a[href]')) {
+    const href = a.getAttribute('href') || '';
+    const h = href.indexOf('#');
+    if (h >= 0 && href.slice(h + 1)) frags.push(href.slice(h + 1));
+  }
+  const out = [], seen = new Set(), savedY = window.scrollY;
+  for (const raw of frags) {
+    let dec; try { dec = decodeURIComponent(raw); } catch (e) { dec = raw; }
+    if (seen.has(dec)) continue;
+    seen.add(dec);
+    let t = document.getElementById(raw) || document.getElementById(dec);
+    if (!t) { try { t = document.querySelector('[name="' + CSS.escape(raw) + '"]'); } catch (e) {} }
+    if (!t) continue;                           // dangling anchor = the links gate's job
+    // Real browser fragment navigation, then measure the landed position.
+    location.hash = '';
+    location.hash = '#' + raw;
+    const hb = headerBottom();                  // re-read (a sticky header may resize)
+    const top = t.getBoundingClientRect().top;
+    if (top < hb - 2) {
+      out.push('#' + dec + ' lands at ' + Math.round(top) + 'px -- under the sticky header '
+        + '(bottom ' + Math.round(hb) + 'px); add scroll-margin-top / scroll-padding-top');
     }
   }
-  if (headerH < 1) return [];
-  const rootPad = Math.max(
-    parseFloat(getComputedStyle(document.documentElement).scrollPaddingTop) || 0,
-    parseFloat(getComputedStyle(document.body).scrollPaddingTop) || 0);
-  const out = [], seen = new Set();
-  for (const a of document.querySelectorAll('a[href^="#"]')) {
-    const raw = a.getAttribute('href').slice(1);
-    if (!raw) continue;                       // bare "#" is not a target
-    let id;
-    try { id = decodeURIComponent(raw); } catch (e) { id = raw; }
-    if (seen.has(id)) continue;
-    seen.add(id);
-    let t = null;
-    try { t = document.getElementById(id) || document.querySelector('[name="' + CSS.escape(id) + '"]'); }
-    catch (e) { t = document.getElementById(id); }
-    if (!t) continue;                         // a dangling anchor is the links gate's job
-    const sm = parseFloat(getComputedStyle(t).scrollMarginTop) || 0;
-    const effective = Math.max(sm, rootPad);
-    if (effective < headerH - 2) {
-      out.push('#' + id + ' lands under the sticky header (scroll offset ' +
-        Math.round(effective) + 'px < header ' + Math.round(headerH) + 'px)');
-    }
-  }
+  window.scrollTo(0, savedY);
+  try { history.replaceState(null, '', location.pathname + location.search); } catch (e) {}
+  root.style.scrollBehavior = prevBehavior;
   return out.slice(0, 8);
 }
 """
