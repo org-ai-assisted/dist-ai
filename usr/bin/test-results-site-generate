@@ -32,6 +32,7 @@ Exit: 0 ok, 2 usage/error.
 
 import argparse
 import datetime
+import hashlib
 import html
 import json
 import os
@@ -48,6 +49,13 @@ from dm_test_results import compare, model, site  # noqa: E402
 
 RESULTS_SUBDIR = "automated-test-results"
 IMAGE_MEDIA_PREFIX = "image/"
+
+## Incremental-regenerate cache format version. The lossless method=6 webp re-encode dominates
+## the generate cost, and a deploy re-runs it for every run on every invocation even when nothing
+## changed. The cache lets an unchanged run reuse its already-encoded webps + cached classification
+## instead of re-encoding. BUMP this on ANY change to how a run's page assets or buckets are
+## produced, so a generator change invalidates every cache entry (no stale output served).
+CACHE_FORMAT_VERSION = 1
 
 ## Legend: status -> human label. Order is display order on the page.
 STATUS_LABEL = [
@@ -398,6 +406,166 @@ def _flatten(sid):
 def _save_webp(image, path):
     ## Lossless webp, deterministic for a given input + params.
     image.save(path, format="WEBP", lossless=True, quality=100, method=6)
+
+
+def _file_sha256(path):
+    """sha256 hex of a file's bytes, following a symlink as the generator's own reads do; a fixed
+    sentinel if it cannot be read. A per-file read error must DEGRADE the fingerprint, never abort
+    the whole generate -- process_run already isolates the same error per shot as UNKNOWN."""
+    digest = hashlib.sha256()
+    try:
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 16), b""):
+                digest.update(chunk)
+    except OSError:
+        return "unreadable"
+    return digest.hexdigest()
+
+
+def _path_sha256_or_empty(path):
+    ## Follow a symlink (os.path.isfile is true for a symlink-to-file), because load_approvals /
+    ## load_mask_config follow it -- hashing by content keeps the fingerprint tracking what
+    ## classify actually reads, so an edit to a symlinked approvals/mask invalidates the cache.
+    if path and os.path.isfile(path):
+        return _file_sha256(path)
+    return ""
+
+
+def shared_input_fingerprint(goldens_dir, approvals_path, mask_config_path,
+                             tolerance, channel_threshold):
+    """Digest of every GENERATE-WIDE input that affects a run's page assets or buckets: the
+    cache format version, the approved goldens, the approvals map, the mask config, and the
+    compare thresholds. Folded into every run's fingerprint, so a golden change or a threshold
+    change invalidates the whole cache. Hashes files by raw bytes (no parse-shape assumptions)."""
+    digest = hashlib.sha256()
+    digest.update(("cachefmt=%d\0" % CACHE_FORMAT_VERSION).encode("ascii"))
+    digest.update(("approvals=%s\0" % _path_sha256_or_empty(approvals_path)).encode("ascii"))
+    digest.update(("mask=%s\0" % _path_sha256_or_empty(mask_config_path)).encode("ascii"))
+    digest.update(("tol=%r;ch=%r\0" % (tolerance, channel_threshold)).encode("ascii"))
+    ## Approved goldens live in per-lane SUBDIRS (goldens_dir/<lane>/<step>.webp) and classify()
+    ## reads each one, so WALK the tree and hash every golden by content, keyed by its path
+    ## relative to goldens_dir. A flat listdir sees only the lane dirs and hashes NO golden,
+    ## leaving a changed/deleted golden invisible to the cache -- a stale MATCH served as green.
+    if goldens_dir and os.path.isdir(goldens_dir):
+        golden_files = []
+        for dirpath, _dirnames, filenames in os.walk(goldens_dir):
+            for name in filenames:
+                full = os.path.join(dirpath, name)
+                if os.path.isfile(full):
+                    golden_files.append((os.path.relpath(full, goldens_dir), full))
+        for rel, full in sorted(golden_files):
+            digest.update(rel.encode("utf-8", "surrogatepass"))
+            digest.update(("=%s\0" % _file_sha256(full)).encode("ascii"))
+    return digest.hexdigest()
+
+
+def run_source_fingerprint(run_dir, result, shared_fp):
+    """Digest of one run's own inputs -- its result record (steps, attachments, exit/status/tails,
+    lane, id, stop time) plus the content of every source screenshot it references. With
+    shared_fp it fully determines the run's page assets and buckets."""
+    digest = hashlib.sha256()
+    digest.update(shared_fp.encode("ascii"))
+    digest.update(b"\0")
+    digest.update(json.dumps(result, ensure_ascii=True, sort_keys=True,
+                             separators=(",", ":")).encode("ascii"))
+    digest.update(b"\0")
+    for step in result["steps"]:
+        for attachment in step["attachments"]:
+            if not str(attachment.get("mediaType", "")).startswith(IMAGE_MEDIA_PREFIX):
+                continue
+            token = str(attachment.get("path", ""))
+            path = os.path.join(run_dir, token)
+            if os.path.isfile(path) and not os.path.islink(path):
+                sha = _file_sha256(path)
+            else:
+                sha = "absent-or-symlink"
+            digest.update(("%s=%s\0" % (token, sha)).encode("utf-8", "surrogatepass"))
+    return digest.hexdigest()
+
+
+def resolve_cache_dir(cache_dir_arg, site_out):
+    if cache_dir_arg:
+        return cache_dir_arg
+    base = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
+    ## Key the default cache by the absolute site-out path, so two different sites never share a
+    ## cache dir (a run id collision between sites would otherwise cross-contaminate).
+    key = hashlib.sha256(
+        os.path.abspath(site_out).encode("utf-8", "surrogatepass")).hexdigest()[:16]
+    return os.path.join(base, "test-results-site-generate", key)
+
+
+def load_cached_view(cache_dir, run_id, fingerprint, out_root, run_dir, result,
+                     now_unix, stale_seconds):
+    """A RunView rebuilt from cache when the fingerprint matches AND every cached webp is still
+    present on disk; else None (caller does a full build). Status/age are recomputed from the
+    cached buckets + the CURRENT clock, so freshness/stale stay correct with no image work."""
+    path = os.path.join(cache_dir, run_id + ".json")
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            cached = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    if cached.get("fingerprint") != fingerprint:
+        return None
+    shots = cached.get("shots")
+    if not isinstance(shots, list):
+        return None
+    webp_sha = cached.get("webp_sha")
+    if not isinstance(webp_sha, dict):
+        return None
+    page_dir = os.path.join(out_root, run_id)
+    ## The reuse is valid only if the page dir holds EXACTLY the generator-owned files this run
+    ## produces, with the SAME BYTES: every cached webp present and matching its recorded sha, and
+    ## NO extra file. A stray file (a stale -golden.webp a prior generate no longer emits, a
+    ## planted artifact) or a changed/corrupt webp means the full build is still owed -- fall back
+    ## so process_run's rmtree + re-encode run. (In normal operation the inputs that would change
+    ## an asset also change the fingerprint; this guards against on-disk drift of the output.)
+    expected = {"index.html"}
+    if shots:
+        expected.add("shots.json")
+    for shot in shots:
+        for key in ("webp", "golden_webp"):
+            name = shot.get(key)
+            if name:
+                expected.add(name)
+                full = os.path.join(page_dir, name)
+                if not os.path.isfile(full) or _file_sha256(full) != webp_sha.get(name):
+                    return None
+    try:
+        present = set(os.listdir(page_dir))
+    except OSError:
+        return None
+    if present - expected:
+        return None
+    buckets = [shot.get("bucket") for shot in shots]
+    status, age = site.run_cell_status(result, buckets, now_unix, stale_seconds)
+    return RunView(run_id, run_dir, result, status, age, shots)
+
+
+def store_cached_view(cache_dir, run_id, fingerprint, view, out_root):
+    """Persist a fully-built run's fingerprint + classification + the sha of each webp it wrote,
+    so the next generate can verify the on-disk bytes before reusing them. A cache write failure
+    never fails the generate -- it only forfeits the next run's speedup."""
+    if not isinstance(view.result, dict):
+        return
+    page_dir = os.path.join(out_root, run_id)
+    webp_sha = {}
+    for shot in view.shots:
+        for key in ("webp", "golden_webp"):
+            name = shot.get(key)
+            if name:
+                webp_sha[name] = _file_sha256(os.path.join(page_dir, name))
+    try:
+        os.makedirs(cache_dir, exist_ok=True)
+        payload = json.dumps({"fingerprint": fingerprint, "shots": view.shots,
+                              "webp_sha": webp_sha},
+                             ensure_ascii=True, sort_keys=True, indent=2) + "\n"
+        tmp = os.path.join(cache_dir, run_id + ".json.tmp")
+        with open(tmp, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+        os.replace(tmp, os.path.join(cache_dir, run_id + ".json"))
+    except (OSError, TypeError, ValueError):
+        pass
 
 
 def select_keep(views, history):
@@ -817,6 +985,12 @@ def main(argv):
     parser.add_argument("--channel-threshold", type=int,
                         default=compare.DEFAULT_CHANNEL_THRESHOLD)
     parser.add_argument("--source-date-epoch", default=None)
+    parser.add_argument("--cache-dir", default=None,
+                        help="incremental-regenerate cache location "
+                             "(default: a per-site dir under XDG_CACHE_HOME)")
+    parser.add_argument("--full-rebuild", action="store_true",
+                        help="ignore the incremental cache and re-encode every run "
+                             "(the cache is still refreshed)")
     args = parser.parse_args(argv)
 
     out_root = os.path.join(args.site_out, RESULTS_SUBDIR)
@@ -856,12 +1030,30 @@ def main(argv):
         used_ids.add(rid)
         assigned.append((run_dir, result, rid))
 
+    cache_dir = resolve_cache_dir(args.cache_dir, args.site_out)
+    shared_fp = shared_input_fingerprint(
+        goldens_dir, approvals_path, args.mask_config, args.tolerance, args.channel_threshold)
+
     views = []
     for run_dir, result, rid in assigned:
-        views.append(process_run(
-            run_dir, result, rid, out_root, goldens_dir, approvals, mask_config,
-            now_unix, stale_seconds, args.tolerance, args.channel_threshold,
-        ))
+        ## Incremental fast path: a run whose inputs are byte-identical to a prior generate reuses
+        ## its cached classification + already-encoded webps (status/age recomputed from the clock),
+        ## skipping the dominant method=6 re-encode. A NODATA (non-dict) run is cheap -- never cached.
+        view = None
+        fingerprint = None
+        if isinstance(result, dict):
+            fingerprint = run_source_fingerprint(run_dir, result, shared_fp)
+            if not args.full_rebuild:
+                view = load_cached_view(cache_dir, rid, fingerprint, out_root, run_dir,
+                                        result, now_unix, stale_seconds)
+        if view is None:
+            view = process_run(
+                run_dir, result, rid, out_root, goldens_dir, approvals, mask_config,
+                now_unix, stale_seconds, args.tolerance, args.channel_threshold,
+            )
+            if fingerprint is not None:
+                store_cached_view(cache_dir, rid, fingerprint, view, out_root)
+        views.append(view)
 
     ## Overview order: worst-first then newest-first, deterministic. The legend
     ## lists pass first; the SORT is the opposite -- the rows needing attention go

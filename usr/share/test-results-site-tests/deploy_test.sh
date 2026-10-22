@@ -91,5 +91,34 @@ check "pull invoked" "${argv}" "pull"
 check "pull carries --allow-system-path (the regression guard)" "${argv}" "--allow-system-path"
 check "pull targets the results plane" "${argv}" "/var/www/results"
 
+## F1 staging-on-disk: the pull's destination is the mktemp staging dir, which must land under
+## the disk-backed default base (HOME/.cache/test-results-deploy/deploy.XXXXXX), NOT a bare
+## mktemp on the small RAM tmpfs that overran the staging budget. The 'deploy.' template prefix
+## AND the .cache path are both new -- the old `mktemp --directory` had neither.
+check "staging is on the disk cache base, not the RAM tmpfs (F1)" \
+   "${argv}" "/.cache/test-results-deploy/deploy."
+if [ -d "${workdir}/.cache/test-results-deploy" ]; then
+   printf '%s\n' "PASS: staging base dir created on disk"
+   pass=$((pass + 1))
+else
+   printf '%s\n' "FAIL: staging base dir was not created (${workdir}/.cache/test-results-deploy)" >&2
+   fail=$((fail + 1))
+fi
+
+## F1 override: TEST_RESULTS_STAGING_DIR relocates the staging base (safe default, overridable).
+override_base="${workdir}/custom-stage"
+override_argv="${workdir}/sandbox.override.argv"
+cat > "${stubdir}/sandbox" <<EOF
+#!/bin/bash
+printf '%s\n' "\$@" > "${override_argv}"
+exit 7
+EOF
+chmod +x -- "${stubdir}/sandbox"
+PATH="${stubdir}:${PATH}" HOME="${workdir}" TEST_RESULTS_PAGES_REPO="${pages_repo}" \
+   TEST_RESULTS_REMOTE=/var/www/results TEST_RESULTS_STAGING_DIR="${override_base}" \
+   "${deploy}" >/dev/null 2>&1 || true
+check "TEST_RESULTS_STAGING_DIR overrides the staging base (F1)" \
+   "$(cat -- "${override_argv}" 2>/dev/null || true)" "${override_base}/deploy."
+
 printf '%s\n' "===== deploy_test: ${pass} pass, ${fail} fail ====="
 [ "${fail}" -eq 0 ]

@@ -93,7 +93,7 @@ python3 "${tests_dir}/dasharo-vbox-boot-test" \
 
 ## Opt-in: publish the verdict + serial capture to the automated-test-results
 ## plane, so this lane shows on org-ai-assisted.github.io/automated-test-results/
-## next to the image boot tests (the existing test-results-deploy timer renders
+## next to the image boot tests (run test-results-deploy from the qube afterwards to render
 ## the plane to the site). Enabled by DASHARO_VBOX_PUBLISH=1 or by setting
 ## IMAGE_TEST_RESULTS_ROOT; needs root + the plane dir, and only for a real verdict
 ## (0/1/2), never a 77 SKIP. Reuses the shared image-test publisher -- no second

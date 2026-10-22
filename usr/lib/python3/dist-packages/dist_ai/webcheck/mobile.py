@@ -21,6 +21,9 @@ layout and the computed cascade:
   - no <img> is broken (404/decode-fail: blank, and not a console error);
   - with JS DISABLED the core content (<h1> + visible body text) and the layout
     still hold (progressive enhancement -- content/layout never gated behind JS);
+  - no in-page #anchor target lands hidden under the sticky header (its
+    scroll-margin-top, or the scroll container's scroll-padding-top, covers the
+    header height);
   - the header items do not overlap across a width sweep.
 
 Geometry audits (overflow / element-overflow / broken-image) run on EVERY engine
@@ -397,6 +400,70 @@ _NOJS_JS = r"""
 }
 """
 
+# Anchor-under-sticky-header occlusion: with a sticky/fixed top header, navigating
+# to an in-page #anchor can land the target UNDER the header unless scroll-margin /
+# scroll-padding push it clear. Rather than STATICALLY model fragment-scroll
+# positioning (root-vs-body scroll-padding, scroll-padding + scroll-margin
+# additivity, %-values, scroll-range clamping, :target timing -- all easy to get
+# wrong), MEASURE it: let the browser perform the real fragment navigation, then
+# read where the target actually lands relative to the header's bottom edge. The
+# engine does the hard part; we observe the result -- immune to the modelling
+# pitfalls. Header band = the bottom-most top-pinned VISIBLE sticky/fixed element
+# (stacked bars included). No sticky header -> no risk. Primary engine, phone width.
+_ANCHOR_OCCLUSION_JS = r"""
+() => {
+  const root = document.documentElement;
+  const prevBehavior = root.style.scrollBehavior;
+  root.style.scrollBehavior = 'auto';           // force instant, synchronous scroll
+  const headerBottom = () => {
+    let b = 0;
+    const vw = window.innerWidth;
+    for (const el of document.querySelectorAll('*')) {
+      const s = getComputedStyle(el);
+      if (s.position !== 'sticky' && s.position !== 'fixed') continue;
+      if (s.visibility === 'hidden' || s.display === 'none' || parseFloat(s.opacity) === 0) continue;
+      const r = el.getBoundingClientRect();
+      // A top HEADER BAR spans most of the width; a narrow full-height fixed SIDE
+      // RAIL (also top-pinned) must NOT be counted as the header band -- its height
+      // would mark every anchor occluded. Require >= half the viewport width.
+      if (r.top <= 1 && r.height > 0 && r.width >= vw * 0.5 && r.bottom > b) b = r.bottom;
+    }
+    return b;
+  };
+  if (headerBottom() < 1) { root.style.scrollBehavior = prevBehavior; return []; }
+  // Fragment targets from every same-document link (covers "#x", "/#x",
+  // "index.html#x"); a cross-page fragment absent from THIS doc is skipped below.
+  const frags = [];
+  for (const a of document.querySelectorAll('a[href]')) {
+    const href = a.getAttribute('href') || '';
+    const h = href.indexOf('#');
+    if (h >= 0 && href.slice(h + 1)) frags.push(href.slice(h + 1));
+  }
+  const out = [], seen = new Set(), savedY = window.scrollY;
+  for (const raw of frags) {
+    let dec; try { dec = decodeURIComponent(raw); } catch (e) { dec = raw; }
+    if (seen.has(dec)) continue;
+    seen.add(dec);
+    let t = document.getElementById(raw) || document.getElementById(dec);
+    if (!t) { try { t = document.querySelector('[name="' + CSS.escape(raw) + '"]'); } catch (e) {} }
+    if (!t) continue;                           // dangling anchor = the links gate's job
+    // Real browser fragment navigation, then measure the landed position.
+    location.hash = '';
+    location.hash = '#' + raw;
+    const hb = headerBottom();                  // re-read (a sticky header may resize)
+    const top = t.getBoundingClientRect().top;
+    if (top < hb - 2) {
+      out.push('#' + dec + ' lands at ' + Math.round(top) + 'px -- under the sticky header '
+        + '(bottom ' + Math.round(hb) + 'px); add scroll-margin-top / scroll-padding-top');
+    }
+  }
+  window.scrollTo(0, savedY);
+  try { history.replaceState(null, '', location.pathname + location.search); } catch (e) {}
+  root.style.scrollBehavior = prevBehavior;
+  return out.slice(0, 8);
+}
+"""
+
 def _skip(msg: str) -> NoReturn:
     sys.stderr.write('website-mobile-tests: SKIP (%s)\n' % msg)
     raise SystemExit(77)
@@ -617,6 +684,10 @@ def main():
                                         '<%s class=%r> %r (light)\n'
                                         % (url, item['cr'], item['need'],
                                            item['tag'].lower(), item['cls'], item['text']))
+                                for msg in page.evaluate(_ANCHOR_OCCLUSION_JS):
+                                    failures += 1
+                                    sys.stderr.write('FAIL %s: anchor occluded: %s\n'
+                                                     % (url, msg))
                             finally:
                                 page.close()
                         # Dark-scheme contrast: the prefers-color-scheme palette
@@ -702,7 +773,7 @@ def main():
     sys.stdout.write('website-mobile-tests: %d pages clean on [%s] -- no overflow at %s px, '
                      'header <=%dpx, WCAG-AA text contrast (%s), no element spill, '
                      'no broken images, content holds with JS off, '
-                     'no header overlap %s px\n'
+                     'no anchor under the sticky header, no header overlap %s px\n'
                      % (checked, ' '.join(browsers),
                         '/'.join(str(w) for w in OVERFLOW_WIDTHS), HEADER_MAX_PX,
                         '+'.join(COLOR_SCHEMES),

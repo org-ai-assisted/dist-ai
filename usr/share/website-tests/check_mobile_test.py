@@ -154,6 +154,15 @@ def run():
           and '_CANVAS_DARK' in main_body)
     check('no-JS lane wired',
           'java_script_enabled=False' in main_body and '_NOJS_JS' in main_body)
+    check('anchor-occlusion gate wired', '_ANCHOR_OCCLUSION_JS' in main_body)
+    # Empirical, not a static CSS model: navigate the fragment, then measure where
+    # the target lands vs the header bottom (the browser handles scroll-padding/
+    # margin/clamping). Must skip invisible sticky/fixed elements as the header.
+    check('anchor-occlusion JS measures real fragment navigation',
+          'location.hash' in cm._ANCHOR_OCCLUSION_JS
+          and 'getBoundingClientRect' in cm._ANCHOR_OCCLUSION_JS
+          and "'sticky'" in cm._ANCHOR_OCCLUSION_JS and "'fixed'" in cm._ANCHOR_OCCLUSION_JS
+          and 'visibility' in cm._ANCHOR_OCCLUSION_JS)
     check('no-JS probes content + layout (ancestor-visibility aware)',
           'h1' in cm._NOJS_JS and 'textlen' in cm._NOJS_JS
           and 'overflow' in cm._NOJS_JS and 'checkVisibility' in cm._NOJS_JS)

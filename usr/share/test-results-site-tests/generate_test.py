@@ -342,14 +342,21 @@ def _rewrite(path, old, new):
         handle.write(text.replace(old, new))
 
 
-def run_generator(root, goldens, approvals_path, site_out):
+def run_generator(root, goldens, approvals_path, site_out, cache_dir=None,
+                  full_rebuild=False):
     os.makedirs(site_out, exist_ok=True)
     env = dict(os.environ)
     env["SOURCE_DATE_EPOCH"] = str(EPOCH)
+    argv = [GEN, "--results-root", root, "--site-out", site_out,
+            "--goldens-dir", goldens, "--approvals", approvals_path]
+    ## Pin the incremental cache into the test work dir so the run is hermetic (never touches the
+    ## real XDG_CACHE_HOME) and the cache behaviour is exercised deterministically.
+    if cache_dir is not None:
+        argv += ["--cache-dir", cache_dir]
+    if full_rebuild:
+        argv += ["--full-rebuild"]
     subprocess.run(  # nosec B603 -- fixed argv, in-tree generator
-        [GEN, "--results-root", root, "--site-out", site_out,
-         "--goldens-dir", goldens, "--approvals", approvals_path],
-        check=True, env=env,
+        argv, check=True, env=env,
     )
 
 
@@ -377,8 +384,9 @@ os.makedirs(plane)
 os.makedirs(goldens)
 build_plane(plane, goldens, approvals_path)
 
+cache_dir = os.path.join(work, "gen-cache")
 site1 = os.path.join(work, "site1")
-run_generator(plane, goldens, approvals_path, site1)
+run_generator(plane, goldens, approvals_path, site1, cache_dir=cache_dir)
 out1 = os.path.join(site1, "automated-test-results")
 overview = read(os.path.join(out1, "index.html"))
 
@@ -564,11 +572,86 @@ check("full-story milestones render in capture order",
 ## single-shot run keeps the plain placeholder caption (no <strong> milestone label).
 check("single-shot green run has no milestone label", "<strong>" not in a_page)
 
-## Determinism: a second generation over identical input is byte-identical.
+## Determinism: a second generation over identical input is byte-identical. A separate site_out
+## (its own empty tree) is a cache MISS even sharing the cache dir -- the cached webps are not
+## present there -- so this still exercises a full build and proves determinism.
 site2 = os.path.join(work, "site2")
-run_generator(plane, goldens, approvals_path, site2)
+run_generator(plane, goldens, approvals_path, site2, cache_dir=cache_dir)
 out2 = os.path.join(site2, "automated-test-results")
 check("regeneration is byte-identical (deterministic)", tree_identical(out1, out2))
+
+## Incremental regenerate (F5): a re-run over the SAME site_out with unchanged inputs must REUSE
+## each run's already-encoded webp -- the dominant method=6 cost -- not re-encode it. Prove the
+## skip by pinning run A's webp mtime to an old value and asserting it survives an incremental
+## run (not rewritten) but IS rewritten under --full-rebuild. Byte content stays identical either
+## way. Canary: the pre-F5 generator has no cache and always re-encodes, so "mtime preserved"
+## FAILS on it.
+a_webp = os.path.join(out1, "kicksecure-lxqt-18-2-3-5-1", "kicksecure-lxqt__calamares-install.webp")
+check("run A webp has a cache entry",
+      os.path.isfile(os.path.join(cache_dir, "kicksecure-lxqt-18-2-3-5-1.json")))
+a_bytes = open(a_webp, "rb").read()
+os.utime(a_webp, (EPOCH, EPOCH))
+run_generator(plane, goldens, approvals_path, site1, cache_dir=cache_dir)
+check("incremental re-run REUSED run A webp (not re-encoded)",
+      int(os.stat(a_webp).st_mtime) == EPOCH)
+check("incremental re-run kept run A webp byte-identical", open(a_webp, "rb").read() == a_bytes)
+os.utime(a_webp, (EPOCH, EPOCH))
+run_generator(plane, goldens, approvals_path, site1, cache_dir=cache_dir, full_rebuild=True)
+check("--full-rebuild re-encoded run A webp", int(os.stat(a_webp).st_mtime) != EPOCH)
+check("--full-rebuild kept run A webp byte-identical", open(a_webp, "rb").read() == a_bytes)
+
+## Review-fix regressions (ai-review 2026-10-22): the incremental cache must never serve a stale
+## green when a dependency drifts. Each starts from a warm, consistent cache for run A.
+
+## C: a cached webp whose BYTES changed on disk (corruption, partial write) must be re-encoded,
+## not reused -- the cache records + verifies each webp's sha. Canary: the pre-fix hit checked
+## only that the filename existed, so it kept the corrupt bytes.
+run_generator(plane, goldens, approvals_path, site1, cache_dir=cache_dir)
+with open(a_webp, "ab") as handle:
+    handle.write(b"corruption")
+os.utime(a_webp, (EPOCH, EPOCH))
+run_generator(plane, goldens, approvals_path, site1, cache_dir=cache_dir)
+check("a corrupted cached webp is re-encoded, not reused",
+      int(os.stat(a_webp).st_mtime) != EPOCH)
+check("a corrupted cached webp is restored to correct bytes", open(a_webp, "rb").read() == a_bytes)
+
+## A: changing an approved GOLDEN -- stored in a per-lane SUBDIR -- must invalidate the cache, or
+## a run stays green against a golden it no longer matches. Canary: the pre-fix flat listdir
+## hashed NO golden (they are all in subdirs), so a golden change left the fingerprint unchanged.
+golden_a = os.path.join(goldens, "kicksecure-lxqt", "calamares-install.webp")
+golden_bytes = open(golden_a, "rb").read()
+os.utime(a_webp, (EPOCH, EPOCH))
+with open(golden_a, "ab") as handle:
+    handle.write(b"golden-drift")
+run_generator(plane, goldens, approvals_path, site1, cache_dir=cache_dir)
+check("a changed golden invalidates the cache (run re-processed)",
+      int(os.stat(a_webp).st_mtime) != EPOCH)
+with open(golden_a, "wb") as handle:
+    handle.write(golden_bytes)
+
+## D: one unreadable source screenshot must NOT abort the whole generate -- the fingerprint hash
+## degrades per-file like process_run isolates a per-shot read error. (Root bypasses file perms,
+## so the unreadable state is unprovable there -- skip the assertion, do not fake a pass.)
+if os.geteuid() != 0:
+    bad_src = os.path.join(plane, "kicksecure-lxqt-18-2-3-5", "20261006T000000Z",
+                           "calamares-install.png")
+    src_mode = os.stat(bad_src).st_mode
+    os.chmod(bad_src, 0)
+    rc = subprocess.run(  # nosec B603 -- fixed argv, in-tree generator
+        [GEN, "--results-root", plane, "--site-out", site1, "--goldens-dir", goldens,
+         "--approvals", approvals_path, "--cache-dir", cache_dir, "--full-rebuild"],
+        env={**os.environ, "SOURCE_DATE_EPOCH": str(EPOCH)}).returncode
+    os.chmod(bad_src, src_mode)
+    if rc == 0:
+        print("ok: an unreadable source screenshot does not crash the generate")
+    else:
+        print("FAIL: unreadable source crashed the generate (rc=%d)" % rc, file=sys.stderr)
+        _failures += 1
+else:
+    print("ok: unreadable-source check skipped (running as root; perms unprovable)")
+
+## Restore a clean, consistent cache + output for run A before the downstream checks.
+run_generator(plane, goldens, approvals_path, site1, cache_dir=cache_dir, full_rebuild=True)
 
 ## Stale-artifact cleanup: a '<shot>-golden.webp' is written only while a shot is CHANGED;
 ## once the shot becomes MATCH the generator stops emitting it. A file left in the run dir
@@ -579,7 +662,9 @@ stale_run = os.path.join(out1, "kicksecure-lxqt-18-2-3-5-1")
 stale_golden = os.path.join(stale_run, "kicksecure-lxqt__calamares-install-golden.webp")
 with open(stale_golden, "wb") as handle:
     handle.write(b"stale-golden-from-a-prior-generate")
-run_generator(plane, goldens, approvals_path, site1)
+## Even with the incremental cache warm for this run, an unexpected file in the page dir forces a
+## full rebuild (orphan-purge is still owed), so the stale artifact is removed.
+run_generator(plane, goldens, approvals_path, site1, cache_dir=cache_dir)
 check("stale per-run -golden.webp removed on regenerate", not os.path.exists(stale_golden))
 check("regenerated MATCH run still rebuilt its page",
       os.path.isfile(os.path.join(stale_run, "index.html")))
