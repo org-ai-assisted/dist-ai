@@ -89,7 +89,8 @@ def build_createvm_argv(vmname, ostype, basefolder=None, vboxmanage=VBOXMANAGE):
 
 def build_modifyvm_argv(vmname, *, memory=None, firmware=None, nic=None,
                         intnet=None, graphicscontroller=None, vram=None,
-                        mouse=None, usb=None, vboxmanage=VBOXMANAGE):
+                        mouse=None, usb=None, chipset=None, hpet=None,
+                        cpuidset=None, vboxmanage=VBOXMANAGE):
     """Set memory, firmware/SecureBoot, networking, graphics and pointer on a VM.
 
     intnet wins over nic: a per-Linux-user-unique internal network name is how
@@ -105,12 +106,22 @@ def build_modifyvm_argv(vmname, *, memory=None, firmware=None, nic=None,
     (vboxapi) drive needs to click GUI widgets by screenshot pixel coordinate
     WITHOUT Guest Additions -- the low-mental-load alternative to blind Tab-key
     navigation for form pages (Calamares LUKS passphrase, user creation).
+
+    chipset/hpet/cpuidset serve the coreboot firmware port (build_coreboot_vm_plan):
+    chipset='piix3' + hpet='on' match the coreboot board emulation, and cpuidset is
+    a 5-tuple (leaf, eax, ebx, ecx, edx) for '--cpuid-set', advertising a sane
+    physical-address width the UefiPayload needs. All three default None and emit
+    nothing, so every existing caller's argv is byte-identical.
     """
     argv = [vboxmanage, 'modifyvm', vmname]
     if memory is not None:
         argv += ['--memory', str(memory)]
     if firmware is not None:
         argv += ['--firmware', _FIRMWARE[firmware]]
+    if chipset is not None:
+        argv += ['--chipset', chipset]
+    if hpet is not None:
+        argv += ['--hpet', hpet]
     if graphicscontroller is not None:
         argv += ['--graphicscontroller', graphicscontroller]
     if vram is not None:
@@ -119,6 +130,8 @@ def build_modifyvm_argv(vmname, *, memory=None, firmware=None, nic=None,
         argv += ['--mouse', mouse]
     if usb is not None:
         argv += ['--usb-' + usb, 'on']
+    if cpuidset is not None:
+        argv += ['--cpuid-set', *cpuidset]
     if intnet is not None:
         argv += ['--nic1', 'intnet', '--intnet1', intnet]
     elif nic is not None:
@@ -420,6 +433,74 @@ def build_serial_vm_plan(vmname, *, iso=None, disk=None, firmware='efi',
                                      vboxmanage=vboxmanage),
         ]
     return plan
+
+
+## --- coreboot + UefiPayload firmware port (the dasharo-vbox lane) -------------
+## VBox's stock EFI is OVMF; the port boots a coreboot.rom whose UefiPayloadPkg
+## publishes a GOP on VBox's linear framebuffer, so the firmware/boot-menu render
+## graphically (like VBox's own EFI) and an OS boots through it. The patched VBox
+## DevEFI consumes two extradata keys under the SAME efi-device namespace the DMI
+## overrides use: EfiRom (the coreboot.rom path) + CorebootRom=1 (load it as a
+## coreboot image, not OVMF). This is PURELY ADDITIVE: coreboot layers on the
+## existing 'efi' firmware device, so '--firmware' / _FIRMWARE are unchanged.
+
+## cpuid leaf 0x80000008 (physical/virtual address sizes): the UefiPayload needs a
+## sane phys-addr width; advertise a 36-bit one. 5-tuple for '--cpuid-set'.
+CB_CPUIDSET = ('0x80000008', '0x00003024', '0x791ef257', '0x0000400f', '0x00010000')
+
+
+def build_coreboot_rom_argv(vmname, efi_rom, vboxmanage=VBOXMANAGE):
+    """Ordered setextradata argv wiring the coreboot ROM into VBox's EFI device:
+    EfiRom = the coreboot.rom (absolute path, read at VM start), CorebootRom = 1.
+
+    Same VBoxInternal/Devices/efi/0/Config/ namespace as the EFI DMI overrides."""
+    base = 'VBoxInternal/Devices/efi/0/Config/'
+    return [
+        [vboxmanage, 'setextradata', vmname, base + 'EfiRom',
+         os.path.abspath(efi_rom)],
+        [vboxmanage, 'setextradata', vmname, base + 'CorebootRom', '1'],
+    ]
+
+
+def build_coreboot_vm_plan(vmname, efi_rom, *, memory=2048, uart_socket=None,
+                           vboxmanage=VBOXMANAGE):
+    """Ordered VBoxManage argv to build a fresh VM that boots the coreboot+UefiPayload
+    ROM (the dasharo firmware port) headless on the VBox linear framebuffer.
+
+    Mirrors the proven-working config: Other_64, EFI firmware, piix3 chipset + HPET,
+    the 36-bit-phys cpuid leaf, vboxvga + 32 MiB VRAM (coreboot drives its bochs-dispi
+    linear framebuffer, which the UefiPayload GOP publishes), the EfiRom/CorebootRom
+    extradata, and no boot media -- the firmware drops to its UEFI shell / boot menu.
+    A uart_socket wires COM1 to a host UNIX socket so the run path can watch the
+    firmware serial log and trigger an ACPI S5 shutdown (reset -s)."""
+    plan = [
+        build_createvm_argv(vmname, 'Other_64', vboxmanage=vboxmanage),
+        build_modifyvm_argv(vmname, memory=memory, firmware='efi',
+                            graphicscontroller='vboxvga', vram=32,
+                            chipset='piix3', hpet='on', cpuidset=CB_CPUIDSET,
+                            vboxmanage=vboxmanage),
+    ]
+    plan += build_coreboot_rom_argv(vmname, efi_rom, vboxmanage=vboxmanage)
+    if uart_socket is not None:
+        plan.append(build_uart_server_argv(vmname, uart_socket,
+                                           vboxmanage=vboxmanage))
+    return plan
+
+
+## Firmware-run verdict predicates (pure; drive the coreboot firmware boot test).
+UEFI_SHELL_MARKER = 'UEFI Interactive Shell'
+S5_MARKER = 'Entering S5 power state'
+
+
+def uefi_shell_reached(serial_text):
+    """True when the firmware serial capture shows the UEFI shell came up."""
+    return UEFI_SHELL_MARKER in serial_text
+
+
+def s5_shutdown_happened(log_text):
+    """True when an ACPI S5 power-down (reset -s, written WITH SLP_EN) was logged --
+    proof the firmware's ACPI is functional, not just that the shell came up."""
+    return S5_MARKER in log_text
 
 
 ## --- AMD-V availability for VirtualBox (pure decision) -----------------------
@@ -788,13 +869,16 @@ class HwAccelError(SetupError):
     """The VM booted WITHOUT AMD-V/VT-x hardware acceleration."""
 
 
-def require_vboxmanage():
-    """VBoxManage is a HARD dependency of every real run path -- loud SETUP if absent."""
+def require_vboxmanage(vboxmanage=VBOXMANAGE):
+    """VBoxManage is a HARD dependency of every real run path -- loud SETUP if absent.
+
+    vboxmanage may be a PATH name or an absolute path (shutil.which resolves both),
+    so the firmware lane can require its patched source-built VBoxManage."""
     import shutil
-    if shutil.which(VBOXMANAGE) is None:
+    if shutil.which(vboxmanage) is None:
         raise SetupError(
-            'VBoxManage not found on PATH -- the VBox backend requires VirtualBox'
-            ' (install it); this is a hard dependency, not a skip')
+            'VBoxManage (%s) not found -- the VBox backend requires VirtualBox'
+            ' (install it); this is a hard dependency, not a skip' % (vboxmanage,))
 
 
 ## Positive hardware-virt markers / fallback markers in a VM's VBox.log (HM subsystem).
@@ -934,10 +1018,10 @@ def boot_and_verify(vmname, expect, *, timeout=240, interval=15, shot=None,
                            shot=shot, vboxmanage=vboxmanage, tesseract=tesseract)
 
 
-def _poweroff_quietly(vmname):
+def _poweroff_quietly(vmname, vboxmanage=VBOXMANAGE):
     """Best-effort cleanup in a finally."""
     try:
-        _run(build_poweroff_argv(vmname))
+        _run(build_poweroff_argv(vmname, vboxmanage))
     except (subprocess.CalledProcessError, FileNotFoundError):
         ## the VM may already be off/gone, or VBoxManage missing -- not a failure.
         pass
@@ -1060,14 +1144,14 @@ def run_install_test(args):
     return rc
 
 
-def _teardown_serial_vm(vmname, uart_socket):
+def _teardown_serial_vm(vmname, uart_socket, vboxmanage=VBOXMANAGE):
     """Best-effort, idempotent teardown: power off, unregister+delete (drops the
     per-VM differencing image a multiattach disk created), remove the UART socket.
     Used by serial-down AND to clean up a serial-up that failed mid-build -- else a
     registered half-built VM blocks the next serial-up at createvm (name in use)."""
-    _poweroff_quietly(vmname)
+    _poweroff_quietly(vmname, vboxmanage)
     try:
-        _run(build_unregister_argv(vmname))
+        _run(build_unregister_argv(vmname, vboxmanage))
     except FileNotFoundError:
         ## VBoxManage gone mid-teardown -- nothing more we can do.
         pass
@@ -1177,6 +1261,198 @@ def run_serial_down(args):
     ## _teardown_serial_vm also removes any converted throwaway VDI.
     _teardown_serial_vm(args.vm, args.uart_socket)
     return PASS_RC
+
+
+## --- coreboot firmware boot test (the dasharo-vbox lane) ---------------------
+
+def _firmware_snap(shot_dir, index, name, vmname, vboxmanage=VBOXMANAGE):
+    """Capture a milestone screenshot NN-<name>.png into shot_dir (best-effort: a
+    momentarily uncapturable or powered-off display must not abort the run). This is
+    what gives the lane the SAME 'full story' NN-<milestone>.png sequence the image
+    lanes publish via image_test_results_publish's directory branch."""
+    if shot_dir is None:
+        return
+    png = os.path.join(shot_dir, '%02d-%s.png' % (index, name))
+    try:
+        _run(build_screenshot_argv(vmname, png, vboxmanage))
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        ## best-effort: a pre-init 0x0 framebuffer or a powered-off VM is not a failure.
+        pass
+
+
+def run_firmware_boot_test(args):
+    """Real-host: boot the coreboot+UefiPayload ROM (the dasharo firmware port)
+    headless on the VBox linear framebuffer, capturing a milestone screenshot
+    sequence into --shot-dir. Verdict from COM1 serial: PASS needs the UEFI shell,
+    and (unless --no-s5) a clean ACPI S5 power-off from `reset -s` -- proof the
+    firmware's ACPI is live, not just that the shell rendered. 0 PASS / 2 SETUP / 5 FAIL.
+
+    --emit-argv prints the VBoxManage build sequence without running it, so the plan
+    is unit-testable with no VBox host."""
+    import socket
+    import threading
+    import time
+
+    vbm = args.vboxmanage
+    plan = build_coreboot_vm_plan(
+        args.vm, args.rom, memory=args.memory, uart_socket=args.uart_socket,
+        vboxmanage=vbm)
+    if args.emit_argv:
+        for argv in plan:
+            print(' '.join(argv))
+        return PASS_RC
+
+    if not os.path.isfile(os.path.abspath(args.rom)):
+        print('dm-smbios-reader-vbox: coreboot ROM not found: %s'
+              % (args.rom,), file=sys.stderr)
+        return SETUP_RC
+    try:
+        require_vboxmanage(vbm)
+    except SetupError as exc:
+        print('dm-smbios-reader-vbox: %s' % (exc,), file=sys.stderr)
+        return SETUP_RC
+
+    shot_dir = args.shot_dir
+    if shot_dir is not None:
+        os.makedirs(shot_dir, exist_ok=True)
+
+    ## Build + power on. Do NOT use start_vm's bundled hwaccel wait before the serial
+    ## reader is attached: the firmware floods COM1 during early boot, and a VBox UART
+    ## with no host-side reader blocks the guest (16550 THRE poll), wedging the boot
+    ## before the GOP comes up. So power on, THEN drain COM1 from a thread immediately.
+    try:
+        for argv in plan:
+            _run(argv)
+        prereq = ensure_amd_v_available()
+        if prereq != PASS_RC:
+            raise SetupError(
+                'AMD-V prerequisite for VirtualBox not satisfied (rc=%d)' % (prereq,))
+        _run(build_startvm_argv(args.vm, vbm))
+    except SetupError as exc:
+        ## AMD-V refused / unload failed -- a SETUP fault.
+        print('dm-smbios-reader-vbox: SETUP -- %s' % (exc,), file=sys.stderr)
+        _teardown_serial_vm(args.vm, args.uart_socket, vbm)
+        return SETUP_RC
+    except subprocess.CalledProcessError as exc:
+        print('dm-smbios-reader-vbox: firmware VM build/start failed: %s'
+              % (' '.join(exc.cmd),), file=sys.stderr)
+        _teardown_serial_vm(args.vm, args.uart_socket, vbm)
+        return SETUP_RC
+
+    ## Connect COM1 and drain it continuously in a background thread from power-on,
+    ## so the guest's console writes never block the boot.
+    serial_lock = threading.Lock()
+    serial_chunks = []
+    stop_drain = threading.Event()
+    sock = None
+    connect_deadline = time.monotonic() + 15
+    while time.monotonic() < connect_deadline and sock is None:
+        candidate = None
+        try:
+            candidate = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            candidate.connect(args.uart_socket)
+            sock = candidate
+        except OSError:
+            if candidate is not None:
+                candidate.close()  # do not leak the unconnected socket each retry
+            time.sleep(0.5)
+
+    ## A COM1 socket that never appears is an environment fault, not a boot failure:
+    ## without the drain the firmware wedges, so fail fast (SETUP) rather than wait
+    ## out the whole --timeout and mis-report FAIL.
+    if sock is None:
+        print('dm-smbios-reader-vbox: SETUP -- COM1 socket %s never connected'
+              % (args.uart_socket,), file=sys.stderr)
+        _teardown_serial_vm(args.vm, args.uart_socket, vbm)
+        return SETUP_RC
+
+    def _drain():
+        sock.settimeout(0.5)
+        while not stop_drain.is_set():
+            try:
+                chunk = sock.recv(4096)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            if not chunk:
+                break  # EOF: the VM closed COM1 (powered off) -- do not busy-spin
+            with serial_lock:
+                serial_chunks.append(chunk)
+
+    drainer = threading.Thread(target=_drain, daemon=True)
+    drainer.start()
+
+    def _serial_text():
+        with serial_lock:
+            return b''.join(serial_chunks).decode('latin-1', 'replace')
+
+    shell_reached = False
+    s5_reached = False
+    try:
+        ## Early-boot capture: the firmware boots to the shell in a few seconds, so
+        ## grab a short sequence as the framebuffer comes up. A pre-init 0x0 frame
+        ## errors and is simply skipped by _firmware_snap, so only real frames land.
+        for _idx, _name in ((10, 'firmware-poweron'), (15, 'firmware-early'),
+                            (20, 'firmware-console')):
+            _firmware_snap(shot_dir, _idx, _name, args.vm, vbm)
+            time.sleep(1.5)
+
+        ## With COM1 now draining, verify hardware acceleration (may block a few
+        ## seconds polling the log). VBox 7.x cannot power on without it, so this is a
+        ## belt-and-suspenders guard, not the whole boot signal.
+        try:
+            assert_hwaccel(args.vm, vbm)
+        except HwAccelError as exc:
+            print('dm-smbios-reader-vbox: SETUP -- %s' % (exc,), file=sys.stderr)
+            return SETUP_RC
+
+        deadline = time.monotonic() + args.timeout
+        sent_reset = False
+        while time.monotonic() < deadline:
+            serial_text = _serial_text()
+            if not shell_reached and uefi_shell_reached(serial_text):
+                shell_reached = True
+                _firmware_snap(shot_dir, 30, 'uefi-shell', args.vm, vbm)
+                if args.no_s5:
+                    break
+                if sock is not None:
+                    try:
+                        sock.sendall(b'reset -s\r\n')
+                        sent_reset = True
+                    except OSError:
+                        ## COM1 dropped (VM already powering off) -- the S5 check still runs.
+                        pass
+            if sent_reset:
+                ## S5 shows in VBox.log (SLP_EN write) and the VM powers off itself.
+                if (s5_shutdown_happened(_vm_log_text(args.vm, vbm))
+                        or s5_shutdown_happened(_serial_text())):
+                    s5_reached = True
+                    break
+            time.sleep(1)
+
+        ## Last visible frame while the VM may still be up (S5 powers it off).
+        _firmware_snap(shot_dir, 40, 'final-frame', args.vm, vbm)
+        ok = shell_reached and (args.no_s5 or s5_reached)
+        if not ok:
+            _firmware_snap(shot_dir, 99, 'failure', args.vm, vbm)
+            print('dm-smbios-reader-vbox: firmware boot FAIL (shell=%s s5=%s)'
+                  % (shell_reached, s5_reached), file=sys.stderr)
+            return FAIL_RC
+        print('dm-smbios-reader-vbox: firmware boot PASS (UEFI shell%s)'
+              % ('' if args.no_s5 else ' + ACPI S5'))
+        return PASS_RC
+    finally:
+        stop_drain.set()
+        if drainer is not None:
+            drainer.join(timeout=2)
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                ## already closed / reset by the VM power-off -- teardown continues.
+                pass
+        _teardown_serial_vm(args.vm, args.uart_socket, vbm)
 
 
 ## --- CLI --------------------------------------------------------------------
@@ -1355,6 +1631,31 @@ def _build_parser():
     serial_down.add_argument('--uart-socket', dest='uart_socket',
                              help='UART socket path to remove')
 
+    firmware = sub.add_parser(
+        'firmware',
+        help='real-host: boot the coreboot+UefiPayload ROM (dasharo port) headless, '
+             'capture a milestone screenshot sequence to --shot-dir, verify the UEFI '
+             'shell on serial + a clean ACPI S5 power-off; exit 0 PASS / 2 setup / 5 fail')
+    firmware.add_argument('--vm', required=True)
+    firmware.add_argument('--rom', required=True,
+                          help='the coreboot.rom to boot via EfiRom/CorebootRom')
+    firmware.add_argument('--uart-socket', dest='uart_socket', required=True,
+                          help='host UNIX socket path VBox listens on for COM1')
+    firmware.add_argument('--shot-dir', dest='shot_dir',
+                          help='directory for the NN-<milestone>.png sequence '
+                               '(published via the image-test directory branch)')
+    firmware.add_argument('--memory', type=int, default=2048)
+    firmware.add_argument('--timeout', type=int, default=120)
+    firmware.add_argument('--no-s5', dest='no_s5', action='store_true',
+                          help='PASS on the UEFI shell alone; do not drive reset -s')
+    firmware.add_argument('--vboxmanage', dest='vboxmanage',
+                          default=os.environ.get('DM_SMBIOS_READER_VBOXMANAGE',
+                                                 VBOXMANAGE),
+                          help='VBoxManage binary (default $DM_SMBIOS_READER_VBOXMANAGE '
+                               'or PATH VBoxManage) -- point at the patched source build')
+    firmware.add_argument('--emit-argv', dest='emit_argv', action='store_true',
+                          help='print the VBoxManage build sequence, do not run it')
+
     verify = sub.add_parser(
         'verify',
         help='compare a screenshot against a committed render baseline (tolerant '
@@ -1429,6 +1730,8 @@ def main(argv=None):
         return run_serial_up(args)
     if args.cmd == 'serial-down':
         return run_serial_down(args)
+    if args.cmd == 'firmware':
+        return run_firmware_boot_test(args)
     if args.cmd == 'verify':
         return _cmd_verify(args)
     return SETUP_RC

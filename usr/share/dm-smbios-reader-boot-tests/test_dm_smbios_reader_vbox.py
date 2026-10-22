@@ -997,7 +997,7 @@ def test_start_vm_powers_off_when_not_hardware_accelerated(monkeypatch):
                         lambda vm, vboxmanage=M.VBOXMANAGE:
                         'HM: HMR3Init: Falling back to NEM\n')
     offs = []
-    monkeypatch.setattr(M, '_poweroff_quietly', lambda vm: offs.append(vm))
+    monkeypatch.setattr(M, '_poweroff_quietly', lambda vm, *a: offs.append(vm))
     with pytest.raises(M.HwAccelError):
         M.start_vm('kick')
     assert offs == ['kick']  # powered off before raising
@@ -1015,7 +1015,7 @@ def test_serial_up_tears_down_half_built_vm_on_build_failure(monkeypatch):
             raise subprocess.CalledProcessError(1, argv)
 
     monkeypatch.setattr(M, '_run', fake_run)
-    monkeypatch.setattr(M, '_poweroff_quietly', lambda vm: None)
+    monkeypatch.setattr(M, '_poweroff_quietly', lambda vm, *a: None)
     args = types.SimpleNamespace(
         vm='kick', iso=None, disk='/d.raw', firmware='efi', memory=3072,
         uart_socket='/s.sock', smbios_serial='dm-cmdline=x', dmi_vendor='QEMU',
@@ -1041,9 +1041,142 @@ def test_run_boot_test_ova_import_failure_maps_to_fail_rc(monkeypatch):
     started = []
     ## start_vm must never be reached when the import fails; prove it stays unstarted.
     monkeypatch.setattr(M, 'start_vm', lambda *a, **k: started.append(True))
-    monkeypatch.setattr(M, '_poweroff_quietly', lambda vm: None)
+    monkeypatch.setattr(M, '_poweroff_quietly', lambda vm, *a: None)
     args = types.SimpleNamespace(
         ova='/nonexistent.ova', vm='kick', no_poweroff=True,
         expect=['x'], timeout=1, interval=1, shot=None)
     assert M.run_boot_test(args) == M.FAIL_RC
     assert started == []  # import failed -> VM never started
+
+
+## --- coreboot + UefiPayload firmware port (dasharo-vbox lane) ----------------
+
+_CB_EFIROM_KEY = 'VBoxInternal/Devices/efi/0/Config/EfiRom'
+_CB_COREBOOTROM_KEY = 'VBoxInternal/Devices/efi/0/Config/CorebootRom'
+
+
+def test_modifyvm_coreboot_kwargs_default_to_noop():
+    ## The additive guarantee: with none of the coreboot kwargs, the argv is
+    ## byte-identical to the pre-change output -- no --chipset/--hpet/--cpuid-set.
+    argv = M.build_modifyvm_argv('kick', memory=3072, firmware='efi')
+    assert argv == ['VBoxManage', 'modifyvm', 'kick',
+                    '--memory', '3072', '--firmware', 'efi']
+    for leaked in ('--chipset', '--hpet', '--cpuid-set'):
+        assert leaked not in argv
+
+
+def test_modifyvm_coreboot_kwargs_emit_flags():
+    argv = M.build_modifyvm_argv(
+        'kick', firmware='efi', chipset='piix3', hpet='on',
+        cpuidset=('0x80000008', '0x1', '0x2', '0x3', '0x4'))
+    assert argv[argv.index('--chipset') + 1] == 'piix3'
+    assert argv[argv.index('--hpet') + 1] == 'on'
+    i = argv.index('--cpuid-set')
+    assert argv[i + 1:i + 6] == ['0x80000008', '0x1', '0x2', '0x3', '0x4']
+
+
+def test_coreboot_rom_argv_keys_and_abspath():
+    ## EfiRom = the ROM path (absolute), CorebootRom = '1'; same efi-device
+    ## namespace as the EFI DMI overrides. A relative ROM is abspath'd (VBox reads
+    ## it at VM start from an unknown cwd).
+    argvs = M.build_coreboot_rom_argv('kick', '/home/admin/cb-uefi-gfx.rom')
+    assert argvs == [
+        ['VBoxManage', 'setextradata', 'kick', _CB_EFIROM_KEY,
+         '/home/admin/cb-uefi-gfx.rom'],
+        ['VBoxManage', 'setextradata', 'kick', _CB_COREBOOTROM_KEY, '1']]
+    rel = M.build_coreboot_rom_argv('kick', 'rom/cb.rom')
+    assert rel[0][-1] == os.path.abspath('rom/cb.rom')  # abspath'd
+
+
+def test_coreboot_rom_argv_threads_vboxmanage():
+    argvs = M.build_coreboot_rom_argv('kick', '/r.rom', vboxmanage='/opt/vbm')
+    assert all(argv[0] == '/opt/vbm' for argv in argvs)
+
+
+def test_coreboot_vm_plan_structure_and_no_media():
+    plan = M.build_coreboot_vm_plan('kick', '/r.rom')
+    names = [argv[1] for argv in plan]
+    ## createvm (Other_64) then modifyvm then the two setextradata; no storage.
+    assert plan[0] == ['VBoxManage', 'createvm', '--name', 'kick',
+                       '--ostype', 'Other_64', '--register']
+    assert names[1] == 'modifyvm'
+    assert names.count('setextradata') == 2
+    flat = [tok for argv in plan for tok in argv]
+    ## firmware boot: no boot media is attached (drops to the UEFI shell/menu).
+    for absent in ('storagectl', 'storageattach', 'dvddrive', 'hdd',
+                   'createmedium'):
+        assert absent not in flat
+
+
+def test_coreboot_vm_plan_modifyvm_has_proven_config():
+    plan = M.build_coreboot_vm_plan('kick', '/r.rom')
+    modify = next(a for a in plan if a[1] == 'modifyvm')
+    assert modify[modify.index('--firmware') + 1] == 'efi'
+    assert modify[modify.index('--chipset') + 1] == 'piix3'
+    assert modify[modify.index('--hpet') + 1] == 'on'
+    assert modify[modify.index('--graphicscontroller') + 1] == 'vboxvga'
+    assert modify[modify.index('--vram') + 1] == '32'
+    ## the exact proven cpuid leaf (36-bit phys addr) the UefiPayload needs.
+    i = modify.index('--cpuid-set')
+    assert tuple(modify[i + 1:i + 6]) == M.CB_CPUIDSET
+
+
+def test_coreboot_vm_plan_rom_extradata_present():
+    plan = M.build_coreboot_vm_plan('kick', '/home/admin/cb.rom')
+    extra = [argv for argv in plan if argv[1] == 'setextradata']
+    keys = {argv[3]: argv[4] for argv in extra}
+    assert keys[_CB_EFIROM_KEY] == '/home/admin/cb.rom'
+    assert keys[_CB_COREBOOTROM_KEY] == '1'
+
+
+def test_coreboot_vm_plan_uart_is_optional():
+    without = M.build_coreboot_vm_plan('kick', '/r.rom')
+    assert all('--uart1' not in argv for argv in without)
+    withuart = M.build_coreboot_vm_plan('kick', '/r.rom',
+                                        uart_socket='/run/cb.sock')
+    uart = next(a for a in withuart if '--uart1' in a)
+    assert uart[-2:] == ['server', '/run/cb.sock']
+
+
+def test_coreboot_vm_plan_threads_vboxmanage():
+    plan = M.build_coreboot_vm_plan('kick', '/r.rom', uart_socket='/s.sock',
+                                    vboxmanage='/opt/vbm')
+    assert all(argv[0] == '/opt/vbm' for argv in plan)
+
+
+def test_firmware_verdict_predicates():
+    assert M.uefi_shell_reached('... UEFI Interactive Shell v2.2 ...')
+    assert not M.uefi_shell_reached('coreboot booting, no shell yet')
+    assert M.s5_shutdown_happened('ACPI: Entering S5 power state (SLP_EN)')
+    assert not M.s5_shutdown_happened('still running')
+
+
+def test_firmware_emit_argv_prints_coreboot_plan(capsys):
+    rc = M.main(['firmware', '--vm', 'cb', '--rom', '/home/admin/cb.rom',
+                 '--uart-socket', '/run/cb.sock', '--emit-argv'])
+    assert rc == M.PASS_RC
+    out = capsys.readouterr().out
+    assert 'createvm --name cb --ostype Other_64' in out
+    assert '--firmware efi' in out and '--chipset piix3' in out
+    assert 'Config/EfiRom /home/admin/cb.rom' in out
+    assert 'Config/CorebootRom 1' in out
+    assert '--uartmode1 server /run/cb.sock' in out
+
+
+def test_firmware_missing_rom_is_setup(tmp_path, capsys):
+    ## No --emit-argv: a nonexistent ROM is a SETUP fault caught before any VBox call.
+    rc = M.main(['firmware', '--vm', 'cb',
+                 '--rom', str(tmp_path / 'absent.rom'),
+                 '--uart-socket', '/run/cb.sock'])
+    assert rc == M.SETUP_RC
+    assert 'ROM not found' in capsys.readouterr().err
+
+
+def test_firmware_vboxmanage_env_default(monkeypatch):
+    ## --vboxmanage defaults to $DM_SMBIOS_READER_VBOXMANAGE so the lane can point at
+    ## the patched source build without a flag.
+    monkeypatch.setenv('DM_SMBIOS_READER_VBOXMANAGE', '/opt/patched/VBoxManage')
+    parser = M._build_parser()
+    args = parser.parse_args(['firmware', '--vm', 'c', '--rom', '/r.rom',
+                              '--uart-socket', '/s.sock', '--emit-argv'])
+    assert args.vboxmanage == '/opt/patched/VBoxManage'

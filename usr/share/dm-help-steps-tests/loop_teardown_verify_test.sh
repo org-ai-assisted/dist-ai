@@ -20,6 +20,14 @@
 ## '--' AS the device ("losetup: /dev/--: detach failed"), so the detach silently
 ## no-opped under '|| true' and the loop stayed attached.
 ##
+## REGRESSION 2: the maps-before-detach gate that fixed the orphan then broke the
+## build itself. 'kpartx -d' RACES a udev/systemd probe and false-reports a
+## partition map "in use. Not removing" though its REAL device-mapper open count is
+## 0; the gate saw the leftover map, never detached, looped 5x and FAILED the build.
+## The fix removes any leftover ${base}pN map directly with 'dmsetup remove --retry'
+## (which consults the TRUE open count), clearing the false positive while a
+## genuinely-held map (count > 0) survives -- no orphan reintroduced.
+##
 ## loop_teardown_verify must:
 ##   1. release a loop that an explicit 'losetup --detach <dev>' (NO '--') frees,
 ##      returning 0 (the benign Qubes/docker false positive);
@@ -27,11 +35,15 @@
 ##      its bounded re-poll, returning 0 -- WITHOUT depending on udev firing;
 ##   3. still return NON-ZERO for a genuinely stuck loop that remains associated
 ##      after every explicit-detach attempt (no masking of a real failure);
-##   4. return 0 and attempt no detach when nothing is associated.
+##   4. return 0 and attempt no detach when nothing is associated;
+##   5. clear a kpartx false positive -- a ${base}pN map left behind with open
+##      count 0 -- via 'dmsetup remove', then detach and return 0;
+##   6. for a genuinely-held map (open count > 0), NEVER detach under the live map
+##      (no "Open count:1" orphan) and return NON-ZERO.
 ##
-## The real function is SOURCED. 'losetup'/'kpartx'/'udevadm'/'sleep' are stubbed
-## so the test needs no root and no real loop devices; SUDO_TO_ROOT is emptied so
-## the stub bash functions (not external binaries) are what the function calls.
+## The real function is SOURCED. 'losetup'/'kpartx'/'dmsetup'/'udevadm'/'sleep' are
+## stubbed so the test needs no root and no real loop devices; SUDO_TO_ROOT is
+## emptied so the stub bash functions (not external binaries) are what it calls.
 
 set -o errexit
 set -o nounset
@@ -93,6 +105,9 @@ assoc_file="${state_dir}/assoc"               ## device 'losetup --associated' r
 detach_count_file="${state_dir}/detach_count" ## times a detach was issued
 detach_last_file="${state_dir}/detach_last"   ## last device a detach saw
 poll_file="${state_dir}/poll"                 ## times --associated was polled
+map_file="${state_dir}/map"                   ## present ${base}pN dm map name ("" = none)
+mapcount_file="${state_dir}/mapcount"         ## that map's TRUE device-mapper open count
+dmremove_file="${state_dir}/dmremove"         ## times 'dmsetup remove' was issued
 # shellcheck disable=SC2317  # reached via the EXIT trap
 cleanup() { safe-rm --recursive --force -- "${state_dir}"; }
 trap cleanup EXIT
@@ -105,11 +120,17 @@ reset_stubs() {
    printf '%s' "0" > "${detach_count_file}"
    printf '%s' ""  > "${detach_last_file}"
    printf '%s' "0" > "${poll_file}"
+   printf '%s' ""  > "${map_file}"
+   printf '%s' "0" > "${mapcount_file}"
+   printf '%s' "0" > "${dmremove_file}"
 }
 
-set_assoc()     { printf '%s' "$1" > "${assoc_file}"; }
-detach_count()  { cat -- "${detach_count_file}"; }
-detach_last()   { cat -- "${detach_last_file}"; }
+set_assoc()      { printf '%s' "$1" > "${assoc_file}"; }
+detach_count()   { cat -- "${detach_count_file}"; }
+detach_last()    { cat -- "${detach_last_file}"; }
+set_map()        { printf '%s' "$1" > "${map_file}"; }
+set_mapcount()   { printf '%s' "$1" > "${mapcount_file}"; }
+dmremove_count() { cat -- "${dmremove_file}"; }
 
 ## losetup stub. Dispatches on the first word:
 ##   --associated <img> --noheadings --output NAME  -> print the association (if any)
@@ -152,6 +173,40 @@ losetup() {
 # shellcheck disable=SC2317  # invoked indirectly, from the sourced loop_teardown_verify
 kpartx() {
    true
+}
+
+## dmsetup stub. loop_teardown_verify uses two subcommands on the fixed code path:
+##   ls --noheadings        -> list the present ${base}pN map (if any)
+##   remove [--retry] <map> -> honor the map's TRUE device-mapper open count:
+##       count <= 0 : genuinely free (a kpartx false positive) -> remove it, succeed
+##       count >  0 : really held -> refuse and leave it (so no detach is forced)
+## Without this stub the fixed function would call the REAL root 'dmsetup'; the stub
+## also isolates the test from any real device-mapper state on the build host. Open
+## count is read-only in the stub, so it is safely inherited into any subshell.
+# shellcheck disable=SC2317  # invoked indirectly, from the sourced loop_teardown_verify
+dmsetup() {
+   local open_count
+   case "${1:-}" in
+      ls)
+         ## real 'dmsetup ls --noheadings' prints "<name>\t(maj:min)"; the function
+         ## reads only field 1 (the map name) via awk, so emitting the name suffices.
+         if [ -n "$(cat -- "${map_file}")" ]; then
+            printf '%s\n' "$(cat -- "${map_file}")"
+         fi
+         ;;
+      remove)
+         printf '%s' "$(( $(cat -- "${dmremove_file}") + 1 ))" > "${dmremove_file}"
+         open_count="$(cat -- "${mapcount_file}")"
+         if [ "${open_count}" -le 0 ]; then
+            printf '%s' "" > "${map_file}"
+            return 0
+         fi
+         return 1
+         ;;
+      *)
+         true "any other dmsetup invocation is a harmless no-op here"
+         ;;
+   esac
 }
 
 # shellcheck disable=SC2317  # invoked indirectly, from the sourced loop_teardown_verify
@@ -245,6 +300,45 @@ if loop_teardown_verify "${img}" ; then
    fail "losetup --associated fails: expected non-zero return, got 0 (fail-open regression)"
 else
    pass "losetup --associated fails: returns non-zero (no false clean)"
+fi
+
+## --- case 7: kpartx false positive -- map left though TRUE open count is 0 -------
+## kpartx -d lost the udev race and refused to remove the map ("in use. Not
+## removing"), yet the map's real device-mapper open count is 0. The fix clears it
+## with 'dmsetup remove --retry', then detaches -> clean teardown, return 0. RED
+## against the gate-only predecessor (no dmsetup remove), which looped and failed.
+reset_stubs
+set_assoc "/dev/loop7"
+set_map "loop7p1"
+set_mapcount 0
+stub_detach_releases=1
+if loop_teardown_verify "${img}" ; then
+   if [ "$(dmremove_count)" -ge "1" ] && [ "$(detach_count)" -ge "1" ]; then
+      pass "kpartx false positive (open count 0): dmsetup remove clears it, then detaches, returns 0"
+   else
+      fail "kpartx false positive: dmremove_count=$(dmremove_count) detach_count=$(detach_count)"
+   fi
+else
+   fail "kpartx false positive (open count 0): expected return 0, got non-zero (recovery regressed to gate-only)"
+fi
+
+## --- case 8: genuinely-held map (open count > 0) -> no detach, return non-zero ---
+## 'dmsetup remove' consults the true open count and refuses, so the map survives
+## and the loop is NEVER detached under a live map (no "Open count:1" orphan). The
+## function must then fail loudly -- proving the recovery did not reintroduce the
+## orphan the maps-before-detach gate fixed.
+reset_stubs
+set_assoc "/dev/loop7"
+set_map "loop7p1"
+set_mapcount 1
+if loop_teardown_verify "${img}" ; then
+   fail "genuinely-held map: expected non-zero return, got 0 (would mask a real failure)"
+else
+   if [ "$(detach_count)" = "0" ]; then
+      pass "genuinely-held map (open count > 0): never detaches under a live map (no orphan), returns non-zero"
+   else
+      fail "genuinely-held map: detached under a live map $(detach_count) time(s) -- orphan risk"
+   fi
 fi
 
 summary_line="===== loop_teardown_verify: ${pass_count} pass, ${fail_count} fail ====="

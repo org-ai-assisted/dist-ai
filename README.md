@@ -646,16 +646,22 @@ ISO's boot structure, and boots it across `bios | efi | efi-secureboot` via the
 End-to-end regression for the Dasharo-in-VirtualBox port: a patched VirtualBox
 (the `DevEFI` CorebootRom + `DevACPI` SLP_EN fixes from
 `org-ai-assisted/virtualbox`) boots a coreboot + `UefiPayloadPkg` ROM
-(`org-ai-assisted/dasharo`) to an interactive UEFI shell on COM1, then `reset -s`
-powers the VM off via a clean ACPI S5 -- proving functional ACPI.
+(`org-ai-assisted/dasharo`). The UefiPayload publishes a GOP on VBox's linear
+framebuffer, so the firmware renders GRAPHICALLY; the lane captures a milestone
+screenshot sequence (`NN-<milestone>.png`) and verifies the interactive UEFI shell
+on COM1, then `reset -s` powers the VM off via a clean ACPI S5 -- proving functional
+ACPI. The VBoxManage plan + verdict come from the shared `dm-smbios-reader-vbox`
+backend (its `firmware` subcommand), reusing the image-test harness; see
+`usr/share/dasharo-vbox-boot-tests/AGENTS.md` for the firmware-port details.
 
 It is opt-in: registered in `dist-ai-tests-all`'s `e2e_suites` (so CI, which runs
 `--core` only, never gates on it) and it SKIPs unless the boot environment is
 present -- the patched non-hardened VBox build (run as root for `/dev/vboxdrv`)
-plus the ROM, via `DASHARO_COREBOOT_ROM` and `DASHARO_VBOX_BIN`. The pure helpers
-(argument building, serial / `VBox.log` assertions) are unit tested on every
-invocation, including the SKIP path, so the logic is covered in the generic CI
-container even though the boot itself cannot run there.
+plus the ROM, via `DASHARO_COREBOOT_ROM` and `DASHARO_VBOX_BIN`. The backend's pure
+helpers (the coreboot plan builder, the serial verdict predicates) are byte-exact
+unit tested by `dm-smbios-reader-vbox-tests`, and a thin contract smoke test runs on
+every invocation of this lane, so the logic is covered in the generic CI container
+even though the boot itself cannot run there.
 
 Run it on a host that has the artifacts (see the `dasharo` repo for the build
 recipe and the five VBox-vs-QEMU tweaks it bakes in):
@@ -667,10 +673,11 @@ dasharo-vbox-boot-tests
 ```
 
 Set `DASHARO_VBOX_PUBLISH=1` (or `IMAGE_TEST_RESULTS_ROOT`) and run as root to
-publish the verdict + serial capture to the results plane via the shared
-`image-test` publisher; run `test-results-deploy` from the qube afterwards to render it onto
-https://org-ai-assisted.github.io/automated-test-results/ alongside the image boot
-tests.
+publish the verdict + the milestone screenshot sequence to the results plane via the
+shared `image-test` publisher (its directory branch, the same one the image lanes
+use); run `test-results-deploy` from the qube afterwards to render it onto
+https://org-ai-assisted.github.io/automated-test-results/ with the same "full story"
+screenshots as the image boot tests.
 
 ## Related
 
