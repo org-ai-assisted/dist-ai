@@ -70,6 +70,9 @@ flock --timeout 3600 "${lock_fd}" \
    || die "another test-results-deploy holds the Pages-repo lock (waited 3600s)"
 
 mkdir --parents -- "${staging_base}"
+## Absolutize: a RELATIVE override would make mktemp print a relative staging path, and the later
+## `cd` into the Pages repo then points the EXIT-trap cleanup at the wrong directory (a leak).
+staging_base="$(cd -- "${staging_base}" && pwd)"
 staging="$(mktemp --directory --tmpdir="${staging_base}" deploy.XXXXXX)"
 ## Registered in the EXIT trap so a failure at any step (read-tree / add / commit) cannot leak
 ## the private index or the message temp file.

@@ -600,6 +600,59 @@ run_generator(plane, goldens, approvals_path, site1, cache_dir=cache_dir, full_r
 check("--full-rebuild re-encoded run A webp", int(os.stat(a_webp).st_mtime) != EPOCH)
 check("--full-rebuild kept run A webp byte-identical", open(a_webp, "rb").read() == a_bytes)
 
+## Review-fix regressions (ai-review 2026-10-22): the incremental cache must never serve a stale
+## green when a dependency drifts. Each starts from a warm, consistent cache for run A.
+
+## C: a cached webp whose BYTES changed on disk (corruption, partial write) must be re-encoded,
+## not reused -- the cache records + verifies each webp's sha. Canary: the pre-fix hit checked
+## only that the filename existed, so it kept the corrupt bytes.
+run_generator(plane, goldens, approvals_path, site1, cache_dir=cache_dir)
+with open(a_webp, "ab") as handle:
+    handle.write(b"corruption")
+os.utime(a_webp, (EPOCH, EPOCH))
+run_generator(plane, goldens, approvals_path, site1, cache_dir=cache_dir)
+check("a corrupted cached webp is re-encoded, not reused",
+      int(os.stat(a_webp).st_mtime) != EPOCH)
+check("a corrupted cached webp is restored to correct bytes", open(a_webp, "rb").read() == a_bytes)
+
+## A: changing an approved GOLDEN -- stored in a per-lane SUBDIR -- must invalidate the cache, or
+## a run stays green against a golden it no longer matches. Canary: the pre-fix flat listdir
+## hashed NO golden (they are all in subdirs), so a golden change left the fingerprint unchanged.
+golden_a = os.path.join(goldens, "kicksecure-lxqt", "calamares-install.webp")
+golden_bytes = open(golden_a, "rb").read()
+os.utime(a_webp, (EPOCH, EPOCH))
+with open(golden_a, "ab") as handle:
+    handle.write(b"golden-drift")
+run_generator(plane, goldens, approvals_path, site1, cache_dir=cache_dir)
+check("a changed golden invalidates the cache (run re-processed)",
+      int(os.stat(a_webp).st_mtime) != EPOCH)
+with open(golden_a, "wb") as handle:
+    handle.write(golden_bytes)
+
+## D: one unreadable source screenshot must NOT abort the whole generate -- the fingerprint hash
+## degrades per-file like process_run isolates a per-shot read error. (Root bypasses file perms,
+## so the unreadable state is unprovable there -- skip the assertion, do not fake a pass.)
+if os.geteuid() != 0:
+    bad_src = os.path.join(plane, "kicksecure-lxqt-18-2-3-5", "20261006T000000Z",
+                           "calamares-install.png")
+    src_mode = os.stat(bad_src).st_mode
+    os.chmod(bad_src, 0)
+    rc = subprocess.run(  # nosec B603 -- fixed argv, in-tree generator
+        [GEN, "--results-root", plane, "--site-out", site1, "--goldens-dir", goldens,
+         "--approvals", approvals_path, "--cache-dir", cache_dir, "--full-rebuild"],
+        env={**os.environ, "SOURCE_DATE_EPOCH": str(EPOCH)}).returncode
+    os.chmod(bad_src, src_mode)
+    if rc == 0:
+        print("ok: an unreadable source screenshot does not crash the generate")
+    else:
+        print("FAIL: unreadable source crashed the generate (rc=%d)" % rc, file=sys.stderr)
+        _failures += 1
+else:
+    print("ok: unreadable-source check skipped (running as root; perms unprovable)")
+
+## Restore a clean, consistent cache + output for run A before the downstream checks.
+run_generator(plane, goldens, approvals_path, site1, cache_dir=cache_dir, full_rebuild=True)
+
 ## Stale-artifact cleanup: a '<shot>-golden.webp' is written only while a shot is CHANGED;
 ## once the shot becomes MATCH the generator stops emitting it. A file left in the run dir
 ## from a prior generate must be REMOVED on regenerate -- else the asset check flags it

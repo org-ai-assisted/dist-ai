@@ -409,15 +409,24 @@ def _save_webp(image, path):
 
 
 def _file_sha256(path):
+    """sha256 hex of a file's bytes, following a symlink as the generator's own reads do; a fixed
+    sentinel if it cannot be read. A per-file read error must DEGRADE the fingerprint, never abort
+    the whole generate -- process_run already isolates the same error per shot as UNKNOWN."""
     digest = hashlib.sha256()
-    with open(path, "rb") as handle:
-        for chunk in iter(lambda: handle.read(1 << 16), b""):
-            digest.update(chunk)
+    try:
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 16), b""):
+                digest.update(chunk)
+    except OSError:
+        return "unreadable"
     return digest.hexdigest()
 
 
 def _path_sha256_or_empty(path):
-    if path and os.path.isfile(path) and not os.path.islink(path):
+    ## Follow a symlink (os.path.isfile is true for a symlink-to-file), because load_approvals /
+    ## load_mask_config follow it -- hashing by content keeps the fingerprint tracking what
+    ## classify actually reads, so an edit to a symlinked approvals/mask invalidates the cache.
+    if path and os.path.isfile(path):
         return _file_sha256(path)
     return ""
 
@@ -426,19 +435,27 @@ def shared_input_fingerprint(goldens_dir, approvals_path, mask_config_path,
                              tolerance, channel_threshold):
     """Digest of every GENERATE-WIDE input that affects a run's page assets or buckets: the
     cache format version, the approved goldens, the approvals map, the mask config, and the
-    compare thresholds. Folded into every run's fingerprint, so a golden approval or a threshold
+    compare thresholds. Folded into every run's fingerprint, so a golden change or a threshold
     change invalidates the whole cache. Hashes files by raw bytes (no parse-shape assumptions)."""
     digest = hashlib.sha256()
     digest.update(("cachefmt=%d\0" % CACHE_FORMAT_VERSION).encode("ascii"))
     digest.update(("approvals=%s\0" % _path_sha256_or_empty(approvals_path)).encode("ascii"))
     digest.update(("mask=%s\0" % _path_sha256_or_empty(mask_config_path)).encode("ascii"))
     digest.update(("tol=%r;ch=%r\0" % (tolerance, channel_threshold)).encode("ascii"))
+    ## Approved goldens live in per-lane SUBDIRS (goldens_dir/<lane>/<step>.webp) and classify()
+    ## reads each one, so WALK the tree and hash every golden by content, keyed by its path
+    ## relative to goldens_dir. A flat listdir sees only the lane dirs and hashes NO golden,
+    ## leaving a changed/deleted golden invisible to the cache -- a stale MATCH served as green.
     if goldens_dir and os.path.isdir(goldens_dir):
-        for name in sorted(os.listdir(goldens_dir)):
-            path = os.path.join(goldens_dir, name)
-            if os.path.isfile(path) and not os.path.islink(path):
-                digest.update(name.encode("utf-8", "surrogatepass"))
-                digest.update(("=%s\0" % _file_sha256(path)).encode("ascii"))
+        golden_files = []
+        for dirpath, _dirnames, filenames in os.walk(goldens_dir):
+            for name in filenames:
+                full = os.path.join(dirpath, name)
+                if os.path.isfile(full):
+                    golden_files.append((os.path.relpath(full, goldens_dir), full))
+        for rel, full in sorted(golden_files):
+            digest.update(rel.encode("utf-8", "surrogatepass"))
+            digest.update(("=%s\0" % _file_sha256(full)).encode("ascii"))
     return digest.hexdigest()
 
 
@@ -493,13 +510,16 @@ def load_cached_view(cache_dir, run_id, fingerprint, out_root, run_dir, result,
     shots = cached.get("shots")
     if not isinstance(shots, list):
         return None
+    webp_sha = cached.get("webp_sha")
+    if not isinstance(webp_sha, dict):
+        return None
     page_dir = os.path.join(out_root, run_id)
     ## The reuse is valid only if the page dir holds EXACTLY the generator-owned files this run
-    ## produces: every cached webp present, and NO extra file. A stray file (a stale -golden.webp
-    ## a prior generate no longer emits, a planted/corrupt artifact) means the orphan-purge that
-    ## process_run's rmtree does is still owed -- fall back to a full rebuild so it runs. (In
-    ## normal operation the orphan-producing transition also changes goldens/approvals, which the
-    ## fingerprint already catches; this guards the off-path case.)
+    ## produces, with the SAME BYTES: every cached webp present and matching its recorded sha, and
+    ## NO extra file. A stray file (a stale -golden.webp a prior generate no longer emits, a
+    ## planted artifact) or a changed/corrupt webp means the full build is still owed -- fall back
+    ## so process_run's rmtree + re-encode run. (In normal operation the inputs that would change
+    ## an asset also change the fingerprint; this guards against on-disk drift of the output.)
     expected = {"index.html"}
     if shots:
         expected.add("shots.json")
@@ -508,7 +528,8 @@ def load_cached_view(cache_dir, run_id, fingerprint, out_root, run_dir, result,
             name = shot.get(key)
             if name:
                 expected.add(name)
-                if not os.path.isfile(os.path.join(page_dir, name)):
+                full = os.path.join(page_dir, name)
+                if not os.path.isfile(full) or _file_sha256(full) != webp_sha.get(name):
                     return None
     try:
         present = set(os.listdir(page_dir))
@@ -521,14 +542,23 @@ def load_cached_view(cache_dir, run_id, fingerprint, out_root, run_dir, result,
     return RunView(run_id, run_dir, result, status, age, shots)
 
 
-def store_cached_view(cache_dir, run_id, fingerprint, view):
-    """Persist a fully-built run's fingerprint + classification for the next generate. A cache
-    write failure never fails the generate -- it only forfeits the next run's speedup."""
+def store_cached_view(cache_dir, run_id, fingerprint, view, out_root):
+    """Persist a fully-built run's fingerprint + classification + the sha of each webp it wrote,
+    so the next generate can verify the on-disk bytes before reusing them. A cache write failure
+    never fails the generate -- it only forfeits the next run's speedup."""
     if not isinstance(view.result, dict):
         return
+    page_dir = os.path.join(out_root, run_id)
+    webp_sha = {}
+    for shot in view.shots:
+        for key in ("webp", "golden_webp"):
+            name = shot.get(key)
+            if name:
+                webp_sha[name] = _file_sha256(os.path.join(page_dir, name))
     try:
         os.makedirs(cache_dir, exist_ok=True)
-        payload = json.dumps({"fingerprint": fingerprint, "shots": view.shots},
+        payload = json.dumps({"fingerprint": fingerprint, "shots": view.shots,
+                              "webp_sha": webp_sha},
                              ensure_ascii=True, sort_keys=True, indent=2) + "\n"
         tmp = os.path.join(cache_dir, run_id + ".json.tmp")
         with open(tmp, "w", encoding="utf-8") as handle:
@@ -1022,7 +1052,7 @@ def main(argv):
                 now_unix, stale_seconds, args.tolerance, args.channel_threshold,
             )
             if fingerprint is not None:
-                store_cached_view(cache_dir, rid, fingerprint, view)
+                store_cached_view(cache_dir, rid, fingerprint, view, out_root)
         views.append(view)
 
     ## Overview order: worst-first then newest-first, deterministic. The legend
