@@ -385,8 +385,11 @@ _NOJS_JS = r"""
   // gate without false positives (a navless standalone view; links in a sibling
   // list outside <header>/<nav>). Content-presence (h1 + visible text, both
   // ancestor-visibility-aware) and no-overflow are the robust no-JS invariants.
+  // ANY visible <h1>, not just the first: a responsive page may place a hidden
+  // <h1> before the shown one, so querySelector('h1') alone would false-fail.
+  const h1 = [...document.querySelectorAll('h1')].some(vis);
   return {
-    h1: vis(document.querySelector('h1')),
+    h1: h1,
     textlen: textlen,
     overflow: document.documentElement.scrollWidth > vw + 1
              ? document.documentElement.scrollWidth : 0,
