@@ -21,12 +21,14 @@
 ## no-opped under '|| true' and the loop stayed attached.
 ##
 ## REGRESSION 2: the maps-before-detach gate that fixed the orphan then broke the
-## build itself. 'kpartx -d' RACES a udev/systemd probe and false-reports a
-## partition map "in use. Not removing" though its REAL device-mapper open count is
-## 0; the gate saw the leftover map, never detached, looped 5x and FAILED the build.
-## The fix removes any leftover ${base}pN map directly with 'dmsetup remove --retry'
-## (which consults the TRUE open count), clearing the false positive while a
-## genuinely-held map (count > 0) survives -- no orphan reintroduced.
+## build itself. 'kpartx -d' can leave a ${base}pN map behind -- either a kpartx FALSE
+## positive (it false-reports "in use" though the REAL open count is 0), or a PERSISTENT
+## open count (the GPT "Linux root x86-64" auto-discovery partition auto-opened by the
+## host with no removable holder, which does not clear). The gate alone, and the later
+## 'dmsetup remove --retry' recovery, both FAIL the persistent case ('--retry' cannot
+## remove an open map). The robust fix adds 'dmsetup remove --force': it cannot delete an
+## open map but loads the 'error' target, dropping the map's loop reference, so the loop
+## detaches without orphaning; detach is gated on every map being gone OR error-target'd.
 ##
 ## loop_teardown_verify must:
 ##   1. release a loop that an explicit 'losetup --detach <dev>' (NO '--') frees,
@@ -36,10 +38,12 @@
 ##   3. still return NON-ZERO for a genuinely stuck loop that remains associated
 ##      after every explicit-detach attempt (no masking of a real failure);
 ##   4. return 0 and attempt no detach when nothing is associated;
-##   5. clear a kpartx false positive -- a ${base}pN map left behind with open
-##      count 0 -- via 'dmsetup remove', then detach and return 0;
-##   6. for a genuinely-held map (open count > 0), NEVER detach under the live map
-##      (no "Open count:1" orphan) and return NON-ZERO.
+##   5. clear a kpartx false positive -- a ${base}pN map with open count 0 -- via
+##      'dmsetup remove --retry', then detach and return 0;
+##   6. recover a PERSISTENT open count -- 'dmsetup remove --force' loads the error
+##      target, then detach the loop and return 0;
+##   7. NEVER detach under a map that is still LIVE (no "Open count:1" orphan): if
+##      --force cannot neutralize it, leave the loop attached and return NON-ZERO.
 ##
 ## The real function is SOURCED. 'losetup'/'kpartx'/'dmsetup'/'udevadm'/'sleep' are
 ## stubbed so the test needs no root and no real loop devices; SUDO_TO_ROOT is
@@ -94,11 +98,13 @@ fail() {
 ## (was a detach issued, for which device, did the device get released), never on
 ## the function's internal iteration construct.
 ##
-## stub_detach_releases / stub_clear_after_polls are read-only in the stub, so they
-## are safely inherited into any subshell the function spawns.
+## stub_* flags are read-only in the stub, so they are safely inherited into any
+## subshell the function spawns.
 stub_detach_releases=0   ## 1: a 'losetup -d'/'--detach' call clears the association (benign)
 stub_clear_after_polls=0 ## >0: report empty once --associated has been polled N times
 stub_assoc_rc=0          ## exit code 'losetup --associated' returns (non-zero = command itself failed)
+stub_uses_maps=0         ## 1: the map model (below) governs when a detach frees the loop
+stub_forcefail=0         ## 1: 'dmsetup remove --force' CANNOT load the error target (defensive)
 
 state_dir="$(mktemp --directory)"
 assoc_file="${state_dir}/assoc"               ## device 'losetup --associated' reports ("" = none)
@@ -107,7 +113,9 @@ detach_last_file="${state_dir}/detach_last"   ## last device a detach saw
 poll_file="${state_dir}/poll"                 ## times --associated was polled
 map_file="${state_dir}/map"                   ## present ${base}pN dm map name ("" = none)
 mapcount_file="${state_dir}/mapcount"         ## that map's TRUE device-mapper open count
-dmremove_file="${state_dir}/dmremove"         ## times 'dmsetup remove' was issued
+map_error_file="${state_dir}/map_error"       ## non-empty once --force loaded the error target
+dmremove_file="${state_dir}/dmremove"         ## times 'dmsetup remove --retry' was issued
+mapforce_file="${state_dir}/mapforce"         ## times 'dmsetup remove --force' was issued
 # shellcheck disable=SC2317  # reached via the EXIT trap
 cleanup() { safe-rm --recursive --force -- "${state_dir}"; }
 trap cleanup EXIT
@@ -116,13 +124,17 @@ reset_stubs() {
    stub_detach_releases=0
    stub_clear_after_polls=0
    stub_assoc_rc=0
+   stub_uses_maps=0
+   stub_forcefail=0
    printf '%s' ""  > "${assoc_file}"
    printf '%s' "0" > "${detach_count_file}"
    printf '%s' ""  > "${detach_last_file}"
    printf '%s' "0" > "${poll_file}"
    printf '%s' ""  > "${map_file}"
    printf '%s' "0" > "${mapcount_file}"
+   printf '%s' ""  > "${map_error_file}"
    printf '%s' "0" > "${dmremove_file}"
+   printf '%s' "0" > "${mapforce_file}"
 }
 
 set_assoc()      { printf '%s' "$1" > "${assoc_file}"; }
@@ -131,6 +143,7 @@ detach_last()    { cat -- "${detach_last_file}"; }
 set_map()        { printf '%s' "$1" > "${map_file}"; }
 set_mapcount()   { printf '%s' "$1" > "${mapcount_file}"; }
 dmremove_count() { cat -- "${dmremove_file}"; }
+mapforce_count() { cat -- "${mapforce_file}"; }
 
 ## losetup stub. Dispatches on the first word:
 ##   --associated <img> --noheadings --output NAME  -> print the association (if any)
@@ -160,7 +173,14 @@ losetup() {
       -d|--detach)
          printf '%s' "$(( $(cat -- "${detach_count_file}") + 1 ))" > "${detach_count_file}"
          printf '%s' "${2:-}" > "${detach_last_file}"
-         if [ "${stub_detach_releases}" = "1" ]; then
+         if [ "${stub_uses_maps}" = "1" ]; then
+            ## map model: the loop frees once no LIVE (non-error) map references it --
+            ## the map is gone, or 'dmsetup remove --force' neutralized it to the error
+            ## target (dropping its loop reference). A still-live map keeps the loop held.
+            if [ -z "$(cat -- "${map_file}")" ] || [ -n "$(cat -- "${map_error_file}")" ]; then
+               printf '%s' "" > "${assoc_file}"
+            fi
+         elif [ "${stub_detach_releases}" = "1" ]; then
             printf '%s' "" > "${assoc_file}"
          fi
          ;;
@@ -175,11 +195,14 @@ kpartx() {
    true
 }
 
-## dmsetup stub. loop_teardown_verify uses two subcommands on the fixed code path:
-##   ls --noheadings        -> list the present ${base}pN map (if any)
-##   remove [--retry] <map> -> honor the map's TRUE device-mapper open count:
-##       count <= 0 : genuinely free (a kpartx false positive) -> remove it, succeed
-##       count >  0 : really held -> refuse and leave it (so no detach is forced)
+## dmsetup stub. loop_teardown_verify uses these subcommands on the robust code path:
+##   ls --noheadings        -> list the present ${base}pN map (a node lingers after --force)
+##   table <map>            -> "<start> <len> <target> ...": 'error' once --force neutralized
+##                             the map, else 'linear' (a live table still on the loop)
+##   remove --retry <map>   -> honor the TRUE open count: remove a free map (a kpartx false
+##                             positive, count 0), refuse a genuinely-held one (count > 0)
+##   remove --force <map>   -> cannot delete an open map, but loads the 'error' target
+##                             (set map_error, unless stub_forcefail); removes a free map
 ## Without this stub the fixed function would call the REAL root 'dmsetup'; the stub
 ## also isolates the test from any real device-mapper state on the build host. Open
 ## count is read-only in the stub, so it is safely inherited into any subshell.
@@ -188,20 +211,41 @@ dmsetup() {
    local open_count
    case "${1:-}" in
       ls)
-         ## real 'dmsetup ls --noheadings' prints "<name>\t(maj:min)"; the function
-         ## reads only field 1 (the map name) via awk, so emitting the name suffices.
          if [ -n "$(cat -- "${map_file}")" ]; then
             printf '%s\n' "$(cat -- "${map_file}")"
          fi
          ;;
-      remove)
-         printf '%s' "$(( $(cat -- "${dmremove_file}") + 1 ))" > "${dmremove_file}"
-         open_count="$(cat -- "${mapcount_file}")"
-         if [ "${open_count}" -le 0 ]; then
-            printf '%s' "" > "${map_file}"
-            return 0
+      table)
+         if [ -n "$(cat -- "${map_error_file}")" ]; then
+            printf '%s\n' "0 16384 error"
+         elif [ -n "$(cat -- "${map_file}")" ]; then
+            printf '%s\n' "0 16384 linear 7:9 2048"
          fi
-         return 1
+         ;;
+      remove)
+         open_count="$(cat -- "${mapcount_file}")"
+         case "${2:-}" in
+            --retry)
+               printf '%s' "$(( $(cat -- "${dmremove_file}") + 1 ))" > "${dmremove_file}"
+               if [ "${open_count}" -le 0 ]; then
+                  printf '%s' "" > "${map_file}"
+                  printf '%s' "" > "${map_error_file}"
+                  return 0
+               fi
+               return 1
+               ;;
+            --force)
+               printf '%s' "$(( $(cat -- "${mapforce_file}") + 1 ))" > "${mapforce_file}"
+               if [ "${open_count}" -le 0 ]; then
+                  printf '%s' "" > "${map_file}"
+                  printf '%s' "" > "${map_error_file}"
+                  return 0
+               fi
+               [ "${stub_forcefail}" = "1" ] && return 1
+               printf '%s' "1" > "${map_error_file}"
+               return 1
+               ;;
+         esac
          ;;
       *)
          true "any other dmsetup invocation is a harmless no-op here"
@@ -303,41 +347,61 @@ else
 fi
 
 ## --- case 7: kpartx false positive -- map left though TRUE open count is 0 -------
-## kpartx -d lost the udev race and refused to remove the map ("in use. Not
-## removing"), yet the map's real device-mapper open count is 0. The fix clears it
-## with 'dmsetup remove --retry', then detaches -> clean teardown, return 0. RED
-## against the gate-only predecessor (no dmsetup remove), which looped and failed.
+## kpartx -d refused to remove the map ("in use. Not removing") yet its real open
+## count is 0. 'dmsetup remove --retry' clears it, then the loop detaches -> return 0.
+## RED against the gate-only predecessor (no dmsetup remove), which looped and failed.
 reset_stubs
+stub_uses_maps=1
 set_assoc "/dev/loop7"
 set_map "loop7p1"
 set_mapcount 0
-stub_detach_releases=1
 if loop_teardown_verify "${img}" ; then
    if [ "$(dmremove_count)" -ge "1" ] && [ "$(detach_count)" -ge "1" ]; then
-      pass "kpartx false positive (open count 0): dmsetup remove clears it, then detaches, returns 0"
+      pass "kpartx false positive (open 0): --retry clears it, then detaches, returns 0"
    else
       fail "kpartx false positive: dmremove_count=$(dmremove_count) detach_count=$(detach_count)"
    fi
 else
-   fail "kpartx false positive (open count 0): expected return 0, got non-zero (recovery regressed to gate-only)"
+   fail "kpartx false positive (open 0): expected return 0, got non-zero"
 fi
 
-## --- case 8: genuinely-held map (open count > 0) -> no detach, return non-zero ---
-## 'dmsetup remove' consults the true open count and refuses, so the map survives
-## and the loop is NEVER detached under a live map (no "Open count:1" orphan). The
-## function must then fail loudly -- proving the recovery did not reintroduce the
-## orphan the maps-before-detach gate fixed.
+## --- case 8: PERSISTENT open count -> --force error target, detach, return 0 -----
+## The map's open count stays > 0 (the GPT root-auto partition, no removable holder), so
+## 'dmsetup remove --retry' cannot remove it. 'dmsetup remove --force' loads the error
+## target, dropping the map's loop reference, so the loop detaches and the function
+## returns 0. RED against the retry-only predecessor (0f459d4c), which never forced.
 reset_stubs
+stub_uses_maps=1
 set_assoc "/dev/loop7"
 set_map "loop7p1"
 set_mapcount 1
 if loop_teardown_verify "${img}" ; then
-   fail "genuinely-held map: expected non-zero return, got 0 (would mask a real failure)"
+   if [ "$(mapforce_count)" -ge "1" ] && [ "$(detach_count)" -ge "1" ]; then
+      pass "persistent open count: --force loads error target, then detaches, returns 0"
+   else
+      fail "persistent open count: mapforce_count=$(mapforce_count) detach_count=$(detach_count)"
+   fi
+else
+   fail "persistent open count: expected return 0, got non-zero (recovery regressed to retry-only)"
+fi
+
+## --- case 9: NO-ORPHAN backstop -- --force cannot neutralize the map -------------
+## Defensive: if 'dmsetup remove --force' fails to load the error target, the map stays
+## LIVE on the loop. The function must then NEVER detach (a detach would orphan it,
+## "Open count:1") and must fail loudly instead.
+reset_stubs
+stub_uses_maps=1
+stub_forcefail=1
+set_assoc "/dev/loop7"
+set_map "loop7p1"
+set_mapcount 1
+if loop_teardown_verify "${img}" ; then
+   fail "force cannot neutralize: expected non-zero return, got 0 (would mask / orphan)"
 else
    if [ "$(detach_count)" = "0" ]; then
-      pass "genuinely-held map (open count > 0): never detaches under a live map (no orphan), returns non-zero"
+      pass "force cannot neutralize: never detaches under a live map (no orphan), returns non-zero"
    else
-      fail "genuinely-held map: detached under a live map $(detach_count) time(s) -- orphan risk"
+      fail "force cannot neutralize: detached under a live map $(detach_count) time(s) -- orphan risk"
    fi
 fi
 
