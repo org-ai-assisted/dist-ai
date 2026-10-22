@@ -21,6 +21,9 @@ layout and the computed cascade:
   - no <img> is broken (404/decode-fail: blank, and not a console error);
   - with JS DISABLED the core content (<h1> + visible body text) and the layout
     still hold (progressive enhancement -- content/layout never gated behind JS);
+  - no in-page #anchor target lands hidden under the sticky header (its
+    scroll-margin-top, or the scroll container's scroll-padding-top, covers the
+    header height);
   - the header items do not overlap across a width sweep.
 
 Geometry audits (overflow / element-overflow / broken-image) run on EVERY engine
@@ -397,6 +400,51 @@ _NOJS_JS = r"""
 }
 """
 
+# Anchor-under-sticky-header occlusion: with a sticky/fixed top header, navigating
+# to an in-page #anchor lands the target at viewport-top -- UNDER the header --
+# unless the target carries scroll-margin-top (or the scroll container carries
+# scroll-padding-top) >= the header height. These sites have a sticky header + many
+# #anchors + partial scroll-margin/padding, so a target missing the offset is a real
+# "sticky element covers content" bug. Checks each anchored target's EFFECTIVE offset
+# (max of its scroll-margin-top and the root scroll-padding-top) against the header
+# height. No sticky header -> no risk (returns []). Primary engine, phone width.
+_ANCHOR_OCCLUSION_JS = r"""
+() => {
+  let headerH = 0;
+  for (const el of document.querySelectorAll('*')) {
+    const s = getComputedStyle(el);
+    if (s.position === 'sticky' || s.position === 'fixed') {
+      const r = el.getBoundingClientRect();
+      if (r.top <= 1 && r.width > 0 && r.height > headerH) headerH = r.height;
+    }
+  }
+  if (headerH < 1) return [];
+  const rootPad = Math.max(
+    parseFloat(getComputedStyle(document.documentElement).scrollPaddingTop) || 0,
+    parseFloat(getComputedStyle(document.body).scrollPaddingTop) || 0);
+  const out = [], seen = new Set();
+  for (const a of document.querySelectorAll('a[href^="#"]')) {
+    const raw = a.getAttribute('href').slice(1);
+    if (!raw) continue;                       // bare "#" is not a target
+    let id;
+    try { id = decodeURIComponent(raw); } catch (e) { id = raw; }
+    if (seen.has(id)) continue;
+    seen.add(id);
+    let t = null;
+    try { t = document.getElementById(id) || document.querySelector('[name="' + CSS.escape(id) + '"]'); }
+    catch (e) { t = document.getElementById(id); }
+    if (!t) continue;                         // a dangling anchor is the links gate's job
+    const sm = parseFloat(getComputedStyle(t).scrollMarginTop) || 0;
+    const effective = Math.max(sm, rootPad);
+    if (effective < headerH - 2) {
+      out.push('#' + id + ' lands under the sticky header (scroll offset ' +
+        Math.round(effective) + 'px < header ' + Math.round(headerH) + 'px)');
+    }
+  }
+  return out.slice(0, 8);
+}
+"""
+
 def _skip(msg: str) -> NoReturn:
     sys.stderr.write('website-mobile-tests: SKIP (%s)\n' % msg)
     raise SystemExit(77)
@@ -617,6 +665,10 @@ def main():
                                         '<%s class=%r> %r (light)\n'
                                         % (url, item['cr'], item['need'],
                                            item['tag'].lower(), item['cls'], item['text']))
+                                for msg in page.evaluate(_ANCHOR_OCCLUSION_JS):
+                                    failures += 1
+                                    sys.stderr.write('FAIL %s: anchor occluded: %s\n'
+                                                     % (url, msg))
                             finally:
                                 page.close()
                         # Dark-scheme contrast: the prefers-color-scheme palette
@@ -702,7 +754,7 @@ def main():
     sys.stdout.write('website-mobile-tests: %d pages clean on [%s] -- no overflow at %s px, '
                      'header <=%dpx, WCAG-AA text contrast (%s), no element spill, '
                      'no broken images, content holds with JS off, '
-                     'no header overlap %s px\n'
+                     'no anchor under the sticky header, no header overlap %s px\n'
                      % (checked, ' '.join(browsers),
                         '/'.join(str(w) for w in OVERFLOW_WIDTHS), HEADER_MAX_PX,
                         '+'.join(COLOR_SCHEMES),
