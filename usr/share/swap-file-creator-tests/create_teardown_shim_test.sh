@@ -515,13 +515,18 @@ check "(P) rollback swapoff STILL called though stderr is full" "$(traced '^swap
 ## before 'fallocate --length 0' fails. Validation now fails up front: do_stop
 ## (safe-rm) and fallocate are never reached. Old code reached both. ---
 trace="${work}/trace-q"
+err="${work}/err-q"
 true > "${trace}"
 true > "${SWAPFILE}"
 rc=0
-TRACE="${trace}" FAKE_FSTYPE=ext4 FAKE_SWAPON_LIST="" \
+TRACE="${trace}" FAKE_FSTYPE=ext4 FAKE_SWAPON_LIST="" DRIVE_VERBOSE=yes \
    DRIVE_SWAPFILE="${SWAPFILE}" DRIVE_SIZE_MB=0 DRIVE_DO_PRE_CHECK=no PATH="${bindir}:${PATH}" \
-   bash "${drive}" start >/dev/null 2>&1 || rc=$?
+   bash "${drive}" start >/dev/null 2>"${err}" || rc=$?
 check "(Q) do_start FAILS (zero size rejected)"          "${rc}" "1"
+## Same class as (V): exit 1 + trace-absence alone would false-GREEN on any
+## unrelated early exit. Assert the range-check diagnostic (0 < 1 MiB floor).
+check "(Q) rejected by the out-of-range check (not an unrelated early exit)" \
+   "$(grep --quiet -F -e 'is out of range (1..1048576 MiB)' -- "${err}" && printf '%s' y || printf '%s' n)" "y"
 check "(Q) safe-rm NOT reached (old swap not destroyed)" "$(traced '^safe-rm ' && printf '%s' y || printf '%s' n)" "n"
 check "(Q) fallocate NOT reached"                        "$(traced '^fallocate ' && printf '%s' y || printf '%s' n)" "n"
 
@@ -578,13 +583,20 @@ check "(T) swap file still present"                          "$([ -e "${SWAPFILE
 ## check rejects it before do_stop. Old code (shell-arithmetic range check only)
 ## wrapped it into range and reached do_stop + fallocate. ---
 trace="${work}/trace-v"
+err="${work}/err-v"
 true > "${trace}"
 true > "${SWAPFILE}"
 rc=0
-TRACE="${trace}" FAKE_FSTYPE=ext4 FAKE_SWAPON_LIST="" \
+TRACE="${trace}" FAKE_FSTYPE=ext4 FAKE_SWAPON_LIST="" DRIVE_VERBOSE=yes \
    DRIVE_SWAPFILE="${SWAPFILE}" DRIVE_SIZE_MB=18446744073709553664 DRIVE_DO_PRE_CHECK=no PATH="${bindir}:${PATH}" \
-   bash "${drive}" start >/dev/null 2>&1 || rc=$?
+   bash "${drive}" start >/dev/null 2>"${err}" || rc=$?
 check "(V) do_start FAILS (overflow size rejected, not wrapped)" "${rc}" "1"
+## Exit 1 + no safe-rm/fallocate is NOT enough: any unrelated early failure (a
+## missing bc, another pre-do_stop validation) exits the same way, false-GREENing
+## the overflow contract. Assert the range-check's own diagnostic so only the bc
+## out-of-range rejection passes. (VERBOSE=yes routes log to stderr.)
+check "(V) rejected by the out-of-range check (not an unrelated early exit)" \
+   "$(grep --quiet -F -e 'is out of range (1..1048576 MiB)' -- "${err}" && printf '%s' y || printf '%s' n)" "y"
 check "(V) safe-rm NOT reached (old swap not destroyed)"         "$(traced '^safe-rm ' && printf '%s' y || printf '%s' n)" "n"
 check "(V) fallocate NOT reached"                                "$(traced '^fallocate ' && printf '%s' y || printf '%s' n)" "n"
 
