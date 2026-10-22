@@ -923,6 +923,57 @@ def check_no_inline_script(root, failures):
                             % rel)
 
 
+class _FoucAudit(html.parser.HTMLParser):
+    # FOUC (flash of unstyled content): a render-blocking <link rel=stylesheet> in
+    # <head> paints the page styled on the first frame. Two patterns defeat that and
+    # flash raw HTML first:
+    #   - an onload handler on the stylesheet link -- the media="print"
+    #     onload="this.media='all'" async-apply trick (paints unstyled until onload);
+    #   - a stylesheet <link> in <body> (parsed and applied late).
+    # The third FOUC vector, a JS-injected stylesheet, is already blocked by the CSP
+    # + no-inline-script gates, so it is not re-checked here.
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.in_body = False
+        self.async_css = []      # hrefs of stylesheet links carrying an onload handler
+        self.body_css = []       # hrefs of stylesheet links inside <body>
+
+    def handle_starttag(self, tag, attrs):
+        if tag == 'body':
+            self.in_body = True
+            return
+        if tag != 'link':
+            return
+        amap = dict(attrs)       # HTMLParser lowercases tag + attribute names
+        if 'stylesheet' not in (amap.get('rel') or '').lower().split():
+            return
+        href = amap.get('href') or '(no href)'
+        if 'onload' in amap:
+            self.async_css.append(href)
+        if self.in_body:
+            self.body_css.append(href)
+
+
+def check_fouc(root, failures):
+    # Flash-of-unstyled-content guard: every stylesheet must load render-blocking in
+    # <head>. Deterministic + static -- no timing/throttle flake. (A throttled-load
+    # frame check is vacuous here: these sites ship external CSS, so ANY async/late
+    # delivery flashes; the delivery pattern is what to gate, and it is static.)
+    for page in html_files(root):
+        rel = os.path.relpath(page, root)
+        audit = _FoucAudit()
+        with open(page, encoding='utf-8') as handle:
+            audit.feed(handle.read())
+        for href in audit.async_css:
+            failures.append('%s: stylesheet <link href=%r> has an onload handler '
+                            '(async-applied CSS flashes unstyled content) -- load it '
+                            'render-blocking in <head>' % (rel, href))
+        for href in audit.body_css:
+            failures.append('%s: stylesheet <link href=%r> is in <body> (applied late, '
+                            'flashes unstyled content) -- move it to <head>'
+                            % (rel, href))
+
+
 def check_supply_chain(root, failures):
     # Supply chain: no page may fetch a subresource (script, image, media, style)
     # from an external host or protocol-relative URL -- everything ships
@@ -2136,6 +2187,7 @@ def main():
         check_banner(root, failures)
         check_csp(root, failures)
         check_no_inline_script(root, failures)
+        check_fouc(root, failures)
         check_supply_chain(root, failures)
         check_image_format(root, failures)
         check_assets(root, failures)

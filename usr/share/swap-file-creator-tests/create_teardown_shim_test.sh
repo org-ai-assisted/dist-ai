@@ -64,6 +64,11 @@
 ##   (T) #10 verbatim swap-record match: a sibling listing line with a '\c' escape
 ##       must not (via a 'printf %b' decode) hide an ACTIVE configured swap and let
 ##       do_stop delete a live swap without a swapoff.
+##   (V) size overflow: a digit string above signed 64-bit must be rejected, not
+##       wrapped by $((...)) back into the valid range (arbitrary-precision bc check).
+##   (W) sparse free-space credit: a SPARSE existing file must be credited by its
+##       ALLOCATED blocks (~0), not its apparent size, so the gate cannot approve a
+##       swap that then fails to allocate after the old file is removed.
 ##
 ## A missing REQUIRED dependency (subject, helper-scripts) is a HARD FAIL.
 
@@ -260,14 +265,16 @@ TRACE="${trace}" FAKE_FSTYPE=btrfs FAKE_SWAPON_LIST="" FAKE_SWAPON_SHOW="${SWAPF
    bash "${drive}" start >/dev/null 2>&1 || rc=$?
 check "(B) do_start succeeds (btrfs, 512 MiB)"    "${rc}" "0"
 check "(B) btrfs mkswapfile used"                 "$(traced '^btrfs filesystem mkswapfile' && printf '%s' y || printf '%s' n)" "y"
-check "(B) btrfs size in bytes (536870912), not rounded G" "$(traced 'mkswapfile --size 536870912' && printf '%s' y || printf '%s' n)" "y"
+## '.*--size' tolerates the '--uuid <UUID>' that now precedes --size on the btrfs call.
+check "(B) btrfs size in bytes (536870912), not rounded G" "$(traced 'mkswapfile .*--size 536870912' && printf '%s' y || printf '%s' n)" "y"
 ## Anchor to the mkswapfile size TOKEN, not a bare '0G': 'traced' greps the
 ## whole trace and every line embeds the mktemp path ${work}, whose random
 ## suffix can itself contain "0G" (false-FAIL ~1/430 runs). A G-suffixed size
-## after 'mkswapfile --size' is the sub-GiB rounding regression; a byte size is not.
-check "(B) btrfs size never G-suffixed (sub-GiB rounds to 0G)" "$(traced 'mkswapfile --size [0-9]*G' && printf '%s' y || printf '%s' n)" "n"
+## after 'mkswapfile ... --size' is the sub-GiB rounding regression; a byte size is not.
+check "(B) btrfs size never G-suffixed (sub-GiB rounds to 0G)" "$(traced 'mkswapfile .*--size [0-9]*G' && printf '%s' y || printf '%s' n)" "n"
 check "(B) plain fallocate NOT used on btrfs"     "$(traced '^fallocate ' && printf '%s' y || printf '%s' n)" "n"
 check "(B) plain mkswap NOT used on btrfs"        "$(traced '^mkswap ' && printf '%s' y || printf '%s' n)"    "n"
+check "(B) btrfs mkswapfile sets the configured UUID" "$(traced 'mkswapfile --uuid ' && printf '%s' y || printf '%s' n)" "y"
 
 ## --- (C) teardown safety: swapoff fails -> no remove, and FAIL LOUD (#7). The
 ## old code kept the file but returned 0, so a service stop falsely succeeded
@@ -355,22 +362,25 @@ TRACE="${trace}" FAKE_FSTYPE=ext4 FAKE_SWAPON_LIST="" FAKE_SWAPON_SHOW="${SWAPFI
 check "(H) do_start FAILS (4 GiB swap, only 3 GiB free)" "${rc}" "1"
 check "(H) fallocate NOT reached (rejected pre-alloc)"   "$(traced '^fallocate ' && printf '%s' y || printf '%s' n)" "n"
 
-## --- (I) #11: restart idempotency. Only 1 GiB raw free, but the existing
-## managed swap file is 7 GiB (sparse) and do_stop reclaims it before
-## allocation, so a 5 GiB target (+2 GiB headroom = 7 GiB) fits the 8 GiB
-## effective free -> do_start must REACH fallocate. Old code ignored the
-## existing file and falsely failed on the 1 GiB raw free. ---
+## --- (I) restart idempotency: the existing managed swap file's ALLOCATED bytes
+## are credited (do_stop reclaims them), so a restart on a full-ish disk is not
+## falsely blocked. A managed swap is never sparse, so use a REAL (fallocate)
+## 50 MiB file; free is set 50 MiB short of required, so it fits ONLY once the
+## existing file's allocated bytes are credited. ---
 trace="${work}/trace-i"
 true > "${trace}"
-truncate --size 7G "${SWAPFILE}"
+safe-rm --force -- "${SWAPFILE}"
+fallocate --length 52428800 "${SWAPFILE}"
 rc=0
-free1g=$(( 1 * 1024 * 1024 * 1024 ))
-TRACE="${trace}" FAKE_FSTYPE=ext4 FAKE_SWAPON_LIST="" FAKE_SWAPON_SHOW="${SWAPFILE} 5G" \
-   FAKE_FREE_BYTES="${free1g}" \
-   DRIVE_SWAPFILE="${SWAPFILE}" DRIVE_SIZE_MB=5120 DRIVE_DO_PRE_CHECK=no PATH="${bindir}:${PATH}" \
+## target 1024 MiB -> required = 1 GiB + 2 GiB headroom; free = required - 50 MiB + 1.
+req_i=$(( 1024 * 1048576 + 2 * 1024 * 1024 * 1024 ))
+free_i=$(( req_i - 52428800 + 1 ))
+TRACE="${trace}" FAKE_FSTYPE=ext4 FAKE_SWAPON_LIST="" FAKE_SWAPON_SHOW="${SWAPFILE} 1G" \
+   FAKE_FREE_BYTES="${free_i}" \
+   DRIVE_SWAPFILE="${SWAPFILE}" DRIVE_SIZE_MB=1024 DRIVE_DO_PRE_CHECK=no PATH="${bindir}:${PATH}" \
    bash "${drive}" start >/dev/null 2>&1 || rc=$?
-check "(I) do_start succeeds (existing 7 GiB credited)"  "${rc}" "0"
-check "(I) fallocate reached (restart not falsely blocked)" "$(traced '^fallocate ' && printf '%s' y || printf '%s' n)" "y"
+check "(I) do_start succeeds (existing 50 MiB allocation credited)" "${rc}" "0"
+check "(I) fallocate reached (restart not falsely blocked)"         "$(traced '^fallocate ' && printf '%s' y || printf '%s' n)" "y"
 
 ## --- (J) #8: a post-enable failure rolls the swap back. swapon enables
 ## successfully, but the size self-check sees the kernel-reported size (1 GiB)
@@ -561,6 +571,42 @@ check "(T) do_stop FAILS (active swap, swapoff unconfirmed)" "${rc}" "1"
 check "(T) swapoff attempted (record matched verbatim)"      "$(traced '^swapoff ' && printf '%s' y || printf '%s' n)" "y"
 check "(T) safe-rm NOT called (live swap not deleted)"       "$(traced '^safe-rm ' && printf '%s' y || printf '%s' n)" "n"
 check "(T) swap file still present"                          "$([ -e "${SWAPFILE}" ] && printf '%s' y || printf '%s' n)" "y"
+
+## --- (V) size overflow must be rejected, not wrapped. A value above signed
+## 64-bit (2^64 + 2048) would wrap in $((10#...)) back to 2048 (a valid-looking
+## size) and proceed to destroy the old swap. The arbitrary-precision bc range
+## check rejects it before do_stop. Old code (shell-arithmetic range check only)
+## wrapped it into range and reached do_stop + fallocate. ---
+trace="${work}/trace-v"
+true > "${trace}"
+true > "${SWAPFILE}"
+rc=0
+TRACE="${trace}" FAKE_FSTYPE=ext4 FAKE_SWAPON_LIST="" \
+   DRIVE_SWAPFILE="${SWAPFILE}" DRIVE_SIZE_MB=18446744073709553664 DRIVE_DO_PRE_CHECK=no PATH="${bindir}:${PATH}" \
+   bash "${drive}" start >/dev/null 2>&1 || rc=$?
+check "(V) do_start FAILS (overflow size rejected, not wrapped)" "${rc}" "1"
+check "(V) safe-rm NOT reached (old swap not destroyed)"         "$(traced '^safe-rm ' && printf '%s' y || printf '%s' n)" "n"
+check "(V) fallocate NOT reached"                                "$(traced '^fallocate ' && printf '%s' y || printf '%s' n)" "n"
+
+## --- (W) #4 sparse credit: a sparse existing file frees only its allocated
+## blocks when removed, so it must be credited by st_blocks (~0), not apparent
+## size. truncate 7 GiB is 0 blocks allocated; with 5 GiB free and a 5 GiB target
+## (+2 GiB headroom = 7 GiB required) the gate must FAIL (removing the sparse file
+## frees ~0) BEFORE do_stop -- never deleting it. Old code credited the apparent
+## 7 GiB, passed, deleted the sparse file, then fallocate of 5 GiB hit ENOSPC. ---
+trace="${work}/trace-w"
+true > "${trace}"
+safe-rm --force -- "${SWAPFILE}"
+truncate --size 7G "${SWAPFILE}"
+rc=0
+free5g=$(( 5 * 1024 * 1024 * 1024 ))
+TRACE="${trace}" FAKE_FSTYPE=ext4 FAKE_SWAPON_LIST="" FAKE_SWAPON_SHOW="${SWAPFILE} 5G" \
+   FAKE_FREE_BYTES="${free5g}" \
+   DRIVE_SWAPFILE="${SWAPFILE}" DRIVE_SIZE_MB=5120 DRIVE_DO_PRE_CHECK=no PATH="${bindir}:${PATH}" \
+   bash "${drive}" start >/dev/null 2>&1 || rc=$?
+check "(W) do_start FAILS (sparse file credited by allocation, not apparent)" "${rc}" "1"
+check "(W) fallocate NOT reached"                           "$(traced '^fallocate ' && printf '%s' y || printf '%s' n)" "n"
+check "(W) safe-rm NOT reached (sparse file not destroyed)" "$(traced '^safe-rm ' && printf '%s' y || printf '%s' n)" "n"
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then

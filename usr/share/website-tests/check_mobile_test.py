@@ -77,6 +77,36 @@ def run():
           "closest('pre, .term, .copybox')" in cm._CONTRAST_JS)
     check('contrast JS uses WCAG thresholds',
           '4.5' in cm._CONTRAST_JS and '3.0' in cm._CONTRAST_JS)
+    # New-audit JS content sanity (a defused JS string enforces nothing).
+    # Element-overflow (ported, validated): must keep the FP-avoidance invariants
+    # -- only overflow-x:visible spills, by-design scroll surfaces are exempt, and
+    # an out-of-flow descendant does not count.
+    check('element-overflow JS flags only overflow-x:visible',
+          "cs.overflowX !== 'visible'" in cm._ELEMENT_OVERFLOW_JS)
+    check('element-overflow JS exempts by-design scroll surfaces',
+          'EXEMPT_ANCESTOR' in cm._ELEMENT_OVERFLOW_JS
+          and 'pre' in cm._ELEMENT_OVERFLOW_EXEMPT and 'table' in cm._ELEMENT_OVERFLOW_EXEMPT)
+    check('element-overflow JS ignores out-of-flow descendants',
+          "ccs.position === 'absolute'" in cm._ELEMENT_OVERFLOW_JS
+          and 'inflow' in cm._ELEMENT_OVERFLOW_JS)
+    check('element-overflow scope targets family content boxes',
+          '.issue' in cm._ELEMENT_OVERFLOW_SCOPE)
+    check('broken-image JS uses complete && naturalWidth===0',
+          'img.complete' in cm._BROKEN_IMG_JS and 'naturalWidth === 0' in cm._BROKEN_IMG_JS)
+    # The lazy-position skip was a false-pass (complete is already false for an
+    # unloaded lazy image; the skip only hid broken lazy images past ~1.5vh). It
+    # must NOT come back -- these sites' galleries are lazy. (dev1238 / 61d6c25)
+    check('broken-image JS has no lazy-position false-pass skip',
+          "loading === 'lazy'" not in cm._BROKEN_IMG_JS
+          and 'innerHeight * 2' not in cm._BROKEN_IMG_JS)
+    # The high-FP generic body-overlap heuristic must NOT come back (inline wrap FP).
+    check('no generic body-overlap heuristic', not hasattr(cm, '_OVERLAP_JS'))
+    check('aspect JS compares natural vs rendered ratio',
+          'naturalWidth' in cm._ASPECT_JS and 'natural' in cm._ASPECT_JS)
+    check('aspect tolerance is a small fraction', 0 < cm._ASPECT_TOLERANCE <= 0.2,
+          repr(cm._ASPECT_TOLERANCE))
+    check('both color schemes named', set(cm.COLOR_SCHEMES) == {'light', 'dark'},
+          repr(cm.COLOR_SCHEMES))
 
     # 3. The rendered-layout gates must be WIRED into main() (defined-but-unused
     #    silently enforces nothing).
@@ -87,6 +117,41 @@ def run():
     check('header-overlap sweep wired',
           'for width in HEADER_SWEEP_WIDTHS' in main_body
           and '_HEADER_OVERLAP_JS' in main_body)
+    # Added audits must be wired too.
+    check('element-overflow gate wired', '_ELEMENT_OVERFLOW_JS' in main_body)
+    check('broken-image gate wired', '_BROKEN_IMG_JS' in main_body)
+    check('aspect-ratio gate wired', '_ASPECT_JS' in main_body)
+    check('dark-scheme contrast wired',
+          "color_scheme='dark'" in main_body and '(dark)' in main_body)
+    check('multi-engine loop wired',
+          '_browsers_from_env' in main_body and 'for engine_name, browser in engines' in main_body)
+    # Silent-skip regression: `primary` must be the first LAUNCHED engine, not
+    # browsers[0]. If chromium (browsers[0]) fails to launch but another engine
+    # runs, keying `primary`/`checked` off browsers[0] leaves checked==0 -> _skip(77),
+    # swallowing the launch failure as a SKIP. Must derive primary from `engines`.
+    check('primary is the first LAUNCHED engine (not browsers[0])',
+          'primary = engines[0][0]' in main_body and 'primary = browsers[0]' not in main_body)
+
+    # 3b. Engine selection: default is chromium (primary), env overrides, dedup,
+    #     and a launch-failure classification exists (loud when another engine ran).
+    _save = os.environ.pop('WEBCHECK_BROWSERS', None)
+    try:
+        check('default engine is chromium-only', cm._browsers_from_env() == ['chromium'])
+        os.environ['WEBCHECK_BROWSERS'] = 'chromium, chromium, firefox'
+        check('engine list dedups preserving order',
+              cm._browsers_from_env() == ['chromium', 'firefox'],
+              repr(cm._browsers_from_env()))
+    finally:
+        if _save is None:
+            os.environ.pop('WEBCHECK_BROWSERS', None)
+        else:
+            os.environ['WEBCHECK_BROWSERS'] = _save
+    check('primary engine drives color audits only',
+          'is_primary' in main_body
+          and main_body.index("color_scheme='dark'") > main_body.index('is_primary'))
+    check('requested-but-missing engine is a loud failure (not silent skip)',
+          "unavailable" in main_body and 'failures += 1' in main_body
+          and 'name == browsers[-1]' in main_body)
 
     # 4. Header-overlap detection is configured: a range of sweep widths (not a
     #    single one) and the icon<->label logic present in the JS.
