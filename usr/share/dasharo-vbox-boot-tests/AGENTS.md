@@ -74,16 +74,30 @@ framebuffer. Each patch script is idempotent.
 
 - DONE: graphics (GOP on the VBox linear framebuffer, firmware renders) + ACPI S5
   (`reset -s` powers off). The lane verifies both.
-- OPEN -- OS boot THROUGH the firmware does NOT work yet. Attaching a Kicksecure
-  disk (SATA/AHCI) and booting: the UefiPayload reaches its own UEFI shell instead
-  of booting the disk (serial: "Booting from COREBOOT region" -> "Welcome to the
-  UEFI Shell!"; all framebuffer frames stay the shell). Likely the payload build
-  lacks an AHCI/NVMe block + the disk's EFI boot-option discovery, so BDS finds no
-  bootable device. Resume recipe (OVH, root, dm-vm-lock --class work): convert a
-  `~/derivative-binary/.../Kicksecure-LXQt-*.raw` to a throwaway VDI
-  (`VBoxManage convertfromraw ... --format VDI`), attach it SATA hdd to a
-  coreboot-firmware VM (the `build_coreboot_vm_plan` config + a SATA controller),
-  drain COM1, screenshot for ~5 min. Fix: add the block/AHCI driver + boot-option
-  refresh to the UefiPayload build (coreboot `.config` payload options / edk2 DSC),
-  then re-run. The scratch script `os-boot.sh` captured in this session does the
-  convert+attach+drain+screenshot loop.
+- OPEN -- OS boot THROUGH the firmware does NOT work yet. ROOT CAUSE (diagnosed):
+  the UefiPayload enumerates NO PCI devices at all. From the shell, `devices` lists
+  ONLY the UART and `map -r` says "Not Found" -- no SATA controller, no disk. The
+  drivers ARE present (PciBusDxe, PciHostBridgeDxe, SataControllerDxe, NvmExpressDxe
+  in the DSC); the failure is PCI CONFIG ACCESS: coreboot (qemu-i440fx under VBox)
+  emits no `CB_TAG_RB_INFO`, so `PciHostBridgeGetRootBridges` falls back to
+  `ScanForRootBridges`, which (with `PciSegmentLibSegmentInfo` + `PcdPciExpressBaseAddress`)
+  does MMIO ECAM reads -- but VBox's piix3/i440fx has NO ECAM (legacy 0xCF8/0xCFC only,
+  coreboot `NO_ECAM_MMCONF_SUPPORT=y`), so every config read returns 0xFFFFFFFF -> no
+  root bridge -> nothing enumerated. (This is also why the GOP PCI binding never fired
+  -- we sidestepped it with direct-GOP-publish; a disk has no such workaround.)
+- TRIED + FAILED: forcing legacy CF8 config access (DSC `PCIE_BASE_SUPPORT=FALSE` ->
+  `PciLib=BasePciLibCf8`, and `PciSegmentLib`->`BasePciSegmentLibPci`). It builds, but
+  the payload then HANGS very early (near-black framebuffer, NO payload serial at all,
+  not even GOPDBG:init-enter) -- an emulated-chipset PCI-scan quirk. Reverted; the
+  working ROM (direct-GOP-publish, ECAM-default) is restored as `/home/admin/cb-uefi-gfx.rom`
+  (archive: `/home/admin/dasharo-patches/cb-uefi-gfx-GRAPHICS-WORKING.rom`).
+- RESUME (OVH, root, dm-vm-lock --class work): instrument the CF8 path with
+  `SerialPortWrite` markers in `ScanForRootBridges`/`PciBusDxe` to find the exact
+  hanging config access and BOUND the bus/device scan (VBox decodes only bus 0,
+  dev 0..~a few); OR make coreboot emit `CB_TAG_RB_INFO` with proper LEGACY apertures
+  (bus 0-0, IO 0-0xFFFF, the 32-bit MMIO window) so `ParseRootBridgeInfo` builds the
+  root-bridge HOB and the scan is skipped. Then: convert a
+  `~/derivative-binary/.../Kicksecure-LXQt-*.raw` -> VDI (`VBoxManage convertfromraw
+  ... --format VDI`), attach SATA hdd to a `build_coreboot_vm_plan` VM + a SATA
+  controller, drain COM1, screenshot ~5 min (the scratch `os-boot.sh` / `osboot-diag.sh`
+  do this). SUCCESS = a frame with colours>100 (grub/kernel/desktop) or a `map` FS entry.
