@@ -43,6 +43,19 @@ _SHIFT_MAKE = 0x2a
 _SHIFT_BREAK = 0xaa
 _BREAK_BIT = 0x80
 
+## Named non-printable keys for a chord (modifiers + function/navigation keys): set-1
+## MAKE codes (break = make | 0x80). Lets a caller express a key combo by NAME --
+## 'ctrl alt f2' to switch to a virtual terminal -- instead of hand-coding make/break
+## hex via the raw `key` verb. Kept here (module scope) so chord_scancodes is importable
+## and unit-testable without the VirtualBox bindings, like text_scancodes.
+_CHORD_MAKE = {
+    'ctrl': 0x1d, 'lctrl': 0x1d, 'alt': 0x38, 'lalt': 0x38,
+    'shift': 0x2a, 'lshift': 0x2a,
+    'enter': 0x1c, 'esc': 0x01, 'tab': 0x0f, 'backspace': 0x0e, 'space': 0x39,
+    'f1': 0x3b, 'f2': 0x3c, 'f3': 0x3d, 'f4': 0x3e, 'f5': 0x3f, 'f6': 0x40,
+    'f7': 0x41, 'f8': 0x42, 'f9': 0x43, 'f10': 0x44, 'f11': 0x57, 'f12': 0x58,
+}
+
 ## A button press fired with ZERO delay after the absolute move is DROPPED by the
 ## guest at higher resolutions (a plain-EFI / EFI+SB Calamares at the GOP's
 ## 1920x1080, rendered by the slow headless llvmpipe): the pointer motion / focus-
@@ -116,6 +129,20 @@ def text_scancodes(text):
     return codes
 
 
+def chord_scancodes(keys):
+    """Set-1 scancodes to press KEYS together then release them: MAKE in the given order,
+    BREAK in REVERSE order (so a modifier is held around the inner key's press+release and
+    released last). KEYS are names from _CHORD_MAKE, e.g. ['ctrl','alt','f2'] to switch to
+    a virtual terminal. Raises ValueError on an unknown key. No VM needed -- unit-testable."""
+    makes = []
+    for key in keys:
+        code = _CHORD_MAKE.get(key.lower())
+        if code is None:
+            raise ValueError('no scancode for chord key %r' % (key,))
+        makes.append(code)
+    return makes + [code | _BREAK_BIT for code in reversed(makes)]
+
+
 def send_scancodes(keyboard, codes):
     """Inject scancodes PACED in small chunks: one big putScancodes overruns the
     guest input buffer and silently DROPS keys (e.g. 'calamares' -> 'calaares'),
@@ -157,6 +184,10 @@ def _build_parser():
                    help='type text read from stdin (keeps secrets out of argv/proc)')
     key = sub.add_parser('key', help='inject raw hex scancodes')
     key.add_argument('codes', nargs='+', metavar='HEX')
+    chord = sub.add_parser('chord',
+                           help='press named keys together then release '
+                                '(e.g. "chord ctrl alt f2" to switch virtual terminal)')
+    chord.add_argument('keys', nargs='+', metavar='KEY')
     return parser
 
 
@@ -203,6 +234,9 @@ def main(argv=None):
         elif args.cmd == 'key':
             send_scancodes(console.keyboard, [int(code, 16) for code in args.codes])
             print('key %s' % (' '.join(args.codes),))
+        elif args.cmd == 'chord':
+            send_scancodes(console.keyboard, chord_scancodes(args.keys))
+            print('chord %s' % (' '.join(args.keys),))
         return 0
     finally:
         session.unlockMachine()

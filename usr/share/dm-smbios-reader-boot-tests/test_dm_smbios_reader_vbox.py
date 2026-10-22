@@ -80,6 +80,29 @@ def test_guestctl_text_scancodes_rejects_unmapped():
         GC.text_scancodes('\t')
 
 
+def test_guestctl_chord_scancodes():
+    ## MAKE in order, BREAK in REVERSE (modifiers held around the inner key, released
+    ## last). Ctrl+Alt+F2 (switch virtual terminal): ctrl 0x1d, alt 0x38, f2 0x3c, then
+    ## breaks f2 0xbc, alt 0xb8, ctrl 0x9d.
+    assert GC.chord_scancodes(['ctrl', 'alt', 'f2']) == [0x1d, 0x38, 0x3c, 0xbc, 0xb8, 0x9d]
+    ## Switch back to the graphical VT (F1); case-insensitive key names.
+    assert GC.chord_scancodes(['Ctrl', 'Alt', 'F1']) == [0x1d, 0x38, 0x3b, 0xbb, 0xb8, 0x9d]
+    ## A single named key still makes+breaks.
+    assert GC.chord_scancodes(['enter']) == [0x1c, 0x9c]
+
+
+def test_guestctl_chord_scancodes_rejects_unmapped():
+    ## an unknown chord key name is a loud ValueError, not a silent no-op.
+    with pytest.raises(ValueError):
+        GC.chord_scancodes(['ctrl', 'nope'])
+
+
+def test_guestctl_parser_accepts_chord():
+    ## the chord subcommand parses its one-or-more KEY operands.
+    ns = GC._build_parser().parse_args(['v', 'chord', 'ctrl', 'alt', 'f2'])
+    assert (ns.cmd, ns.keys) == ('chord', ['ctrl', 'alt', 'f2'])
+
+
 def test_guestctl_parser_validates_operands():
     ## argparse gives clean usage/SystemExit, not a raw IndexError/ValueError, on
     ## missing or non-numeric operands.

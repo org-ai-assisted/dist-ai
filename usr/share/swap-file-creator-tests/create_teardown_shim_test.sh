@@ -51,6 +51,19 @@
 ##   (O) a failing logger must not abort a critical path: log()'s
 ##       'printf | systemd-cat' pipeline (systemd-cat failing under pipefail)
 ##       must not fire the ERR trap before the rollback swapoff runs.
+##   (P) #8 logger fail-safe on the VERBOSE=yes branch: log()'s plain 'printf'
+##       (not the systemd-cat pipeline) must not abort a caller when its write
+##       fails (stderr to a full disk) -- low RAM forces VERBOSE=yes, so this is a
+##       normal runtime path; the rollback swapoff must STILL run.
+##   (Q) size validation before do_stop: a zero/non-integer SWAP_FILE_SIZE must be
+##       rejected up front, never after do_stop has destroyed the existing swap.
+##   (R) #11 octal: a leading-zero SWAP_FILE_SIZE is DECIMAL (base-10 normalized),
+##       not octal -- '001024' allocates 1 GiB, not ~557 MB.
+##   (S) #4 UUID validation before do_stop: an invalid UUID is rejected up front,
+##       not after do_stop removed the old swap (it only fails at 'mkswap --uuid').
+##   (T) #10 verbatim swap-record match: a sibling listing line with a '\c' escape
+##       must not (via a 'printf %b' decode) hide an ACTIVE configured swap and let
+##       do_stop delete a live swap without a swapoff.
 ##
 ## A missing REQUIRED dependency (subject, helper-scripts) is a HARD FAIL.
 
@@ -464,6 +477,90 @@ TRACE="${trace}" FAKE_FSTYPE=ext4 FAKE_SWAPON_LIST="" FAKE_SWAPON_SHOW="${SWAPFI
 check "(O) do_start FAILS (size mismatch)"                     "${rc}" "1"
 check "(O) enabling swapon reached despite failing logger"     "$(traced '^swapon ' && printf '%s' y || printf '%s' n)" "y"
 check "(O) rollback swapoff STILL called though systemd-cat fails" "$(traced '^swapoff ' && printf '%s' y || printf '%s' n)" "y"
+
+## --- (P) #8 logger fail-safe on the VERBOSE=yes branch. Drive the (J)
+## size-mismatch rollback with VERBOSE=yes, the production ERR trap, and the
+## drive's stderr pointed at /dev/full: the error logs at 561-563 and the
+## rollback's own log at 71 all write to the full device, but the rollback
+## swapoff at 72 must STILL run. Old code (unguarded 'printf' on line 19) fired
+## the ERR trap on the first failed write and aborted before any rollback. ---
+if [ ! -c /dev/full ]; then
+   printf '%s\n' "FATAL: /dev/full missing (required for (P))" >&2
+   exit 1
+fi
+trace="${work}/trace-p"
+true > "${trace}"
+safe-rm --force -- "${SWAPFILE}"
+rc=0
+TRACE="${trace}" FAKE_FSTYPE=ext4 FAKE_SWAPON_LIST="" FAKE_SWAPON_SHOW="${SWAPFILE} 1G" \
+   DRIVE_VERBOSE=yes DRIVE_INSTALL_ERR_TRAP=yes \
+   DRIVE_SWAPFILE="${SWAPFILE}" DRIVE_SIZE_MB=5120 DRIVE_DO_PRE_CHECK=no PATH="${bindir}:${PATH}" \
+   bash "${drive}" start 1>/dev/null 2>/dev/full || rc=$?
+check "(P) do_start FAILS (size mismatch)"                     "${rc}" "1"
+check "(P) enabling swapon reached despite failing logger"     "$(traced '^swapon ' && printf '%s' y || printf '%s' n)" "y"
+check "(P) rollback swapoff STILL called though stderr is full" "$(traced '^swapoff ' && printf '%s' y || printf '%s' n)" "y"
+
+## --- (Q) size validation before do_stop. A zero SWAP_FILE_SIZE would pass the
+## free gate (required = 2 GiB headroom only) and the old swap would be deleted
+## before 'fallocate --length 0' fails. Validation now fails up front: do_stop
+## (safe-rm) and fallocate are never reached. Old code reached both. ---
+trace="${work}/trace-q"
+true > "${trace}"
+true > "${SWAPFILE}"
+rc=0
+TRACE="${trace}" FAKE_FSTYPE=ext4 FAKE_SWAPON_LIST="" \
+   DRIVE_SWAPFILE="${SWAPFILE}" DRIVE_SIZE_MB=0 DRIVE_DO_PRE_CHECK=no PATH="${bindir}:${PATH}" \
+   bash "${drive}" start >/dev/null 2>&1 || rc=$?
+check "(Q) do_start FAILS (zero size rejected)"          "${rc}" "1"
+check "(Q) safe-rm NOT reached (old swap not destroyed)" "$(traced '^safe-rm ' && printf '%s' y || printf '%s' n)" "n"
+check "(Q) fallocate NOT reached"                        "$(traced '^fallocate ' && printf '%s' y || printf '%s' n)" "n"
+
+## --- (R) #11 octal: a leading-zero size is DECIMAL. '001024' MiB must allocate
+## 1073741824 bytes (1 GiB); old code read it as octal 532 -> 557842432 bytes. ---
+trace="${work}/trace-r"
+true > "${trace}"
+safe-rm --force -- "${SWAPFILE}"
+rc=0
+TRACE="${trace}" FAKE_FSTYPE=ext4 FAKE_SWAPON_LIST="" FAKE_SWAPON_SHOW="${SWAPFILE} 1024M" \
+   DRIVE_SWAPFILE="${SWAPFILE}" DRIVE_SIZE_MB=001024 DRIVE_DO_PRE_CHECK=no PATH="${bindir}:${PATH}" \
+   bash "${drive}" start >/dev/null 2>&1 || rc=$?
+check "(R) do_start succeeds (001024 normalized to decimal)"    "${rc}" "0"
+check "(R) fallocate uses decimal 1 GiB (1073741824 bytes)"     "$(traced 'fallocate --length 1073741824' && printf '%s' y || printf '%s' n)" "y"
+check "(R) fallocate NOT the octal-532 byte count (557842432)"  "$(traced 'fallocate --length 557842432' && printf '%s' y || printf '%s' n)" "n"
+
+## --- (S) #4 UUID validation before do_stop. An invalid UUID only fails at
+## 'mkswap --uuid' AFTER do_stop removed the old swap. Reject it up front:
+## do_stop (safe-rm) and fallocate are never reached. Old code reached both. ---
+trace="${work}/trace-s"
+true > "${trace}"
+true > "${SWAPFILE}"
+rc=0
+TRACE="${trace}" FAKE_FSTYPE=ext4 FAKE_SWAPON_LIST="" \
+   DRIVE_UUID="not-a-valid-uuid" \
+   DRIVE_SWAPFILE="${SWAPFILE}" DRIVE_SIZE_MB=1024 DRIVE_DO_PRE_CHECK=no PATH="${bindir}:${PATH}" \
+   bash "${drive}" start >/dev/null 2>&1 || rc=$?
+check "(S) do_start FAILS (invalid UUID rejected)"       "${rc}" "1"
+check "(S) safe-rm NOT reached (old swap not destroyed)" "$(traced '^safe-rm ' && printf '%s' y || printf '%s' n)" "n"
+check "(S) fallocate NOT reached"                        "$(traced '^fallocate ' && printf '%s' y || printf '%s' n)" "n"
+
+## --- (T) #10 verbatim swap-record match. The configured file is ACTIVE, but an
+## earlier listing line carries a '\c' escape. Under the old 'printf %b' decode
+## the listing truncated at '\c' before our record, our file looked inactive,
+## swapoff was skipped, and safe-rm deleted a LIVE swap (returning 0). With
+## verbatim matching our record is found, swapoff is required; swapoff fails here,
+## so do_stop fails LOUD and the live file is KEPT. ---
+trace="${work}/trace-t"
+true > "${trace}"
+true > "${SWAPFILE}"
+rc=0
+TRACE="${trace}" SWAPOFF_RC=32 \
+   FAKE_SWAPON_LIST=$'/other/swap\\cfile file 8G\n'"${SWAPFILE} file 1024M" \
+   DRIVE_SWAPFILE="${SWAPFILE}" PATH="${bindir}:${PATH}" \
+   bash "${drive}" stop >/dev/null 2>&1 || rc=$?
+check "(T) do_stop FAILS (active swap, swapoff unconfirmed)" "${rc}" "1"
+check "(T) swapoff attempted (record matched verbatim)"      "$(traced '^swapoff ' && printf '%s' y || printf '%s' n)" "y"
+check "(T) safe-rm NOT called (live swap not deleted)"       "$(traced '^safe-rm ' && printf '%s' y || printf '%s' n)" "n"
+check "(T) swap file still present"                          "$([ -e "${SWAPFILE}" ] && printf '%s' y || printf '%s' n)" "y"
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
