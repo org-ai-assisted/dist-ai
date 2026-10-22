@@ -35,6 +35,9 @@ HIBERNATION='no'
 ## Overridable so a case can force log()'s 'printf | systemd-cat' branch
 ## (VERBOSE=no) to exercise the logger-abort path; default quiet-for-the-test.
 VERBOSE="${DRIVE_VERBOSE:-yes}"
+## Overridable so a case can drive an invalid UUID through the pre-do_stop
+## validation without editing the config files.
+if [ -v DRIVE_UUID ]; then UUID="${DRIVE_UUID}"; fi
 
 ## Install the SAME ERR trap main() installs, when a case needs to exercise the
 ## production error_handler path (e.g. the post-enable rollback on an ERR-driven
