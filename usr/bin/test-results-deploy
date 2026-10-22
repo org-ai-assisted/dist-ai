@@ -74,6 +74,13 @@ mkdir --parents -- "${staging_base}"
 ## `cd` into the Pages repo then points the EXIT-trap cleanup at the wrong directory (a leak).
 staging_base="$(cd -- "${staging_base}" && pwd)"
 staging="$(mktemp --directory --tmpdir="${staging_base}" deploy.XXXXXX)"
+## The sandbox / qube-ctl pull stages the incoming archive on TMPDIR before delivering it to the
+## destination, and the default /tmp is the small, near-full tmpfs whose free space the pull's
+## budget check rejects. Point TMPDIR + TMP at the disk-backed staging dir so the TRANSPORT's own
+## archive staging lands on disk too -- redirecting only the destination is not enough. Cleaned by
+## the EXIT trap.
+export TMPDIR="${staging}"
+export TMP="${staging}"
 ## Registered in the EXIT trap so a failure at any step (read-tree / add / commit) cannot leak
 ## the private index or the message temp file.
 idx=""
