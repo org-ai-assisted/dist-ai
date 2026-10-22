@@ -30,6 +30,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 me="${0##*/}"
 
@@ -101,15 +102,21 @@ repo_dir="$(readlink --canonicalize -- "${repo_dir}")" \
 git -C "${repo_dir}" rev-parse --is-inside-work-tree > /dev/null 2>&1 \
    || die 66 "not a git repository: '${repo_dir}'"
 
-## Resolve website-tests from the same tree as this script when running
-## from a checkout, else the installed path.
+## Resolve website-tests from the same tree as this script when running from a checkout, else
+## the installed path. SITE_DEPLOY_WEBSITE_TESTS overrides the binary (a test seam, in the
+## overridable-base convention) so a suite can exercise the real push path without the browser
+## gate -- strictly LESS permissive than the existing SITE_DEPLOY_SKIP, which skips the gate
+## entirely; this only swaps which gate binary runs, defaulting to the real one.
 self_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
-website_tests="${self_dir}/website-tests"
-if [ ! -x "${website_tests}" ]; then
-   website_tests='/usr/bin/website-tests'
+website_tests="${SITE_DEPLOY_WEBSITE_TESTS:-}"
+if [ -z "${website_tests}" ]; then
+   website_tests="${self_dir}/website-tests"
+   if [ ! -x "${website_tests}" ]; then
+      website_tests='/usr/bin/website-tests'
+   fi
 fi
 [ -x "${website_tests}" ] \
-   || die 69 "website-tests not found (looked in '${self_dir}' and /usr/bin)"
+   || die 69 "website-tests not found (SITE_DEPLOY_WEBSITE_TESTS / '${self_dir}' / /usr/bin)"
 
 ## Point the suite at THIS checkout. The variable name is per-site;
 ## an unrecognized directory is refused rather than silently testing
@@ -154,5 +161,10 @@ branch="$(git -C "${repo_dir}" rev-parse --abbrev-ref HEAD)"
    || die 1 'detached HEAD: check out the publishing branch first'
 
 printf '%s\n' "${me}: pushing ${branch} -> ${remote}/${branch}" >&2
-git -C "${repo_dir}" push -- "${remote}" "${branch}"
+## The pre-push hook in each site repo re-runs website-tests via `site-deploy --check-only` on the
+## publishing remote. This push IS that publish, and the identical suite just ran GREEN above on
+## this same checkout, moments ago -- letting the hook re-run it would gate TWICE (doubling a
+## ~15-20min browser suite, the deploy's dominant cost). Suppress the hook for THIS push only; a
+## bare `git push` by anyone else is unaffected and still gates.
+SITE_DEPLOY_SKIP=1 git -C "${repo_dir}" push -- "${remote}" "${branch}"
 printf '%s\n' "${me}: published" >&2

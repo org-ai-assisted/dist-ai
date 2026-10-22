@@ -668,7 +668,7 @@ dasharo-vbox-boot-tests
 
 Set `DASHARO_VBOX_PUBLISH=1` (or `IMAGE_TEST_RESULTS_ROOT`) and run as root to
 publish the verdict + serial capture to the results plane via the shared
-`image-test` publisher; the `test-results-deploy` timer then renders it onto
+`image-test` publisher; run `test-results-deploy` from the qube afterwards to render it onto
 https://org-ai-assisted.github.io/automated-test-results/ alongside the image boot
 tests.
 
