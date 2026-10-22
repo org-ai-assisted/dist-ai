@@ -76,8 +76,8 @@ if [ -z "${func_text}" ]; then
    printf '%s\n' "FATAL: resolved dm-packaging-helper-script ('${subject}') predates the git_commit_pathspecs pathspec-abort fix; point DEVELOPER_META_FILES_DIR at a developer-meta-files checkout that has it." >&2
    exit 1
 fi
-if [[ "${func_text}" != *'git diff --cached'* ]]; then
-   printf '%s\n' "FATAL: git_commit_pathspecs in '${subject}' lacks the staged-content filter ('git diff --cached'); subject predates the fix." >&2
+if [[ "${func_text}" != *'--cached'* ]]; then
+   printf '%s\n' "FATAL: git_commit_pathspecs in '${subject}' lacks the staged-content filter ('--cached' index check); subject predates the fix." >&2
    exit 1
 fi
 
@@ -95,11 +95,34 @@ for caller in pkg_git_manpages pkg_git_debinstfile; do
    fi
 done
 
+## pkg_git_manpages must stage the man dirs WHOLESALE, not a 'man'/* glob: the
+## glob misses dotfiles and tracked-file deletions, leaving the index behind the
+## worktree. Since git_commit_pathspecs commits with 'git commit -- <dir>' (git
+## commit --only = records the worktree), a lagging index silently drops a
+## deletion or commits an unstaged edit. Guard against a regression to the glob.
+manpages_text="$(awk '
+   /^pkg_git_manpages\(\) \{/ { f=1 }
+   f                          { print }
+   f && /^\}/                 { exit }
+' "${subject}")"
+if [[ "${manpages_text}" == *"add -- 'man'/*"* ]]; then
+   fail "pkg_git_manpages stages a 'man'/* glob (misses dotfiles/deletions); stage the dir"
+else
+   pass "pkg_git_manpages stages the man dirs wholesale, not a glob"
+fi
+
 tmp_root="$(mktemp -d)"
 ## Scrub inherited git location vars: an inherited GIT_DIR (etc.) makes bare
 ## 'git' operate on this test runner's real repo, not the fixture.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
    GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_NAMESPACE
+## Isolate from ambient git config: a global commit.gpgsign=true would make the
+## fixture's own 'git commit' (and the helper's bare 'git commit') try to sign
+## with a key the sandbox / CI lacks -- "gpg failed to sign ... failed to write
+## commit object" -- falsely failing correct code. Also clear the inline-config
+## env that git carries across a child process.
+unset GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
 # shellcheck disable=SC2317  # reached only via the EXIT trap
 cleanup() {
    safe-rm --recursive --force -- "${tmp_root}"
@@ -115,6 +138,7 @@ make_repo() {
    git -C "${repo}" init -q -b master
    git -C "${repo}" config user.name t
    git -C "${repo}" config user.email t@t
+   git -C "${repo}" config commit.gpgsign false
    for dir in "$@"; do
       mkdir -p "${repo}/${dir}"
       printf '%s\n' 'orig' > "${repo}/${dir}/page"
