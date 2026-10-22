@@ -924,34 +924,62 @@ def check_no_inline_script(root, failures):
 
 
 class _FoucAudit(html.parser.HTMLParser):
-    # FOUC (flash of unstyled content): a render-blocking <link rel=stylesheet> in
-    # <head> paints the page styled on the first frame. Two patterns defeat that and
+    # FOUC (flash of unstyled content): a render-blocking stylesheet in <head>
+    # paints the page styled on the first frame. The patterns that defeat that and
     # flash raw HTML first:
-    #   - an onload handler on the stylesheet link -- the media="print"
-    #     onload="this.media='all'" async-apply trick (paints unstyled until onload);
-    #   - a stylesheet <link> in <body> (parsed and applied late).
-    # The third FOUC vector, a JS-injected stylesheet, is already blocked by the CSP
-    # + no-inline-script gates, so it is not re-checked here.
+    #   - an onload handler on a stylesheet <link> (the media="print"
+    #     onload="this.media='all'" async-apply trick);
+    #   - the preload swap: <link rel="preload" as="style" onload="...rel='stylesheet'">
+    #     -- the canonical async-CSS pattern (applied only once onload fires);
+    #   - a stylesheet <link>, or a <style> element, in <body> (applied late).
+    # A JS-INJECTED stylesheet is already blocked by the CSP + no-inline-script gates.
+    # Guards: a <body> seen inside <title>/<textarea> (HTMLParser, unlike a real HTML
+    # parser, does NOT treat those as RCDATA, so a title containing "<body>" would
+    # else flip in_body and false-flag the head sheet); content inside <template> is
+    # inert (not applied until cloned), so links/styles there are not flagged.
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.in_body = False
-        self.async_css = []      # hrefs of stylesheet links carrying an onload handler
+        self._rcdata = 0         # inside <title>/<textarea> (tags there are not real)
+        self._template = 0       # inside <template> (inert content)
+        self.async_css = []      # hrefs of async-applied stylesheet links (onload swap)
         self.body_css = []       # hrefs of stylesheet links inside <body>
+        self.body_style = 0      # count of <style> elements inside <body>
 
     def handle_starttag(self, tag, attrs):
-        if tag == 'body':
+        if tag in ('title', 'textarea'):
+            self._rcdata += 1
+            return
+        if tag == 'template':
+            self._template += 1
+            return
+        # Ignore a <body> emitted inside RCDATA text (e.g. a title mentioning it).
+        if tag == 'body' and self._rcdata == 0:
             self.in_body = True
+            return
+        if self._template:       # inert template content is never applied
+            return
+        if tag == 'style' and self.in_body:
+            self.body_style += 1
             return
         if tag != 'link':
             return
         amap = dict(attrs)       # HTMLParser lowercases tag + attribute names
-        if 'stylesheet' not in (amap.get('rel') or '').lower().split():
-            return
+        rels = (amap.get('rel') or '').lower().split()
         href = amap.get('href') or '(no href)'
-        if 'onload' in amap:
+        is_sheet = 'stylesheet' in rels
+        # The preload swap applies CSS only from onload -> an unstyled flash first.
+        is_preload_style = 'preload' in rels and (amap.get('as') or '').lower() == 'style'
+        if 'onload' in amap and (is_sheet or is_preload_style):
             self.async_css.append(href)
-        if self.in_body:
+        if is_sheet and self.in_body:
             self.body_css.append(href)
+
+    def handle_endtag(self, tag):
+        if tag in ('title', 'textarea') and self._rcdata:
+            self._rcdata -= 1
+        elif tag == 'template' and self._template:
+            self._template -= 1
 
 
 def check_fouc(root, failures):
@@ -965,13 +993,17 @@ def check_fouc(root, failures):
         with open(page, encoding='utf-8') as handle:
             audit.feed(handle.read())
         for href in audit.async_css:
-            failures.append('%s: stylesheet <link href=%r> has an onload handler '
-                            '(async-applied CSS flashes unstyled content) -- load it '
-                            'render-blocking in <head>' % (rel, href))
+            failures.append('%s: stylesheet <link href=%r> is applied via onload '
+                            '(async/preload-swap CSS flashes unstyled content) -- load '
+                            'it render-blocking in <head>' % (rel, href))
         for href in audit.body_css:
             failures.append('%s: stylesheet <link href=%r> is in <body> (applied late, '
                             'flashes unstyled content) -- move it to <head>'
                             % (rel, href))
+        if audit.body_style:
+            failures.append('%s: <style> element in <body> (applied when the parser '
+                            'reaches it, flashes unstyled content) -- move it to <head>'
+                            % rel)
 
 
 def check_supply_chain(root, failures):

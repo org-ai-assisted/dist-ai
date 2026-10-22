@@ -530,7 +530,16 @@ def run():
                '<link rel="stylesheet" href="/s.css" media="print" '
                'onload="this.media=\'all\'"></head><body>x</body></html>')
         check('onload-swap stylesheet flagged (FOUC)',
-              any('onload handler' in f for f in _fouc_failures(root)),
+              any('onload' in f for f in _fouc_failures(root)),
+              repr(_fouc_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        # The canonical preload swap: rel=preload as=style promoted to a sheet onload.
+        _write(root, 'index.html',
+               '<!doctype html><html><head><title>t</title>'
+               '<link rel="preload" href="/s.css" as="style" '
+               'onload="this.onload=null;this.rel=\'stylesheet\'"></head><body>x</body></html>')
+        check('preload-swap stylesheet flagged (FOUC)',
+              any('onload' in f for f in _fouc_failures(root)),
               repr(_fouc_failures(root)))
     with tempfile.TemporaryDirectory() as root:
         _write(root, 'index.html',
@@ -540,7 +549,33 @@ def run():
               any('in <body>' in f for f in _fouc_failures(root)),
               repr(_fouc_failures(root)))
     with tempfile.TemporaryDirectory() as root:
-        # A non-stylesheet link with onload (e.g. rel=preload) is not this gate's
+        # A <style> element in <body> applies late -> flash.
+        _write(root, 'index.html',
+               '<!doctype html><html><head><title>t</title></head>'
+               '<body><p>x</p><style>p{color:red}</style></body></html>')
+        check('<style> in <body> flagged (FOUC)',
+              any('<style> element in <body>' in f for f in _fouc_failures(root)),
+              repr(_fouc_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        # FP guard: a <title> containing the text "<body>" must NOT flip in_body and
+        # false-flag the real head stylesheet (HTMLParser is not a RCDATA parser).
+        _write(root, 'index.html',
+               '<!doctype html><html><head><title>The <body> element</title>'
+               '<link rel="stylesheet" href="/style.css"></head><body>ok</body></html>')
+        check('title containing "<body>" does not false-flag head stylesheet',
+              _fouc_failures(root) == [], repr(_fouc_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        # FP guard: a stylesheet <link> inside <template> is inert (not applied until
+        # cloned) -- must NOT be flagged as body CSS.
+        _write(root, 'index.html',
+               '<!doctype html><html><head><title>t</title>'
+               '<link rel="stylesheet" href="/style.css"></head>'
+               '<body><template><link rel="stylesheet" href="/cloned.css"></template>'
+               '<p>ok</p></body></html>')
+        check('stylesheet in <template> not flagged',
+              _fouc_failures(root) == [], repr(_fouc_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        # A non-stylesheet link with onload (e.g. rel=icon) is not this gate's
         # concern -- must NOT be flagged as a stylesheet FOUC.
         _write(root, 'index.html',
                '<!doctype html><html><head><title>t</title>'

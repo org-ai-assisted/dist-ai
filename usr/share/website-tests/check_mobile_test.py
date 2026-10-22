@@ -86,13 +86,24 @@ def run():
     check('element-overflow JS exempts by-design scroll surfaces',
           'EXEMPT_ANCESTOR' in cm._ELEMENT_OVERFLOW_JS
           and 'pre' in cm._ELEMENT_OVERFLOW_EXEMPT and 'table' in cm._ELEMENT_OVERFLOW_EXEMPT)
-    check('element-overflow JS ignores out-of-flow descendants',
-          "ccs.position === 'absolute'" in cm._ELEMENT_OVERFLOW_JS
-          and 'inflow' in cm._ELEMENT_OVERFLOW_JS)
+    # Widened (0-FP preserving): flag an in-flow descendant past the edge OR a
+    # text-only overflow with no descendant past; skip ONLY out-of-flow-only.
+    check('element-overflow JS skips out-of-flow-only, catches text-only',
+          "ccs.position !== 'absolute'" in cm._ELEMENT_OVERFLOW_JS
+          and 'inFlowPast' in cm._ELEMENT_OVERFLOW_JS
+          and 'anyDescendantPast' in cm._ELEMENT_OVERFLOW_JS
+          and '!inFlowPast && anyDescendantPast' in cm._ELEMENT_OVERFLOW_JS)
+    # Canonical shared shape: STRUCTURED objects (the mw-static tool imports these
+    # and formats its own line); string formatting lives in the consumer's reporter.
+    check('element-overflow JS returns structured {sel,over,sw,cw,text}',
+          'sel:' in cm._ELEMENT_OVERFLOW_JS and 'sw:' in cm._ELEMENT_OVERFLOW_JS
+          and 'cw:' in cm._ELEMENT_OVERFLOW_JS and 'text:' in cm._ELEMENT_OVERFLOW_JS)
     check('element-overflow scope targets family content boxes',
           '.issue' in cm._ELEMENT_OVERFLOW_SCOPE)
     check('broken-image JS uses complete && naturalWidth===0',
           'img.complete' in cm._BROKEN_IMG_JS and 'naturalWidth === 0' in cm._BROKEN_IMG_JS)
+    check('broken-image JS returns structured {src,alt}',
+          'src:' in cm._BROKEN_IMG_JS and 'alt:' in cm._BROKEN_IMG_JS)
     # The lazy-position skip was a false-pass (complete is already false for an
     # unloaded lazy image; the skip only hid broken lazy images past ~1.5vh). It
     # must NOT come back -- these sites' galleries are lazy. (dev1238 / 61d6c25)
@@ -101,10 +112,28 @@ def run():
           and 'innerHeight * 2' not in cm._BROKEN_IMG_JS)
     # The high-FP generic body-overlap heuristic must NOT come back (inline wrap FP).
     check('no generic body-overlap heuristic', not hasattr(cm, '_OVERLAP_JS'))
-    check('aspect JS compares natural vs rendered ratio',
-          'naturalWidth' in cm._ASPECT_JS and 'natural' in cm._ASPECT_JS)
-    check('aspect tolerance is a small fraction', 0 < cm._ASPECT_TOLERANCE <= 0.2,
-          repr(cm._ASPECT_TOLERANCE))
+    # The mount server must swallow a client-aborted connection (a no-JS page that
+    # stops at domcontentloaded aborts in-flight image loads -> BrokenPipeError),
+    # so a harmless disconnect never dumps a traceback that reads as a failure.
+    srv = object.__new__(cm._MountingTCPServer)
+    try:
+        raise BrokenPipeError('client went away')
+    except BrokenPipeError:
+        _raised = False
+        try:
+            cm._MountingTCPServer.handle_error(srv, None, ('127.0.0.1', 0))
+        except Exception:                      # noqa: BLE001 -- must NOT re-raise
+            _raised = True
+        check('mount server swallows a client-aborted connection', not _raised)
+    # broken-image must EXEMPT svg (naturalWidth===0 is unreliable for a
+    # dimensionless SVG on Gecko/WebKit -> cross-engine false positive).
+    check('broken-image JS exempts svg', '.svg' in cm._BROKEN_IMG_JS)
+    # contrast fallback canvas is scheme-aware (white in light, dark in dark) --
+    # assuming white under color-scheme:dark mis-scored transparent-bg text.
+    check('contrast JS takes a scheme default canvas', '(dflt)' in cm._CONTRAST_JS
+          and 'return dflt' in cm._CONTRAST_JS)
+    check('dark canvas default is dark', cm._CANVAS_DARK['r'] < 64
+          and cm._CANVAS_LIGHT['r'] == 255, repr(cm._CANVAS_DARK))
     check('both color schemes named', set(cm.COLOR_SCHEMES) == {'light', 'dark'},
           repr(cm.COLOR_SCHEMES))
 
@@ -120,20 +149,28 @@ def run():
     # Added audits must be wired too.
     check('element-overflow gate wired', '_ELEMENT_OVERFLOW_JS' in main_body)
     check('broken-image gate wired', '_BROKEN_IMG_JS' in main_body)
-    check('aspect-ratio gate wired', '_ASPECT_JS' in main_body)
     check('dark-scheme contrast wired',
-          "color_scheme='dark'" in main_body and '(dark)' in main_body)
+          "color_scheme='dark'" in main_body and '(dark)' in main_body
+          and '_CANVAS_DARK' in main_body)
     check('no-JS lane wired',
           'java_script_enabled=False' in main_body and '_NOJS_JS' in main_body)
-    check('no-JS probes content + nav + layout',
-          'h1' in cm._NOJS_JS and 'navlinks' in cm._NOJS_JS
-          and 'textlen' in cm._NOJS_JS and 'overflow' in cm._NOJS_JS)
-    # Nav assertion is gated on a header/nav existing (a navless standalone view
-    # must not false-fail); the main() check must honour hasnav.
-    check('no-JS nav check gated on hasnav (no FP on navless pages)',
-          'hasnav' in cm._NOJS_JS and "nj['hasnav']" in main_body)
+    check('no-JS probes content + layout (ancestor-visibility aware)',
+          'h1' in cm._NOJS_JS and 'textlen' in cm._NOJS_JS
+          and 'overflow' in cm._NOJS_JS and 'checkVisibility' in cm._NOJS_JS)
+    # The fragile nav assertion was dropped (navless standalone views + links in a
+    # sibling list outside header/nav both false-fail); it must not come back.
+    check('no-JS has no fragile nav assertion',
+          'navlinks' not in cm._NOJS_JS and 'hasnav' not in cm._NOJS_JS)
     check('no-JS min-text threshold is a sane positive', cm._NOJS_MIN_TEXT >= 50,
           repr(cm._NOJS_MIN_TEXT))
+    # no-JS goto waits domcontentloaded, not load -- an image-heavy gallery exceeds
+    # the load timeout with JS off.
+    check('no-JS goto waits domcontentloaded',
+          "wait_until='domcontentloaded'" in main_body)
+    # Silent-skip regression (0 pages + a launch failure): the failure return must
+    # come BEFORE the checked==0 _skip, so a recorded failure surfaces as exit 1.
+    check('failure return precedes the no-pages skip',
+          main_body.index('if failures:') < main_body.index("_skip('no pages served"))
     check('multi-engine loop wired',
           '_browsers_from_env' in main_body and 'for engine_name, browser in engines' in main_body)
     # Silent-skip regression: `primary` must be the first LAUNCHED engine, not
