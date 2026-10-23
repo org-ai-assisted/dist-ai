@@ -261,7 +261,10 @@ snap() {
 ##             EXIT trap AFTER this gate runs.
 milestone_blank_mode() {
    case "$1" in
-      live-guestcontrol-ready|welcome|location|keyboard|partitions|partitions-luks-filled|summary|install-started|install-done|first-boot|mok-reboot-desktop|terminal-open|check-6-gui-rendered|checks-complete|vt-graphical-restored)
+      live-guestcontrol-ready|welcome|location|keyboard|partitions|partitions-luks-filled|summary|install-started|install-done|installed-grub-menu|first-boot|mok-reboot-desktop|terminal-open|sysmaint-terminal|check-6-gui-rendered|checks-complete|vt-graphical-restored)
+         ## installed-grub-menu is hundreds of colours when the menu rendered (only a blank fails);
+         ## sysmaint-terminal is captured right AFTER open_terminal OCR-confirms the terminal came
+         ## up, so a black frame there is a real failure (symmetric with the user terminal-open).
          printf '%s' rich
          ;;
       luks-prompt|luks-passphrase-typed|luks-unlocked|sysmaint-luks-prompt)

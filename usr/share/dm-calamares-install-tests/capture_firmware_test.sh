@@ -189,8 +189,8 @@ mbm() { milestone_blank_mode "$1"; }
 ## RICH = the settled snap() captures (desktop / Calamares GUI / first boot / checks) + the
 ## restored graphical desktop: a near-black frame there is a real render failure.
 for rich in live-guestcontrol-ready welcome location keyboard partitions partitions-luks-filled \
-   summary install-started install-done first-boot mok-reboot-desktop terminal-open \
-   check-6-gui-rendered checks-complete vt-graphical-restored; do
+   summary install-started install-done installed-grub-menu first-boot mok-reboot-desktop \
+   terminal-open sysmaint-terminal check-6-gui-rendered checks-complete vt-graphical-restored; do
    got=0; [ "$(mbm "${rich}")" = 'rich' ] || got=1
    check "milestone_blank_mode(${rich}) = rich (default near-black gate)" "${got}"
 done
@@ -205,7 +205,7 @@ done
 ## MUST be skip -- defaulting them to rich false-failed every --shot-dir run (always-black firmware
 ## grab / transitional frames).
 for skip in power-on-first-frame live-kernel-boot live-grub-menu live-grub-entry-selected \
-   install-host-launched installed-first-frame installed-grub-menu sysmaint-terminal firmware-state \
+   install-host-launched installed-first-frame firmware-state \
    final-last-frame vt-switched vt-logged-in vt-logged-out vm-defined vm-stopped-iso-detached \
    vm-stopped-final mok-cert-enrolled failure-vm-state; do
    got=0; [ "$(mbm "${skip}")" = 'skip' ] || got=1
