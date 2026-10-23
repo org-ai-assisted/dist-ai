@@ -181,6 +181,26 @@ lib_dir="${saved_lib_dir2}"
 got=0; has 'DETECTED=unverified' "$(cat -- "${work}/fw")" && has 'MATCH=false' "$(cat -- "${work}/fw")" || got=1
 check "classifier printed match=true but no detected= -> DETECTED=unverified MATCH=false" "${got}"
 
+## --- milestone_blank_mode classifier (#41): must-be-rich milestones -> rich (default near-black
+##     gate), legitimately-sparse -> sparse (uniform-only), pure-transient/elsewhere-gated -> skip.
+##     A wrong class is a false-green (rich-as-skip hides a blank desktop) or false-fail (transient
+##     -as-rich reds a valid run), so pin the split. ---
+mbm() { milestone_blank_mode "$1"; }
+for rich in live-guestcontrol-ready welcome partitions-luks-filled install-done installed-grub-menu \
+   first-boot mok-reboot-desktop check-6-gui-rendered checks-complete final-last-frame vt-graphical-restored; do
+   got=0; [ "$(mbm "${rich}")" = 'rich' ] || got=1
+   check "milestone_blank_mode(${rich}) = rich (default near-black gate)" "${got}"
+done
+for sparse in luks-prompt luks-passphrase-typed luks-unlocked sysmaint-luks-prompt vm-stopped-final; do
+   got=0; [ "$(mbm "${sparse}")" = 'sparse' ] || got=1
+   check "milestone_blank_mode(${sparse}) = sparse (uniform-only, legit near-black)" "${got}"
+done
+for skip in live-kernel-boot live-grub-menu live-grub-entry-selected installed-first-frame \
+   firmware-state vt-switched vt-logged-in vt-logged-out vm-defined mok-cert-enrolled; do
+   got=0; [ "$(mbm "${skip}")" = 'skip' ] || got=1
+   check "milestone_blank_mode(${skip}) = skip (transient / gated elsewhere)" "${got}"
+done
+
 ## --- no evidence file set: capture is a no-op (does not error) ---
 # shellcheck disable=SC2034  ## read by the sourced capture_firmware_lane
 firmware=efi

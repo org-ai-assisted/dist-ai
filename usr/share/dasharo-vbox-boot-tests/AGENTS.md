@@ -24,29 +24,70 @@ Other_64; `--firmware efi --chipset piix3 --hpet on --graphicscontroller vboxvga
 `build_coreboot_vm_plan` in `../dm-smbios-reader-boot-tests/dm-smbios-reader-vbox`
 emits exactly this.
 
-## Chipset: piix3 (i440fx) vs ich9 -- why i440fx is the base (SETTLED)
+## Chipset: two working paths -- i440fx (OS boots) and the q35 port (firmware boots)
 
-- VBox has only two chipsets: `piix3` (default, i440fx) and `ich9` (added in VBox 4.0). There is
-  NO q35 machine type and none on the roadmap.
-- `piix3` has NO PCIe ECAM/MMCONFIG and NO fw_cfg -> that is what drove the CF8-only PciLib + the
+VBox ships two chipsets: `piix3` (default, i440fx) and `ich9`. There is no upstream q35 machine
+type. Two bring-up paths now exist:
+
+### i440fx (`--chipset piix3`) -- the WORKING OS path
+
+- Legacy host bridge, NO PCIe ECAM/MMCONFIG, NO fw_cfg -> drove the CF8-only PciLib + the
   MCFG-suppress patch.
-- `ich9` DOES expose real ECAM + an ACPI MCFG table. VERIFIED two ways: VBox source
-  (ConsoleImplConfigX86.cpp sets McfgBase/McfgLength for ChipsetType_ICH9; DevPciIch9.cpp maps the
-  ECAM MMIO window per PCIe 7.2.2; DevACPI.cpp plants the MCFG table) AND empirically (boot
-  `--chipset ich9`: /proc/iomem shows `dc000000-dfffffff : PCI ECAM 0000 [bus 00-3f]`, MCFG table
-  present, kernel uses ECAM). Window: base ~0xdc000000 (= 4G - RAM-hole, config-dependent),
-  length 0x4000000 = 64 buses (00-3f).
-- BUT ich9 is NOT a real Q35: it is an i440fx-class host bridge with ECAM BOLTED ON. No Q35 MCH
-  (host-bridge dev is `#if 0`'d out in VBox), no programmable PCIEXBAR (ECAM base is
-  hypervisor-fixed), and NO SMM (VBox has never implemented it).
-- So coreboot's `qemu-q35` board -- and Dasharo's q35 config (CONFIG_CPU_QEMU_X86_TSEG_SMM=y) --
-  do NOT fit: they program Q35 MCH/PAM/TSEG, build+validate PCIEXBAR (halt on mismatch), and
-  expect ECAM at 0xb0000000 / 256 buses plus SMM -- none present on VBox ich9. A q35 base would
-  trade the 2 small i440fx patches (CF8 + MCFG-suppress) for a LARGER, fragile de-Q35 patch set.
-- CONCLUSION: base on `qemu-i440fx` (VM on `piix3`). Move to `ich9` ONLY if ECAM is specifically
-  needed, and then keep the i440fx board + ADD an ECAM window at VBox's actual MCFG base -- do NOT
-  adopt the q35 board. For the Dasharo port: author a Dasharo i440fx `vbox_uefi` config (sovereign
-  boot + the setup menus are payload-level, so they port), not the q35 config.
+- Kicksecure LXQt desktop boots end-to-end through the coreboot/UefiPayload fork ROM. This is the
+  path to use for a working guest today.
+- `ich9` (stock) also exposes real ECAM (McfgBase ~0xdc000000 = 4G - RAM-hole, 64 buses) + an ACPI
+  MCFG, but stock ich9 is an i440fx-class bridge with ECAM bolted on: no Q35 MCH, no programmable
+  PCIEXBAR, no SMM.
+
+### q35 -- ported into VBox (`--chipset ich9` + the opt-in `Q35Chipset` device config)
+
+VBox was extended (org-ai-assisted/virtualbox-coreboot@ai, `DevPciIch9.cpp`) with an opt-in
+`Q35Chipset` mode (CFGM `VBoxInternal/Devices/ich9pci/0/Config/Q35Chipset 1`, default OFF so legacy
+ich9 is byte-for-byte unchanged). It adds the two PCI devices coreboot `qemu-q35` needs:
+
+- Q35 MCH host bridge at 00:00.0 (vendor 0x8086 dev 0x29c0). A config-access intercept treats a
+  PCIEXBAR (reg 0x60/0x64) write like a real MCH: it relocates the ECAM/MMCONFIG MMIO window to the
+  firmware-programmed base (coreboot programs 0xb0000000). So coreboot's `mainboard_machine_check`
+  (PCIEXBAR readback) passes and ECAM lands where the q35 board expects it.
+- ICH9 SMBus stub at 00:1f.3 (vendor 0x8086 dev 0x2930, SMBus class). Presence-only: coreboot
+  i82801ix `enable_smbus()` die()s if no Intel device answers there; qemu-q35 issues no real SMBus
+  transaction (no SPD read on the emulated board), so no I/O backend is needed.
+- Needs `cMaxPciDevices=2` on the ich9pci DEVREG (host bridge + SMBus slots) -- an R0-visible change
+  (see the ring-0 gotcha below).
+
+coreboot q35 ROM: switch the board to `emulation/qemu-q35` and force NO_SMM
+(`CONFIG_CPU_QEMU_X86_NO_SMM=y` -- VBox has no SMRAM/TSEG), keep the UefiPayload. Build script:
+`/home/admin/deploy-q35-build.sh` -> `/home/admin/cb-q35-fork.rom`.
+
+- VERIFIED (serial via `--uartmode file`): coreboot q35 boots bootblock -> romstage (past
+  `enable_smbus`) -> ramstage ("QEMU Northbridge q35", PCI enum) -> ECAM window at
+  `b0000000-bfffffff` -> writes ACPI/SMBIOS/coreboot tables -> loads UefiPayload -> "Jumping to boot
+  code" (hands to edk2). The firmware bring-up works.
+- REGRESSION VERIFIED: stock VBox EFI (no coreboot, `Q35Chipset` off) still boots the Kicksecure
+  desktop (1280x800, ~8900 colours) with the rebuilt VBoxDD.so -- the default firmware is unbroken.
+- OPEN (milestone 2): the edk2 UefiPayload does NOT start on q35/ich9 -- after coreboot's handoff
+  the 1024x768 framebuffer stays blank and edk2 emits no serial (worked fine on i440fx/piix3). Needs
+  edk2-payload-on-q35 debugging (enable the UefiPayload DEBUG serial; check what its early init
+  touches on ich9). Until fixed, q35 reaches the payload but not a guest OS.
+
+### Which to use
+
+- Working guest OS today: i440fx. For the Dasharo port, a Dasharo i440fx `vbox_uefi` config is the
+  quickest route to a booting guest (sovereign boot + setup menus are payload-level, so they port).
+- Upstreamable VBox chipset work: the q35 port above (separable from the CorebootRom/SLP_EN patches;
+  gated, legacy-safe) -- finish milestone 2 for a q35 guest.
+
+### Ring-0 gotcha when testing a self-built VBox on a host with the packaged VBox
+
+- A self-built VBox and the apt VBox share `/dev/vboxdrv`; supdrv caches ring-0 modules by name, so
+  if a packaged-VBox VM is running it has already loaded the stock `VMMR0.r0`/`VBoxDDR0.r0` and the
+  self-built VBox silently REUSES them (its R3 runs against the stock R0). An R0-visible change
+  (e.g. `cMaxPciDevices`) then fails `VERR_INCOMPATIBLE_CONFIG` (`cMaxPciDevices 0x2 vs 0x1`).
+- To load our modified R0: stop every packaged-VBox VM (savestate is reversible) AND build our own
+  ring-0 set -- `kmk VMMR0` once, plus `VBoxDDR0` (the rebuild script `deploy-rebuild-vbox.sh` now
+  builds `VBoxDD VBoxDDR0`). Then our full R0 loads.
+- All VBox VMs on the test server run as ROOT: the vboxdrv open handler EPERMs non-root on the
+  restricted `/dev/vboxdrv` node regardless of its 0666 mode.
 
 ## The three graphics patches (archived at `/home/admin/dasharo-patches/`)
 

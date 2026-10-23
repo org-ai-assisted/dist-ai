@@ -63,6 +63,10 @@ CASES = [
     ("installed-firmware-logo", "installed system / first boot"),
     ("installed-grub-menu", "installed system / first boot"),
     ("mok-reboot-desktop", "installed system / first boot"),
+    ("first-boot", "installed system / first boot"),
+    ## anchored: a live-* name that merely CONTAINS 'first-boot' must stay live, not be mislabeled
+    ## installed by an unanchored substring match.
+    ("live-first-boot-probe", "live / pre-install"),
     ## installed system / MOK enrollment (must NOT be swallowed by the first-boot branch)
     ("mok-cert-enrolled", "installed system / MOK enrollment"),
     ## installed system / sysmaint boot (sysmaint wins over the luks substring)
