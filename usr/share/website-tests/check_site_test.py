@@ -398,8 +398,10 @@ def run():
     # manifest (dm_test_results.site.GENERATED_CLASSES); style.css (hand-maintained in a DIFFERENT
     # repo) must define every one -- including the st-<status> CO-classes undefined-classes skips
     # by design. No-op where the generated tree is absent. Canary: the .stage drift that shipped
-    # unstyled and silently blocked every Pages publish.
-    from dm_test_results import site as rsite
+    # unstyled and silently blocked every Pages publish. Import the numpy-free leaf module (not
+    # dm_test_results.site, which pulls compare -> numpy) so this REQUIRED unit stays runnable
+    # where numpy is absent -- the same no-op-when-absent guarantee the production check keeps.
+    from dm_test_results import site_classes as rsite
 
     def _gcc_failures(root):
         failures: list[str] = []

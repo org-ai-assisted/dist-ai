@@ -114,16 +114,28 @@ check "override publishes past a failed gate" "$(pushed)" "pushed:yes"
 check "override push carries SITE_DEPLOY_SKIP=1" \
    "$(cat -- "${push_env}" 2>/dev/null || true)" "SITE_DEPLOY_SKIP=1"
 check "override exits 0 (published)" "rc:${rc}" "rc:0"
-check "override WARNING is loud" "${out}" "publishing PAST a failed gate"
+check "override WARNING is loud" "${out}" "publishing PAST a FAILED gate"
 check "override WARNING names the failed check" "${out}" "demo consistency check"
 
-## 3. SKIP (exit 77), WITH the override -> STILL refuses, no push.
-make_gate 77
-run_deploy --record-and-publish
-check "exit 77 still refuses even with the override" "$(refused)" "refused:yes"
-check "exit 77 with the override does not push" "$(pushed)" "pushed:no"
+## 3. An INCOMPLETE result (nothing fully verified) is NEVER overridable, even with the flag:
+## 77 (SKIP target-absent) and 78 (SKIP env-unmet) both still refuse and do not push. This is the
+## false green the gate exists to prevent -- the override only waives a COMPLETE red (exit 1).
+for code in 77 78; do
+   make_gate "${code}"
+   run_deploy --record-and-publish
+   check "exit ${code} still refuses even with the override" "$(refused)" "refused:yes"
+   check "exit ${code} with the override does not push" "$(pushed)" "pushed:no"
+done
 
-## 4. The SITE_DEPLOY_RECORD=1 env is equivalent to the flag.
+## 4. --check-only must reflect the true result even WITH the override: a failing gate refuses
+## (non-zero) and does not push, so a gate caller (the pre-push hook runs `site-deploy
+## --check-only`) cannot inherit a green from an ambient SITE_DEPLOY_RECORD.
+make_gate 1
+run_deploy --check-only --record-and-publish
+check "check-only + override + failure still refuses (non-zero)" "$(refused)" "refused:yes"
+check "check-only + override never pushes" "$(pushed)" "pushed:no"
+
+## 5. The SITE_DEPLOY_RECORD=1 env is equivalent to the flag (publishes past a complete red).
 make_gate 1
 safe-rm --force -- "${push_env}"
 out="$(PATH="${bin}:${PATH}" SITE_DEPLOY_WEBSITE_TESTS="${gate}" SITE_DEPLOY_RECORD=1 \

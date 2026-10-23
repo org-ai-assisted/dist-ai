@@ -1916,17 +1916,17 @@ def check_undefined_classes(root, failures):
 
 def check_generated_class_contract(root, failures):
     # The test-results plane is emitted by test-results-site-generate (dist-ai), whose emitted CSS
-    # classes are a generator-owned manifest (dm_test_results.site.GENERATED_CLASSES). style.css is
-    # hand-maintained in THIS site repo -- a DIFFERENT repo from the generator -- so nothing coupled
-    # the two: the generator's new .stage boot caption shipped with no rule, and undefined-classes
-    # (sole-class only) blocked every publish from behind a 25-page failure. This asserts style.css
-    # defines EVERY manifest class -- including the st-<status> CO-classes undefined-classes skips by
-    # design -- and names the one missing class, not N pages. No-op where the generated tree is
-    # absent, so it never runs on a site that does not use the generator.
+    # classes are a generator-owned manifest (dm_test_results.site_classes.GENERATED_CLASSES).
+    # style.css is hand-maintained in THIS site repo -- a DIFFERENT repo from the generator -- so
+    # nothing coupled the two: the generator's new .stage boot caption shipped with no rule, and
+    # undefined-classes (sole-class only) blocked every publish from behind a 25-page failure. This
+    # asserts /style.css defines EVERY manifest class -- including the st-<status> CO-classes
+    # undefined-classes skips by design -- and names the one missing class, not N pages. No-op
+    # where the generated tree is absent, so it never runs on a site that does not use the generator.
     if not os.path.isdir(os.path.join(root, RESULTS_SUBDIR)):
         return
     try:
-        from dm_test_results import site as results_site
+        from dm_test_results import site_classes as results_classes
     except ImportError as exc:
         # Generated tree present but its generator package is not importable -> the contract cannot
         # be verified. FAIL loud; a silent pass here is the false green this gate exists to prevent.
@@ -1934,11 +1934,26 @@ def check_generated_class_contract(root, failures):
             '%s present but dm_test_results is not importable (%s): cannot verify the '
             'generated-class contract' % (RESULTS_SUBDIR, exc))
         return
-    defined = _defined_css_classes(root)
-    for name in sorted(results_site.GENERATED_CLASSES):
+    # Scope to the ONE stylesheet the generated pages load (`<link href="/style.css">` at the site
+    # root), not the union of every .css under the tree: a rule in an unlinked sheet or a sibling
+    # page's inline <style> would not reach the results pages, so it must not count as "defined".
+    # "Defined" is the same dot-token heuristic check_undefined_classes uses (kept identical on
+    # purpose); style.css is small and hand-maintained, so a class name buried in a url()/string is
+    # not a realistic false match.
+    style_path = os.path.join(root, 'style.css')
+    try:
+        with open(style_path, encoding='utf-8') as handle:
+            css = _strip_css_comments(handle.read())
+    except OSError as exc:
+        failures.append(
+            '%s is present but /style.css is unreadable (%s): the generated pages load it and '
+            'cannot be style-checked' % (RESULTS_SUBDIR, exc))
+        return
+    defined = set(re.findall(r'\.(-?[_a-zA-Z][_a-zA-Z0-9-]*)', css))
+    for name in sorted(results_classes.GENERATED_CLASSES):
         if name not in defined:
             failures.append(
-                'generator-emitted class %r has no CSS rule in style.css -- '
+                'generator-emitted class %r has no CSS rule in /style.css -- '
                 'test-results-site-generate emits it; add a rule or the element ships unstyled'
                 % name)
 

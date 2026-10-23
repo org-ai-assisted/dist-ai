@@ -25,12 +25,15 @@
 ## never ran is exactly the false green this gate exists to prevent.
 ##
 ## --record-and-publish (or SITE_DEPLOY_RECORD=1) is the operator-authorized override: run the
-## FULL suite as always, and on a real FAILURE publish anyway after printing a loud WARNING that
-## names the failed check(s) -- so a consistency failure does not hold the deploy hostage, while
-## the deploy log carries an honest, visible record of what was overridden. Default OFF, so the
+## FULL suite as always, and when it reports a COMPLETE red result (exit 1 -- the suite ran and
+## found real consistency failures) publish anyway after a loud WARNING that reprints the suite
+## output, so the deploy log carries an honest record of what was overridden. Default OFF, so the
 ## automated test-results-deploy path stays strict. Distinct from SITE_DEPLOY_SKIP (a blind
-## pre-push-hook bypass that runs NOTHING and records nothing -- discouraged). Exit 77 still
-## refuses even under the override: nothing-verified is never overridable, only a KNOWN red is.
+## pre-push-hook bypass that runs NOTHING and records nothing -- discouraged). Only a complete red
+## is overridable: a SKIP (77), env-unmet (78), killed, or any other incomplete result is NOT --
+## nothing was fully verified, the exact false green this gate prevents. The override never fires
+## under --check-only either, so a gate caller (the pre-push hook) cannot inherit a green from an
+## ambient SITE_DEPLOY_RECORD.
 
 set -o errexit
 set -o nounset
@@ -58,9 +61,11 @@ usage() {
   --repo DIR             site checkout (default: current directory)
   --remote NAME          git remote to push to (default: origin)
   --check-only           run the suite, do not push
-  --record-and-publish   operator override: on a suite FAILURE, print a loud WARNING
-                         naming the failed check(s) and publish anyway (exit 77 still
-                         refuses). Also enabled by SITE_DEPLOY_RECORD=1. Default off.
+  --record-and-publish   operator override: when the suite reports a COMPLETE red result
+                         (exit 1), print a loud WARNING with the suite output and publish
+                         anyway. A skip/env-unmet/incomplete run (nothing fully verified)
+                         still refuses, as does --check-only. Also enabled by
+                         SITE_DEPLOY_RECORD=1. Default off.
   -h, --help             show this help
 
 Exit 0 = tested and pushed (or tested, with --check-only).
@@ -172,27 +177,33 @@ else
    env "${site_var}=${repo_dir}" "${website_tests}" || test_rc="$?"
 fi
 
-if [ "${test_rc}" -eq 77 ]; then
-   die 1 "website-tests SKIPPED (exit 77): it resolved no site checkout, so nothing was verified. Refusing to publish."
-fi
-if [ "${test_rc}" -ne 0 ]; then
-   if [ "${record_and_publish}" != 'true' ]; then
-      die 1 "website-tests failed (exit ${test_rc}). Refusing to publish."
-   fi
-   ## Operator override: publish past a KNOWN failure, loudly. 77 is unreachable here (handled
-   ## above): nothing-verified is never overridable, only a known red is.
+## Decide from the suite exit:
+##  0  -> green: publish (or report, with --check-only).
+##  1  -> the suite RAN TO COMPLETION and found real consistency failures: a KNOWN red. Refuse,
+##        UNLESS the operator override is set AND we are actually publishing. The override never
+##        applies under --check-only, so a gate caller -- the pre-push hook runs `site-deploy
+##        --check-only` -- can never inherit a green from an inherited SITE_DEPLOY_RECORD.
+##  else (77 SKIP target-absent, 78 SKIP env-unmet, 143 killed, ...) -> nothing was verified to
+##        completion, which is NEVER overridable: publishing on it is the false green this gate
+##        exists to prevent. Refuse regardless of the override.
+if [ "${test_rc}" -eq 0 ]; then
+   printf '%s\n' "${me}: suite green" >&2
+elif [ "${test_rc}" -eq 1 ] && [ "${record_and_publish}" = 'true' ] \
+      && [ "${check_only}" != 'true' ]; then
+   ## Publish past a KNOWN, COMPLETE red result, loudly. The full captured suite output is
+   ## reprinted under the banner so the deploy record names exactly which checks were overridden.
    {
       printf '%s\n' "${me}: ============================================================"
-      printf '%s\n' "${me}: WARNING: --record-and-publish: publishing PAST a failed gate"
-      printf '%s\n' "${me}: website-tests exited ${test_rc}. Failed check(s):"
-      printf '%s\n' "${suite_out}" \
-         | grep -E '^(FAIL |website-tests: [0-9]+ failure)' | sed "s/^/${me}:   /" \
-         || printf '%s\n' "${me}:   (see the suite output above)"
+      printf '%s\n' "${me}: WARNING: --record-and-publish: publishing PAST a FAILED gate"
+      printf '%s\n' "${me}: website-tests exited ${test_rc}. Full suite output follows:"
+      printf '%s\n' "${suite_out}"
       printf '%s\n' "${me}: operator authorized this publish despite the above"
       printf '%s\n' "${me}: ============================================================"
    } >&2
+elif [ "${test_rc}" -eq 77 ]; then
+   die 1 "website-tests SKIPPED (exit 77): it resolved no site checkout, so nothing was verified. Refusing to publish."
 else
-   printf '%s\n' "${me}: suite green" >&2
+   die 1 "website-tests failed (exit ${test_rc}). Refusing to publish."
 fi
 
 if [ "${check_only}" = 'true' ]; then

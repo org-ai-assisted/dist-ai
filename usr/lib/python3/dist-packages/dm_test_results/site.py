@@ -23,27 +23,24 @@ functional verdict was PASS.
 
 from . import compare
 from . import model
-
-## Run-cell statuses. Only STATUS_PASS is green. CSS class = "st-<status>".
-STATUS_PASS = "pass"
-STATUS_FAIL = "fail"
-STATUS_INCONCLUSIVE = "inconclusive"
-STATUS_INCOMPLETE = "incomplete"
-STATUS_NODATA = "nodata"
-STATUS_STALE = "stale"
-STATUS_UNKNOWN = "unknown"
-STATUS_CHANGED = "changed"
-STATUS_NEW = "new"
-
-## The one green status.
-STATUS_GREEN = STATUS_PASS
-
-## Every run-cell status, in one tuple, so the st-<status> CSS family is derived from a
-## single place (css_class below). A new status added above lands in the family here, so it
-## cannot silently reach the site without a matching CSS rule.
-ALL_STATUSES = (
-    STATUS_PASS, STATUS_FAIL, STATUS_INCONCLUSIVE, STATUS_INCOMPLETE,
-    STATUS_NODATA, STATUS_STALE, STATUS_UNKNOWN, STATUS_CHANGED, STATUS_NEW,
+## Re-export the pure-data status + CSS-class contract. It lives in a numpy-free leaf module so
+## the required website-tests unit and the deploy-time contract check can import GENERATED_CLASSES
+## without pulling compare -> numpy (not a declared dep of those checks). Callers keep using
+## site.STATUS_*, site.css_class, site.GENERATED_CLASSES unchanged.
+from .site_classes import (  # noqa: F401  -- re-exported for callers of this module
+    ALL_STATUSES,
+    GENERATED_CLASSES,
+    STATUS_CHANGED,
+    STATUS_FAIL,
+    STATUS_GREEN,
+    STATUS_INCOMPLETE,
+    STATUS_INCONCLUSIVE,
+    STATUS_NEW,
+    STATUS_NODATA,
+    STATUS_PASS,
+    STATUS_STALE,
+    STATUS_UNKNOWN,
+    css_class,
 )
 
 ## Default staleness window: a run older than this is shown stale (never green),
@@ -61,28 +58,6 @@ _SHOT_NONGREEN_ORDER = (
     (compare.BUCKET_CHANGED, STATUS_CHANGED),
     (compare.BUCKET_NEW, STATUS_NEW),
 )
-
-
-def css_class(status):
-    return "st-%s" % status
-
-
-## Generator-owned class contract: every CSS class the HTML generator emits as a literal
-## class="..." token (chrome, footer, cards, hero, matrix, step logs), UNION the st-<status>
-## family. style.css lives in a SEPARATE repo (org-ai-assisted.github.io), hand-maintained, so
-## nothing structurally coupled the two -- a new generator class (the .stage boot caption) shipped
-## unstyled and the undefined-classes gate silently blocked every publish. Two sides enforce this
-## set: dist_ai.webcheck.site.check_generated_class_contract asserts the served style.css defines
-## every class here (catching co-classes undefined-classes cannot), and site_generate_test asserts
-## the generator emits nothing outside it. Classes from a --chrome-from lifted masthead are NOT
-## listed: they come from an already-styled family page in the same repo, not from the generator.
-_STRUCTURAL_CLASSES = frozenset({
-    "nav", "wrap", "brand", "ftop", "fcols", "fcol", "self", "fbot", "fcopy",
-    "chip", "cat", "catname", "matrix-wrap", "matrix", "legend",
-    "hero", "kicker", "line", "sub", "runid", "steplog", "issue", "fg", "stage",
-})
-
-GENERATED_CLASSES = _STRUCTURAL_CLASSES | frozenset(css_class(s) for s in ALL_STATUSES)
 
 
 def is_green(status):
