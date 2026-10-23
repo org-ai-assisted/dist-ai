@@ -398,6 +398,58 @@ static void unit_is_event_device_name(void)
     CHECK(!is_event_device_name(""));
 }
 
+/* Regression for the press-tracking double-list bug (the src/kloak.c FIXME):
+ * on a key/button press kloak links the SAME input_packet onto two queues at
+ * once -- the main event queue (evq_head, via `entries`) and the pressing
+ * device's tracking queue (trackq_head, via `trackq_entries`). A single shared
+ * TAILQ_ENTRY link cannot be on two lists at the same time, so the second
+ * insert corrupted both: removing the packet from the tracking queue on release
+ * mangled the event queue (the "silently failing TAILQ_REMOVE" -> assertion
+ * failure / use-after-free on the second release). The fix gives the tracking
+ * queue its own `trackq_entries` link. This reproduces the exact membership and
+ * asserts that removing from one queue leaves the other intact; it also fails to
+ * compile if `trackq_entries` is ever removed again. */
+static void unit_trackq_separate_link(void)
+{
+    struct li_device_info dev = { 0 };
+    struct input_packet *earlier = safe_calloc(1, sizeof(*earlier));
+    struct input_packet *press = safe_calloc(1, sizeof(*press));
+    struct input_packet *walk = NULL;
+    int seen = 0;
+
+    TAILQ_INIT(&evq_head);
+    TAILQ_INIT(&dev.trackq_head);
+
+    /* The event queue already holds an earlier event; the press then arrives on
+     * both the event queue and the device tracking queue, exactly as kloak's
+     * handler does. */
+    TAILQ_INSERT_TAIL(&evq_head, earlier, entries);
+    TAILQ_INSERT_TAIL(&evq_head, press, entries);
+    TAILQ_INSERT_TAIL(&dev.trackq_head, press, trackq_entries);
+
+    /* Release handling removes the matching press from the tracking queue. */
+    TAILQ_REMOVE(&dev.trackq_head, press, trackq_entries);
+
+    /* Tracking queue is now empty ... */
+    CHECK(TAILQ_EMPTY(&dev.trackq_head));
+    /* ... and the event queue is still well-formed: both events, in order, with
+     * the chain intact. A shared link would have unlinked `press` from evq too
+     * (or corrupted `earlier`'s next pointer) when it was removed above. */
+    TAILQ_FOREACH(walk, &evq_head, entries) {
+        if (seen == 0) {
+            CHECK(walk == earlier);
+        } else if (seen == 1) {
+            CHECK(walk == press);
+        }
+        ++seen;
+    }
+    CHECK(seen == 2);
+
+    TAILQ_INIT(&evq_head);
+    free(earlier);
+    free(press);
+}
+
 int main(void)
 {
     unit_lookup_keycode();
@@ -414,6 +466,7 @@ int main(void)
     unit_randname();
     unit_kb_handle_keymap();
     unit_is_event_device_name();
+    unit_trackq_separate_link();
     characterize_open_bugs_24();
     printf("kloak harness: all assertions passed (%d checks)\n", checks);
     return 0;
