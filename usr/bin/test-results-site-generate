@@ -900,7 +900,7 @@ def _milestone_stage(name):
     n = (name or "").lower()
     ## Installed-system milestones FIRST, so 'installed-*' is not mis-split by the 'install-'
     ## (Calamares, live) prefix, and 'sysmaint'/'luks' boot phases win over a bare substring.
-    if n.startswith("installed-") or n.startswith("mok-reboot") or "first-boot" in n:
+    if n.startswith("installed-") or n.startswith("mok-reboot") or n.startswith("first-boot"):
         return "installed system / first boot"
     if n.startswith("mok-"):
         return "installed system / MOK enrollment"
