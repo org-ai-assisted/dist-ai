@@ -26,6 +26,7 @@ Exit: 0 all pass, 1 any fail, 78 env-unmet.
 
 import filecmp
 import os
+import re
 import subprocess  # nosec B404 -- drives the in-tree generator, fixed argv
 import sys
 import tempfile
@@ -37,7 +38,7 @@ if os.path.isdir(_LIB) and _LIB not in sys.path:
 
 try:
     from PIL import Image
-    from dm_test_results import compare, model
+    from dm_test_results import compare, model, site
 except ImportError as exc:
     print("generate_test: env-unmet (Pillow/numpy): %s" % exc, file=sys.stderr)
     sys.exit(78)
@@ -404,6 +405,52 @@ check("footer .ftop is a direct <footer> child",
       overview.count('<footer><div class="ftop">') == 1)
 check("footer has no intermediate .wrap row-wrapper", 'class="wrap"' not in footer_region)
 check("footer .fbot tagline row present", '<div class="fbot">' in footer_region)
+
+## Generator-owned CSS class contract (dm_test_results.site.GENERATED_CLASSES): every class the
+## generator emits MUST be in the manifest, so a NEW class (the .stage boot caption that shipped
+## with no rule and silently blocked every publish) is caught HERE, in dist-ai's own suite, not
+## later as an opaque undefined-classes failure across every generated page at deploy. The
+## companion website-tests check (check_generated_class_contract) asserts the served style.css
+## defines the manifest; together they close the generator<->style.css drift.
+_CLASS_ATTR = re.compile(r'class="([^"]*)"')
+_CLASS_TOKEN = re.compile(r'-?[_a-zA-Z][_a-zA-Z0-9-]*\Z')
+
+
+def emitted_classes(tree):
+    tokens = set()
+    for base, _dirs, files in os.walk(tree):
+        for name in files:
+            if name.endswith(".html"):
+                for attr in _CLASS_ATTR.findall(read(os.path.join(base, name))):
+                    tokens.update(attr.split())
+    return tokens
+
+
+## The fixture uses the generator's built-in header (no --chrome-from lift), so every emitted
+## class is a generator literal -- any token outside the manifest is an unregistered new class.
+emitted = emitted_classes(out1)
+unregistered = sorted(emitted - site.GENERATED_CLASSES)
+check("every generator-emitted class is in GENERATED_CLASSES (unregistered: %s)"
+      % (unregistered or "none"), not unregistered)
+## Canary: the subset check must FAIL on an unregistered class, else it proves nothing.
+check("manifest subset check catches an unregistered class (canary)",
+      bool((emitted | {"xdrift-canary"}) - site.GENERATED_CLASSES))
+
+## Manifest honesty (no stale entry): the structural half of the manifest must match EXACTLY the
+## class literals the generator source emits. The st-<status> half is derived from ALL_STATUSES via
+## css_class (not a literal), so it cannot drift and is excluded here. Python source quotes the
+## class attribute with backslash-escaped quotes in a few spots -- unescape before scanning.
+structural_manifest = {c for c in site.GENERATED_CLASSES if not c.startswith("st-")}
+src = read(GEN).replace('\\"', '"')
+src_structural = set()
+for attr in _CLASS_ATTR.findall(src):
+    for tok in attr.split():
+        if _CLASS_TOKEN.match(tok):  # skip the "%s" status placeholder in `class="chip %s"`
+            src_structural.add(tok)
+check("GENERATED_CLASSES structural set matches the generator's class literals exactly "
+      "(only-in-manifest=%s only-in-source=%s)"
+      % (sorted(structural_manifest - src_structural), sorted(src_structural - structural_manifest)),
+      structural_manifest == src_structural)
 
 ## Overview carries the non-green statuses, and green for exactly the green runs.
 check("overview has green pass cell", "st-pass" in overview)
