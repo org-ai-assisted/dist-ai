@@ -600,41 +600,54 @@ run_check() {
 ## file empty (-> no firmware panel), never failing a passing install.
 capture_firmware_lane() {
    [ -n "${firmware_evidence_file}" ] || return 0
-   local out detected expected match
-   out="$(gc_run "${live_account}" 'printf "[ -d /sys/firmware/efi ] -> "; { [ -d /sys/firmware/efi ] && echo UEFI || echo BIOS; }; printf "mokutil --sb-state -> "; mokutil --sb-state 2>&1 || true' 10 2>/dev/null || true)"
-   ## Classify from the probe text (glob match on a lowered copy -- no grep pipe). mokutil
-   ## prints 'SecureBoot enabled' / 'disabled'; the efi-dir line decides BIOS vs UEFI.
-   local out_lc="${out,,}"
-   case "${out_lc}" in
-      *'-> uefi'*)
-         case "${out_lc}" in
-            *'secureboot enabled'*)
-               detected="UEFI+SecureBoot"
-               ;;
-            *)
-               detected="UEFI"
-               ;;
-         esac
-         ;;
-      *)
-         detected="BIOS"
-         ;;
-   esac
+   local out out_lc efi coreboot sb declared id_out detected match line fw_identity
+   local declared_arg=()
+   ## Probe the installed guest for the three independent axes the shared classifier needs:
+   ## UEFI-vs-BIOS (the efi dir), Secure Boot state (mokutil), and the firmware VENDOR
+   ## (/sys/class/dmi/id/bios_vendor -- 'coreboot' on the dasharo coreboot+UefiPayload ROM,
+   ## 'innotek GmbH' on VBox's own EFI).
+   out="$(gc_run "${live_account}" 'printf "[ -d /sys/firmware/efi ] -> "; { [ -d /sys/firmware/efi ] && echo UEFI || echo BIOS; }; printf "mokutil --sb-state -> "; mokutil --sb-state 2>&1 || true; printf "bios_vendor -> "; cat /sys/class/dmi/id/bios_vendor 2>/dev/null; echo' 10 2>/dev/null || true)"
+   ## Derive the axes by glob on a lowered copy (no grep pipe). efi-dir line -> UEFI/BIOS; mokutil
+   ## -> SecureBoot enabled/disabled; a 'coreboot' bios_vendor -> the dasharo ROM, else VBox EFI.
+   out_lc="${out,,}"
+   case "${out_lc}" in *'-> uefi'*) efi=1 ;; *) efi=0 ;; esac
+   case "${out_lc}" in *'secureboot enabled'*) sb=1 ;; *) sb=0 ;; esac
+   case "${out_lc}" in *'bios_vendor -> coreboot'*) coreboot=1 ;; *) coreboot=0 ;; esac
+   ## Declared identity from --firmware. The calamares path boots VBox's own EFI, never coreboot,
+   ## so efi* declares vbox-efi*; the classifier decides detected + match in the same vocabulary.
    case "${firmware}" in
       bios)
-         expected="BIOS"
+         declared='bios'
          ;;
       efi)
-         expected="UEFI"
+         declared='vbox-efi'
          ;;
       efi-secureboot)
-         expected="UEFI+SecureBoot"
+         declared='vbox-efi-secureboot'
          ;;
       *)
-         expected=""
+         declared=''
          ;;
    esac
-   if [ "${detected}" = "${expected}" ]; then match="true"; else match="false"; fi
+   [ -z "${declared}" ] || declared_arg=(--declared "${declared}")
+   ## Shared classifier (sibling dist-ai tool): the SINGLE identity-decision source for every VBox
+   ## lane, so the bios/vbox-efi/dasharo-efi mapping + the declared-vs-detected match live in one
+   ## place. Prefer the checkout sibling, fall back to PATH (installed).
+   fw_identity="${lib_dir}/dm-firmware-identity"
+   [ -x "${fw_identity}" ] || fw_identity='dm-firmware-identity'
+   id_out="$("${fw_identity}" --efi "${efi}" --coreboot "${coreboot}" --secureboot "${sb}" "${declared_arg[@]}" 2>/dev/null || true)"
+   detected=''
+   match=''
+   while IFS= read -r line; do
+      case "${line}" in
+         detected=*)
+            detected="${line#detected=}"
+            ;;
+         match=*)
+            match="${line#match=}"
+            ;;
+      esac
+   done <<< "${id_out}"
    {
       printf '%s\n' "DETECTED=${detected}"
       printf '%s\n' "MATCH=${match}"
