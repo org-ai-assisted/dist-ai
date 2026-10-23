@@ -7469,6 +7469,86 @@ _mid.mouseReleaseEvent(_QME_sel(_QEv_sel.Type.MouseButtonRelease, _mid_pt, _mid_
 eq(_mid._select_mode, 'word',
    'sel: a middle-click release does not reset the word-select mode (left-only branch)')
 
+# A middle-click after a WORD/LINE select must DELIVER the PRIMARY buffer to the child.
+# The word/line left-release is swallowed before super() (keeping our custom unit
+# selection), which LATCHES QWidgetTextControl.mousePressed -- so the base control's own
+# middle-paste (`else if (!mousePressed)`) was silently DEAD after any double/triple-click
+# select and the pty got NOTHING. _paste_primary owns the paste. End to end against the
+# REAL compositor PRIMARY (the suite always runs under real wayland, where it exists).
+_mp = SecureTerminal(command='/bin/cat')
+_mp.resize(700, 400)
+_mp.show()
+APP.processEvents()
+_mp._cols = 0
+feed_output(_mp, b'PASTEME tail\r\n')
+_mp._force_current_frame()
+APP.processEvents()
+_mp_clip = _st_mod.QGuiApplication.clipboard()
+ok(_mp_clip.supportsSelection(),
+   'midpaste: precondition -- the test compositor has a PRIMARY selection buffer')
+_mp_pt = _selpt(_mp, 2)                 # inside PASTEME
+_sel_press(_mp, _mp_pt)
+_sel_dbl(_mp, _mp_pt)
+_mp.mouseReleaseEvent(_sel_ev(_QEv_sel.Type.MouseButtonRelease, _mp_pt,
+                              buttons=_Qt_sel.MouseButton.NoButton))
+eq(_mp._select_mode, 'word', 'midpaste: double-click armed word mode (the latch case)')
+# Put a DISTINCT payload on PRIMARY so a stale same-text match cannot mask a dead paste.
+_mp_clip.setText('MIDPASTE_PAYLOAD', _QClip_sel.Mode.Selection)
+APP.processEvents()
+_mp_sink = []
+_mp._write = sink_write(_mp_sink)
+_mp.mousePressEvent(_QME_sel(_QEv_sel.Type.MouseButtonPress, _mp_pt, _mp_pt,
+                             _Qt_sel.MouseButton.MiddleButton, _Qt_sel.MouseButton.MiddleButton,
+                             _Qt_sel.KeyboardModifier.NoModifier))
+_mp.mouseReleaseEvent(_QME_sel(_QEv_sel.Type.MouseButtonRelease, _mp_pt, _mp_pt,
+                               _Qt_sel.MouseButton.MiddleButton, _Qt_sel.MouseButton.NoButton,
+                               _Qt_sel.KeyboardModifier.NoModifier))
+APP.processEvents()
+ok(b'MIDPASTE_PAYLOAD' in b''.join(_mp_sink),
+   'midpaste: middle-click after a word-select delivers PRIMARY to the child')
+
+
+# _paste_primary no-ops where PRIMARY is unsupported (Wayland/macOS fallbacks) or where
+# the buffer is empty (mimeData None) -- neither reaches the paste pipeline. Driven
+# through a fake QGuiApplication so both guard branches run deterministically.
+class _MPFakeClip:
+    def __init__(self, supports, md):
+        self._supports = supports
+        self._md = md
+
+    def supportsSelection(self):
+        return self._supports
+
+    def mimeData(self, _mode):
+        return self._md
+
+
+class _MPFakeGui:
+    _clip = None
+
+    @staticmethod
+    def clipboard():
+        return _MPFakeGui._clip
+
+
+_mp2 = SecureTerminal(command='/bin/cat')
+_mp2.resize(700, 400)
+_mp2.show()
+APP.processEvents()
+_mp2_sink = []
+_mp2._write = sink_write(_mp2_sink)
+_mp_orig_gui = _st_mod.QGuiApplication
+_st_mod.QGuiApplication = _MPFakeGui
+try:
+    _MPFakeGui._clip = _MPFakeClip(False, None)        # no PRIMARY buffer at all
+    _mp2._paste_primary()
+    _MPFakeGui._clip = _MPFakeClip(True, None)         # PRIMARY present but empty
+    _mp2._paste_primary()
+finally:
+    _st_mod.QGuiApplication = _mp_orig_gui
+ok(_mp2_sink == [],
+   'midpaste: _paste_primary no-ops when PRIMARY is unsupported or empty')
+
 
 # --- #28: ctl_send_text(submit=True) must NOT fire a bare submit CR when the line was only
 # PARTIALLY written. _dispatch_paste returns whether _write delivered EVERY byte, so a
