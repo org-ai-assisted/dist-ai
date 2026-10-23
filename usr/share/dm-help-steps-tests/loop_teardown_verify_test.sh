@@ -146,6 +146,7 @@ set_mapcount()      { printf '%s' "${1}" > "${mapcount_file}"; }
 add_forcefail_map() { touch -- "${marks_dir}/ff_${1}"; }        ## this map's --force cannot load the error target
 set_mounted_map()   { touch -- "${marks_dir}/mnt_${1}"; }       ## findmnt reports this map mounted
 set_ls_fails()      { touch -- "${marks_dir}/lsfail"; }         ## 'dmsetup ls' exits non-zero (unreadable listing)
+set_findmnt_unreadable() { touch -- "${marks_dir}/findmnt_unreadable"; }  ## findmnt table unreadable -> dm_map_mounted fails CLOSED
 set_table()         { printf '%s' "${2}" > "${marks_dir}/tbl_${1}"; }  ## override 'dmsetup table <map>' output
 set_backing()       { printf '%s' "${2}" > "${marks_dir}/backing_${1}"; }  ## this map's backing block-device name (default loop7 = owned)
 dmremove_count()    { cat -- "${dmremove_file}"; }
@@ -330,16 +331,23 @@ dmsetup() {
    esac
 }
 
-## findmnt stub -- loop_teardown_verify's dm_map_mounted runs
-## 'findmnt --noheadings --source /dev/mapper/<map>' before --force. Report mounted iff a
-## mnt_<map> marker exists; otherwise not mounted. Stubbed so cases do not leak host state.
+## findmnt stub -- loop_teardown_verify's dm_map_mounted FIRST probes whole-table readability
+## with a bare 'findmnt --noheadings' (no --source), THEN runs
+## 'findmnt --noheadings --source /dev/mapper/<map>'. Model a readable table by default (the
+## bare probe exits 0) and report a map mounted iff a mnt_<map> marker exists. The
+## findmnt_unreadable marker models an unreadable/missing table (binary gone, /proc unreadable):
+## BOTH shapes then exit non-zero, so dm_map_mounted fails CLOSED (treats the map as mounted,
+## refuses --force). Stubbed so cases do not leak host state.
 # shellcheck disable=SC2317  # invoked indirectly, from the sourced loop_teardown_verify
 findmnt() {
-   local prev="" a map=""
+   [ -e "${marks_dir}/findmnt_unreadable" ] && return 1
+   local prev="" a map="" have_source=""
    for a in "$@"; do
+      [ "${a}" = "--source" ] && have_source=1
       [ "${prev}" = "--source" ] && map="${a##*/}"
       prev="${a}"
    done
+   [ -n "${have_source}" ] || return 0   ## bare table-readability probe -> table is readable
    [ -n "${map}" ] && [ -e "${marks_dir}/mnt_${map}" ]
 }
 
@@ -597,6 +605,54 @@ if loop_teardown_verify "${img}" ; then
    fi
 else
    fail "foreign map: expected return 0 (loop detaches, foreign map untouched), got non-zero"
+fi
+
+## --- case 15: UNKNOWN deps (numeric, unresolvable) -- GATED, never dropped, never forced -----
+## A PERSISTENT-open map loop7p1 whose 'dmsetup deps -o blkdevname' returns only a NUMERIC
+## major,minor (name unresolvable) -> UNKNOWN. dm_partition_maps must EMIT it (so it GATES the
+## detach -- it could be ours), but dm_map_owned_by must treat it as not-owned, so NEITHER
+## --retry NOR --force touches it. It stays live -> the loop is NEVER detached -> non-zero.
+## RED on the pre-3-way code: a numeric deps string was misread as FOREIGN and DROPPED, so the
+## loop detached under the still-present map -> an orphan (returned 0). UNKNOWN fixes that
+## without destroying a map we cannot confirm is ours.
+reset_stubs
+stub_uses_maps=1
+set_assoc "/dev/loop7"
+set_maps "loop7p1"
+set_mapcount 1                 ## persistent open: --retry could not clear it even if tried
+set_backing "loop7p1" "7, 0"   ## numeric major,minor -> name unresolvable -> UNKNOWN
+if loop_teardown_verify "${img}" ; then
+   fail "unknown (numeric deps): expected non-zero (gated, loop kept), got 0 -- orphan risk"
+else
+   if [ "$(dmremove_count)" = "0" ] && [ "$(mapforce_count)" = "0" ] \
+      && [ "$(detach_count)" = "0" ] && map_present "loop7p1"; then
+      pass "unknown (numeric deps): GATED not dropped, never --retry/--force'd, loop never detached (no orphan)"
+   else
+      fail "unknown (numeric deps): dmremove=$(dmremove_count) mapforce=$(mapforce_count) detach=$(detach_count) present=$(map_present loop7p1 && printf '%s' yes || printf '%s' no)"
+   fi
+fi
+
+## --- case 16: findmnt table UNREADABLE -- dm_map_mounted fails CLOSED, --force refused --------
+## A PERSISTENT-open OWNED map loop7p1 while the mount table is unreadable (findmnt missing /
+## /proc unreadable). dm_map_mounted probes the whole table first and, finding it unreadable,
+## reports the map MOUNTED (fail closed) -> --force is REFUSED (never error-target a live fs on a
+## table we could not read). The map stays live -> the loop is never detached -> non-zero.
+## RED on the pre-fail-closed code: the old dm_map_mounted ran only 'findmnt --source', whose
+## non-zero (no match) read as NOT mounted -> --force proceeded on the unreadable table.
+reset_stubs
+stub_uses_maps=1
+set_assoc "/dev/loop7"
+set_maps "loop7p1"
+set_mapcount 1                 ## owned + persistent open -> --retry fails, --force would be next
+set_findmnt_unreadable         ## whole-table probe fails -> dm_map_mounted fails closed
+if loop_teardown_verify "${img}" ; then
+   fail "findmnt unreadable: expected non-zero (force refused, loop kept), got 0"
+else
+   if [ "$(mapforce_count)" = "0" ] && [ "$(detach_count)" = "0" ] && map_present "loop7p1"; then
+      pass "findmnt unreadable: dm_map_mounted fails CLOSED -> --force refused, loop never detached (no corruption, no orphan)"
+   else
+      fail "findmnt unreadable: mapforce=$(mapforce_count) detach=$(detach_count) present=$(map_present loop7p1 && printf '%s' yes || printf '%s' no)"
+   fi
 fi
 
 summary_line="===== loop_teardown_verify: ${pass_count} pass, ${fail_count} fail ====="
