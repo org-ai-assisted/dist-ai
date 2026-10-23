@@ -43,7 +43,9 @@
 ##   6. recover a PERSISTENT open count -- 'dmsetup remove --force' loads the error
 ##      target, then detach the loop and return 0;
 ##   7. NEVER detach under a map that is still LIVE (no "Open count:1" orphan): if
-##      --force cannot neutralize it, leave the loop attached and return NON-ZERO.
+##      --force cannot neutralize it, leave the loop attached and return NON-ZERO;
+##   8. NEVER remove or gate on a coincidentally-named FOREIGN map (a ${base}pN map backed
+##      by a different device, not this loop): it is identified by 'dmsetup deps' blkdevname.
 ##
 ## The real function is SOURCED. 'losetup'/'kpartx'/'dmsetup'/'findmnt'/'udevadm'/'sleep'
 ## are stubbed so the test needs no root and no real loop devices; SUDO_TO_ROOT is
@@ -145,8 +147,13 @@ add_forcefail_map() { touch -- "${marks_dir}/ff_${1}"; }        ## this map's --
 set_mounted_map()   { touch -- "${marks_dir}/mnt_${1}"; }       ## findmnt reports this map mounted
 set_ls_fails()      { touch -- "${marks_dir}/lsfail"; }         ## 'dmsetup ls' exits non-zero (unreadable listing)
 set_table()         { printf '%s' "${2}" > "${marks_dir}/tbl_${1}"; }  ## override 'dmsetup table <map>' output
+set_backing()       { printf '%s' "${2}" > "${marks_dir}/backing_${1}"; }  ## this map's backing block-device name (default loop7 = owned)
 dmremove_count()    { cat -- "${dmremove_file}"; }
 mapforce_count()    { cat -- "${mapforce_file}"; }
+
+## A map's backing block-device name: an explicit backing_<map> marker, else loop7 (owned).
+# shellcheck disable=SC2317
+map_backing() { if [ -e "${marks_dir}/backing_${1}" ]; then cat -- "${marks_dir}/backing_${1}"; else printf '%s' "loop7"; fi; }
 
 ## Map helpers over the space-separated ${map_file} list + per-map markers in ${marks_dir}.
 ## (SC2013: the map list is space-separated words on one line, so word-splitting $(cat) is
@@ -164,10 +171,14 @@ map_remove() {    ## drop ${1} from the list
    printf '%s' "${rest}" > "${map_file}"
 }
 # shellcheck disable=SC2317,SC2013
-any_live_map() {  ## true if any present map has NO error marker (a live table still on the loop)
-   local m
+any_live_map() {  ## $1 = loop base name; true if a present map is non-error AND backed by THIS loop
+   local m loop_base
+   loop_base="${1:-}"
    for m in $(cat -- "${map_file}"); do
-      [ -e "${marks_dir}/err_${m}" ] || return 0
+      [ -e "${marks_dir}/err_${m}" ] && continue       ## neutralized -> no longer holds the loop
+      ## a foreign map (backed by a different device) never holds this loop
+      [ -n "${loop_base}" ] && [ "$(map_backing "${m}")" != "${loop_base}" ] && continue
+      return 0
    done
    return 1
 }
@@ -179,7 +190,7 @@ any_live_map() {  ## true if any present map has NO error marker (a live table s
 ## interchangeably, so the stub is not coupled to the one the function happens to use.
 # shellcheck disable=SC2317  # invoked indirectly, from the sourced loop_teardown_verify
 losetup() {
-   local poll_now assoc_now
+   local poll_now assoc_now detach_base
    case "${1:-}" in
       --associated)
          poll_now="$(cat -- "${poll_file}")"
@@ -202,9 +213,11 @@ losetup() {
          printf '%s' "${2:-}" > "${detach_last_file}"
          if [ "${stub_uses_maps}" = "1" ]; then
             ## map model: the loop frees ONLY when the CORRECT loop operand is detached AND no
-            ## live (non-error) map still references it. Detaching the wrong device, or while a
-            ## live map remains, does not free it (and on real dm would orphan that map).
-            if [ "${2:-}" = "$(cat -- "${assoc_file}")" ] && ! any_live_map; then
+            ## live (non-error) map BACKED BY IT remains. Detaching the wrong device, or while
+            ## an owned live map remains, does not free it (on real dm that would orphan it). A
+            ## foreign map (backed by a different device) does not hold this loop.
+            detach_base="${2##*/}"
+            if [ "${2:-}" = "$(cat -- "${assoc_file}")" ] && ! any_live_map "${detach_base}"; then
                printf '%s' "" > "${assoc_file}"
             fi
          elif [ "${stub_detach_releases}" = "1" ]; then
@@ -237,12 +250,23 @@ kpartx() {
 ## Isolates the test from real device-mapper state on the build host.
 # shellcheck disable=SC2317  # invoked indirectly, from the sourced loop_teardown_verify
 dmsetup() {
-   local open_count map arg have_retry have_force m
+   local open_count map arg have_retry have_force m backing
    case "${1:-}" in
       ls)
          [ -e "${marks_dir}/lsfail" ] && return 1
          # shellcheck disable=SC2013  # map list is space-separated words; word-split is intended
          for m in $(cat -- "${map_file}"); do printf '%s\n' "${m}"; done
+         ;;
+      deps)
+         ## 'dmsetup deps --noheadings -o blkdevname <map>' -> the map's backing block-device
+         ## name in the real "N dependencies  : (name)" format. Default loop7 (owned);
+         ## set_backing overrides it (e.g. sda1 for a foreign map named like ours).
+         map=""
+         for arg in "$@"; do map="${arg}"; done   ## the map is the last arg (deps ... -o blkdevname <map>)
+         if map_present "${map}"; then
+            backing="$(map_backing "${map}")"
+            printf '%s\n' "1 dependencies  : (${backing})"
+         fi
          ;;
       table)
          map="${2:-}"
@@ -552,6 +576,27 @@ else
    else
       fail "multi-segment table: detached $(detach_count) time(s) under a live segment -- orphan risk"
    fi
+fi
+
+## --- case 14: OWNERSHIP -- a coincidentally-named FOREIGN map is never removed ---------
+## A pre-existing unmounted dm map named loop7p1 but backed by /dev/sda1, open count 0.
+## It is NOT ours (backed by sda1, not loop7): dm_partition_maps must skip it, so it is never removed and
+## never gates our detach -- the loop (no OWNED maps) detaches and the foreign map is left
+## intact. Guards against the name-match-vs-loop-ownership gap (would delete /dev/sda1's map).
+reset_stubs
+stub_uses_maps=1
+set_assoc "/dev/loop7"
+set_maps "loop7p1"
+set_mapcount 0                 ## open 0 -> --retry WOULD delete it if it were treated as ours
+set_backing "loop7p1" "sda1"   ## backed by /dev/sda1, NOT loop7
+if loop_teardown_verify "${img}" ; then
+   if [ "$(dmremove_count)" = "0" ] && [ "$(mapforce_count)" = "0" ] && map_present "loop7p1"; then
+      pass "foreign map (backed by sda1): never removed (not ours), loop still detaches, returns 0"
+   else
+      fail "foreign map: dmremove=$(dmremove_count) mapforce=$(mapforce_count) present=$(map_present loop7p1 && printf '%s' yes || printf '%s' no)"
+   fi
+else
+   fail "foreign map: expected return 0 (loop detaches, foreign map untouched), got non-zero"
 fi
 
 summary_line="===== loop_teardown_verify: ${pass_count} pass, ${fail_count} fail ====="
