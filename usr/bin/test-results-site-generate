@@ -1090,11 +1090,11 @@ def main(argv):
                 store_cached_view(cache_dir, rid, fingerprint, view, out_root)
         views.append(view)
 
-    ## Overview order: worst-first then newest-first, deterministic. The legend
-    ## lists pass first; the SORT is the opposite -- the rows needing attention go
-    ## to the top. Secondary key is stop time descending (newest first), run_id as
-    ## the final tiebreak for determinism.
-    views.sort(key=lambda v: (_sort_severity(v.status), -_view_stop_unix(v), v.run_id))
+    ## Overview order: newest-first, then worst-severity-first, deterministic. The
+    ## freshest run goes to the top; among runs with the same stop time the ones
+    ## needing attention (worse severity) come first, run_id as the final tiebreak
+    ## for determinism.
+    views.sort(key=lambda v: (-_view_stop_unix(v), _sort_severity(v.status), v.run_id))
 
     keep = select_keep(views, args.history)
     shown = [v for v in views if v.run_id in keep]
