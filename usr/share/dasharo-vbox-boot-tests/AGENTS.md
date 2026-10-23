@@ -152,10 +152,11 @@ framebuffer. Each patch script is idempotent.
     no kernel-config changes -- it touches the shipped image).
     Verify: re-run the aperture probe -- /dev/dri/card0 appears and `vboxvideo ... probe` succeeds
     instead of `-16`.
-  * Reproduce the fix: `scratchpad/cbfb-retag-patch.sh` (idempotent source patch) ->
-    `cbfb-rebuild.sh` (CLEAN payload rebuild -- the .inf adds a `BlParseLib` LibraryClass, so a
-    stale partial build misreports) -> `aperture-test.sh` (DRM/vboxvideo check) /
-    `os-desktop-test.sh` (desktop screenshots; brighten only needed for a near-black kernel console).
+  * Reproduce the fix (all under `/home/admin`, `dasharo-patches/` for the patch):
+    `dasharo-patches/cbfb-retag-patch.sh` (idempotent source patch) -> `cbfb-rebuild.sh` (CLEAN
+    payload rebuild -- the .inf adds a `BlParseLib` LibraryClass, so a stale partial build
+    misreports) -> `aperture-test.sh` (DRM/vboxvideo check) / `os-desktop-test.sh` (desktop
+    screenshots; brighten only needed for a near-black kernel console).
   * Working ROM `/home/admin/cb-uefi-gfx.rom` is CLEAN (0 GOPDBG/PCIDBG markers; GOP is stock).
     Archived: `/home/admin/dasharo-patches/cb-uefi-desktop-WORKING.rom`; pre-patch rollback at
     `/home/admin/cb-uefi-gfx.rom.prefbretag`.
