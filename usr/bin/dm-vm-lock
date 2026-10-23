@@ -166,6 +166,10 @@ vm_lock_acquire_slot() {
       remaining=$(( deadline - now ))
       [ "${poll}" -lt "${remaining}" ] && remaining="${poll}"
       sleep "${remaining}"
+      ## After waking, give up immediately if the budget is spent -- do NOT let the loop-top scan
+      ## claim a slot that freed AT/after the deadline and run the command past --wait. The initial
+      ## scan (loop top, first iteration) still gets an immediately-free slot with no wait.
+      [ "$(date +%s)" -lt "${deadline}" ] || return 75
    done
 }
 
@@ -334,7 +338,12 @@ cmd_acquire() {
    ## the real mutex). cmd= is LAST (may contain spaces).
    local pid=$$ now deadline session session_id user
    now="$(date +%s)"
-   deadline=$(( now + ttl ))
+   ## ttl_deadline_epoch must cover the WHOLE worst-case lifetime -- the slot poll (up to --wait)
+   ## PLUS the command (up to --ttl) -- because the record is written BEFORE the slot poll. Using
+   ## now+ttl would let vm_lock_reap delete the record of a LIVE holder that polled (or ran) past
+   ## ttl, recreating the "status shows no holder while a leak is blocked" gap this ordering fixes.
+   ## A truly-wedged holder is still reaped once its pid dies (the pid check), or at this bound.
+   deadline=$(( now + wait + ttl ))
    ## Sanitized: these are untrusted (forwarded env / id output) and precede pid= on the line;
    ## an unsanitized value could forge a field the reader picks up (see vm_lock_sanitize_field).
    session="$(vm_lock_sanitize_field "${CLAUDE_RC_SESSION_NAME:-none}")"
