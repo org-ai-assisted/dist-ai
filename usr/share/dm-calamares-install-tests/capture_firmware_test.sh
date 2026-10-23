@@ -186,19 +186,30 @@ check "classifier printed match=true but no detected= -> DETECTED=unverified MAT
 ##     A wrong class is a false-green (rich-as-skip hides a blank desktop) or false-fail (transient
 ##     -as-rich reds a valid run), so pin the split. ---
 mbm() { milestone_blank_mode "$1"; }
-for rich in live-guestcontrol-ready welcome partitions-luks-filled install-done installed-grub-menu \
-   first-boot mok-reboot-desktop check-6-gui-rendered checks-complete final-last-frame vt-graphical-restored; do
+## RICH = the settled snap() captures (desktop / Calamares GUI / first boot / checks) + the
+## restored graphical desktop: a near-black frame there is a real render failure.
+for rich in live-guestcontrol-ready welcome location keyboard partitions partitions-luks-filled \
+   summary install-started install-done first-boot mok-reboot-desktop terminal-open \
+   check-6-gui-rendered checks-complete vt-graphical-restored; do
    got=0; [ "$(mbm "${rich}")" = 'rich' ] || got=1
    check "milestone_blank_mode(${rich}) = rich (default near-black gate)" "${got}"
 done
-for sparse in luks-prompt luks-passphrase-typed luks-unlocked sysmaint-luks-prompt vm-stopped-final; do
+for sparse in luks-prompt luks-passphrase-typed luks-unlocked sysmaint-luks-prompt; do
    got=0; [ "$(mbm "${sparse}")" = 'sparse' ] || got=1
    check "milestone_blank_mode(${sparse}) = sparse (uniform-only, legit near-black)" "${got}"
 done
-for skip in live-kernel-boot live-grub-menu live-grub-entry-selected installed-first-frame \
-   firmware-state vt-switched vt-logged-in vt-logged-out vm-defined mok-cert-enrolled; do
+## SKIP (fail-SAFE default): transient host-side frames that are legitimately uniform-black at
+## capture (power-on/GRUB/kernel-boot/first-frame/install-host/sysmaint-terminal), vt-* (gated by
+## require_vt_captures), the dm-text-to-png cards (gated by the card gate), and the EXIT-trap final
+## frames (written AFTER the gate). power-on-first-frame / install-host-launched / sysmaint-terminal
+## MUST be skip -- defaulting them to rich false-failed every --shot-dir run (always-black firmware
+## grab / transitional frames).
+for skip in power-on-first-frame live-kernel-boot live-grub-menu live-grub-entry-selected \
+   install-host-launched installed-first-frame installed-grub-menu sysmaint-terminal firmware-state \
+   final-last-frame vt-switched vt-logged-in vt-logged-out vm-defined vm-stopped-iso-detached \
+   vm-stopped-final mok-cert-enrolled failure-vm-state; do
    got=0; [ "$(mbm "${skip}")" = 'skip' ] || got=1
-   check "milestone_blank_mode(${skip}) = skip (transient / gated elsewhere)" "${got}"
+   check "milestone_blank_mode(${skip}) = skip (transient / gated elsewhere / post-gate)" "${got}"
 done
 
 ## --- no evidence file set: capture is a no-op (does not error) ---
