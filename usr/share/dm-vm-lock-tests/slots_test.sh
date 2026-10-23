@@ -118,4 +118,32 @@ rc=0; DM_VM_LOCK_WORK_SLOTS=2 DM_VM_LOCK_DIR="${d4}" "${TOOL}" acquire --class w
 if [ "${rc}" -eq 69 ]; then r=0; else r=1; fi
 check 'a missing slot file is rejected (69), not silently capped lower' "${r}"
 
+## --- --wait is a true DEADLINE, not rounded up to the poll interval. With poll (10s) >> wait
+##     (2s) and the only slot held, the cap must return 75 at ~wait, NOT ~poll. FAILS on the old
+##     code that always slept a full poll before re-checking the deadline. ---
+d5="$(new_lockdir)"; dirs+=("${d5}")
+bg_hold work "${d5}" 1
+if wait_for_n_work "${d5}" 1; then r=0; else r=1; fi
+check 'one work holder under N=1 (deadline test setup)' "${r}"
+start_s=${SECONDS}
+rc=0; DM_VM_LOCK_WORK_SLOTS=1 DM_VM_LOCK_SLOT_POLL=10 DM_VM_LOCK_DIR="${d5}" \
+   "${TOOL}" acquire --class work --wait 2 -- true 2>/dev/null || rc=$?
+dur_s=$(( SECONDS - start_s ))
+if [ "${rc}" -eq 75 ] && [ "${dur_s}" -lt 6 ]; then r=0; else r=1; fi
+check "the slot wait honors --wait as a deadline (75 at ~2s, not ~10s; got rc=${rc} dur=${dur_s}s)" "${r}"
+
+## --- a work waiter polling for a slot holds the shared lock, so `status` MUST show it (its
+##     holder record is written BEFORE the poll). Otherwise a blocked leak sees "no holders".
+##     Holder A takes the only slot; waiter B then polls -> two work holder records must appear.
+##     FAILS on the old code that wrote B's record only after it claimed a slot (which it never does). ---
+d6="$(new_lockdir)"; dirs+=("${d6}")
+bg_hold work "${d6}" 1
+if wait_for_n_work "${d6}" 1; then r=0; else r=1; fi
+check 'holder A takes the only slot (waiter-visibility setup)' "${r}"
+DM_VM_LOCK_WORK_SLOTS=1 DM_VM_LOCK_DIR="${d6}" \
+   "${TOOL}" acquire --class work --ttl 30 --wait 20 -- sleep 20 &
+pids+=("$!")
+if wait_for_n_work "${d6}" 2; then r=0; else r=1; fi
+check 'a work waiter polling for a slot is visible in status (record written before the poll)' "${r}"
+
 vmlock_done

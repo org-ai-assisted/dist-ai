@@ -71,9 +71,6 @@ vm_lock_default_wait=5400
 ## Set by cmd_acquire; the traps run FUNCTIONS, not inline commands (R-051). Empty = no-op.
 vm_lock_holder_file=""
 vm_lock_child_pid=""
-## Index of the work slot this holder claimed (observability only; the flock on the slot fd is
-## the real semaphore, auto-released on process death). Empty for a leak holder.
-vm_lock_slot_index=""
 
 die() {
    printf '%s\n' "${me}: ERROR: ${2}" >&2
@@ -130,10 +127,10 @@ vm_lock_flock_flag() {
 ## poll until one frees or the wait budget (the same --wait the main lock uses) elapses. flock
 ## has no native block-on-any-of-set, and per the standing rule we do NOT hand-roll a fancier
 ## primitive: a short poll of a minutes-long VM test is negligible. Uses fixed fd 8 (fd 9 is the
-## shared lock), reused across the scan. Returns 0 (slot held, vm_lock_slot_index set) or 75.
+## shared lock), reused across the scan. Returns 0 (slot held on fd 8) or 75 (capped / timed out).
 vm_lock_acquire_slot() {
    local slots="$1" wait_budget="$2" nonblock="$3"
-   local i slotfile start deadline poll
+   local i slotfile start deadline poll now remaining
    poll="${DM_VM_LOCK_SLOT_POLL:-2}"
    case "${poll}" in ''|*[!0-9]*) die 64 "DM_VM_LOCK_SLOT_POLL must be whole seconds" ;; esac
    poll="$(( 10#${poll} ))"
@@ -152,7 +149,6 @@ vm_lock_acquire_slot() {
          slotfile="${vm_lock_dir}/slot.${i}"
          exec 8<>"${slotfile}" || die 69 "cannot open ${slotfile}"
          if flock --exclusive --nonblock 8; then
-            vm_lock_slot_index="${i}"
             return 0
          fi
          ## Slot busy: drop this fd before trying the next so a failed attempt never pins it.
@@ -161,8 +157,15 @@ vm_lock_acquire_slot() {
       if [ "${nonblock}" -eq 1 ]; then
          return 75
       fi
-      [ "$(date +%s)" -lt "${deadline}" ] || return 75
-      sleep "${poll}"
+      ## --wait is a true DEADLINE. Sleep only up to the REMAINING budget, never a full poll
+      ## interval past it: otherwise a --wait shorter than the poll waits a whole poll and can
+      ## then acquire + run the command (past the stated wait), and a large poll delays the 75
+      ## far past the window it reports. sleep min(poll, remaining).
+      now="$(date +%s)"
+      [ "${now}" -lt "${deadline}" ] || return 75
+      remaining=$(( deadline - now ))
+      [ "${poll}" -lt "${remaining}" ] && remaining="${poll}"
+      sleep "${remaining}"
    done
 }
 
@@ -324,6 +327,33 @@ cmd_acquire() {
       die 75 "could not acquire the ${class} VM-work lock within ${wait}s"
    fi
 
+   ## Record holder identity for observability BEFORE the slot poll below. A work waiter holds the
+   ## shared lock (so it blocks a leak) while it polls for a slot; writing the record only after a
+   ## slot is claimed would make `status` report "no holders" during that window even though a leak
+   ## is genuinely blocked. Best-effort: a failed write never fails the run (the flock on fd 9 is
+   ## the real mutex). cmd= is LAST (may contain spaces).
+   local pid=$$ now deadline session session_id user
+   now="$(date +%s)"
+   deadline=$(( now + ttl ))
+   ## Sanitized: these are untrusted (forwarded env / id output) and precede pid= on the line;
+   ## an unsanitized value could forge a field the reader picks up (see vm_lock_sanitize_field).
+   session="$(vm_lock_sanitize_field "${CLAUDE_RC_SESSION_NAME:-none}")"
+   session_id="$(vm_lock_sanitize_field "${CLAUDE_CODE_SESSION_ID:-none}")"
+   user="$(vm_lock_sanitize_field "$(id -un 2>/dev/null || printf '%s' "${USER:-unknown}")")"
+   vm_lock_holder_file="${vm_lock_dir}/holder.${class}.${pid}"
+   ## Write the record refusing to FOLLOW a symlink or clobber an existing path: the dir is
+   ## group-writable, so a member could pre-plant holder.<class>.<pid> as a symlink to a root file
+   ## and a root-run holder (image-test-run) would overwrite that target. noclobber opens O_EXCL,
+   ## which fails on any pre-existing path (symlink included) instead of following it. The record
+   ## is advisory, so a refused write is harmless (the flock on fd 9 is the real mutex).
+   (
+      set -o noclobber
+      printf '%s\n' \
+         "class=${class} session=${session} session_id=${session_id} user=${user} pid=${pid} acquired=$(date -u -d "@${now}" +%FT%TZ) ttl=${ttl} ttl_deadline_epoch=${deadline} cmd=$*" > "${vm_lock_holder_file}"
+   ) 2>/dev/null || true
+   ## Release the registry entry on exit; flock on fd 9 auto-releases when this process ends.
+   trap vm_lock_cleanup EXIT
+
    ## Bounded work concurrency: after the shared lock (which already blocks a leak), claim one of
    ## N slots so concurrent work cannot oversubscribe the host CPUs. A leak needs no slot -- its
    ## exclusive lock on fd 9 already excludes all work regardless of slot state.
@@ -346,31 +376,6 @@ cmd_acquire() {
          die 75 "could not claim a work slot (all ${slots} in use) within ${wait}s"
       fi
    fi
-
-   ## Record holder identity for observability. Best-effort: a failed write never fails the
-   ## run (the flock on fd 9 is the real mutex). cmd= is LAST (may contain spaces).
-   local pid=$$ now deadline session session_id user
-   now="$(date +%s)"
-   deadline=$(( now + ttl ))
-   ## Sanitized: these are untrusted (forwarded env / id output) and precede pid= on the line;
-   ## an unsanitized value could forge a field the reader picks up (see vm_lock_sanitize_field).
-   session="$(vm_lock_sanitize_field "${CLAUDE_RC_SESSION_NAME:-none}")"
-   session_id="$(vm_lock_sanitize_field "${CLAUDE_CODE_SESSION_ID:-none}")"
-   user="$(vm_lock_sanitize_field "$(id -un 2>/dev/null || printf '%s' "${USER:-unknown}")")"
-   vm_lock_holder_file="${vm_lock_dir}/holder.${class}.${pid}"
-   ## Write the record refusing to FOLLOW a symlink or clobber an existing path: the dir is
-   ## group-writable, so a member could pre-plant holder.<class>.<pid> as a symlink to a root file
-   ## and a root-run holder (image-test-run) would overwrite that target. noclobber opens O_EXCL,
-   ## which fails on any pre-existing path (symlink included) instead of following it. The record
-   ## is advisory, so a refused write is harmless (the flock on fd 9 is the real mutex).
-   (
-      set -o noclobber
-      printf '%s\n' \
-         "class=${class} session=${session} session_id=${session_id} user=${user} pid=${pid} slot=${vm_lock_slot_index} acquired=$(date -u -d "@${now}" +%FT%TZ) ttl=${ttl} ttl_deadline_epoch=${deadline} cmd=$*" > "${vm_lock_holder_file}"
-   ) 2>/dev/null || true
-
-   ## Release the registry entry on exit; flock on fd 9 auto-releases when this process ends.
-   trap vm_lock_cleanup EXIT
 
    ## Run the command under the TTL deadline, with the lock fd CLOSED in the child so the
    ## command's descendants (VBoxSVC, a detached GUI) cannot inherit it and pin the lock.
