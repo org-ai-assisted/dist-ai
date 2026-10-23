@@ -245,31 +245,33 @@ snap() {
    "${GUESTCTL}" "${vm}" shot "${shot_dir}/${nn}-${name}.png" >/dev/null 2>&1 || true
 }
 
-## Blank-gate mode for a milestone SCREENSHOT, by its <name>, calibrated from the real shot set so
-## the gate catches a failed render WITHOUT false-failing a legitimately-sparse frame:
-##   rich   -- normally thousands of colours; a near-black frame means the desktop / GUI / menu did
-##             NOT render (a real failure) -> DEFAULT near-black check.
-##   sparse -- legitimately near-black but non-blank (a LUKS passphrase prompt, a powered-off VM)
-##             -> UNIFORM-ONLY (only a 1-colour truly-blank frame fails; a 2+ colour frame passes).
-##   skip   -- pure transient best-effort frames that are legitimately uniform-black at capture
-##             (live GRUB / kernel-boot / installed first-frame / firmware splash), or gated by a
-##             dedicated path (vt-* by require_vt_captures; dm-text-to-png cards by the card gate).
+## Blank-gate mode for a milestone SCREENSHOT, by its <name>. The default is SKIP (fail-SAFE): only
+## an EXPLICITLY-listed name is gated, so an unlisted/new milestone can never false-fail a valid
+## run (the opposite -- gate-everything-unlisted -- false-failed the always-black firmware grabs).
+##   rich   -- the SETTLED post-quiesce snap() captures (desktop / Calamares GUI / first boot /
+##             checks) + the restored graphical desktop; a near-black frame there means the GUI did
+##             NOT render -> DEFAULT near-black check. This is where a blank-desktop false-green is
+##             caught. New must-be-rich milestones are added here (a documented maintenance point).
+##   sparse -- legitimately near-black but non-blank (the LUKS passphrase prompts) -> UNIFORM-ONLY
+##             (only a 1-colour truly-blank frame fails; the 2+ colour prompt passes).
+##   skip   -- everything else: transient host-side story_snap frames (power-on / GRUB / kernel-boot
+##             / installed first-frame / install-host-launched / sysmaint-terminal) that are
+##             legitimately uniform-black at capture; vt-* (gated by require_vt_captures); the
+##             dm-text-to-png cards (gated by the card gate); and the final frames written by the
+##             EXIT trap AFTER this gate runs.
 milestone_blank_mode() {
    case "$1" in
-      luks-prompt|luks-passphrase-typed|luks-unlocked|sysmaint-luks-prompt|vm-stopped-final)
+      live-guestcontrol-ready|welcome|location|keyboard|partitions|partitions-luks-filled|summary|install-started|install-done|installed-grub-menu|first-boot|mok-reboot-desktop|terminal-open|sysmaint-terminal|check-6-gui-rendered|checks-complete|vt-graphical-restored)
+         ## installed-grub-menu is hundreds of colours when the menu rendered (only a blank fails);
+         ## sysmaint-terminal is captured right AFTER open_terminal OCR-confirms the terminal came
+         ## up, so a black frame there is a real failure (symmetric with the user terminal-open).
+         printf '%s' rich
+         ;;
+      luks-prompt|luks-passphrase-typed|luks-unlocked|sysmaint-luks-prompt)
          printf '%s' sparse
          ;;
-      live-grub-menu|live-grub-entry-selected|live-kernel-boot|installed-first-frame|installed-firmware-logo|firmware-state|live-desktop-ready)
-         printf '%s' skip
-         ;;
-      vt-switched|vt-logged-in|vt-logged-out)
-         printf '%s' skip
-         ;;
-      vm-defined|vm-stopped-iso-detached|mok-cert-enrolled|failure-vm-state)
-         printf '%s' skip
-         ;;
       *)
-         printf '%s' rich
+         printf '%s' skip
          ;;
    esac
 }

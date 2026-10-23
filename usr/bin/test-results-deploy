@@ -44,6 +44,9 @@ staging_base="${TEST_RESULTS_STAGING_DIR:-${HOME}/.cache/test-results-deploy}"
 ## Confirm-published poll budget (seconds): GitHub Pages builds the pushed branch ASYNCHRONOUSLY,
 ## so a successful push is not yet a live site. Poll this long for the build to land at our commit.
 confirm_timeout="${TEST_RESULTS_CONFIRM_TIMEOUT:-600}"
+## Seconds between build-API polls. Prod keeps 15s; a hermetic test overrides it so the
+## multi-poll path (a stale errored build clearing before our commit builds) runs in ~1s.
+confirm_poll_interval="${TEST_RESULTS_CONFIRM_POLL_INTERVAL:-15}"
 
 die() {
    printf '%s\n' "${me}: ERROR: $1" >&2
@@ -84,12 +87,15 @@ confirm_published() {
       if [ "${status}" = "built" ] && [ "${commit}" = "${want}" ]; then
          return 0
       fi
-      if [ "${status}" = "errored" ]; then
-         printf '%s\n' "${me}: GitHub Pages build ERRORED (commit ${commit:-unknown})" >&2
+      ## Reject an errored build only when it is OUR commit. A stale errored build for a
+      ## DIFFERENT commit is still the "latest" until our push builds; aborting on it would
+      ## fail before our commit can finish -- keep polling instead.
+      if [ "${status}" = "errored" ] && [ "${commit}" = "${want}" ]; then
+         printf '%s\n' "${me}: GitHub Pages build ERRORED (commit ${commit})" >&2
          return 1
       fi
       [ "$(date +%s)" -lt "${deadline}" ] || return 1
-      sleep 15
+      sleep "${confirm_poll_interval}"
    done
 }
 
