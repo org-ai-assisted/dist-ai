@@ -109,6 +109,7 @@ def vbox_default_vcpus():
             if out.isdigit():
                 return int(out)
         except Exception:
+            ## best-effort: helper missing/erroring -- fall back to local cpu count below.
             pass
     online = len(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity') \
         else (os.cpu_count() or 1)
@@ -1208,6 +1209,7 @@ def _teardown_serial_vm(vmname, uart_socket, vboxmanage=VBOXMANAGE):
         try:
             os.unlink(uart_socket)
         except OSError:
+            ## best-effort cleanup -- socket already gone/unremovable is not a failure.
             pass
     ## Remove a converted throwaway VDI serial-up may have made for a raw/qcow2 --disk.
     ## Done HERE (not only in serial-down) so a serial-up that fails AFTER converting
@@ -1215,6 +1217,7 @@ def _teardown_serial_vm(vmname, uart_socket, vboxmanage=VBOXMANAGE):
     try:
         os.unlink(converted_disk_path(vmname))
     except OSError:
+        ## best-effort cleanup -- disk already gone/unremovable is not a failure.
         pass
 
 
