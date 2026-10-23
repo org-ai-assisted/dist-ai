@@ -90,33 +90,28 @@ framebuffer. Each patch script is idempotent.
   IT -- grub loads from the ESP and the Linux kernel starts (verified: BRIGHTEN the
   near-black OS frame ~6x and the kernel dmesg is there). The dasharo port's core goal
   -- an OS boots through the firmware -- is demonstrated.
-- OPEN -- full DESKTOP does not come up. Two late-boot issues (OS/board side; the GOP
-  itself works, the Setup menu proves it):
-  1. `simple-framebuffer: Unable to acquire aperture: -16` -- now that PCI enumerates,
-     the vboxvga BAR (0xfc000000) is a claimed PCI resource, so the kernel's simpledrm
-     cannot request_mem_region the EFI framebuffer. vboxvideo is the real driver (needs
-     userspace up first); secondary.
-  2. `dracut-initqueue: Timed out waiting for udev queue` + `ACPI: No LAPIC entries
-     present` -- THE blocker. coreboot's qemu-i440fx board code does not fully match
-     VBox's piix3: the generated ACPI MADT has no LAPIC entries (likely a wrong/absent
-     IOAPIC too), so the KERNEL's AHCI interrupts do not work -> root-disk I/O times out
-     -> dracut gives up. grub reads the disk fine (firmware EFI block I/O); only the
-     kernel's own interrupt-driven AHCI stalls.
+- DONE -- Kicksecure FULLY BOOTS to a login prompt through the firmware. The dracut
+  root-timeout was `ACPI: No LAPIC entries present`: coreboot's qemu-i440fx board reads
+  the CPU count from QEMU `fw_cfg` (`.get_cpu_count = fw_cfg_max_cpus`), but VBox has NO
+  fw_cfg ("firmware config interface not found"), so `fw_cfg_max_cpus()` returned 0 -> 0
+  CPU devices -> the common MADT (`CONFIG_ACPI_COMMON_MADT_LAPIC=y`) emitted NO LAPIC ->
+  the guest kernel had no APIC -> AHCI interrupts dead -> root I/O timed out. FIX (in the
+  coreboot ROM now): `src/drivers/emulation/qemu/fw_cfg.c` `fw_cfg_max_cpus()` returns 1
+  (the BSP) when `!fw_cfg_present()`. Boot the VM with `--ioapic on` so the MADT IOAPIC
+  matches hardware. VERIFIED: coreboot logs `LAPIC 0x0 in XAPIC mode` + `IOAPIC: ... on
+  fec00000`, and the guest serial (add `console=ttyS0,115200n8`) reaches
+  `Welcome to Kicksecure (TM)! / localhost login:`.
+- OPEN -- only the VISIBLE GUI on the framebuffer. The OS boots to a console login, but
+  the on-screen framebuffer stays the dead simpledrm console (`simple-framebuffer: Unable
+  to acquire aperture: -16` -- the vboxvga BAR 0xfc000000 is a claimed PCI resource). This
+  is an OS display-driver matter (vboxvideo must bind the vboxvga PCI device and evict
+  simpledrm), NOT a firmware blocker.
 - RESUME (OVH, root, dm-vm-lock --class work):
-  * CONFIRMED: grub loads from the disk and renders its graphical Kicksecure "Choose
-    boot mode" menu (gfxterm, 4739 colours) THROUGH the firmware, and the unedited
-    image auto-boots into the Linux kernel. So the firmware->PCI->disk->grub->kernel
-    chain works; only the kernel's AHCI-IRQ (MADT) stalls dracut.
-  * QUICK experiment for the dracut blocker: at the grub "Choose boot mode" menu press
-    `e`, append `noapic irqpoll rootdelay=30` to the linux line, Ctrl-X (coreboot has
-    `ACPI_HAVE_PCAT_8259=y`). Do NOT just `sed` grub.cfg on the mounted VDI -- that was
-    tried and made grub WAIT at the menu instead of auto-booting (inconclusive). Drive
-    the grub `e`/arrow/Ctrl-X via `keyboardputscancode` on a tcpserver-serial VM.
-  * REAL fix: port coreboot `src/mainboard/emulation/qemu-i440fx` ACPI MADT/IOAPIC/LAPIC
-    generation to VBox's piix3 -- `CONFIG_ACPI_COMMON_MADT_LAPIC=y` emits a LAPIC per
-    APIC device, and none are being created under VBox, so verify the CPU/APIC device
-    enumeration. Compare the guest MADT (shell `acpiview`, or `acpidump` from a Linux
-    live) against a known-good VBox-EFI boot.
+  * VISIBLE GUI: check whether the Kicksecure kernel loads `vboxvideo` (drivers/gpu/drm/
+    vboxvideo, PCI 80ee:beef); if not auto-bound, the GUI has no DRM device. Try booting
+    with `fbcon=map:0` / a modeset cmdline, or confirm the GUI target started (serial
+    `console=ttyS0` + drop `quiet loglevel=0`). Firmware-side option: reserve the GOP
+    framebuffer in the EFI memory map so simpledrm is not evicted.
   * `/home/admin/cb-uefi-gfx.rom` is the CF8 build (boots an OS) but carries PCIDBG/
     GOPDBG SerialPortWrite debug markers + the instrument patches -- STRIP them before
     any land. ECAM pre-CF8 ROM archived at
