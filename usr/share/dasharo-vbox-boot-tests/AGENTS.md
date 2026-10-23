@@ -112,17 +112,49 @@ framebuffer. Each patch script is idempotent.
   the on-screen framebuffer stays the dead simpledrm console (`simple-framebuffer: Unable
   to acquire aperture: -16` -- the vboxvga BAR 0xfc000000 is a claimed PCI resource).
   TESTED: this is INDEPENDENT of how the firmware publishes the GOP -- the stock-PCI-binding
-  GOP gives the exact same `-16` (the kernel derives the fb from the EFI GOP + the PCI BAR
-  either way). So it is an OS display-driver matter (vboxvideo must bind vboxvga + evict
-  simpledrm), NOT fixable by the GOP method. A firmware fix is possible but is MORE code
-  (reserve the GOP fb in the EFI memory map, or init vboxvga in the VBox-native VBVA/HGSMI
-  state coreboot's bochs-dispi path does not), not less.
+  GOP gives the exact same `-16`. ROOT-CAUSED (see RESUME below): the guest kernel reserves the
+  fb region from coreboot's `LB_TAG_FRAMEBUFFER` and that reservation sits inside the vboxvga
+  BAR, so vboxvideo/simpledrm cannot claim it. NOT fixable OS-side (a fb-driver cmdline toggle
+  does not free it -- verified); the fix is firmware (strip the fb tag post-consume) or guest
+  kernel config. The core port goal (an OS boots through the firmware) is already met; the
+  visible desktop is this one remaining item.
 - RESUME (OVH, root, dm-vm-lock --class work):
-  * VISIBLE GUI (OS-side, simplest): get a shell (serial `console=ttyS0` + an autologin, or
-    boot a SYSMAINT entry) and check `lsmod | grep vbox`, `ls /dev/dri`, `dmesg | grep -i
-    drm`. If `vboxvideo` (PCI 80ee:beef) is not bound, the GUI has no DRM device -> load/
-    unblacklist it, or compare against a stock-VBox-EFI boot of the SAME image (does it use
-    vboxvideo or efifb there?). Firmware-side (more code): reserve the GOP fb region.
+  * ROOT CAUSE (VERIFIED, not theorized -- two init=/bin/bash boots + /proc/iomem):
+    `/proc/iomem` shows the vboxvga BAR `fc000000-fdffffff : 0000:00:02.0` with a child
+    `fc000000-fc2fffff : Coreboot Framebuffer`. That child is a HARD reserved region the GUEST
+    KERNEL creates from coreboot's `LB_TAG_FRAMEBUFFER` (its coreboot_table driver registers a
+    `simple-framebuffer` platform device whose mem resource reserves the region). It sits INSIDE
+    the BAR, so EVERY DRM driver fails `request_region` on the BAR with `-16 (EBUSY)`: `vboxvideo
+    0000:00:02.0: probe ... failed with error -16`, same for `simpledrm`. No /dev/dri -> the
+    Wayland/LXQt GUI cannot start -> black. efifb (legacy fbdev, no DRM) binds and gives the
+    firmware console, which is why text renders but no desktop.
+  * REFUTED (do NOT retry): it is NOT efifb holding the aperture. Booting with
+    `video=efifb:off video=simplefb:off video=vesafb:off` REMOVES efifb/simplefb from
+    /proc/iomem but the `Coreboot Framebuffer` reservation PERSISTS and `vboxvideo` STILL fails
+    `-16`. So no OS display-driver / kernel-cmdline fb toggle frees the aperture -- the blocker is
+    the coreboot-table simple-framebuffer reservation itself.
+  * The coreboot table is NOT installed as a UEFI config table; both the payload (CbParseLib
+    scans mem 0~4KB then high mem) and the guest kernel independently find it by signature scan.
+    The payload NEEDS `LB_TAG_FRAMEBUFFER` (CbParseLib.c:569) to build its GOP, so simply not
+    emitting it kills firmware graphics. coreboot does NOT itself reserve the fb (no reserved_ram/
+    mmio for it) -- the reservation is purely the guest kernel's doing.
+  * FIX (operator ruled: FIRMWARE ONLY, NO guest kernel-config change). A late UefiPayload DXE
+    step (ReadyToBoot / EndOfDxe, after the GOP is built) retags the coreboot framebuffer entry
+    so the guest kernel's scan skips it and falls back to the EVICTABLE EFI GOP fb (sysfb/aperture
+    framework), which vboxvideo can evict -> binds -> /dev/dri -> desktop. Mechanics (all confirmed
+    in CbParseLib + commonlib/coreboot_tables.h):
+      - `GetParameterBase()` -> full table (follows CB_TAG_FORWARD); `FindCbTag(LB_TAG_FRAMEBUFFER
+        == 0x0012)` -> the record.
+      - set `record->tag = LB_TAG_UNUSED (0x0000)` (unknown/unused tags are iterated past).
+      - recompute `Header->table_checksum = CbCheckSum16(entries, table_bytes)` THEN
+        `Header->header_checksum` (table_checksum is a field INSIDE the header, so the header sum
+        must be redone after). Both are validated (CbParseLib IsValidCbTable); a wrong sum makes
+        the guest drop the WHOLE table (acceptable, but do it right).
+      - Payload needs the tag at GOP-build time, so retag LATE, never remove it from coreboot.
+    Rejected: guest kernel disable of CONFIG_GOOGLE_COREBOOT_TABLE/FRAMEBUFFER_COREBOOT (operator:
+    no kernel-config changes -- it touches the shipped image).
+    Verify: re-run the aperture probe -- /dev/dri/card0 appears and `vboxvideo ... probe` succeeds
+    instead of `-16`.
   * `/home/admin/cb-uefi-gfx.rom` is the CF8 build (boots an OS) but carries PCIDBG/
     GOPDBG SerialPortWrite debug markers + the instrument patches -- STRIP them before
     any land. ECAM pre-CF8 ROM archived at

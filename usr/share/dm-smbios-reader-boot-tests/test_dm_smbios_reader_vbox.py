@@ -759,7 +759,10 @@ def test_serial_vm_plan_disk_is_multiattach_hdd_no_createmedium():
         dmi_vendor='QEMU', dmi_serial='dm-cmdline=x')
     flat = [' '.join(a) for a in plan]
     assert flat[0] == 'VBoxManage createvm --name kick --ostype Debian_64 --register'
-    assert 'VBoxManage modifyvm kick --memory 3072 --firmware efi' in flat
+    ## --cpus (online-1, host-dependent) is always emitted now; assert the flags are present on
+    ## the modifyvm step rather than an exact string with fixed adjacency.
+    mv = next(f for f in flat if f.startswith('VBoxManage modifyvm kick'))
+    assert '--memory 3072' in mv and '--firmware efi' in mv and '--cpus' in mv
     ## firmware='efi' -> DMI on the efi device (not pcbios).
     assert ('VBoxManage setextradata kick %s QEMU' % _DMI_VENDOR_KEY_EFI) in flat
     assert any('--uart1 0x3f8 4 --uartmode1 server /s.sock' in f for f in flat)
@@ -1073,11 +1076,12 @@ _CB_COREBOOTROM_KEY = 'VBoxInternal/Devices/efi/0/Config/CorebootRom'
 
 
 def test_modifyvm_coreboot_kwargs_default_to_noop():
-    ## The additive guarantee: with none of the coreboot kwargs, the argv is
-    ## byte-identical to the pre-change output -- no --chipset/--hpet/--cpuid-set.
-    argv = M.build_modifyvm_argv('kick', memory=3072, firmware='efi')
+    ## The additive guarantee: with none of the coreboot kwargs, the argv carries only
+    ## memory/firmware plus the always-emitted --cpus -- no --chipset/--hpet/--cpuid-set.
+    ## cpus pinned for a deterministic exact-argv assertion (the default is host-dependent).
+    argv = M.build_modifyvm_argv('kick', memory=3072, firmware='efi', cpus=2)
     assert argv == ['VBoxManage', 'modifyvm', 'kick',
-                    '--memory', '3072', '--firmware', 'efi']
+                    '--memory', '3072', '--cpus', '2', '--firmware', 'efi']
     for leaked in ('--chipset', '--hpet', '--cpuid-set'):
         assert leaked not in argv
 
@@ -1197,3 +1201,44 @@ def test_firmware_vboxmanage_env_default(monkeypatch):
     args = parser.parse_args(['firmware', '--vm', 'c', '--rom', '/r.rom',
                               '--uart-socket', '/s.sock', '--emit-argv'])
     assert args.vboxmanage == '/opt/patched/VBoxManage'
+
+
+## --- vCPU sizing: online host CPUs minus one, shared via dm-vbox-vcpus ----------------------
+
+VBOX_VCPUS = Path(__file__).resolve().parent.parent.parent / 'bin' / 'dm-vbox-vcpus'
+
+
+@pytest.mark.parametrize('online,expect', [
+    ('1', '1'), ('2', '1'), ('4', '3'), ('8', '7'), ('16', '15'),
+])
+def test_dm_vbox_vcpus_helper_online_minus_one(online, expect):
+    ## The shared helper floors at 1 and otherwise returns online-1 (the OVH host runs 8 online
+    ## of 16 under nosmt=force -> 7). DM_VBOX_ONLINE_CPUS_OVERRIDE is the test seam for the
+    ## online count; production reads the real getconf _NPROCESSORS_ONLN.
+    env = dict(os.environ, DM_VBOX_ONLINE_CPUS_OVERRIDE=online)
+    out = subprocess.run([str(VBOX_VCPUS)], capture_output=True, text=True,
+                         check=True, env=env).stdout.strip()
+    assert out == expect
+
+
+@pytest.mark.parametrize('online,expect', [('1', 1), ('4', 3), ('8', 7)])
+def test_vbox_default_vcpus(monkeypatch, online, expect):
+    monkeypatch.setenv('DM_VBOX_ONLINE_CPUS_OVERRIDE', online)
+    assert M.vbox_default_vcpus() == expect
+
+
+def test_modifyvm_defaults_cpus_to_online_minus_one(monkeypatch):
+    ## Every VBox test VM is created with online-1 vCPUs by default, so a hardened guest boot
+    ## does not wedge its GA setup on a single vCPU under host-CPU contention.
+    monkeypatch.setenv('DM_VBOX_ONLINE_CPUS_OVERRIDE', '8')
+    argv = M.build_modifyvm_argv('vm', memory=4096, firmware='efi-secureboot',
+                                 graphicscontroller='vmsvga', vram=128)
+    assert '--cpus' in argv
+    assert argv[argv.index('--cpus') + 1] == '7'
+
+
+def test_modifyvm_cpus_explicit_pin_overrides_default(monkeypatch):
+    ## The coreboot plan pins cpus=1; an explicit value wins over the online-1 default.
+    monkeypatch.setenv('DM_VBOX_ONLINE_CPUS_OVERRIDE', '8')
+    argv = M.build_modifyvm_argv('vm', memory=2048, firmware='efi', cpus=1)
+    assert argv[argv.index('--cpus') + 1] == '1'

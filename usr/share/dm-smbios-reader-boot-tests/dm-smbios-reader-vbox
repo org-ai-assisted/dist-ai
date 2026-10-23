@@ -87,10 +87,39 @@ def build_createvm_argv(vmname, ostype, basefolder=None, vboxmanage=VBOXMANAGE):
     return argv
 
 
+def vbox_default_vcpus():
+    """Online host CPUs minus one (floored at 1), via the shared dm-vbox-vcpus helper so the
+    online-1 math lives in exactly one place. A single-vCPU guest runs a hardened boot's Guest
+    Additions setup so slowly that under host-CPU contention it exceeds the GA service timeout
+    and wedges; ~all cores avoids that. Falls back to an in-process computation only if the
+    helper cannot be found."""
+    import os
+    import shutil
+    import subprocess
+    helper = shutil.which('dm-vbox-vcpus')
+    if helper is None:
+        cand = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            '..', '..', 'bin', 'dm-vbox-vcpus')
+        if os.path.exists(cand):
+            helper = cand
+    if helper is not None:
+        try:
+            out = subprocess.run([helper], capture_output=True, text=True,
+                                 check=True).stdout.strip()
+            if out.isdigit():
+                return int(out)
+        except Exception:
+            ## best-effort: helper missing/erroring -- fall back to local cpu count below.
+            pass
+    online = len(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity') \
+        else (os.cpu_count() or 1)
+    return max(1, online - 1)
+
+
 def build_modifyvm_argv(vmname, *, memory=None, firmware=None, nic=None,
                         intnet=None, graphicscontroller=None, vram=None,
                         mouse=None, usb=None, chipset=None, hpet=None,
-                        cpuidset=None, vboxmanage=VBOXMANAGE):
+                        cpuidset=None, cpus=None, vboxmanage=VBOXMANAGE):
     """Set memory, firmware/SecureBoot, networking, graphics and pointer on a VM.
 
     intnet wins over nic: a per-Linux-user-unique internal network name is how
@@ -111,11 +140,18 @@ def build_modifyvm_argv(vmname, *, memory=None, firmware=None, nic=None,
     chipset='piix3' + hpet='on' match the coreboot board emulation, and cpuidset is
     a 5-tuple (leaf, eax, ebx, ecx, edx) for '--cpuid-set', advertising a sane
     physical-address width the UefiPayload needs. All three default None and emit
-    nothing, so every existing caller's argv is byte-identical.
+    nothing, so an existing caller's argv is unchanged except for the always-emitted
+    --cpus (online host CPUs minus one; see vbox_default_vcpus / cpus=).
     """
     argv = [vboxmanage, 'modifyvm', vmname]
     if memory is not None:
         argv += ['--memory', str(memory)]
+    ## vCPUs default to online-host-CPUs-minus-one (shared dm-vbox-vcpus helper) for every VBox
+    ## test VM, so a hardened guest boot does not wedge its GA setup on a single vCPU under
+    ## host-CPU contention. A caller may pin cpus explicitly (the coreboot plan keeps 1).
+    if cpus is None:
+        cpus = vbox_default_vcpus()
+    argv += ['--cpus', str(cpus)]
     if firmware is not None:
         argv += ['--firmware', _FIRMWARE[firmware]]
     if chipset is not None:
@@ -475,10 +511,13 @@ def build_coreboot_vm_plan(vmname, efi_rom, *, memory=2048, uart_socket=None,
     firmware serial log and trigger an ACPI S5 shutdown (reset -s)."""
     plan = [
         build_createvm_argv(vmname, 'Other_64', vboxmanage=vboxmanage),
+        ## cpus=1: the coreboot+UefiPayload ROM is validated single-CPU; whether it SMP-boots
+        ## is the dasharo lane's call (dev1124). Pin 1 here so the online-1 default does not
+        ## change this plan until the firmware is confirmed to bring up secondary CPUs.
         build_modifyvm_argv(vmname, memory=memory, firmware='efi',
                             graphicscontroller='vboxvga', vram=32,
                             chipset='piix3', hpet='on', cpuidset=CB_CPUIDSET,
-                            vboxmanage=vboxmanage),
+                            cpus=1, vboxmanage=vboxmanage),
     ]
     plan += build_coreboot_rom_argv(vmname, efi_rom, vboxmanage=vboxmanage)
     if uart_socket is not None:
@@ -1170,6 +1209,7 @@ def _teardown_serial_vm(vmname, uart_socket, vboxmanage=VBOXMANAGE):
         try:
             os.unlink(uart_socket)
         except OSError:
+            ## best-effort cleanup -- socket already gone/unremovable is not a failure.
             pass
     ## Remove a converted throwaway VDI serial-up may have made for a raw/qcow2 --disk.
     ## Done HERE (not only in serial-down) so a serial-up that fails AFTER converting
@@ -1177,6 +1217,7 @@ def _teardown_serial_vm(vmname, uart_socket, vboxmanage=VBOXMANAGE):
     try:
         os.unlink(converted_disk_path(vmname))
     except OSError:
+        ## best-effort cleanup -- disk already gone/unremovable is not a failure.
         pass
 
 
