@@ -612,9 +612,9 @@ fi
 ## major,minor (name unresolvable) -> UNKNOWN. dm_partition_maps must EMIT it (so it GATES the
 ## detach -- it could be ours), but dm_map_owned_by must treat it as not-owned, so NEITHER
 ## --retry NOR --force touches it. It stays live -> the loop is NEVER detached -> non-zero.
-## RED on the pre-3-way code: a numeric deps string was misread as FOREIGN and DROPPED, so the
-## loop detached under the still-present map -> an orphan (returned 0). UNKNOWN fixes that
-## without destroying a map we cannot confirm is ours.
+## Guard: a classifier that treats a numeric deps string as FOREIGN would DROP the owned map,
+## detach under it, and orphan it; UNKNOWN keeps it gated without destroying a map it cannot
+## confirm is foreign. This case fails if that distinction regresses.
 reset_stubs
 stub_uses_maps=1
 set_assoc "/dev/loop7"
@@ -637,8 +637,9 @@ fi
 ## /proc unreadable). dm_map_mounted probes the whole table first and, finding it unreadable,
 ## reports the map MOUNTED (fail closed) -> --force is REFUSED (never error-target a live fs on a
 ## table we could not read). The map stays live -> the loop is never detached -> non-zero.
-## RED on the pre-fail-closed code: the old dm_map_mounted ran only 'findmnt --source', whose
-## non-zero (no match) read as NOT mounted -> --force proceeded on the unreadable table.
+## Guard: a dm_map_mounted that only runs 'findmnt --source' reads its non-zero (no match) as
+## NOT mounted and forces on the unreadable table; the whole-table probe prevents that. This
+## case fails if the fail-closed probe regresses.
 reset_stubs
 stub_uses_maps=1
 set_assoc "/dev/loop7"
