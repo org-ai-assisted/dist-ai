@@ -5,3 +5,10 @@
 
 %:
 	dh ${@}
+
+## Strip VCS control files swept into the package by dist-ai.install's `usr/*` glob (e.g. a
+## corpus dir's .gitignore for generated shots/payloads). They are useless in the installed
+## package and trip lintian package-contains-vcs-control-file (genmkfile fails CLOSED on it).
+## Keep them in the repo, out of the .deb.
+execute_after_dh_install:
+	find debian/dist-ai -type f \( -name .gitignore -o -name .gitattributes -o -name .hgignore \) -delete
