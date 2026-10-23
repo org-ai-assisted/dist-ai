@@ -1,0 +1,40 @@
+#!/bin/bash
+
+## Copyright (C) 2025 - 2025 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Print the vCPU count a VirtualBox TEST VM should be created with: all ONLINE host CPUs
+## minus one (leave one core for the host + the harness), floored at 1. Shared by EVERY VBox
+## VM-creation path (dm-calamares-install, the dm-smbios-reader-vbox plan builder, the dasharo
+## lane) so the safe default is in one place -- a VM gets ~all cores, so a hardened single-vCPU
+## boot no longer wedges its Guest Additions setup under host-CPU contention.
+##
+## ONLINE, not configured: an offline CPU (e.g. an SMT sibling disabled by nosmt=force -- the
+## OVH host runs 8 online of 16) cannot back a guest, so size to the online count.
+## DM_VBOX_ONLINE_CPUS_OVERRIDE is a TEST seam only (drives the canary); production reads the
+## real online count.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+online="${DM_VBOX_ONLINE_CPUS_OVERRIDE:-$(getconf _NPROCESSORS_ONLN)}"
+
+## A non-numeric or empty reading (should not happen) falls back to 1 rather than erroring a
+## VM creation on a surprising platform.
+case "${online}" in
+   ''|*[!0-9]*)
+      online=1
+      ;;
+esac
+
+cpus=$(( online - 1 ))
+[ "${cpus}" -ge 1 ] || cpus=1
+
+printf '%s\n' "${cpus}"

@@ -934,9 +934,13 @@ build_vm() {
    "${VBOXMANAGE}" unregistervm "${vm}" --delete 2>/dev/null || true
    safe-rm --force -- "${disk}"
    "${VBOXMANAGE}" createvm --name "${vm}" --ostype Debian_64 --register >/dev/null
+   ## vCPUs = online host CPUs minus one (shared dm-vbox-vcpus helper): a single-vCPU VM runs
+   ## the hardened boot's Guest Additions setup so slowly that under host-CPU contention it
+   ## exceeds the GA service timeout and wedges (no dynamic resize). Give it ~all cores.
+   vcpus="$("${lib_dir}/dm-vbox-vcpus" 2>/dev/null || dm-vbox-vcpus)"
    ## vmsvga+128 VRAM: else the desktop never draws headless. usbtablet+USB: give
    ## an absolute pointer so vbox-ctl-local clicks land pre-Guest-Additions.
-   "${VBOXMANAGE}" modifyvm "${vm}" --memory 4096 \
+   "${VBOXMANAGE}" modifyvm "${vm}" --memory 4096 --cpus "${vcpus}" \
       --graphicscontroller vmsvga --vram 128 --mouse usbtablet --usb-ohci on \
       --nic1 nat >/dev/null
    apply_firmware
@@ -998,7 +1002,11 @@ main() {
    ## guestcontrol -- a real launch signal, no OCR terminal + blind-typed line (the
    ## single most fragile step: a fullscreen terminal OCRs unreliably, so the old
    ## blind type had no verification at all).
-   wait_ready 480
+   ## Raised from 480s + overridable: the live desktop reaches full resolution only once the
+   ## Guest Additions resize client is up, and a hardened boot's GA setup can be slow under
+   ## residual host-CPU contention. The online-1 vCPU sizing + the vboxadd self-heal drop-in
+   ## make this margin rarely needed, but a genuinely-slow boot should not false-fail at 480s.
+   wait_ready "${DM_CALAMARES_FULLRES_TIMEOUT:-720}"
    ## Brief settle: wait_ready returns when the compositor is UP, but the first paint can lag
    ## (a frame grabbed mid-mode-switch is black). No guestcontrol yet, so snap()'s quiesce
    ## cannot run here -- best-effort settle only; this frame stays allow-listed in the blank gate.
