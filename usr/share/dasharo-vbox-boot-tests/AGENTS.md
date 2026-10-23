@@ -74,30 +74,48 @@ framebuffer. Each patch script is idempotent.
 
 - DONE: graphics (GOP on the VBox linear framebuffer, firmware renders) + ACPI S5
   (`reset -s` powers off). The lane verifies both.
-- OPEN -- OS boot THROUGH the firmware does NOT work yet. ROOT CAUSE (diagnosed):
-  the UefiPayload enumerates NO PCI devices at all. From the shell, `devices` lists
-  ONLY the UART and `map -r` says "Not Found" -- no SATA controller, no disk. The
-  drivers ARE present (PciBusDxe, PciHostBridgeDxe, SataControllerDxe, NvmExpressDxe
-  in the DSC); the failure is PCI CONFIG ACCESS: coreboot (qemu-i440fx under VBox)
-  emits no `CB_TAG_RB_INFO`, so `PciHostBridgeGetRootBridges` falls back to
-  `ScanForRootBridges`, which (with `PciSegmentLibSegmentInfo` + `PcdPciExpressBaseAddress`)
-  does MMIO ECAM reads -- but VBox's piix3/i440fx has NO ECAM (legacy 0xCF8/0xCFC only,
-  coreboot `NO_ECAM_MMCONF_SUPPORT=y`), so every config read returns 0xFFFFFFFF -> no
-  root bridge -> nothing enumerated. (This is also why the GOP PCI binding never fired
-  -- we sidestepped it with direct-GOP-publish; a disk has no such workaround.)
-- TRIED + FAILED: forcing legacy CF8 config access (DSC `PCIE_BASE_SUPPORT=FALSE` ->
-  `PciLib=BasePciLibCf8`, and `PciSegmentLib`->`BasePciSegmentLibPci`). It builds, but
-  the payload then HANGS very early (near-black framebuffer, NO payload serial at all,
-  not even GOPDBG:init-enter) -- an emulated-chipset PCI-scan quirk. Reverted; the
-  working ROM (direct-GOP-publish, ECAM-default) is restored as `/home/admin/cb-uefi-gfx.rom`
-  (archive: `/home/admin/dasharo-patches/cb-uefi-gfx-GRAPHICS-WORKING.rom`).
-- RESUME (OVH, root, dm-vm-lock --class work): instrument the CF8 path with
-  `SerialPortWrite` markers in `ScanForRootBridges`/`PciBusDxe` to find the exact
-  hanging config access and BOUND the bus/device scan (VBox decodes only bus 0,
-  dev 0..~a few); OR make coreboot emit `CB_TAG_RB_INFO` with proper LEGACY apertures
-  (bus 0-0, IO 0-0xFFFF, the 32-bit MMIO window) so `ParseRootBridgeInfo` builds the
-  root-bridge HOB and the scan is skipped. Then: convert a
-  `~/derivative-binary/.../Kicksecure-LXQt-*.raw` -> VDI (`VBoxManage convertfromraw
-  ... --format VDI`), attach SATA hdd to a `build_coreboot_vm_plan` VM + a SATA
-  controller, drain COM1, screenshot ~5 min (the scratch `os-boot.sh` / `osboot-diag.sh`
-  do this). SUCCESS = a frame with colours>100 (grub/kernel/desktop) or a `map` FS entry.
+- DONE -- PCI enumeration FIXED + an OS BOOTS THROUGH the firmware. The earlier
+  zero-PCI state: VBox's piix3/i440fx has NO ECAM (legacy 0xCF8/0xCFC only; coreboot
+  `NO_ECAM_MMCONF_SUPPORT=y`), coreboot emits no `CB_TAG_RB_INFO`, so
+  `PciHostBridgeGetRootBridges` fell back to `ScanForRootBridges` doing ECAM MMIO reads
+  that always returned 0xFFFFFFFF -> no root bridge -> nothing enumerated (also why the
+  GOP PCI binding never fired -- sidestepped with direct-GOP-publish). FIX (in the ROM
+  now): DSC `PCIE_BASE_SUPPORT=FALSE` (-> `PciLib=BasePciLibCf8`) + `PciSegmentLib` ->
+  `MdePkg/Library/BasePciSegmentLibPci/BasePciSegmentLibPci.inf` -- ALL PCI config
+  access is then legacy CF8, which piix3 decodes. (An earlier CF8 attempt "hung" with
+  no payload serial -- that was a STALE partial rebuild; a CLEAN recompile boots fine.
+  Always force a clean payload rebuild on a DSC lib-mapping change.)
+- With CF8 the firmware: renders a GRAPHICAL Setup menu (Boot Manager / System Config /
+  Reboot -- richer than VBox's own EFI); enumerates PCI; finds the SATA disk; and BOOTS
+  IT -- grub loads from the ESP and the Linux kernel starts (verified: BRIGHTEN the
+  near-black OS frame ~6x and the kernel dmesg is there). The dasharo port's core goal
+  -- an OS boots through the firmware -- is demonstrated.
+- OPEN -- full DESKTOP does not come up. Two late-boot issues (OS/board side; the GOP
+  itself works, the Setup menu proves it):
+  1. `simple-framebuffer: Unable to acquire aperture: -16` -- now that PCI enumerates,
+     the vboxvga BAR (0xfc000000) is a claimed PCI resource, so the kernel's simpledrm
+     cannot request_mem_region the EFI framebuffer. vboxvideo is the real driver (needs
+     userspace up first); secondary.
+  2. `dracut-initqueue: Timed out waiting for udev queue` + `ACPI: No LAPIC entries
+     present` -- THE blocker. coreboot's qemu-i440fx board code does not fully match
+     VBox's piix3: the generated ACPI MADT has no LAPIC entries (likely a wrong/absent
+     IOAPIC too), so the KERNEL's AHCI interrupts do not work -> root-disk I/O times out
+     -> dracut gives up. grub reads the disk fine (firmware EFI block I/O); only the
+     kernel's own interrupt-driven AHCI stalls.
+- RESUME (OVH, root, dm-vm-lock --class work):
+  * QUICK experiment for the dracut blocker: boot grub, press `e`, add `noapic irqpoll
+    rootdelay=30` to the linux line (coreboot has `ACPI_HAVE_PCAT_8259=y`, so the 8259
+    PIC is available) -- if AHCI then works via the PIC the root mounts and the desktop
+    comes up. (Or mount the VDI's /boot + edit grub.cfg.)
+  * REAL fix: port coreboot `src/mainboard/emulation/qemu-i440fx` ACPI MADT/IOAPIC/LAPIC
+    generation to VBox's piix3 -- `CONFIG_ACPI_COMMON_MADT_LAPIC=y` emits a LAPIC per
+    APIC device, and none are being created under VBox, so verify the CPU/APIC device
+    enumeration. Compare the guest MADT (shell `acpiview`, or `acpidump` from a Linux
+    live) against a known-good VBox-EFI boot.
+  * `/home/admin/cb-uefi-gfx.rom` is the CF8 build (boots an OS) but carries PCIDBG/
+    GOPDBG SerialPortWrite debug markers + the instrument patches -- STRIP them before
+    any land. ECAM pre-CF8 ROM archived at
+    `/home/admin/dasharo-patches/cb-uefi-gfx-GRAPHICS-WORKING.rom`.
+  * Test loop: `os-boot.sh` (screenshot boot), `interrupt-boot.sh` + `nav-bootmgr.sh`
+    (reach the Setup/Boot menu via Down-spam then Up/Enter scancodes), `osboot-diag.sh`
+    (shell map/bcfg). A near-black OS frame is usually the kernel console -- BRIGHTEN 6x.
