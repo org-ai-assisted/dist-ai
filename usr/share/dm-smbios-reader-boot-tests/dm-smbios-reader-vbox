@@ -542,6 +542,18 @@ def s5_shutdown_happened(log_text):
     return S5_MARKER in log_text
 
 
+## coreboot's own DEBUG console prints a 'coreboot-<version> ... starting' banner on COM1 that
+## stock VBox EFI never emits -- the real cross-check that the patched VBox loaded the coreboot
+## ROM (vs falling back to its own EFI). The firmware-identity DETECTED signal for the dasharo
+## lane (dev1124-confirmed; the ACPI "COREBOOT" OEM-ID is a guest-dmesg signal, not on COM1).
+COREBOOT_BANNER_MARKER = 'coreboot-'
+
+
+def coreboot_firmware_detected(serial_text):
+    """True when the firmware serial capture shows coreboot's own DEBUG banner."""
+    return COREBOOT_BANNER_MARKER in serial_text
+
+
 ## --- AMD-V availability for VirtualBox (pure decision) -----------------------
 ## On an AMD host the KVM modules (kvm_amd + kvm) own AMD-V (SVM) exclusively,
 ## so VirtualBox cannot power on a VM while they are loaded -- power-on fails
@@ -1491,6 +1503,16 @@ def run_firmware_boot_test(args):
         stop_drain.set()
         if drainer is not None:
             drainer.join(timeout=2)
+        ## Persist the captured COM1 text (after the drain has flushed) for the caller -- the
+        ## dasharo lane greps it for the coreboot banner as the firmware-identity DETECTED signal.
+        ## Best-effort: a failed write never changes the boot verdict.
+        if args.serial_log:
+            try:
+                with open(args.serial_log, 'w', encoding='latin-1') as serial_fh:
+                    serial_fh.write(_serial_text())
+            except OSError as exc:
+                print('dm-smbios-reader-vbox: WARNING: could not write --serial-log %s: %s'
+                      % (args.serial_log, exc), file=sys.stderr)
         if sock is not None:
             try:
                 sock.close()
@@ -1689,6 +1711,10 @@ def _build_parser():
     firmware.add_argument('--shot-dir', dest='shot_dir',
                           help='directory for the NN-<milestone>.png sequence '
                                '(published via the image-test directory branch)')
+    firmware.add_argument('--serial-log', dest='serial_log',
+                          help='write the captured COM1 firmware serial text here; the '
+                               'dasharo lane greps it for the coreboot banner as the '
+                               'firmware-identity DETECTED signal')
     firmware.add_argument('--memory', type=int, default=2048)
     firmware.add_argument('--timeout', type=int, default=120)
     firmware.add_argument('--no-s5', dest='no_s5', action='store_true',

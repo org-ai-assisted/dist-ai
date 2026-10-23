@@ -1129,6 +1129,27 @@ def test_coreboot_vm_plan_structure_and_no_media():
         assert absent not in flat
 
 
+def test_coreboot_firmware_detected():
+    ## The firmware-identity DETECTED cross-check: coreboot's own DEBUG banner on COM1
+    ## (which stock VBox EFI never prints) distinguishes dasharo-efi from a VBox-EFI fallback.
+    assert M.coreboot_firmware_detected(
+        'coreboot-4.19-1234abcd starting...\nUEFI Interactive Shell')
+    ## stock VBox EFI reaching the same UEFI shell must NOT read as coreboot.
+    assert not M.coreboot_firmware_detected(
+        'UEFI Interactive Shell v2.2\nShell> ')
+    assert not M.coreboot_firmware_detected('')
+
+
+def test_firmware_subparser_accepts_serial_log():
+    ## --serial-log is optional (defaults None -> no log written) and captured on the namespace;
+    ## the dasharo lane passes it so the backend persists COM1 for the coreboot-banner grep.
+    base = ['firmware', '--vm', 'v', '--rom', 'r.rom', '--uart-socket', '/s.sock']
+    ns = M._build_parser().parse_args(base + ['--serial-log', '/tmp/fw.log'])
+    assert ns.serial_log == '/tmp/fw.log'
+    ns_default = M._build_parser().parse_args(base)
+    assert ns_default.serial_log is None
+
+
 def test_coreboot_vm_plan_modifyvm_has_proven_config():
     plan = M.build_coreboot_vm_plan('kick', '/r.rom')
     modify = next(a for a in plan if a[1] == 'modifyvm')
