@@ -600,41 +600,106 @@ run_check() {
 ## file empty (-> no firmware panel), never failing a passing install.
 capture_firmware_lane() {
    [ -n "${firmware_evidence_file}" ] || return 0
-   local out detected expected match
-   out="$(gc_run "${live_account}" 'printf "[ -d /sys/firmware/efi ] -> "; { [ -d /sys/firmware/efi ] && echo UEFI || echo BIOS; }; printf "mokutil --sb-state -> "; mokutil --sb-state 2>&1 || true' 10 2>/dev/null || true)"
-   ## Classify from the probe text (glob match on a lowered copy -- no grep pipe). mokutil
-   ## prints 'SecureBoot enabled' / 'disabled'; the efi-dir line decides BIOS vs UEFI.
-   local out_lc="${out,,}"
-   case "${out_lc}" in
-      *'-> uefi'*)
-         case "${out_lc}" in
-            *'secureboot enabled'*)
-               detected="UEFI+SecureBoot"
-               ;;
-            *)
-               detected="UEFI"
-               ;;
-         esac
-         ;;
-      *)
-         detected="BIOS"
-         ;;
-   esac
+   local out efi sb coreboot declared id_out detected match line fw_identity
+   local declared_arg=()
+   ## Probe the installed guest, computing EACH axis IN the guest and emitting one TRUSTED
+   ## key=value per line -- EFI/SB/COREBOOT -- plus the raw BIOS_VENDOR (evidence only, LAST).
+   ## The host then reads each axis from its OWN key: a firmware-controlled bios_vendor cannot
+   ## forge another axis (the guest does the exact 'bios_vendor = coreboot' test, not a host-side
+   ## substring glob of the whole blob -- which earlier let a crafted vendor spoof efi/sb).
+   ## The snippet is single-quoted ON PURPOSE: its $(...) must expand IN THE GUEST, not host-side.
+   # shellcheck disable=SC2016
+   out="$(gc_run "${live_account}" '
+      [ -d /sys/firmware/efi ] && printf "EFI=1\n" || printf "EFI=0\n"
+      if mokutil --sb-state 2>&1 | grep --quiet --ignore-case "secureboot enabled"; then printf "SB=1\n"; else printf "SB=0\n"; fi
+      if [ "$(cat /sys/class/dmi/id/bios_vendor 2>/dev/null)" = "coreboot" ]; then printf "COREBOOT=1\n"; else printf "COREBOOT=0\n"; fi
+      printf "BIOS_VENDOR=%s\n" "$(cat /sys/class/dmi/id/bios_vendor 2>/dev/null)"
+   ' 10 2>/dev/null || true)"
+   ## Read each axis from its OWN key line, FIRST occurrence wins (the guest emits EFI/SB/COREBOOT
+   ## before the untrusted BIOS_VENDOR, so a newline injected into the vendor cannot override one).
+   efi=''
+   sb=''
+   coreboot=''
+   while IFS= read -r line; do
+      case "${line}" in
+         EFI=0)
+            [ -n "${efi}" ] || efi=0
+            ;;
+         EFI=1)
+            [ -n "${efi}" ] || efi=1
+            ;;
+         SB=0)
+            [ -n "${sb}" ] || sb=0
+            ;;
+         SB=1)
+            [ -n "${sb}" ] || sb=1
+            ;;
+         COREBOOT=0)
+            [ -n "${coreboot}" ] || coreboot=0
+            ;;
+         COREBOOT=1)
+            [ -n "${coreboot}" ] || coreboot=1
+            ;;
+      esac
+   done <<< "${out}"
+   ## Fail CLOSED: a probe that did not emit all three axes captured nothing (gc_run failed /
+   ## timed out). Record UNVERIFIED + MATCH=false rather than defaulting to an identity that could
+   ## spuriously MATCH a lane. An unconfirmed boot is never green.
+   if [ -z "${efi}" ] || [ -z "${sb}" ] || [ -z "${coreboot}" ]; then
+      {
+         printf '%s\n' "DETECTED=unverified"
+         printf '%s\n' "MATCH=false"
+         printf '%s\n' "${out}"
+      } > "${firmware_evidence_file}" 2>/dev/null || true
+      return 0
+   fi
+   ## Declared identity from --firmware. The calamares path boots VBox's own EFI, never coreboot,
+   ## so efi* declares vbox-efi*; the classifier decides detected + match in the same vocabulary.
    case "${firmware}" in
       bios)
-         expected="BIOS"
+         declared='bios'
          ;;
       efi)
-         expected="UEFI"
+         declared='vbox-efi'
          ;;
       efi-secureboot)
-         expected="UEFI+SecureBoot"
+         declared='vbox-efi-secureboot'
          ;;
       *)
-         expected=""
+         declared=''
          ;;
    esac
-   if [ "${detected}" = "${expected}" ]; then match="true"; else match="false"; fi
+   [ -z "${declared}" ] || declared_arg=(--declared "${declared}")
+   ## Shared classifier (sibling dist-ai tool): the SINGLE identity-decision source for every VBox
+   ## lane. Prefer the checkout sibling, fall back to PATH (installed).
+   fw_identity="${lib_dir}/dm-firmware-identity"
+   [ -x "${fw_identity}" ] || fw_identity='dm-firmware-identity'
+   id_out="$("${fw_identity}" --efi "${efi}" --coreboot "${coreboot}" --secureboot "${sb}" "${declared_arg[@]}" 2>/dev/null || true)"
+   detected=''
+   match=''
+   while IFS= read -r line; do
+      case "${line}" in
+         detected=*)
+            detected="${line#detected=}"
+            ;;
+         match=*)
+            match="${line#match=}"
+            ;;
+      esac
+   done <<< "${id_out}"
+   ## Fail CLOSED on a missing / errored / partial / out-of-order classifier result. MATCH must be
+   ## a definite true|false (dm-release-test forwards only true|false; anything else becomes a null
+   ## the results site reads as GREEN). An empty OR 'unverified' detected can NEVER be a pass, so it
+   ## forces MATCH=false even if a stray 'match=true' was printed without a detected line.
+   [ -n "${detected}" ] || detected='unverified'
+   case "${match}" in
+      true|false)
+         ;;
+      *)
+         match='false'
+         ;;
+   esac
+   [ "${detected}" = 'unverified' ] && match='false'
    {
       printf '%s\n' "DETECTED=${detected}"
       printf '%s\n' "MATCH=${match}"

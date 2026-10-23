@@ -12,13 +12,16 @@
 ##   2. regenerate the static site into the Pages repo (test-results-site-generate)
 ##   3. commit the regenerated site + static pages and publish via site-deploy
 ##
-## STANDING DEFAULT: results are ALWAYS deployed to GitHub, unattended -- this is the one
-## command that does it (a systemd timer runs it; see the results-plane deploy unit). It does
-## NOT approve goldens: new/changed shots render as NEW for the human to review + approve
+## RUN AS THE FINAL STEP of a test-run flow (NOT a blind timer -- an hourly oneshot was dropped
+## because its runtime cap SIGTERM'd the website-tests gate mid-run so pushes never landed). It
+## does NOT approve goldens: new/changed shots render as NEW for the human to review + approve
 ## (test-results-site-approve), a separate human-mediated step.
 ##
-## Report-only: any failure exits non-zero with a clear message and NEVER leaves a half-published
-## state read as success (site-deploy's own pre-push website-tests gate still applies).
+## CONFIRMED publish: after pushing it POLLS the GitHub Pages build API until the live site is
+## built AT the pushed commit, and FAILS LOUD otherwise -- a pushed-but-unbuilt, errored, or
+## stale publish must never read as success (the silent-stale wedge). Any failure exits non-zero
+## and NEVER leaves a half-published state read as success (site-deploy's own pre-push
+## website-tests gate still applies).
 
 set -o errexit
 set -o nounset
@@ -38,10 +41,56 @@ pages_repo="${TEST_RESULTS_PAGES_REPO:-${HOME}/private-sources/org-ai-assisted.g
 ## it and sandbox aborts on the staging free-space budget. A disk-backed base under $HOME is the
 ## default so the safe path needs nothing recalled; override with TEST_RESULTS_STAGING_DIR.
 staging_base="${TEST_RESULTS_STAGING_DIR:-${HOME}/.cache/test-results-deploy}"
+## Confirm-published poll budget (seconds): GitHub Pages builds the pushed branch ASYNCHRONOUSLY,
+## so a successful push is not yet a live site. Poll this long for the build to land at our commit.
+confirm_timeout="${TEST_RESULTS_CONFIRM_TIMEOUT:-600}"
 
 die() {
    printf '%s\n' "${me}: ERROR: $1" >&2
    exit 1
+}
+
+## Confirm the pushed commit is LIVE: poll the GitHub Pages build API until the latest build is
+## status=built at ${want}. Returns 0 only on a confirmed built-at-our-commit; 1 on an errored
+## build or timeout. A pushed commit is NOT a deployed site (Pages builds async), so this is what
+## makes "published" mean "actually built live", not merely "pushed" -- no silent stale publish.
+confirm_published() {
+   local want="$1" url owner_repo rec parsed status commit deadline
+   if ! command -v github-api >/dev/null 2>&1; then
+      printf '%s\n' "${me}: github-api not found -- cannot confirm publish" >&2
+      return 1
+   fi
+   if ! command -v jq >/dev/null 2>&1; then
+      printf '%s\n' "${me}: jq not found -- cannot confirm publish" >&2
+      return 1
+   fi
+   ## owner/repo for the Pages build API: an explicit override (a non-github mirror, or a test),
+   ## else derived from origin's github URL.
+   owner_repo="${TEST_RESULTS_PAGES_OWNER_REPO:-}"
+   if [ -z "${owner_repo}" ]; then
+      url="$(git remote get-url origin 2>/dev/null)" || return 1
+      owner_repo="$(printf '%s' "${url}" | sed -E 's#^.*github\.com[:/]+##; s#\.git$##')"
+   fi
+   if [ -z "${owner_repo}" ]; then
+      printf '%s\n' "${me}: cannot derive owner/repo (origin='${url:-}')" >&2
+      return 1
+   fi
+   deadline=$(( $(date +%s) + confirm_timeout ))
+   while :; do
+      rec="$(github-api GET "/repos/${owner_repo}/pages/builds/latest" 2>/dev/null)" || rec=""
+      parsed="$(printf '%s' "${rec}" | jq -r '(.status // "") + " " + (.commit // "")' 2>/dev/null)" || parsed=""
+      status="${parsed%% *}"
+      commit="${parsed##* }"
+      if [ "${status}" = "built" ] && [ "${commit}" = "${want}" ]; then
+         return 0
+      fi
+      if [ "${status}" = "errored" ]; then
+         printf '%s\n' "${me}: GitHub Pages build ERRORED (commit ${commit:-unknown})" >&2
+         return 1
+      fi
+      [ "$(date +%s)" -lt "${deadline}" ] || return 1
+      sleep 15
+   done
 }
 
 ## Resolve the generator AND site-deploy as THIS script's SIBLINGS, not by PATH -- so a checkout
@@ -51,8 +100,11 @@ die() {
 ## re-triggers the pre-push hook's duplicate website-tests run -- whose minutes hold the push SSH
 ## open until GitHub idle-closes it, failing the publish. Fall back to PATH only if no sibling.
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
-generate="${script_dir}/test-results-site-generate"
-[ -x "${generate}" ] || generate="test-results-site-generate"
+generate="${TEST_RESULTS_SITE_GENERATE:-}"
+if [ -z "${generate}" ]; then
+   generate="${script_dir}/test-results-site-generate"
+   [ -x "${generate}" ] || generate="test-results-site-generate"
+fi
 site_deploy="${TEST_RESULTS_SITE_DEPLOY:-}"
 if [ -z "${site_deploy}" ]; then
    site_deploy="${script_dir}/site-deploy"
@@ -148,10 +200,17 @@ fi
 ## anyway rather than risk stranding a commit.
 remote_tip="$(git ls-remote origin refs/heads/master 2>/dev/null | cut -f1)" || remote_tip=""
 if [ -n "${remote_tip}" ] && [ "${remote_tip}" = "$(git rev-parse HEAD)" ]; then
-   printf '%s\n' "${me}: nothing to publish (already pushed)."
-   exit 0
+   printf '%s\n' "${me}: already pushed; confirming the live site reflects it."
+else
+   printf '%s\n' "${me}: publishing via site-deploy"
+   "${site_deploy}" || die "site-deploy failed (results committed locally; not published)"
 fi
 
-printf '%s\n' "${me}: publishing via site-deploy"
-"${site_deploy}" || die "site-deploy failed (results committed locally; not published)"
-printf '%s\n' "${me}: deployed."
+## A pushed commit is not yet a live site (Pages builds async, and can error): confirm the build
+## landed AT our commit or FAIL LOUD. This is what stops a stranded/errored/stale publish from
+## reading as a successful deploy -- the silent-stale wedge the operator hit.
+pushed_head="$(git rev-parse HEAD)"
+printf '%s\n' "${me}: confirming GitHub Pages built ${pushed_head} (up to ${confirm_timeout}s)"
+confirm_published "${pushed_head}" \
+   || die "publish NOT confirmed: GitHub Pages did not report a successful build of ${pushed_head} within ${confirm_timeout}s -- the live site may be stale"
+printf '%s\n' "${me}: deployed + confirmed live at ${pushed_head}."

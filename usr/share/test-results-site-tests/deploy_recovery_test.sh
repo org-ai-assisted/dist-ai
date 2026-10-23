@@ -105,6 +105,16 @@ exit 0
 STUB
 chmod +x -- "${bin}/site-deploy"
 
+## github-api stub: confirm-published polls pages/builds/latest. Report status=built at the
+## repo's CURRENT HEAD (the stub runs in the driver's cwd = the pages repo) so confirm passes
+## fast -- this test is about the PUBLISH/recovery path, not the live Pages build.
+cat > "${bin}/github-api" <<'STUB'
+#!/bin/bash
+printf '{"status":"built","commit":"%s"}\n' "$(git rev-parse HEAD 2>/dev/null)"
+exit 0
+STUB
+chmod +x -- "${bin}/github-api"
+
 run_driver() {
    ## TEST_RESULTS_SITE_DEPLOY points the driver at the seam stub (off PATH); the driver
    ## sibling-resolves site-deploy and honors this override, never a stale PATH copy.
@@ -112,6 +122,8 @@ run_driver() {
    TEST_RESULTS_SITE_DEPLOY="${seam_dir}/site-deploy" \
    TEST_RESULTS_DEPLOY_TARGET='stub' TEST_RESULTS_PAGES_REPO="${pages}" \
    TEST_RESULTS_REMOTE='/var/www/results' \
+   TEST_RESULTS_PAGES_OWNER_REPO='org-ai-assisted/org-ai-assisted.github.io' \
+   TEST_RESULTS_CONFIRM_TIMEOUT=5 \
       "${deploy}" 2>&1 || true
 }
 

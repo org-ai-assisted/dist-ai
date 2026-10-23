@@ -94,12 +94,17 @@ fi
 ## sequence into shot_dir. COM1 is a host UNIX socket the backend creates + removes.
 shot_dir="$(mktemp --directory)"
 uart_socket="$(mktemp --dry-run --tmpdir dasharo-uart.XXXXXX.sock)"
+## The backend writes the captured COM1 firmware serial text here; the firmware-identity step
+## below greps it for coreboot's banner as the DETECTED signal.
+serial_log="$(mktemp --tmpdir dasharo-serial.XXXXXX.log)"
 cleanup() {
    ## Reached only via the EXIT trap, which shellcheck does not trace (SC2317).
    # shellcheck disable=SC2317
    safe-rm --recursive --force -- "${shot_dir}"
    # shellcheck disable=SC2317
    safe-rm --force -- "${uart_socket}"
+   # shellcheck disable=SC2317
+   safe-rm --force -- "${serial_log}"
 }
 trap cleanup EXIT
 
@@ -112,6 +117,7 @@ boot_cmd=(
    python3 "${backend}" firmware
    --vm 'dasharo-vbox-boot' --rom "${rom}"
    --uart-socket "${uart_socket}" --shot-dir "${shot_dir}"
+   --serial-log "${serial_log}"
    --vboxmanage "${vboxmanage}" "$@"
 )
 rc=0
@@ -141,6 +147,59 @@ if { [ "${DASHARO_VBOX_PUBLISH:-}" = '1' ] || [ -n "${IMAGE_TEST_RESULTS_ROOT:-}
       fi
       # shellcheck source=../libexec/image-test/results-publish.bsh
       source "${publisher}"
+      ## Firmware identity for the results plane: declared dasharo-efi, detected from whether the
+      ## captured COM1 log carries coreboot's own DEBUG banner (what stock VBox EFI never prints,
+      ## so a fallback to VBox's EFI is a loud MATCH=false, not a silent pass). Classified by the
+      ## shared dm-firmware-identity helper. Only when a non-empty serial log was captured (a real
+      ## boot) -- a SETUP failure that produced no COM1 output emits no firmware fields.
+      fw_args=()
+      if [ -s "${serial_log}" ]; then
+         fw_coreboot=0
+         if grep --quiet -- 'coreboot-' "${serial_log}"; then
+            fw_coreboot=1
+         fi
+         fw_identity="${script_dir}/dm-firmware-identity"
+         [ -x "${fw_identity}" ] || fw_identity='dm-firmware-identity'
+         fw_detected=''
+         fw_match=''
+         fw_id_out="$("${fw_identity}" --efi 1 --coreboot "${fw_coreboot}" --secureboot 0 --declared 'dasharo-efi' 2>/dev/null || true)"
+         while IFS= read -r fw_line; do
+            case "${fw_line}" in
+               detected=*)
+                  fw_detected="${fw_line#detected=}"
+                  ;;
+               match=*)
+                  fw_match="${fw_line#match=}"
+                  ;;
+            esac
+         done <<< "${fw_id_out}"
+         ## Fail CLOSED: a missing/erroring classifier leaves detected/match empty. An empty match
+         ## would be dropped -> null -> the results site reads it GREEN. Force detected=unverified
+         ## and match to a definite true|false, and ALWAYS pass --env-firmware-match.
+         [ -n "${fw_detected}" ] || fw_detected='unverified'
+         case "${fw_match}" in
+            true|false)
+               ;;
+            *)
+               fw_match='false'
+               ;;
+         esac
+         ## Evidence is free text from the serial log; PREFIX it with a fixed label so the value can
+         ## never start with '--' (a 'coreboot-' line could, e.g. '--coreboot...'), which the
+         ## publisher/emitter argparse would otherwise treat as a flag and fail the whole publish.
+         fw_evidence_raw="$(grep --max-count=3 -- 'coreboot-' "${serial_log}" 2>/dev/null || true)"
+         if [ -n "${fw_evidence_raw}" ]; then
+            fw_evidence="COM1 coreboot banner: ${fw_evidence_raw}"
+         else
+            fw_evidence='no coreboot- banner on COM1 (VBox EFI fallback?)'
+         fi
+         fw_args=(
+            --env-firmware-declared 'dasharo-efi'
+            --env-firmware-detected "${fw_detected}"
+            --env-firmware-evidence "${fw_evidence}"
+            --env-firmware-match "${fw_match}"
+         )
+      fi
       ## lane / step-name must be label-safe ([A-Za-z0-9._-]); the publisher rejects
       ## spaces and punctuation (it writes them as root). shot_dir is the 7th positional
       ## (shot_src) -- a directory of NN-<milestone>.png, published as the "full story".
@@ -150,6 +209,7 @@ if { [ "${DASHARO_VBOX_PUBLISH:-}" = '1' ] || [ -n "${IMAGE_TEST_RESULTS_ROOT:-}
          --lane "dasharo-coreboot-uefi-vbox" \
          --builder "dasharo-vbox-boot" --origin built \
          --step-name "boot-uefi-shell-and-acpi-s5" \
+         "${fw_args[@]}" \
          || printf '%s\n' "dasharo-vbox-boot-tests: WARNING: results publish failed (verdict rc=${rc} preserved)." >&2
    else
       printf '%s\n' "dasharo-vbox-boot-tests: publish requested but no writable results plane / not root; skipping publish (verdict rc=${rc})." >&2

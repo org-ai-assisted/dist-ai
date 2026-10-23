@@ -892,6 +892,33 @@ def render_step(view, step):
     return '<div class="issue">%s%s</div>' % (caption, "".join(imgs))
 
 
+def _milestone_stage(name):
+    """Boot PHASE for a milestone, derived from its name, so every screenshot states which stage
+    it is from -- live/pre-install vs the installed system's first boot vs post-boot checks -- and
+    the two firmware shots (live 'firmware-state' vs installed 'installed-firmware-logo') are never
+    ambiguous. Returns '' for an unrecognized name (never a guessed phase)."""
+    n = (name or "").lower()
+    ## Installed-system milestones FIRST, so 'installed-*' is not mis-split by the 'install-'
+    ## (Calamares, live) prefix, and 'sysmaint'/'luks' boot phases win over a bare substring.
+    if n.startswith("installed-") or n.startswith("mok-reboot") or "first-boot" in n:
+        return "installed system / first boot"
+    if n.startswith("mok-"):
+        return "installed system / MOK enrollment"
+    if n.startswith("sysmaint"):
+        return "installed system / sysmaint boot"
+    if n.startswith("luks"):
+        return "boot / LUKS unlock"
+    ## Live environment: the boot into it AND the Calamares installer that runs there
+    ## (welcome / partitions / install-done) -- all pre-install. 'install-' (dash) must NOT catch
+    ## 'installed-' above (it does not: 'installed' has no dash after 'install').
+    if (n.startswith("live-") or n == "firmware-state" or n.startswith("welcome")
+            or n.startswith("partitions") or n.startswith("install-")):
+        return "live / pre-install"
+    if n.startswith("check") or n.startswith("vt-") or n == "vt":
+        return "post-boot checks"
+    return ""
+
+
 def _shot_html(view, shot, step_status_cls=None):
     bucket_cls = _bucket_status_class(shot["bucket"])
     ## A screenshot's visual bucket (golden MATCH/changed/...) is a SEPARATE axis from
@@ -917,6 +944,12 @@ def _shot_html(view, shot, step_status_cls=None):
     milestone = shot.get("name") or ""
     if milestone and milestone != "screenshot":
         parts.append(" <strong>%s</strong>" % esc(milestone))
+        ## State the boot PHASE (live / installed-first-boot / post-boot checks) so a milestone's
+        ## stage is explicit -- the operator must never have to guess whether a firmware shot is
+        ## the live or the installed system.
+        stage = _milestone_stage(milestone)
+        if stage:
+            parts.append(' <span class="stage">(%s)</span>' % esc(stage))
     if shot["detail"].get("reason"):
         parts.append(" &mdash; %s" % esc(shot["detail"]["reason"]))
     parts.append("</p>")

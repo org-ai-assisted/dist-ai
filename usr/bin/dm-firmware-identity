@@ -1,0 +1,127 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Map a VM boot's independent guest probes to ONE canonical firmware identity, and cross-check it
+## against the DECLARED identity, so a lane cannot silently pass on the wrong firmware. The single
+## DECISION source for every VBox/qemu boot lane: each lane gathers its own raw probes (is there
+## UEFI? is it coreboot? is Secure Boot enforcing?) -- which are boot-/language-specific and stay
+## in the lane -- then calls this to classify + decide declared-vs-detected, so the mapping is
+## defined in exactly one place (closes the "detection duplicated across lanes" gap).
+##
+## Canonical identities:
+##   bios                    -- legacy BIOS, no UEFI (SeaBIOS / VBox PCBIOS)
+##   vbox-efi[-secureboot]   -- UEFI firmware that is NOT coreboot (VBox's built-in EFI)
+##   dasharo-efi[-secureboot]-- UEFI on a coreboot + UefiPayloadPkg ROM (the patched-VBox lane)
+## The -secureboot suffix means Secure Boot is enforcing.
+##
+## Usage:
+##   dm-firmware-identity --efi <0|1> [--coreboot <0|1>] [--secureboot <0|1>] [--declared <id>]
+## Prints (one KEY=VALUE per line):
+##   detected=<identity>
+##   match=<true|false|unknown>      ## unknown only when --declared is omitted
+## match is DATA for the caller to gate on (a lane emits it as environment.firmware.match, which
+## the results site turns red on false) -- a mismatch is NOT this tool's exit code. Exit 0 on a
+## valid parse, 64 on a usage error.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+me="${0##*/}"
+
+die() {
+   printf '%s\n' "${me}: ERROR: ${2}" >&2
+   exit "$1"
+}
+
+## Map the three independent axes to one canonical identity. PURE (no I/O), so a dist-ai suite can
+## source this file and exercise every combination without a VM.
+##   $1 efi       0|1
+##   $2 coreboot  0|1  (ignored when efi=0: our coreboot target is UEFI-payload only)
+##   $3 secureboot 0|1 (ignored when efi=0: a BIOS boot has no Secure Boot)
+firmware_identity_classify() {
+   local efi="$1" coreboot="$2" secureboot="$3" base
+   if [ "${efi}" != '1' ]; then
+      printf '%s' 'bios'
+      return 0
+   fi
+   if [ "${coreboot}" = '1' ]; then
+      base='dasharo-efi'
+   else
+      base='vbox-efi'
+   fi
+   if [ "${secureboot}" = '1' ]; then
+      printf '%s' "${base}-secureboot"
+   else
+      printf '%s' "${base}"
+   fi
+}
+
+main() {
+   local efi='' coreboot='0' secureboot='0' declared='' declared_set=0
+   while [ "$#" -gt 0 ]; do
+      case "$1" in
+         --efi)
+            [ "$#" -ge 2 ] || die 64 "--efi requires a value"
+            efi="$2"
+            shift 2
+            ;;
+         --coreboot)
+            [ "$#" -ge 2 ] || die 64 "--coreboot requires a value"
+            coreboot="$2"
+            shift 2
+            ;;
+         --secureboot)
+            [ "$#" -ge 2 ] || die 64 "--secureboot requires a value"
+            secureboot="$2"
+            shift 2
+            ;;
+         --declared)
+            [ "$#" -ge 2 ] || die 64 "--declared requires a value"
+            declared="$2"
+            declared_set=1
+            shift 2
+            ;;
+         *)
+            die 64 "unknown option '$1'"
+            ;;
+      esac
+   done
+
+   ## --efi is required and the axes are strict 0|1: a typo must fail loud, never classify as a
+   ## default that could read a mismatch as a match.
+   case "${efi}" in 0|1) ;; *) die 64 "--efi must be 0 or 1 (got '${efi}')" ;; esac
+   case "${coreboot}" in 0|1) ;; *) die 64 "--coreboot must be 0 or 1 (got '${coreboot}')" ;; esac
+   case "${secureboot}" in 0|1) ;; *) die 64 "--secureboot must be 0 or 1 (got '${secureboot}')" ;; esac
+   ## An explicitly empty --declared is a usage error, NOT "omitted": match=unknown is reserved
+   ## for a genuine omission, so an empty value cannot slip a mismatch past as unknown.
+   if [ "${declared_set}" -eq 1 ] && [ -z "${declared}" ]; then
+      die 64 "--declared must not be empty"
+   fi
+
+   local detected
+   detected="$(firmware_identity_classify "${efi}" "${coreboot}" "${secureboot}")"
+   printf '%s\n' "detected=${detected}"
+
+   if [ "${declared_set}" -eq 0 ]; then
+      printf '%s\n' 'match=unknown'
+      return 0
+   fi
+   if [ "${declared}" = "${detected}" ]; then
+      printf '%s\n' 'match=true'
+   else
+      printf '%s\n' 'match=false'
+   fi
+}
+
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+   main "$@"
+fi
