@@ -93,6 +93,19 @@ else
    fail "root+no-SUDO_USER resolved to '${got}', wanted logname 'login-user'"
 fi
 
+## 4. ROOT + NUMERIC SUDO_USER: refuse. getent passwd coerces an all-numeric key
+## (optional leading '+' / leading zeros, strtoul) to a UID lookup, resolving a
+## DIFFERENT account -> HOMEVAR at the wrong home. Must emit NOTHING on stdout so
+## the preamble's empty-check aborts loudly (old body echoed the number verbatim).
+for bad in 1006 +1006 01006; do
+   got="$( SUDO_USER="${bad}" determine_build_user 0 2>/dev/null )"
+   if [ -z "${got}" ]; then
+      pass "root refuses numeric/UID-coercible SUDO_USER '${bad}'"
+   else
+      fail "root echoed numeric SUDO_USER '${bad}' as '${got}' (would be a getent UID key -> wrong home)"
+   fi
+done
+
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s) (${pass_count} passed)." >&2
    exit 1

@@ -45,8 +45,8 @@
 ##   7. NEVER detach under a map that is still LIVE (no "Open count:1" orphan): if
 ##      --force cannot neutralize it, leave the loop attached and return NON-ZERO.
 ##
-## The real function is SOURCED. 'losetup'/'kpartx'/'dmsetup'/'udevadm'/'sleep' are
-## stubbed so the test needs no root and no real loop devices; SUDO_TO_ROOT is
+## The real function is SOURCED. 'losetup'/'kpartx'/'dmsetup'/'findmnt'/'udevadm'/'sleep'
+## are stubbed so the test needs no root and no real loop devices; SUDO_TO_ROOT is
 ## emptied so the stub bash functions (not external binaries) are what it calls.
 
 set -o errexit
@@ -100,22 +100,21 @@ fail() {
 ##
 ## stub_* flags are read-only in the stub, so they are safely inherited into any
 ## subshell the function spawns.
-stub_detach_releases=0   ## 1: a 'losetup -d'/'--detach' call clears the association (benign)
+stub_detach_releases=0   ## 1: a 'losetup -d'/'--detach' call clears the association (benign, no maps)
 stub_clear_after_polls=0 ## >0: report empty once --associated has been polled N times
 stub_assoc_rc=0          ## exit code 'losetup --associated' returns (non-zero = command itself failed)
-stub_uses_maps=0         ## 1: the map model (below) governs when a detach frees the loop
-stub_forcefail=0         ## 1: 'dmsetup remove --force' CANNOT load the error target (defensive)
+stub_uses_maps=0         ## 1: the per-map model (below) governs when a detach frees the loop
 
 state_dir="$(mktemp --directory)"
 assoc_file="${state_dir}/assoc"               ## device 'losetup --associated' reports ("" = none)
 detach_count_file="${state_dir}/detach_count" ## times a detach was issued
 detach_last_file="${state_dir}/detach_last"   ## last device a detach saw
 poll_file="${state_dir}/poll"                 ## times --associated was polled
-map_file="${state_dir}/map"                   ## present ${base}pN dm map name ("" = none)
-mapcount_file="${state_dir}/mapcount"         ## that map's TRUE device-mapper open count
-map_error_file="${state_dir}/map_error"       ## non-empty once --force loaded the error target
+map_file="${state_dir}/map"                   ## space-separated present ${base}pN map names ("" = none)
+mapcount_file="${state_dir}/mapcount"         ## the maps' TRUE device-mapper open count (uniform)
 dmremove_file="${state_dir}/dmremove"         ## times 'dmsetup remove --retry' was issued
 mapforce_file="${state_dir}/mapforce"         ## times 'dmsetup remove --force' was issued
+marks_dir="${state_dir}/marks"                ## per-map markers: err_<map> (error target), ff_<map> (--force cannot neutralize)
 # shellcheck disable=SC2317  # reached via the EXIT trap
 cleanup() { safe-rm --recursive --force -- "${state_dir}"; }
 trap cleanup EXIT
@@ -125,25 +124,53 @@ reset_stubs() {
    stub_clear_after_polls=0
    stub_assoc_rc=0
    stub_uses_maps=0
-   stub_forcefail=0
    printf '%s' ""  > "${assoc_file}"
    printf '%s' "0" > "${detach_count_file}"
    printf '%s' ""  > "${detach_last_file}"
    printf '%s' "0" > "${poll_file}"
    printf '%s' ""  > "${map_file}"
    printf '%s' "0" > "${mapcount_file}"
-   printf '%s' ""  > "${map_error_file}"
    printf '%s' "0" > "${dmremove_file}"
    printf '%s' "0" > "${mapforce_file}"
+   safe-rm --recursive --force -- "${marks_dir}"
+   mkdir -p -- "${marks_dir}"
 }
 
-set_assoc()      { printf '%s' "$1" > "${assoc_file}"; }
-detach_count()   { cat -- "${detach_count_file}"; }
-detach_last()    { cat -- "${detach_last_file}"; }
-set_map()        { printf '%s' "$1" > "${map_file}"; }
-set_mapcount()   { printf '%s' "$1" > "${mapcount_file}"; }
-dmremove_count() { cat -- "${dmremove_file}"; }
-mapforce_count() { cat -- "${mapforce_file}"; }
+set_assoc()         { printf '%s' "$1" > "${assoc_file}"; }
+detach_count()      { cat -- "${detach_count_file}"; }
+detach_last()       { cat -- "${detach_last_file}"; }
+set_maps()          { printf '%s' "${1}" > "${map_file}"; }     ## space-separated map names
+set_mapcount()      { printf '%s' "${1}" > "${mapcount_file}"; }
+add_forcefail_map() { touch -- "${marks_dir}/ff_${1}"; }        ## this map's --force cannot load the error target
+set_mounted_map()   { touch -- "${marks_dir}/mnt_${1}"; }       ## findmnt reports this map mounted
+set_ls_fails()      { touch -- "${marks_dir}/lsfail"; }         ## 'dmsetup ls' exits non-zero (unreadable listing)
+set_table()         { printf '%s' "${2}" > "${marks_dir}/tbl_${1}"; }  ## override 'dmsetup table <map>' output
+dmremove_count()    { cat -- "${dmremove_file}"; }
+mapforce_count()    { cat -- "${mapforce_file}"; }
+
+## Map helpers over the space-separated ${map_file} list + per-map markers in ${marks_dir}.
+## (SC2013: the map list is space-separated words on one line, so word-splitting $(cat) is
+## intended; SC2317: these are invoked indirectly, from the sourced loop_teardown_verify.)
+# shellcheck disable=SC2317
+map_present() {   ## ${1} present in the list?
+   case " $(cat -- "${map_file}") " in *" ${1} "*) return 0 ;; *) return 1 ;; esac
+}
+# shellcheck disable=SC2317,SC2013
+map_remove() {    ## drop ${1} from the list
+   local m rest=""
+   for m in $(cat -- "${map_file}"); do
+      [ "${m}" = "${1}" ] || rest="${rest:+${rest} }${m}"
+   done
+   printf '%s' "${rest}" > "${map_file}"
+}
+# shellcheck disable=SC2317,SC2013
+any_live_map() {  ## true if any present map has NO error marker (a live table still on the loop)
+   local m
+   for m in $(cat -- "${map_file}"); do
+      [ -e "${marks_dir}/err_${m}" ] || return 0
+   done
+   return 1
+}
 
 ## losetup stub. Dispatches on the first word:
 ##   --associated <img> --noheadings --output NAME  -> print the association (if any)
@@ -174,10 +201,10 @@ losetup() {
          printf '%s' "$(( $(cat -- "${detach_count_file}") + 1 ))" > "${detach_count_file}"
          printf '%s' "${2:-}" > "${detach_last_file}"
          if [ "${stub_uses_maps}" = "1" ]; then
-            ## map model: the loop frees once no LIVE (non-error) map references it --
-            ## the map is gone, or 'dmsetup remove --force' neutralized it to the error
-            ## target (dropping its loop reference). A still-live map keeps the loop held.
-            if [ -z "$(cat -- "${map_file}")" ] || [ -n "$(cat -- "${map_error_file}")" ]; then
+            ## map model: the loop frees ONLY when the CORRECT loop operand is detached AND no
+            ## live (non-error) map still references it. Detaching the wrong device, or while a
+            ## live map remains, does not free it (and on real dm would orphan that map).
+            if [ "${2:-}" = "$(cat -- "${assoc_file}")" ] && ! any_live_map; then
                printf '%s' "" > "${assoc_file}"
             fi
          elif [ "${stub_detach_releases}" = "1" ]; then
@@ -195,62 +222,101 @@ kpartx() {
    true
 }
 
-## dmsetup stub. loop_teardown_verify uses these subcommands on the robust code path:
-##   ls --noheadings        -> list the present ${base}pN map (a node lingers after --force)
-##   table <map>            -> "<start> <len> <target> ...": 'error' once --force neutralized
-##                             the map, else 'linear' (a live table still on the loop)
-##   remove --retry <map>   -> honor the TRUE open count: remove a free map (a kpartx false
-##                             positive, count 0), refuse a genuinely-held one (count > 0)
-##   remove --force <map>   -> cannot delete an open map, but loads the 'error' target
-##                             (set map_error, unless stub_forcefail); removes a free map
-## Without this stub the fixed function would call the REAL root 'dmsetup'; the stub
-## also isolates the test from any real device-mapper state on the build host. Open
-## count is read-only in the stub, so it is safely inherited into any subshell.
+## dmsetup stub -- PER MAP, honoring the device-name argument (a single global flag would let
+## an implementation that mishandles one of several partition maps false-pass). Subcommands:
+##   ls --noheadings        -> list every present ${base}pN map (nodes linger after --force);
+##                             exits NON-ZERO if set_ls_fails (an unreadable listing: the
+##                             function MUST fail closed, never read it as "no maps left")
+##   table <map>            -> 'error' once THAT map was --force'd to the error target, else
+##                             'linear' (live on the loop); set_table overrides it verbatim
+##   remove [--retry] [-f|--force] <map>  -> flags in any order ('-f' == '--force'); honor the
+##                             TRUE open count: remove a free map (open 0); for an open map,
+##                             --force loads the error target (unless ff_<map>) and returns
+##                             non-zero (busy), retry/plain cannot and return non-zero
+## An unrecognized form FAILS CLOSED (non-zero), never a silent empty success.
+## Isolates the test from real device-mapper state on the build host.
 # shellcheck disable=SC2317  # invoked indirectly, from the sourced loop_teardown_verify
 dmsetup() {
-   local open_count
+   local open_count map arg have_retry have_force m
    case "${1:-}" in
       ls)
-         if [ -n "$(cat -- "${map_file}")" ]; then
-            printf '%s\n' "$(cat -- "${map_file}")"
-         fi
+         [ -e "${marks_dir}/lsfail" ] && return 1
+         # shellcheck disable=SC2013  # map list is space-separated words; word-split is intended
+         for m in $(cat -- "${map_file}"); do printf '%s\n' "${m}"; done
          ;;
       table)
-         if [ -n "$(cat -- "${map_error_file}")" ]; then
-            printf '%s\n' "0 16384 error"
-         elif [ -n "$(cat -- "${map_file}")" ]; then
-            printf '%s\n' "0 16384 linear 7:9 2048"
+         map="${2:-}"
+         if [ -e "${marks_dir}/tbl_${map}" ]; then
+            cat -- "${marks_dir}/tbl_${map}"
+         elif map_present "${map}"; then
+            if [ -e "${marks_dir}/err_${map}" ]; then
+               printf '%s\n' "0 16384 error"
+            else
+               printf '%s\n' "0 16384 linear 7:9 2048"
+            fi
          fi
          ;;
       remove)
+         shift
+         have_retry=0
+         have_force=0
+         map=""
+         for arg in "$@"; do
+            case "${arg}" in
+               --retry)
+                  have_retry=1
+                  ;;
+               -f|--force)
+                  have_force=1
+                  ;;
+               -*)
+                  true "ignore any other flag"
+                  ;;
+               *)
+                  map="${arg}"
+                  ;;
+            esac
+         done
+         if [ "${have_retry}" = "1" ]; then
+            printf '%s' "$(( $(cat -- "${dmremove_file}") + 1 ))" > "${dmremove_file}"
+         fi
+         if [ "${have_force}" = "1" ]; then
+            printf '%s' "$(( $(cat -- "${mapforce_file}") + 1 ))" > "${mapforce_file}"
+         fi
+         map_present "${map}" || return 0   ## already gone -> idempotent success
          open_count="$(cat -- "${mapcount_file}")"
-         case "${2:-}" in
-            --retry)
-               printf '%s' "$(( $(cat -- "${dmremove_file}") + 1 ))" > "${dmremove_file}"
-               if [ "${open_count}" -le 0 ]; then
-                  printf '%s' "" > "${map_file}"
-                  printf '%s' "" > "${map_error_file}"
-                  return 0
-               fi
-               return 1
-               ;;
-            --force)
-               printf '%s' "$(( $(cat -- "${mapforce_file}") + 1 ))" > "${mapforce_file}"
-               if [ "${open_count}" -le 0 ]; then
-                  printf '%s' "" > "${map_file}"
-                  printf '%s' "" > "${map_error_file}"
-                  return 0
-               fi
-               [ "${stub_forcefail}" = "1" ] && return 1
-               printf '%s' "1" > "${map_error_file}"
-               return 1
-               ;;
-         esac
+         if [ "${open_count}" -le 0 ]; then
+            map_remove "${map}"
+            return 0
+         fi
+         ## open map: only --force can act, loading the error target unless this map is
+         ## marked un-neutralizable; it still exits non-zero (busy). retry/plain: non-zero.
+         if [ "${have_force}" = "1" ] && [ ! -e "${marks_dir}/ff_${map}" ]; then
+            touch -- "${marks_dir}/err_${map}"
+         fi
+         return 1
          ;;
       *)
-         true "any other dmsetup invocation is a harmless no-op here"
+         ## FAIL-CLOSED: an unrecognized dmsetup form must not silently return empty success.
+         ## The function gates detach on the QUERY path (ls/table), so a fabricated empty
+         ## result would cause a detach under a live map. Refuse loudly instead.
+         printf '%s\n' "dmsetup stub: unrecognized invocation: $*" >&2
+         return 2
          ;;
    esac
+}
+
+## findmnt stub -- loop_teardown_verify's dm_map_mounted runs
+## 'findmnt --noheadings --source /dev/mapper/<map>' before --force. Report mounted iff a
+## mnt_<map> marker exists; otherwise not mounted. Stubbed so cases do not leak host state.
+# shellcheck disable=SC2317  # invoked indirectly, from the sourced loop_teardown_verify
+findmnt() {
+   local prev="" a map=""
+   for a in "$@"; do
+      [ "${prev}" = "--source" ] && map="${a##*/}"
+      prev="${a}"
+   done
+   [ -n "${map}" ] && [ -e "${marks_dir}/mnt_${map}" ]
 }
 
 # shellcheck disable=SC2317  # invoked indirectly, from the sourced loop_teardown_verify
@@ -353,7 +419,7 @@ fi
 reset_stubs
 stub_uses_maps=1
 set_assoc "/dev/loop7"
-set_map "loop7p1"
+set_maps "loop7p1"
 set_mapcount 0
 if loop_teardown_verify "${img}" ; then
    if [ "$(dmremove_count)" -ge "1" ] && [ "$(detach_count)" -ge "1" ]; then
@@ -369,17 +435,18 @@ fi
 ## The map's open count stays > 0 (the GPT root-auto partition, no removable holder), so
 ## 'dmsetup remove --retry' cannot remove it. 'dmsetup remove --force' loads the error
 ## target, dropping the map's loop reference, so the loop detaches and the function
-## returns 0. RED against the retry-only predecessor (0f459d4c), which never forced.
+## returns 0. --retry MUST be tried before --force (no needless error-targeting). RED
+## against the retry-only predecessor (0f459d4c), which never forced.
 reset_stubs
 stub_uses_maps=1
 set_assoc "/dev/loop7"
-set_map "loop7p1"
+set_maps "loop7p1"
 set_mapcount 1
 if loop_teardown_verify "${img}" ; then
-   if [ "$(mapforce_count)" -ge "1" ] && [ "$(detach_count)" -ge "1" ]; then
-      pass "persistent open count: --force loads error target, then detaches, returns 0"
+   if [ "$(dmremove_count)" -ge "1" ] && [ "$(mapforce_count)" -ge "1" ] && [ "$(detach_count)" -ge "1" ]; then
+      pass "persistent open count: --retry first, then --force error target, then detaches, returns 0"
    else
-      fail "persistent open count: mapforce_count=$(mapforce_count) detach_count=$(detach_count)"
+      fail "persistent open count: dmremove=$(dmremove_count) mapforce=$(mapforce_count) detach=$(detach_count)"
    fi
 else
    fail "persistent open count: expected return 0, got non-zero (recovery regressed to retry-only)"
@@ -391,10 +458,10 @@ fi
 ## "Open count:1") and must fail loudly instead.
 reset_stubs
 stub_uses_maps=1
-stub_forcefail=1
 set_assoc "/dev/loop7"
-set_map "loop7p1"
+set_maps "loop7p1"
 set_mapcount 1
+add_forcefail_map "loop7p1"
 if loop_teardown_verify "${img}" ; then
    fail "force cannot neutralize: expected non-zero return, got 0 (would mask / orphan)"
 else
@@ -402,6 +469,88 @@ else
       pass "force cannot neutralize: never detaches under a live map (no orphan), returns non-zero"
    else
       fail "force cannot neutralize: detached under a live map $(detach_count) time(s) -- orphan risk"
+   fi
+fi
+
+## --- case 10: MULTI-MAP -- only the loop's maps that neutralize may free it ------
+## Two maps on the loop; only loop7p1 can be forced to the error target, loop7p2 cannot.
+## loop7p2 stays LIVE, so the loop must NOT be detached (that would orphan loop7p2). Guards
+## against an implementation that detaches once SOME (not every) map is neutralized.
+reset_stubs
+stub_uses_maps=1
+set_assoc "/dev/loop7"
+set_maps "loop7p1 loop7p2"
+set_mapcount 1
+add_forcefail_map "loop7p2"
+if loop_teardown_verify "${img}" ; then
+   fail "multi-map one still live: expected non-zero return, got 0 (orphaned loop7p2)"
+else
+   if [ "$(detach_count)" = "0" ]; then
+      pass "multi-map one still live: never detaches while loop7p2 is live (no orphan), returns non-zero"
+   else
+      fail "multi-map one still live: detached with loop7p2 live $(detach_count) time(s) -- orphan"
+   fi
+fi
+
+## --- case 11: FAIL-CLOSED -- 'dmsetup ls' fails while a map is present -----------
+## An unreadable listing must NEVER be read as "no maps left" (the old '| grep || true'
+## swallowed its exit status). With a map present but ls failing, the function must NOT
+## detach -- it keeps the loop attached and fails loudly after its retries.
+reset_stubs
+stub_uses_maps=1
+set_assoc "/dev/loop7"
+set_maps "loop7p1"
+set_mapcount 0           ## retry WOULD remove it if the listing were readable
+set_ls_fails
+if loop_teardown_verify "${img}" ; then
+   fail "dmsetup ls fails: expected non-zero return, got 0 (fail-open: detached on an unreadable listing)"
+else
+   if [ "$(detach_count)" = "0" ]; then
+      pass "dmsetup ls fails: fail-closed -- never detaches on an unreadable listing, returns non-zero"
+   else
+      fail "dmsetup ls fails: detached $(detach_count) time(s) despite an unreadable listing -- orphan risk"
+   fi
+fi
+
+## --- case 12: REFUSE --force on a MOUNTED map -----------------------------------
+## --force loads the error target, which would make a mounted filesystem's I/O fail
+## (corruption). The function must refuse to force a mounted map, leave the loop attached,
+## and fail loudly -- never corrupt a live filesystem and claim success.
+reset_stubs
+stub_uses_maps=1
+set_assoc "/dev/loop7"
+set_maps "loop7p1"
+set_mapcount 1
+set_mounted_map "loop7p1"
+if loop_teardown_verify "${img}" ; then
+   fail "mounted map: expected non-zero return, got 0 (forced/corrupted a mounted fs)"
+else
+   if [ "$(mapforce_count)" = "0" ] && [ "$(detach_count)" = "0" ]; then
+      pass "mounted map: refuses --force and never detaches (no corruption, no orphan), returns non-zero"
+   else
+      fail "mounted map: mapforce=$(mapforce_count) detach=$(detach_count) -- forced or detached a mounted map"
+   fi
+fi
+
+## --- case 13: multi-segment table -- EVERY segment must be the error target -----
+## A map whose table has an error segment AND a still-live linear segment is NOT fully
+## neutralized (the live segment still references the loop). The function must read ALL
+## segments, not just the first, and keep the loop attached. Guards against an awk
+## 'print $3; exit' that only inspects the first line.
+reset_stubs
+stub_uses_maps=1
+set_assoc "/dev/loop7"
+set_maps "loop7p1"
+set_mapcount 1
+set_table "loop7p1" "0 2048 error
+2048 14336 linear 7:9 4096"
+if loop_teardown_verify "${img}" ; then
+   fail "multi-segment table: expected non-zero return, got 0 (detached under a live segment)"
+else
+   if [ "$(detach_count)" = "0" ]; then
+      pass "multi-segment table: a live segment keeps the loop attached (no orphan), returns non-zero"
+   else
+      fail "multi-segment table: detached $(detach_count) time(s) under a live segment -- orphan risk"
    fi
 fi
 
