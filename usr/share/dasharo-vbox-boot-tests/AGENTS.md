@@ -118,6 +118,16 @@ framebuffer. Each patch script is idempotent.
   (reserve the GOP fb in the EFI memory map, or init vboxvga in the VBox-native VBVA/HGSMI
   state coreboot's bochs-dispi path does not), not less.
 - RESUME (OVH, root, dm-vm-lock --class work):
+  * ROOT CAUSE (diagnosed via init=/bin/bash + /proc/iomem): the guest kernel builds a
+    `Coreboot Framebuffer` RESERVED region (fc000000-fc2fffff) from coreboot's CB_TAG_FRAMEBUFFER
+    and `efifb` grabs it. That reservation is NOT an evictable DRM aperture, so BOTH `simpledrm`
+    and `vboxvideo` fail `-16 (EBUSY)` claiming the vboxvga BAR -> NO /dev/dri -> the Wayland/LXQt
+    GUI cannot start -> black (the firmware console renders via efifb, which has no DRM). The
+    coreboot "0 MiB video memory" log is COSMETIC (mem is only printed). FIX direction (firmware/
+    kernel boundary): make the guest use the EFI GOP framebuffer (evictable simpledrm) instead of
+    the coreboot framebuffer table -- i.e. stop the UefiPayload leaving CB_TAG_FRAMEBUFFER
+    discoverable by the guest, or reserve the GOP fb as EfiMemoryMappedIO not a hard region. Then
+    vboxvideo evicts simpledrm and binds -> /dev/dri -> desktop.
   * VISIBLE GUI (OS-side, simplest): get a shell (serial `console=ttyS0` + an autologin, or
     boot a SYSMAINT entry) and check `lsmod | grep vbox`, `ls /dev/dri`, `dmesg | grep -i
     drm`. If `vboxvideo` (PCI 80ee:beef) is not bound, the GUI has no DRM device -> load/
