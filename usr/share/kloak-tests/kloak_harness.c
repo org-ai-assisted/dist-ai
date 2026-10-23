@@ -236,12 +236,11 @@ static void unit_coord_space(void)
     }
 }
 
-/* Regression for the repeated-`-k` bug: parse_cli_args calls parse_esc_key_str
- * once per -k/--escape-keys. It must APPEND each list, not overwrite slot 0 and
- * leave the new slot [len-1] uninitialised (the old per-call-index bug, where
- * register_esc_combo_event then read garbage). Pre-fix the second call writes
- * KEY_B into slot 0, so the slot-0 CHECK fails cleanly BEFORE the uninitialised
- * slot 1 is dereferenced -- deterministic RED, no segfault. */
+/* parse_esc_key_str parses one -k/--escape-keys value: a comma separates escape
+ * combos, '|' separates the keys within a combo. The CLI rejects a repeated -k
+ * (check_dup_arg_and_mark exits before a second call), so parse_esc_key_str is
+ * invoked at most once; this tests that single-call contract across both
+ * separators. */
 static void unit_parse_esc_key_str(void)
 {
     esc_key_list = NULL;
@@ -249,14 +248,15 @@ static void unit_parse_esc_key_str(void)
     active_esc_key_list = NULL;
     esc_key_list_len = 0;
 
-    parse_esc_key_str("KEY_A");
-    parse_esc_key_str("KEY_B");
+    /* two combos: "KEY_A" and the chord "KEY_RIGHTSHIFT|KEY_B" */
+    parse_esc_key_str("KEY_A,KEY_RIGHTSHIFT|KEY_B");
 
     CHECK(esc_key_list_len == 2);
-    CHECK(esc_key_list[0][0] == KEY_A);
     CHECK(esc_key_sublist_len[0] == 1);
-    CHECK(esc_key_list[1][0] == KEY_B);
-    CHECK(esc_key_sublist_len[1] == 1);
+    CHECK(esc_key_list[0][0] == KEY_A);
+    CHECK(esc_key_sublist_len[1] == 2);
+    CHECK(esc_key_list[1][0] == KEY_RIGHTSHIFT);
+    CHECK(esc_key_list[1][1] == KEY_B);
 }
 
 /* randname must fill the buffer with [A-Za-z] only. Bug: the lowercase branch
