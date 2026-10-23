@@ -7438,8 +7438,10 @@ _dup_sel = _dup.textCursor().selectedText()
 ok('one' in _dup_sel and 'three' in _dup_sel,
    'sel: dragging a word-select upward extends above the anchor')
 
-# A middle-click release while word-mode is still latched falls through to super (its
-# PRIMARY paste), not swallowed by the left-only branch; the selection survives.
+# A middle-click release after a word-select pastes PRIMARY and CLEARS the held selection:
+# a live selection freezes _render_tui (so the pasted input's output would not surface),
+# and _paste_primary clears it as Qt's own middle-paste did by moving the caret. The clear
+# resets the select mode to 'char' with it.
 _mid = SecureTerminal(command='/bin/cat')
 _mid.resize(700, 400)
 _mid.show()
@@ -7460,14 +7462,10 @@ _mid.mousePressEvent(_QME_sel(_QEv_sel.Type.MouseButtonPress, _mid_pt, _mid_pt,
 _mid.mouseReleaseEvent(_QME_sel(_QEv_sel.Type.MouseButtonRelease, _mid_pt, _mid_pt,
                                 _Qt_sel.MouseButton.MiddleButton, _Qt_sel.MouseButton.NoButton,
                                 _Qt_sel.KeyboardModifier.NoModifier))
-# The middle release falls through to super (its PRIMARY paste), NOT swallowed by the
-# LEFT-only word/line branch, so the word-select MODE persists until the next LEFT press.
-# The mode is the platform-independent invariant here: whether the display selection TEXT
-# itself survives is not -- a real compositor supports PRIMARY selection, so super moves the
-# caret (clearing it) on a middle-click, while the offscreen platform has no PRIMARY and
-# leaves it. Asserting selectedText() would encode offscreen-only behaviour.
-eq(_mid._select_mode, 'word',
-   'sel: a middle-click release does not reset the word-select mode (left-only branch)')
+ok(not _mid.textCursor().hasSelection(),
+   'sel: a middle-click paste clears the held word-selection (unfreezes the render)')
+eq(_mid._select_mode, 'char',
+   'sel: clearing the selection on a middle-paste resets the select mode')
 
 # A middle-click after a WORD/LINE select must DELIVER the PRIMARY buffer to the child.
 # The word/line left-release is swallowed before super() (keeping our custom unit
@@ -7506,6 +7504,11 @@ _mp.mouseReleaseEvent(_QME_sel(_QEv_sel.Type.MouseButtonRelease, _mp_pt, _mp_pt,
 APP.processEvents()
 ok(b'MIDPASTE_PAYLOAD' in b''.join(_mp_sink),
    'midpaste: middle-click after a word-select delivers PRIMARY to the child')
+# The paste also CLEARS the held selection: a live selection freezes _render_tui, so the
+# pasted input's output would not surface until some later action. Qt's old middle-paste
+# cleared it by moving the caret; _paste_primary must do the same.
+ok(not _mp.textCursor().hasSelection(),
+   'midpaste: the paste clears the held selection (unfreezes the grid render)')
 
 
 # _paste_primary no-ops where PRIMARY is unsupported (Wayland/macOS fallbacks) or where
