@@ -24,6 +24,30 @@ Other_64; `--firmware efi --chipset piix3 --hpet on --graphicscontroller vboxvga
 `build_coreboot_vm_plan` in `../dm-smbios-reader-boot-tests/dm-smbios-reader-vbox`
 emits exactly this.
 
+## Chipset: piix3 (i440fx) vs ich9 -- why i440fx is the base (SETTLED)
+
+- VBox has only two chipsets: `piix3` (default, i440fx) and `ich9` (added in VBox 4.0). There is
+  NO q35 machine type and none on the roadmap.
+- `piix3` has NO PCIe ECAM/MMCONFIG and NO fw_cfg -> that is what drove the CF8-only PciLib + the
+  MCFG-suppress patch.
+- `ich9` DOES expose real ECAM + an ACPI MCFG table. VERIFIED two ways: VBox source
+  (ConsoleImplConfigX86.cpp sets McfgBase/McfgLength for ChipsetType_ICH9; DevPciIch9.cpp maps the
+  ECAM MMIO window per PCIe 7.2.2; DevACPI.cpp plants the MCFG table) AND empirically (boot
+  `--chipset ich9`: /proc/iomem shows `dc000000-dfffffff : PCI ECAM 0000 [bus 00-3f]`, MCFG table
+  present, kernel uses ECAM). Window: base ~0xdc000000 (= 4G - RAM-hole, config-dependent),
+  length 0x4000000 = 64 buses (00-3f).
+- BUT ich9 is NOT a real Q35: it is an i440fx-class host bridge with ECAM BOLTED ON. No Q35 MCH
+  (host-bridge dev is `#if 0`'d out in VBox), no programmable PCIEXBAR (ECAM base is
+  hypervisor-fixed), and NO SMM (VBox has never implemented it).
+- So coreboot's `qemu-q35` board -- and Dasharo's q35 config (CONFIG_CPU_QEMU_X86_TSEG_SMM=y) --
+  do NOT fit: they program Q35 MCH/PAM/TSEG, build+validate PCIEXBAR (halt on mismatch), and
+  expect ECAM at 0xb0000000 / 256 buses plus SMM -- none present on VBox ich9. A q35 base would
+  trade the 2 small i440fx patches (CF8 + MCFG-suppress) for a LARGER, fragile de-Q35 patch set.
+- CONCLUSION: base on `qemu-i440fx` (VM on `piix3`). Move to `ich9` ONLY if ECAM is specifically
+  needed, and then keep the i440fx board + ADD an ECAM window at VBox's actual MCFG base -- do NOT
+  adopt the q35 board. For the Dasharo port: author a Dasharo i440fx `vbox_uefi` config (sovereign
+  boot + the setup menus are payload-level, so they port), not the q35 config.
+
 ## The three graphics patches (archived at `/home/admin/dasharo-patches/`)
 
 coreboot drives VBox's VGA as bochs-dispi; the UefiPayload GOP then paints the
