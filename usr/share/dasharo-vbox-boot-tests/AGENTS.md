@@ -103,10 +103,15 @@ framebuffer. Each patch script is idempotent.
      -> dracut gives up. grub reads the disk fine (firmware EFI block I/O); only the
      kernel's own interrupt-driven AHCI stalls.
 - RESUME (OVH, root, dm-vm-lock --class work):
-  * QUICK experiment for the dracut blocker: boot grub, press `e`, add `noapic irqpoll
-    rootdelay=30` to the linux line (coreboot has `ACPI_HAVE_PCAT_8259=y`, so the 8259
-    PIC is available) -- if AHCI then works via the PIC the root mounts and the desktop
-    comes up. (Or mount the VDI's /boot + edit grub.cfg.)
+  * CONFIRMED: grub loads from the disk and renders its graphical Kicksecure "Choose
+    boot mode" menu (gfxterm, 4739 colours) THROUGH the firmware, and the unedited
+    image auto-boots into the Linux kernel. So the firmware->PCI->disk->grub->kernel
+    chain works; only the kernel's AHCI-IRQ (MADT) stalls dracut.
+  * QUICK experiment for the dracut blocker: at the grub "Choose boot mode" menu press
+    `e`, append `noapic irqpoll rootdelay=30` to the linux line, Ctrl-X (coreboot has
+    `ACPI_HAVE_PCAT_8259=y`). Do NOT just `sed` grub.cfg on the mounted VDI -- that was
+    tried and made grub WAIT at the menu instead of auto-booting (inconclusive). Drive
+    the grub `e`/arrow/Ctrl-X via `keyboardputscancode` on a tcpserver-serial VM.
   * REAL fix: port coreboot `src/mainboard/emulation/qemu-i440fx` ACPI MADT/IOAPIC/LAPIC
     generation to VBox's piix3 -- `CONFIG_ACPI_COMMON_MADT_LAPIC=y` emits a LAPIC per
     APIC device, and none are being created under VBox, so verify the CPU/APIC device
