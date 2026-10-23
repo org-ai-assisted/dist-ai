@@ -68,20 +68,25 @@ run_case() {
    capture_firmware_lane
 }
 
-## VBox's own EFI reports bios_vendor 'innotek GmbH'; the dasharo coreboot+UefiPayload ROM reports
-## 'coreboot'. The probe snippet also prints the efi dir + mokutil sb-state lines.
-efi_sb_out='[ -d /sys/firmware/efi ] -> UEFI
-mokutil --sb-state -> SecureBoot enabled
-bios_vendor -> innotek GmbH'
-efi_out='[ -d /sys/firmware/efi ] -> UEFI
-mokutil --sb-state -> SecureBoot disabled
-bios_vendor -> innotek GmbH'
-bios_out='[ -d /sys/firmware/efi ] -> BIOS
-mokutil --sb-state -> EFI variables are not supported on this system
-bios_vendor -> innotek GmbH'
-dasharo_out='[ -d /sys/firmware/efi ] -> UEFI
-mokutil --sb-state -> SecureBoot disabled
-bios_vendor -> coreboot'
+## The guest emits TRUSTED EFI/SB/COREBOOT key=value lines (computed in-guest) plus the raw
+## BIOS_VENDOR (evidence, last). VBox's own EFI -> COREBOOT=0 (bios_vendor 'innotek GmbH'); the
+## dasharo coreboot+UefiPayload ROM -> COREBOOT=1 (bios_vendor 'coreboot').
+efi_sb_out='EFI=1
+SB=1
+COREBOOT=0
+BIOS_VENDOR=innotek GmbH'
+efi_out='EFI=1
+SB=0
+COREBOOT=0
+BIOS_VENDOR=innotek GmbH'
+bios_out='EFI=0
+SB=0
+COREBOOT=0
+BIOS_VENDOR=innotek GmbH'
+dasharo_out='EFI=1
+SB=0
+COREBOOT=1
+BIOS_VENDOR=coreboot'
 
 ## --- declared efi-secureboot, booted VBox EFI + SecureBoot -> vbox-efi-secureboot, match ---
 run_case efi-secureboot "${efi_sb_out}"
@@ -89,8 +94,8 @@ got=0; has 'DETECTED=vbox-efi-secureboot' "$(cat -- "${work}/fw")" || got=1
 check "efi-secureboot + SB-enabled + innotek vendor -> DETECTED=vbox-efi-secureboot" "${got}"
 got=0; has 'MATCH=true' "$(cat -- "${work}/fw")" || got=1
 check "efi-secureboot matching its lane -> MATCH=true" "${got}"
-got=0; has 'mokutil --sb-state -> SecureBoot enabled' "$(cat -- "${work}/fw")" || got=1
-check "the probe command+output is recorded as evidence" "${got}"
+got=0; has 'BIOS_VENDOR=innotek GmbH' "$(cat -- "${work}/fw")" || got=1
+check "the probe output is recorded as evidence" "${got}"
 
 ## --- declared efi-secureboot, booted BIOS -> MISMATCH ---
 run_case efi-secureboot "${bios_out}"
@@ -119,13 +124,26 @@ check "coreboot bios_vendor -> DETECTED=dasharo-efi (distinct from vbox-efi)" "$
 got=0; has 'MATCH=false' "$(cat -- "${work}/fw")" || got=1
 check "declared vbox-efi but booted coreboot -> MATCH=false (loud mismatch)" "${got}"
 
-## --- a bios_vendor that merely STARTS with 'coreboot' is NOT the dasharo ROM (anchored match) ---
-coreboot_prefix_out='[ -d /sys/firmware/efi ] -> UEFI
-mokutil --sb-state -> SecureBoot disabled
-bios_vendor -> coreboot-notdasharo'
-run_case efi "${coreboot_prefix_out}"
-got=0; has 'DETECTED=vbox-efi' "$(cat -- "${work}/fw")" && ! has 'DETECTED=dasharo' "$(cat -- "${work}/fw")" || got=1
-check "bios_vendor 'coreboot-notdasharo' -> DETECTED=vbox-efi (not dasharo-efi; anchored)" "${got}"
+## --- a probe MISSING an axis (here COREBOOT) is incomplete -> unverified + MATCH=false. ---
+partial_probe='EFI=1
+SB=0
+BIOS_VENDOR=innotek GmbH'
+run_case efi "${partial_probe}"
+got=0; has 'DETECTED=unverified' "$(cat -- "${work}/fw")" && has 'MATCH=false' "$(cat -- "${work}/fw")" || got=1
+check "a probe missing an axis -> DETECTED=unverified MATCH=false" "${got}"
+
+## --- a firmware-controlled BIOS_VENDOR cannot FORGE an axis: the host reads EFI/SB from their own
+##     key lines (first-wins, emitted before the untrusted vendor), so an 'EFI=1'/'SB=1' injected
+##     after the vendor does NOT flip a real BIOS boot to vbox-efi. ---
+forge_probe='EFI=0
+SB=0
+COREBOOT=0
+BIOS_VENDOR=innotek
+EFI=1
+SB=1'
+run_case efi "${forge_probe}"
+got=0; has 'DETECTED=bios' "$(cat -- "${work}/fw")" && has 'MATCH=false' "$(cat -- "${work}/fw")" || got=1
+check "a vendor-injected EFI=1/SB=1 does not forge the axis (first-wins) -> DETECTED=bios MATCH=false" "${got}"
 
 ## --- fail CLOSED: an EMPTY probe (gc_run failed) must NOT default to a BIOS identity that
 ##     silently MATCHes a --firmware bios lane; it records unverified + MATCH=false. ---
@@ -148,21 +166,11 @@ lib_dir="${saved_lib_dir}"
 got=0; has 'DETECTED=unverified' "$(cat -- "${work}/fw")" && has 'MATCH=false' "$(cat -- "${work}/fw")" || got=1
 check "empty classifier output -> DETECTED=unverified MATCH=false (never null/green)" "${got}"
 
-## --- the efi axis is anchored to the DIR line: a firmware-controlled bios_vendor containing
-##     '-> UEFI' must NOT override an honest '-> BIOS' directory line (else a BIOS boot reads
-##     vbox-efi + MATCH=true on the efi lane). ---
-bios_vendor_uefi_out='[ -d /sys/firmware/efi ] -> BIOS
-mokutil --sb-state -> SecureBoot disabled
-bios_vendor -> innotek -> UEFI'
-run_case efi "${bios_vendor_uefi_out}"
-got=0; has 'DETECTED=bios' "$(cat -- "${work}/fw")" && has 'MATCH=false' "$(cat -- "${work}/fw")" || got=1
-check "a bios_vendor containing '-> UEFI' does not override the BIOS dir line -> DETECTED=bios MATCH=false" "${got}"
-
-## --- fail CLOSED on a PARTIAL classifier result: detected present but no match= line must force
-##     MATCH=false, not leave it blank (-> null -> the site reads GREEN). ---
+## --- fail CLOSED on a PARTIAL/out-of-order classifier: 'match=true' with NO detected= line must
+##     NOT ride green -- detected becomes unverified and MATCH is forced false. ---
 partial_libdir="${work}/partial-bin"
 mkdir --parents -- "${partial_libdir}"
-printf '%s\n' '#!/bin/bash' "printf '%s\\n' detected=vbox-efi" > "${partial_libdir}/dm-firmware-identity"
+printf '%s\n' '#!/bin/bash' "printf '%s\\n' match=true" > "${partial_libdir}/dm-firmware-identity"
 chmod +x -- "${partial_libdir}/dm-firmware-identity"
 saved_lib_dir2="${lib_dir}"
 # shellcheck disable=SC2034  ## read by the sourced capture_firmware_lane
@@ -170,8 +178,8 @@ lib_dir="${partial_libdir}"
 run_case efi "${efi_out}"
 # shellcheck disable=SC2034
 lib_dir="${saved_lib_dir2}"
-got=0; has 'DETECTED=vbox-efi' "$(cat -- "${work}/fw")" && has 'MATCH=false' "$(cat -- "${work}/fw")" || got=1
-check "classifier printed detected but no match= line -> MATCH forced false (never blank/null)" "${got}"
+got=0; has 'DETECTED=unverified' "$(cat -- "${work}/fw")" && has 'MATCH=false' "$(cat -- "${work}/fw")" || got=1
+check "classifier printed match=true but no detected= -> DETECTED=unverified MATCH=false" "${got}"
 
 ## --- no evidence file set: capture is a no-op (does not error) ---
 # shellcheck disable=SC2034  ## read by the sourced capture_firmware_lane
