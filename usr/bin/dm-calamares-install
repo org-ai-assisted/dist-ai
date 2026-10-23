@@ -267,7 +267,12 @@ milestone_blank_mode() {
          ## up, so a black frame there is a real failure (symmetric with the user terminal-open).
          printf '%s' rich
          ;;
-      luks-prompt|luks-passphrase-typed|luks-unlocked|sysmaint-luks-prompt)
+      luks-prompt|luks-passphrase-typed|sysmaint-luks-prompt)
+         ## The LUKS passphrase PROMPT is on screen (captured right after gui_wait_for / the typed
+         ## passphrase), so it is reliably non-uniform -> uniform-only catches a totally-blank
+         ## prompt. (luks-unlocked is NOT here: it is a post-unlock transition captured on a fixed
+         ## sleep and can be transient uniform-black, so it falls to skip -- unlock success is
+         ## proven by the subsequent boot milestones, not by that frame.)
          printf '%s' sparse
          ;;
       *)

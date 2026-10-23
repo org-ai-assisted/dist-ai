@@ -194,7 +194,7 @@ for rich in live-guestcontrol-ready welcome location keyboard partitions partiti
    got=0; [ "$(mbm "${rich}")" = 'rich' ] || got=1
    check "milestone_blank_mode(${rich}) = rich (default near-black gate)" "${got}"
 done
-for sparse in luks-prompt luks-passphrase-typed luks-unlocked sysmaint-luks-prompt; do
+for sparse in luks-prompt luks-passphrase-typed sysmaint-luks-prompt; do
    got=0; [ "$(mbm "${sparse}")" = 'sparse' ] || got=1
    check "milestone_blank_mode(${sparse}) = sparse (uniform-only, legit near-black)" "${got}"
 done
@@ -205,7 +205,7 @@ done
 ## MUST be skip -- defaulting them to rich false-failed every --shot-dir run (always-black firmware
 ## grab / transitional frames).
 for skip in power-on-first-frame live-kernel-boot live-grub-menu live-grub-entry-selected \
-   install-host-launched installed-first-frame firmware-state \
+   install-host-launched installed-first-frame luks-unlocked firmware-state \
    final-last-frame vt-switched vt-logged-in vt-logged-out vm-defined vm-stopped-iso-detached \
    vm-stopped-final mok-cert-enrolled failure-vm-state; do
    got=0; [ "$(mbm "${skip}")" = 'skip' ] || got=1
