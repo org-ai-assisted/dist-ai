@@ -186,4 +186,36 @@ work_recs=("${d7}"/holder.work.*)
 if [ "${#work_recs[@]}" -eq 2 ]; then r=0; else r=1; fi
 check 'a live work waiter past its --ttl is NOT reaped (deadline covers the slot wait)' "${r}"
 
+## --- a slot freed DURING the wait (before --wait expires) must be CLAIMED by the scan at the
+##     deadline, not missed. With poll (10s) >> wait (3s) there is no mid-wait retry, so only the
+##     final scan can catch a slot the holder frees at ~1s. FAILS on code that returns 75 after
+##     the last sleep without a final scan. ---
+d8="$(new_lockdir)"; dirs+=("${d8}")
+DM_VM_LOCK_WORK_SLOTS=1 DM_VM_LOCK_DIR="${d8}" \
+   "${TOOL}" acquire --class work --ttl 30 --wait 10 -- sh -c "touch '${d8}/aheld'; exec sleep 1" &
+pids+=("$!")
+for (( i = 0; i < 200; i++ )); do [ -e "${d8}/aheld" ] && break; sleep 0.05; done
+rc=0; DM_VM_LOCK_WORK_SLOTS=1 DM_VM_LOCK_SLOT_POLL=10 DM_VM_LOCK_DIR="${d8}" \
+   "${TOOL}" acquire --class work --ttl 10 --wait 3 -- true 2>/dev/null || rc=$?
+if [ "${rc}" -eq 0 ]; then r=0; else r=1; fi
+check "a slot freed during the wait is claimed by the deadline scan, not missed (rc=${rc})" "${r}"
+
+## --- the record's ttl_deadline_epoch must cover the FULL worst-case flock hold: slot poll
+##     (--wait) + command (--ttl) + the SIGTERM->SIGKILL grace (DM_VM_LOCK_KILL_AFTER, during
+##     which a TERM-ignoring command still holds the flock). Deterministic: read the record's
+##     own fields, not reap timing. FAILS on a deadline of only acquired+wait+ttl. ---
+d9="$(new_lockdir)"; dirs+=("${d9}")
+DM_VM_LOCK_WORK_SLOTS=1 DM_VM_LOCK_KILL_AFTER=9 DM_VM_LOCK_DIR="${d9}" \
+   "${TOOL}" acquire --class work --ttl 5 --wait 7 -- sh -c "touch '${d9}/cheld'; exec sleep 60" &
+pids+=("$!")
+for (( i = 0; i < 200; i++ )); do [ -e "${d9}/cheld" ] && break; sleep 0.05; done
+rec="$(cat -- "${d9}"/holder.work.* 2>/dev/null || true)"
+acq_iso="${rec#*acquired=}"; acq_iso="${acq_iso%% *}"
+dl="${rec#*ttl_deadline_epoch=}"; dl="${dl%% *}"
+acq_epoch="$(date -u -d "${acq_iso}" +%s 2>/dev/null || printf '%s' 0)"
+want=$(( 7 + 5 + 9 ))   ## --wait + --ttl + DM_VM_LOCK_KILL_AFTER
+got=$(( dl - acq_epoch ))
+if [ "${got}" -eq "${want}" ]; then r=0; else r=1; fi
+check "record deadline spans wait+ttl+kill_after so a live holder is never reaped (want ${want}s, got ${got}s)" "${r}"
+
 vmlock_done

@@ -157,19 +157,16 @@ vm_lock_acquire_slot() {
       if [ "${nonblock}" -eq 1 ]; then
          return 75
       fi
-      ## --wait is a true DEADLINE. Sleep only up to the REMAINING budget, never a full poll
-      ## interval past it: otherwise a --wait shorter than the poll waits a whole poll and can
-      ## then acquire + run the command (past the stated wait), and a large poll delays the 75
-      ## far past the window it reports. sleep min(poll, remaining).
+      ## Loop invariant: SCAN first (top), then check the deadline, then sleep. So the scan runs
+      ## once at/just-after each wake INCLUDING the final one at the deadline -- a slot freed any
+      ## time up to the deadline is claimed, never missed. --wait is a true deadline because the
+      ## sleep is clamped to the remaining budget (never a full poll past it): sleep min(poll,
+      ## remaining). Once a scan finds nothing AND the deadline has passed, give up with 75.
       now="$(date +%s)"
       [ "${now}" -lt "${deadline}" ] || return 75
       remaining=$(( deadline - now ))
       [ "${poll}" -lt "${remaining}" ] && remaining="${poll}"
       sleep "${remaining}"
-      ## After waking, give up immediately if the budget is spent -- do NOT let the loop-top scan
-      ## claim a slot that freed AT/after the deadline and run the command past --wait. The initial
-      ## scan (loop top, first iteration) still gets an immediately-free slot with no wait.
-      [ "$(date +%s)" -lt "${deadline}" ] || return 75
    done
 }
 
@@ -338,12 +335,14 @@ cmd_acquire() {
    ## the real mutex). cmd= is LAST (may contain spaces).
    local pid=$$ now deadline session session_id user
    now="$(date +%s)"
-   ## ttl_deadline_epoch must cover the WHOLE worst-case lifetime -- the slot poll (up to --wait)
-   ## PLUS the command (up to --ttl) -- because the record is written BEFORE the slot poll. Using
-   ## now+ttl would let vm_lock_reap delete the record of a LIVE holder that polled (or ran) past
-   ## ttl, recreating the "status shows no holder while a leak is blocked" gap this ordering fixes.
-   ## A truly-wedged holder is still reaped once its pid dies (the pid check), or at this bound.
-   deadline=$(( now + wait + ttl ))
+   ## ttl_deadline_epoch must cover the WHOLE worst-case flock-hold -- the slot poll (up to --wait)
+   ## PLUS the command under timeout (up to --ttl) PLUS the SIGTERM->SIGKILL grace
+   ## (DM_VM_LOCK_KILL_AFTER, during which a TERM-ignoring command still holds the flock) -- because
+   ## the record is written BEFORE the slot poll. A shorter deadline lets vm_lock_reap delete the
+   ## record of a LIVE holder still holding the lock, recreating the "status shows no holder while a
+   ## leak is blocked" gap this ordering fixes. A truly-wedged holder is still reaped once its pid
+   ## dies (the pid check), or at this bound.
+   deadline=$(( now + wait + ttl + vm_lock_kill_after ))
    ## Sanitized: these are untrusted (forwarded env / id output) and precede pid= on the line;
    ## an unsanitized value could forge a field the reader picks up (see vm_lock_sanitize_field).
    session="$(vm_lock_sanitize_field "${CLAUDE_RC_SESSION_NAME:-none}")"
