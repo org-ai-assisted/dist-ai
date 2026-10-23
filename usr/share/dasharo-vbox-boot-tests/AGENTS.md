@@ -108,17 +108,14 @@ framebuffer. Each patch script is idempotent.
   ConsoleOut). Reverted GraphicsOutput.c / PlatformConsole.c / PciHostBridgeLib markers to
   stock in the mrchromebox tree (kept CF8 DSC + coreboot bochs/fw_cfg). Net LESS code; the
   firmware shell + Setup menu still render.
-- OPEN -- only the VISIBLE GUI on the framebuffer. The OS boots to a console login, but
-  the on-screen framebuffer stays the dead simpledrm console (`simple-framebuffer: Unable
-  to acquire aperture: -16` -- the vboxvga BAR 0xfc000000 is a claimed PCI resource).
-  TESTED: this is INDEPENDENT of how the firmware publishes the GOP -- the stock-PCI-binding
-  GOP gives the exact same `-16`. ROOT-CAUSED (see RESUME below): the guest kernel reserves the
-  fb region from coreboot's `LB_TAG_FRAMEBUFFER` and that reservation sits inside the vboxvga
-  BAR, so vboxvideo/simpledrm cannot claim it. NOT fixable OS-side (a fb-driver cmdline toggle
-  does not free it -- verified); the fix is firmware (strip the fb tag post-consume) or guest
-  kernel config. The core port goal (an OS boots through the firmware) is already met; the
-  visible desktop is this one remaining item.
-- RESUME (OVH, root, dm-vm-lock --class work):
+- DONE -- VISIBLE LXQt DESKTOP renders through the firmware; the full port goal incl. graphics
+  is met. VERIFIED on the patched ROM: `/proc/iomem` shows the vboxvga BAR with NO `Coreboot
+  Framebuffer` child reservation; `modprobe vboxvideo` -> `/dev/dri/card0`; dmesg `[drm]
+  Initialized vboxvideo 1.0.0 ... on minor 0` + `vboxvideodrmfb (fb0) is primary device` (no
+  `-16`); a normal unedited-image boot renders the full Kicksecure LXQt desktop (panel, icons,
+  Setup Wizard), stable across the whole screenshot window (~8800 colours/frame vs 2 when black).
+  Root cause + fix mechanics below.
+- FIX DETAIL (implemented in UefiPayloadPkg/BlSupportDxe, VERIFIED):
   * ROOT CAUSE (VERIFIED, not theorized -- two init=/bin/bash boots + /proc/iomem):
     `/proc/iomem` shows the vboxvga BAR `fc000000-fdffffff : 0000:00:02.0` with a child
     `fc000000-fc2fffff : Coreboot Framebuffer`. That child is a HARD reserved region the GUEST
@@ -155,10 +152,11 @@ framebuffer. Each patch script is idempotent.
     no kernel-config changes -- it touches the shipped image).
     Verify: re-run the aperture probe -- /dev/dri/card0 appears and `vboxvideo ... probe` succeeds
     instead of `-16`.
-  * `/home/admin/cb-uefi-gfx.rom` is the CF8 build (boots an OS) but carries PCIDBG/
-    GOPDBG SerialPortWrite debug markers + the instrument patches -- STRIP them before
-    any land. ECAM pre-CF8 ROM archived at
-    `/home/admin/dasharo-patches/cb-uefi-gfx-GRAPHICS-WORKING.rom`.
-  * Test loop: `os-boot.sh` (screenshot boot), `interrupt-boot.sh` + `nav-bootmgr.sh`
-    (reach the Setup/Boot menu via Down-spam then Up/Enter scancodes), `osboot-diag.sh`
-    (shell map/bcfg). A near-black OS frame is usually the kernel console -- BRIGHTEN 6x.
+  * Reproduce the fix (all under `/home/admin`, `dasharo-patches/` for the patch):
+    `dasharo-patches/cbfb-retag-patch.sh` (idempotent source patch) -> `cbfb-rebuild.sh` (CLEAN
+    payload rebuild -- the .inf adds a `BlParseLib` LibraryClass, so a stale partial build
+    misreports) -> `aperture-test.sh` (DRM/vboxvideo check) / `os-desktop-test.sh` (desktop
+    screenshots; brighten only needed for a near-black kernel console).
+  * Working ROM `/home/admin/cb-uefi-gfx.rom` is CLEAN (0 GOPDBG/PCIDBG markers; GOP is stock).
+    Archived: `/home/admin/dasharo-patches/cb-uefi-desktop-WORKING.rom`; pre-patch rollback at
+    `/home/admin/cb-uefi-gfx.rom.prefbretag`.
