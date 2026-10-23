@@ -129,17 +129,24 @@ present 'check-build-primitives'               "${sanity_tests}" "1100 still run
 present 'check-hostname\(\)'                    "${prepare_machine}" "1200 defines check-hostname"
 present 'check-mailname\(\)'                    "${prepare_machine}" "1200 defines check-mailname"
 prepare_main="$(sed -n '/^main()/,/^}/p' -- "${prepare_machine}" | grep --invert-match --extended-regexp '^[[:space:]]*#' || true)"
-if grep --quiet --extended-regexp 'check-hostname|check-mailname' <<< "${prepare_main}"; then
+## Each prep step must be dispatched -- AND, not an alternation: a single grep
+## 'check-hostname|check-mailname' passes vacuously when main calls only ONE,
+## accepting a missing preparation step.
+if grep --quiet --fixed-strings 'check-hostname' <<< "${prepare_main}" \
+   && grep --quiet --fixed-strings 'check-mailname' <<< "${prepare_main}"; then
    pass "1200 calls hostname/mailname prep from main"
 else
-   fail "1200 defines hostname/mailname prep but never calls it from main"
+   fail "1200 defines hostname/mailname prep but never calls BOTH from main"
 fi
 
 ## --- ~/.gnupg is created before the sq keystore/signing calls that need it ---
 
 ## first_match ERE FILE -> 1-indexed line number of the first match, or empty.
+## '|| true': a no-match makes grep exit 1; under pipefail+errexit the bare
+## command-substitution assignment would abort the test BEFORE its own empty-check
+## and the specific failure message. Return success + empty instead.
 first_match() {
-   grep --line-number --extended-regexp --max-count=1 -- "$1" "$2" 2>/dev/null | cut -d: -f1
+   grep --line-number --extended-regexp --max-count=1 -- "$1" "$2" 2>/dev/null | cut -d: -f1 || true
 }
 
 gnupg_before_sq() {

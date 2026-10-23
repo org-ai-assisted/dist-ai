@@ -76,8 +76,10 @@ if ! sanity_tests="$(locate_build_step 1100_sanity-tests "${DM_SANITY_TESTS:-}")
    exit 1
 fi
 
-dm_root="$(dirname -- "$(dirname -- "${early_setup}")")"
-deps_conf="${dm_root}/variables.d/60_dependencies.bsh"
+## Resolve the deps fragments against the authoritative ${dm_checkout}, NOT two
+## dirnames of ${early_setup}: a staged copy or a DM_EARLY_SETUP override does not
+## sit two levels under the checkout, so that derivation misses the real file.
+deps_conf="${DM_DEPENDENCIES_CONF:-${dm_checkout}/variables.d/60_dependencies.bsh}"
 if [ ! -r "${deps_conf}" ]; then
    printf '%s\n' "FATAL: variables.d/60_dependencies.bsh not found at '${deps_conf}'." >&2
    exit 1
@@ -87,7 +89,7 @@ fi
 ## by 1050_early-build-setup and by 60_dependencies.bsh): 1050 runs before
 ## 'variables', so it cannot read the list from there. dist_build_script_build_dependency
 ## still lives in 60_dependencies.bsh (deps_conf).
-early_deps_conf="${dm_root}/help-steps/set-early-dependencies"
+early_deps_conf="${DM_EARLY_DEPENDENCIES_CONF:-${dm_checkout}/help-steps/set-early-dependencies}"
 if [ ! -r "${early_deps_conf}" ]; then
    printf '%s\n' "FATAL: help-steps/set-early-dependencies not found at '${early_deps_conf}'." >&2
    exit 1
