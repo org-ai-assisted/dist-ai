@@ -138,16 +138,23 @@ framebuffer. Each patch script is idempotent.
     The payload NEEDS `LB_TAG_FRAMEBUFFER` (CbParseLib.c:569) to build its GOP, so simply not
     emitting it kills firmware graphics. coreboot does NOT itself reserve the fb (no reserved_ram/
     mmio for it) -- the reservation is purely the guest kernel's doing.
-  * FIX OPTIONS (none is "less code"; this is now a firmware-vs-image engineering call):
-    (a) FIRMWARE: after the payload consumes `LB_TAG_FRAMEBUFFER`, invalidate/retag it in the
-        in-memory coreboot table AND recompute the entries checksum (CbParseLib validates it,
-        lines 145-155) so the guest kernel's scan skips it and falls back to the evictable EFI
-        GOP -> vboxvideo binds. Real patch (checksum-aware), full clean coreboot+payload rebuild.
-    (b) GUEST IMAGE: disable CONFIG_GOOGLE_COREBOOT_TABLE / CONFIG_FRAMEBUFFER_COREBOOT in the
-        Kicksecure kernel so it never builds the simple-framebuffer from the coreboot table.
-        Touches the shipped image, not the firmware.
-    Verify either by re-running the aperture probe: /dev/dri appears and `vboxvideo ... probe`
-    succeeds instead of `-16`.
+  * FIX (operator ruled: FIRMWARE ONLY, NO guest kernel-config change). A late UefiPayload DXE
+    step (ReadyToBoot / EndOfDxe, after the GOP is built) retags the coreboot framebuffer entry
+    so the guest kernel's scan skips it and falls back to the EVICTABLE EFI GOP fb (sysfb/aperture
+    framework), which vboxvideo can evict -> binds -> /dev/dri -> desktop. Mechanics (all confirmed
+    in CbParseLib + commonlib/coreboot_tables.h):
+      - `GetParameterBase()` -> full table (follows CB_TAG_FORWARD); `FindCbTag(LB_TAG_FRAMEBUFFER
+        == 0x0012)` -> the record.
+      - set `record->tag = LB_TAG_UNUSED (0x0000)` (unknown/unused tags are iterated past).
+      - recompute `Header->table_checksum = CbCheckSum16(entries, table_bytes)` THEN
+        `Header->header_checksum` (table_checksum is a field INSIDE the header, so the header sum
+        must be redone after). Both are validated (CbParseLib IsValidCbTable); a wrong sum makes
+        the guest drop the WHOLE table (acceptable, but do it right).
+      - Payload needs the tag at GOP-build time, so retag LATE, never remove it from coreboot.
+    Rejected: guest kernel disable of CONFIG_GOOGLE_COREBOOT_TABLE/FRAMEBUFFER_COREBOOT (operator:
+    no kernel-config changes -- it touches the shipped image).
+    Verify: re-run the aperture probe -- /dev/dri/card0 appears and `vboxvideo ... probe` succeeds
+    instead of `-16`.
   * `/home/admin/cb-uefi-gfx.rom` is the CF8 build (boots an OS) but carries PCIDBG/
     GOPDBG SerialPortWrite debug markers + the instrument patches -- STRIP them before
     any land. ECAM pre-CF8 ROM archived at
