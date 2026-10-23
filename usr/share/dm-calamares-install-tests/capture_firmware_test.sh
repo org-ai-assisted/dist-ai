@@ -148,6 +148,31 @@ lib_dir="${saved_lib_dir}"
 got=0; has 'DETECTED=unverified' "$(cat -- "${work}/fw")" && has 'MATCH=false' "$(cat -- "${work}/fw")" || got=1
 check "empty classifier output -> DETECTED=unverified MATCH=false (never null/green)" "${got}"
 
+## --- the efi axis is anchored to the DIR line: a firmware-controlled bios_vendor containing
+##     '-> UEFI' must NOT override an honest '-> BIOS' directory line (else a BIOS boot reads
+##     vbox-efi + MATCH=true on the efi lane). ---
+bios_vendor_uefi_out='[ -d /sys/firmware/efi ] -> BIOS
+mokutil --sb-state -> SecureBoot disabled
+bios_vendor -> innotek -> UEFI'
+run_case efi "${bios_vendor_uefi_out}"
+got=0; has 'DETECTED=bios' "$(cat -- "${work}/fw")" && has 'MATCH=false' "$(cat -- "${work}/fw")" || got=1
+check "a bios_vendor containing '-> UEFI' does not override the BIOS dir line -> DETECTED=bios MATCH=false" "${got}"
+
+## --- fail CLOSED on a PARTIAL classifier result: detected present but no match= line must force
+##     MATCH=false, not leave it blank (-> null -> the site reads GREEN). ---
+partial_libdir="${work}/partial-bin"
+mkdir --parents -- "${partial_libdir}"
+printf '%s\n' '#!/bin/bash' "printf '%s\\n' detected=vbox-efi" > "${partial_libdir}/dm-firmware-identity"
+chmod +x -- "${partial_libdir}/dm-firmware-identity"
+saved_lib_dir2="${lib_dir}"
+# shellcheck disable=SC2034  ## read by the sourced capture_firmware_lane
+lib_dir="${partial_libdir}"
+run_case efi "${efi_out}"
+# shellcheck disable=SC2034
+lib_dir="${saved_lib_dir2}"
+got=0; has 'DETECTED=vbox-efi' "$(cat -- "${work}/fw")" && has 'MATCH=false' "$(cat -- "${work}/fw")" || got=1
+check "classifier printed detected but no match= line -> MATCH forced false (never blank/null)" "${got}"
+
 ## --- no evidence file set: capture is a no-op (does not error) ---
 # shellcheck disable=SC2034  ## read by the sourced capture_firmware_lane
 firmware=efi

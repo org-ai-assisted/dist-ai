@@ -613,11 +613,15 @@ capture_firmware_lane() {
    ## MATCH=false and stop, rather than defaulting to a BIOS identity that could spuriously MATCH a
    ## --firmware bios lane. An unconfirmed boot is never green.
    out_lc="${out,,}"
+   ## Anchor each axis to its OWN probe line, not the whole blob: the efi-dir marker carries the
+   ## ']' from '[ -d /sys/firmware/efi ] -> UEFI', and the sb marker the 'sb-state -> ' prefix, so
+   ## a firmware-controlled bios_vendor string (e.g. a vendor containing '-> UEFI') cannot override
+   ## the honest directory/mokutil lines.
    case "${out_lc}" in
-      *'-> uefi'*)
+      *'] -> uefi'*)
          efi=1
          ;;
-      *'-> bios'*)
+      *'] -> bios'*)
          efi=0
          ;;
       *)
@@ -629,7 +633,7 @@ capture_firmware_lane() {
          return 0
          ;;
    esac
-   case "${out_lc}" in *'secureboot enabled'*) sb=1 ;; *) sb=0 ;; esac
+   case "${out_lc}" in *'sb-state -> secureboot enabled'*) sb=1 ;; *) sb=0 ;; esac
    ## Match the coreboot vendor VALUE exactly -- followed by a newline OR end-of-string (the
    ## bios_vendor line is LAST, and $() strips its trailing newline, so an end-anchor is needed
    ## too). An unanchored prefix would misread a 'coreboot-<x>' bios_vendor as the dasharo ROM.
@@ -676,13 +680,18 @@ capture_firmware_lane() {
             ;;
       esac
    done <<< "${id_out}"
-   ## Fail CLOSED on a classifier that was missing or errored: an empty detected would leave MATCH
-   ## empty, which dm-release-test forwards as a null environment.firmware.match that the results
-   ## site reads as "not a mismatch" -- i.e. GREEN. An unverifiable classification is a FAILURE.
-   if [ -z "${detected}" ]; then
-      detected='unverified'
-      match='false'
-   fi
+   ## Fail CLOSED on a classifier that was missing, errored, or returned a partial result: an empty
+   ## detected or a non-true/false match would leave MATCH null, which dm-release-test forwards as a
+   ## null environment.firmware.match the results site reads as "not a mismatch" -- i.e. GREEN. MATCH
+   ## must be a definite true|false; force anything else (empty, 'unknown', garbage) to false.
+   [ -n "${detected}" ] || detected='unverified'
+   case "${match}" in
+      true|false)
+         ;;
+      *)
+         match='false'
+         ;;
+   esac
    {
       printf '%s\n' "DETECTED=${detected}"
       printf '%s\n' "MATCH=${match}"

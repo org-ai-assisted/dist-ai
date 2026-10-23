@@ -173,14 +173,32 @@ if { [ "${DASHARO_VBOX_PUBLISH:-}" = '1' ] || [ -n "${IMAGE_TEST_RESULTS_ROOT:-}
                   ;;
             esac
          done <<< "${fw_id_out}"
-         fw_evidence="$(grep --max-count=3 -- 'coreboot-' "${serial_log}" 2>/dev/null || true)"
-         [ -n "${fw_evidence}" ] || fw_evidence='no coreboot- banner on COM1 (VBox EFI fallback?)'
+         ## Fail CLOSED: a missing/erroring classifier leaves detected/match empty. An empty match
+         ## would be dropped -> null -> the results site reads it GREEN. Force detected=unverified
+         ## and match to a definite true|false, and ALWAYS pass --env-firmware-match.
+         [ -n "${fw_detected}" ] || fw_detected='unverified'
+         case "${fw_match}" in
+            true|false)
+               ;;
+            *)
+               fw_match='false'
+               ;;
+         esac
+         ## Evidence is free text from the serial log; PREFIX it with a fixed label so the value can
+         ## never start with '--' (a 'coreboot-' line could, e.g. '--coreboot...'), which the
+         ## publisher/emitter argparse would otherwise treat as a flag and fail the whole publish.
+         fw_evidence_raw="$(grep --max-count=3 -- 'coreboot-' "${serial_log}" 2>/dev/null || true)"
+         if [ -n "${fw_evidence_raw}" ]; then
+            fw_evidence="COM1 coreboot banner: ${fw_evidence_raw}"
+         else
+            fw_evidence='no coreboot- banner on COM1 (VBox EFI fallback?)'
+         fi
          fw_args=(
             --env-firmware-declared 'dasharo-efi'
             --env-firmware-detected "${fw_detected}"
             --env-firmware-evidence "${fw_evidence}"
+            --env-firmware-match "${fw_match}"
          )
-         [ -z "${fw_match}" ] || fw_args+=(--env-firmware-match "${fw_match}")
       fi
       ## lane / step-name must be label-safe ([A-Za-z0-9._-]); the publisher rejects
       ## spaces and punctuation (it writes them as root). shot_dir is the 7th positional
