@@ -101,17 +101,28 @@ framebuffer. Each patch script is idempotent.
   matches hardware. VERIFIED: coreboot logs `LAPIC 0x0 in XAPIC mode` + `IOAPIC: ... on
   fec00000`, and the guest serial (add `console=ttyS0,115200n8`) reaches
   `Welcome to Kicksecure (TM)! / localhost login:`.
+- CLEANUP -- GOP now uses the STOCK GraphicsOutputDxe PCI DriverBinding, not the earlier
+  direct-publish + ConOut hacks. The direct-publish existed ONLY because PCI did not
+  enumerate; CF8 fixed that, so stock `GraphicsOutputDxe` binds the vboxvga PCI handle and
+  publishes the GOP as its CHILD (`dh -p GraphicsOutput` -> `Pci(0x2,0x0)/AcpiAdr(..)`,
+  ConsoleOut). Reverted GraphicsOutput.c / PlatformConsole.c / PciHostBridgeLib markers to
+  stock in the mrchromebox tree (kept CF8 DSC + coreboot bochs/fw_cfg). Net LESS code; the
+  firmware shell + Setup menu still render.
 - OPEN -- only the VISIBLE GUI on the framebuffer. The OS boots to a console login, but
   the on-screen framebuffer stays the dead simpledrm console (`simple-framebuffer: Unable
-  to acquire aperture: -16` -- the vboxvga BAR 0xfc000000 is a claimed PCI resource). This
-  is an OS display-driver matter (vboxvideo must bind the vboxvga PCI device and evict
-  simpledrm), NOT a firmware blocker.
+  to acquire aperture: -16` -- the vboxvga BAR 0xfc000000 is a claimed PCI resource).
+  TESTED: this is INDEPENDENT of how the firmware publishes the GOP -- the stock-PCI-binding
+  GOP gives the exact same `-16` (the kernel derives the fb from the EFI GOP + the PCI BAR
+  either way). So it is an OS display-driver matter (vboxvideo must bind vboxvga + evict
+  simpledrm), NOT fixable by the GOP method. A firmware fix is possible but is MORE code
+  (reserve the GOP fb in the EFI memory map, or init vboxvga in the VBox-native VBVA/HGSMI
+  state coreboot's bochs-dispi path does not), not less.
 - RESUME (OVH, root, dm-vm-lock --class work):
-  * VISIBLE GUI: check whether the Kicksecure kernel loads `vboxvideo` (drivers/gpu/drm/
-    vboxvideo, PCI 80ee:beef); if not auto-bound, the GUI has no DRM device. Try booting
-    with `fbcon=map:0` / a modeset cmdline, or confirm the GUI target started (serial
-    `console=ttyS0` + drop `quiet loglevel=0`). Firmware-side option: reserve the GOP
-    framebuffer in the EFI memory map so simpledrm is not evicted.
+  * VISIBLE GUI (OS-side, simplest): get a shell (serial `console=ttyS0` + an autologin, or
+    boot a SYSMAINT entry) and check `lsmod | grep vbox`, `ls /dev/dri`, `dmesg | grep -i
+    drm`. If `vboxvideo` (PCI 80ee:beef) is not bound, the GUI has no DRM device -> load/
+    unblacklist it, or compare against a stock-VBox-EFI boot of the SAME image (does it use
+    vboxvideo or efifb there?). Firmware-side (more code): reserve the GOP fb region.
   * `/home/admin/cb-uefi-gfx.rom` is the CF8 build (boots an OS) but carries PCIDBG/
     GOPDBG SerialPortWrite debug markers + the instrument patches -- STRIP them before
     any land. ECAM pre-CF8 ROM archived at
