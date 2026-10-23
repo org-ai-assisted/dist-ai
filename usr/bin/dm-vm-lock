@@ -159,9 +159,13 @@ vm_lock_acquire_slot() {
       fi
       ## Loop invariant: SCAN first (top), then check the deadline, then sleep. So the scan runs
       ## once at/just-after each wake INCLUDING the final one at the deadline -- a slot freed any
-      ## time up to the deadline is claimed, never missed. --wait is a true deadline because the
-      ## sleep is clamped to the remaining budget (never a full poll past it): sleep min(poll,
-      ## remaining). Once a scan finds nothing AND the deadline has passed, give up with 75.
+      ## time up to the deadline is claimed, never missed. The sleep is clamped to the remaining
+      ## budget (never a full poll past it): sleep min(poll, remaining). --wait is a BEST-EFFORT
+      ## deadline, not a hard cutoff: a slot that frees right at the boundary (or within one wake's
+      ## scheduler slop past it) may still be claimed. That is deliberate -- claiming a just-freed
+      ## slot is far better than returning 75 and forcing a full retry of a multi-minute VM op, and
+      ## adding a pre-accept deadline check would instead MISS a slot freed during the wait. Once a
+      ## scan finds nothing AND the deadline has passed, give up with 75.
       now="$(date +%s)"
       [ "${now}" -lt "${deadline}" ] || return 75
       remaining=$(( deadline - now ))

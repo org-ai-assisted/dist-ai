@@ -194,7 +194,11 @@ d8="$(new_lockdir)"; dirs+=("${d8}")
 DM_VM_LOCK_WORK_SLOTS=1 DM_VM_LOCK_DIR="${d8}" \
    "${TOOL}" acquire --class work --ttl 30 --wait 10 -- sh -c "touch '${d8}/aheld'; exec sleep 1" &
 pids+=("$!")
-for (( i = 0; i < 200; i++ )); do [ -e "${d8}/aheld" ] && break; sleep 0.05; done
+## Assert the holder actually took the slot (its command touches the marker post-claim). Without
+## this check a holder that failed to start would let the waiter acquire immediately -> the test
+## would "pass" without ever exercising the deadline scan.
+if wait_for_ready "${d8}/aheld"; then r=0; else r=1; fi
+check 'holder took the only slot then frees it at ~1s (deadline-scan setup)' "${r}"
 rc=0; DM_VM_LOCK_WORK_SLOTS=1 DM_VM_LOCK_SLOT_POLL=10 DM_VM_LOCK_DIR="${d8}" \
    "${TOOL}" acquire --class work --ttl 10 --wait 3 -- true 2>/dev/null || rc=$?
 if [ "${rc}" -eq 0 ]; then r=0; else r=1; fi
