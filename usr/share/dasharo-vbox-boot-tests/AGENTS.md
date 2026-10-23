@@ -24,17 +24,16 @@ Other_64; `--firmware efi --chipset piix3 --hpet on --graphicscontroller vboxvga
 `build_coreboot_vm_plan` in `../dm-smbios-reader-boot-tests/dm-smbios-reader-vbox`
 emits exactly this.
 
-## Chipset: two working paths -- i440fx (OS boots) and the q35 port (firmware boots)
+## Chipset: two working paths -- i440fx and the q35 port, both boot the Kicksecure desktop
 
 VBox ships two chipsets: `piix3` (default, i440fx) and `ich9`. There is no upstream q35 machine
-type. Two bring-up paths now exist:
+type. Two bring-up paths now exist, and BOTH boot the full Kicksecure LXQt desktop end to end:
 
-### i440fx (`--chipset piix3`) -- the WORKING OS path
+### i440fx (`--chipset piix3`) -- the original OS path
 
 - Legacy host bridge, NO PCIe ECAM/MMCONFIG, NO fw_cfg -> drove the CF8-only PciLib + the
   MCFG-suppress patch.
-- Kicksecure LXQt desktop boots end-to-end through the coreboot/UefiPayload fork ROM. This is the
-  path to use for a working guest today.
+- Kicksecure LXQt desktop boots end-to-end through the coreboot/UefiPayload fork ROM.
 - `ich9` (stock) also exposes real ECAM (McfgBase ~0xdc000000 = 4G - RAM-hole, 64 buses) + an ACPI
   MCFG, but stock ich9 is an i440fx-class bridge with ECAM bolted on: no Q35 MCH, no programmable
   PCIEXBAR, no SMM.
