@@ -41,13 +41,31 @@ cleanup() {
 }
 trap cleanup EXIT
 
-## Hold a slot in the background: `<class> <lockdir> [slots]`. Records the pid. Returns once the
-## holder's registry file exists (slot already claimed), so the caller never races acquisition.
+## Hold a slot/lock in the background: `<class> <lockdir> [slots]`. The wrapped command touches a
+## unique readiness marker (exposed in the global `held_marker`) AFTER the lock+slot are acquired,
+## then sleeps. The marker -- not the holder REGISTRY file -- is the race-free "this holder has
+## its slot" signal: the record is now written BEFORE the slot poll, so a present record does NOT
+## mean the slot is claimed. Records the pid for cleanup.
+held_seq=0
+held_marker=""
 bg_hold() {
    local class="$1" dir="$2" slots="${3:-}"
+   held_seq=$(( held_seq + 1 ))
+   held_marker="${dir}/ready.${held_seq}"
    DM_VM_LOCK_WORK_SLOTS="${slots}" DM_VM_LOCK_DIR="${dir}" \
-      "${TOOL}" acquire --class "${class}" --ttl 120 --wait 10 -- sleep 120 &
+      "${TOOL}" acquire --class "${class}" --ttl 120 --wait 10 -- \
+      sh -c "touch '${held_marker}'; exec sleep 120" &
    pids+=("$!")
+}
+
+## Wait (bounded ~10s) for a bg_hold readiness marker -- i.e. that holder actually holds its slot.
+wait_for_ready() {
+   local marker="$1" i
+   for (( i = 0; i < 200; i++ )); do
+      [ -e "${marker}" ] && return 0
+      sleep 0.05
+   done
+   return 1
 }
 
 ## Wait (bounded ~10s) until at least n work-holder registry files exist in dir.
@@ -65,9 +83,9 @@ wait_for_n_work() {
 
 ## --- N=2 default: two work holders coexist, the third is capped (75). FAILS on old unbounded. ---
 d1="$(new_lockdir)"; dirs+=("${d1}")
-bg_hold work "${d1}" 2
-bg_hold work "${d1}" 2
-if wait_for_n_work "${d1}" 2; then r=0; else r=1; fi
+bg_hold work "${d1}" 2; m1="${held_marker}"
+bg_hold work "${d1}" 2; m2="${held_marker}"
+if wait_for_ready "${m1}" && wait_for_ready "${m2}"; then r=0; else r=1; fi
 check 'two work holders coexist under the default N=2' "${r}"
 
 rc=0; DM_VM_LOCK_WORK_SLOTS=2 DM_VM_LOCK_DIR="${d1}" "${TOOL}" acquire --class work --nonblock -- true 2>/dev/null || rc=$?
@@ -99,7 +117,7 @@ check 'a leak holder excludes work even with all slots free (75)' "${r}"
 ## --- the knob: DM_VM_LOCK_WORK_SLOTS=1 caps work at one. ---
 d3="$(new_lockdir)"; dirs+=("${d3}")
 bg_hold work "${d3}" 1
-if wait_for_n_work "${d3}" 1; then r=0; else r=1; fi
+if wait_for_ready "${held_marker}"; then r=0; else r=1; fi
 check 'one work holder under DM_VM_LOCK_WORK_SLOTS=1' "${r}"
 rc=0; DM_VM_LOCK_WORK_SLOTS=1 DM_VM_LOCK_DIR="${d3}" "${TOOL}" acquire --class work --nonblock -- true 2>/dev/null || rc=$?
 if [ "${rc}" -eq 75 ]; then r=0; else r=1; fi
@@ -123,7 +141,7 @@ check 'a missing slot file is rejected (69), not silently capped lower' "${r}"
 ##     code that always slept a full poll before re-checking the deadline. ---
 d5="$(new_lockdir)"; dirs+=("${d5}")
 bg_hold work "${d5}" 1
-if wait_for_n_work "${d5}" 1; then r=0; else r=1; fi
+if wait_for_ready "${held_marker}"; then r=0; else r=1; fi
 check 'one work holder under N=1 (deadline test setup)' "${r}"
 start_s=${SECONDS}
 rc=0; DM_VM_LOCK_WORK_SLOTS=1 DM_VM_LOCK_SLOT_POLL=10 DM_VM_LOCK_DIR="${d5}" \
@@ -138,12 +156,70 @@ check "the slot wait honors --wait as a deadline (75 at ~2s, not ~10s; got rc=${
 ##     FAILS on the old code that wrote B's record only after it claimed a slot (which it never does). ---
 d6="$(new_lockdir)"; dirs+=("${d6}")
 bg_hold work "${d6}" 1
-if wait_for_n_work "${d6}" 1; then r=0; else r=1; fi
+if wait_for_ready "${held_marker}"; then r=0; else r=1; fi
 check 'holder A takes the only slot (waiter-visibility setup)' "${r}"
+## B holds the shared lock then polls for the (busy) slot; its record must appear WHILE it polls,
+## so two work records are visible even though only A has a slot (wait_for_n_work counts records).
 DM_VM_LOCK_WORK_SLOTS=1 DM_VM_LOCK_DIR="${d6}" \
    "${TOOL}" acquire --class work --ttl 30 --wait 20 -- sleep 20 &
 pids+=("$!")
 if wait_for_n_work "${d6}" 2; then r=0; else r=1; fi
 check 'a work waiter polling for a slot is visible in status (record written before the poll)' "${r}"
+
+## --- a LIVE work waiter whose slot wait exceeds its --ttl must NOT be reaped: the record's
+##     deadline covers the slot wait + command (now+wait+ttl), so vm_lock_reap (run by `status`)
+##     leaves a live holder alone. FAILS on the code that wrote the deadline as now+ttl -- the
+##     waiter's record was reaped once past ttl while it still held the shared lock. ---
+d7="$(new_lockdir)"; dirs+=("${d7}")
+bg_hold work "${d7}" 1
+if wait_for_ready "${held_marker}"; then r=0; else r=1; fi
+check 'holder A takes the only slot (reap-of-waiter setup)' "${r}"
+DM_VM_LOCK_WORK_SLOTS=1 DM_VM_LOCK_SLOT_POLL=1 DM_VM_LOCK_DIR="${d7}" \
+   "${TOOL}" acquire --class work --ttl 2 --wait 60 -- sleep 60 &
+pids+=("$!")
+if wait_for_n_work "${d7}" 2; then r=0; else r=1; fi
+check 'waiter B record present before its ttl elapses (reap-of-waiter setup)' "${r}"
+sleep 3   ## past B's --ttl 2; it is still a live holder of the shared lock
+DM_VM_LOCK_DIR="${d7}" "${TOOL}" status >/dev/null 2>&1 || true   ## triggers a reap pass
+shopt -s nullglob
+work_recs=("${d7}"/holder.work.*)
+if [ "${#work_recs[@]}" -eq 2 ]; then r=0; else r=1; fi
+check 'a live work waiter past its --ttl is NOT reaped (deadline covers the slot wait)' "${r}"
+
+## --- a slot freed DURING the wait (before --wait expires) must be CLAIMED by the scan at the
+##     deadline, not missed. With poll (10s) >> wait (3s) there is no mid-wait retry, so only the
+##     final scan can catch a slot the holder frees at ~1s. FAILS on code that returns 75 after
+##     the last sleep without a final scan. ---
+d8="$(new_lockdir)"; dirs+=("${d8}")
+DM_VM_LOCK_WORK_SLOTS=1 DM_VM_LOCK_DIR="${d8}" \
+   "${TOOL}" acquire --class work --ttl 30 --wait 10 -- sh -c "touch '${d8}/aheld'; exec sleep 1" &
+pids+=("$!")
+## Assert the holder actually took the slot (its command touches the marker post-claim). Without
+## this check a holder that failed to start would let the waiter acquire immediately -> the test
+## would "pass" without ever exercising the deadline scan.
+if wait_for_ready "${d8}/aheld"; then r=0; else r=1; fi
+check 'holder took the only slot then frees it at ~1s (deadline-scan setup)' "${r}"
+rc=0; DM_VM_LOCK_WORK_SLOTS=1 DM_VM_LOCK_SLOT_POLL=10 DM_VM_LOCK_DIR="${d8}" \
+   "${TOOL}" acquire --class work --ttl 10 --wait 3 -- true 2>/dev/null || rc=$?
+if [ "${rc}" -eq 0 ]; then r=0; else r=1; fi
+check "a slot freed during the wait is claimed by the deadline scan, not missed (rc=${rc})" "${r}"
+
+## --- the record's ttl_deadline_epoch must cover the FULL worst-case flock hold: slot poll
+##     (--wait) + command (--ttl) + the SIGTERM->SIGKILL grace (DM_VM_LOCK_KILL_AFTER, during
+##     which a TERM-ignoring command still holds the flock). Deterministic: read the record's
+##     own fields, not reap timing. FAILS on a deadline of only acquired+wait+ttl. ---
+d9="$(new_lockdir)"; dirs+=("${d9}")
+DM_VM_LOCK_WORK_SLOTS=1 DM_VM_LOCK_KILL_AFTER=9 DM_VM_LOCK_DIR="${d9}" \
+   "${TOOL}" acquire --class work --ttl 5 --wait 7 -- sh -c "touch '${d9}/cheld'; exec sleep 60" &
+pids+=("$!")
+for (( i = 0; i < 200; i++ )); do [ -e "${d9}/cheld" ] && break; sleep 0.05; done
+rec="$(cat -- "${d9}"/holder.work.* 2>/dev/null || true)"
+acq_iso="${rec#*acquired=}"; acq_iso="${acq_iso%% *}"
+dl="${rec#*ttl_deadline_epoch=}"; dl="${dl%% *}"
+acq_epoch="$(date -u -d "${acq_iso}" +%s 2>/dev/null || printf '%s' 0)"
+want=$(( 7 + 5 + 9 ))   ## --wait + --ttl + DM_VM_LOCK_KILL_AFTER
+got=$(( dl - acq_epoch ))
+if [ "${got}" -eq "${want}" ]; then r=0; else r=1; fi
+check "record deadline spans wait+ttl+kill_after so a live holder is never reaped (want ${want}s, got ${got}s)" "${r}"
 
 vmlock_done
