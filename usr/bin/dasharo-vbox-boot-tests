@@ -103,11 +103,19 @@ cleanup() {
 }
 trap cleanup EXIT
 
+## Serialize the actual VM boot under the shared VM-work lock (class=work): it excludes a
+## concurrent leak test and claims a slot so concurrent VM boots cannot oversubscribe the host
+## CPUs. Wrapped around the BOOT ONLY, not the whole script -- the pytest smoke above runs in
+## the generic CI container where /run/dm-vm-lock does not exist; taking the lock there would
+## wrongly die. dm-vm-lock's reentrancy passes through when a caller already holds the lock.
+boot_cmd=(
+   python3 "${backend}" firmware
+   --vm 'dasharo-vbox-boot' --rom "${rom}"
+   --uart-socket "${uart_socket}" --shot-dir "${shot_dir}"
+   --vboxmanage "${vboxmanage}" "$@"
+)
 rc=0
-python3 "${backend}" firmware \
-   --vm 'dasharo-vbox-boot' --rom "${rom}" \
-   --uart-socket "${uart_socket}" --shot-dir "${shot_dir}" \
-   --vboxmanage "${vboxmanage}" "$@" || rc=$?
+dm-vm-lock acquire --class work --ttl "${DASHARO_VBOX_LOCK_TTL:-3600}" -- "${boot_cmd[@]}" || rc=$?
 
 ## Any non-zero backend rc is a real FAIL here: the genuinely-optional cases (no ROM,
 ## no patched VBox) already SKIP above, BEFORE the backend runs. A backend SETUP (2)

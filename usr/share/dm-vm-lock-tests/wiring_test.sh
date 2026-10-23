@@ -40,6 +40,14 @@ rec="${work}/calls"
    printf '%s\n' 'exit 0'
 } > "${stubbin}/dm-vm-lock"
 chmod +x -- "${stubbin}/dm-vm-lock"
+
+## A VBoxManage stub so the VBox-gated lanes (dasharo, smbios --backend vbox) see a VBox host and
+## reach their lock guard. It is never actually run -- the dm-vm-lock stub exits before the boot.
+{
+   printf '%s\n' '#!/bin/bash'
+   printf '%s\n' 'exit 0'
+} > "${stubbin}/VBoxManage"
+chmod +x -- "${stubbin}/VBoxManage"
 export PATH="${stubbin}:${PATH}"
 
 ppfile="${work}/pp"; printf '%s\n' "x" > "${ppfile}"
@@ -72,5 +80,22 @@ assert_class 'dm-whonix-pair (leak test)'     leak "${bin}/dm-whonix-pair"     -
 assert_class 'dm-calamares-install (VBox)'    work "${bin}/dm-calamares-install" --vm V --iso /nonexistent.iso --passphrase-file "${ppfile}"
 assert_class 'image-test-run (VBox image)'    work "${bin}/image-test-run"     "${conf}"
 assert_class 'dm-iso-build (image build)'     work "${bin}/dm-iso-build"
+
+## The dasharo lane locks around the BOOT (not a top-of-script re-exec): it must first pass the
+## CI-safe pytest smoke + the ROM/VBox guards. Supply a (never-booted) ROM path so it reaches the
+## guarded boot, where the VBoxManage stub lets it proceed to the dm-vm-lock wrapper.
+export DASHARO_COREBOOT_ROM="${work}/fake.rom"; printf '%s' "" > "${DASHARO_COREBOOT_ROM}"
+assert_class 'dasharo-vbox-boot-tests (VBox boot)' work "${bin}/dasharo-vbox-boot-tests"
+unset DASHARO_COREBOOT_ROM
+
+## The smbios lane locks only when the EFFECTIVE backend is vbox, AFTER a pytest smoke that spawns
+## PATH-sensitive dm-smbios-reader-image-test subprocesses -- a VBoxManage stub on PATH would make
+## THOSE auto-resolve to vbox and fail, so the re-exec cannot be driven dynamically here without
+## perturbing that suite. Assert it STATICALLY instead (same tradeoff as the vboxadd static canary):
+## the guard re-execs under --class work AND is gated on the vbox backend. A revert/class-change FAILS.
+smbios_leaf="${bin}/dm-smbios-reader-boot-tests"
+if grep --extended-regexp --quiet "exec dm-vm-lock acquire --class work " -- "${smbios_leaf}" \
+   && grep --extended-regexp --quiet '\[ "\$\{effective_backend\}" = .vbox. \]' -- "${smbios_leaf}"; then r=0; else r=1; fi
+check 'dm-smbios-reader-boot-tests self-locks (--class work), gated on the vbox backend [static]' "${r}"
 
 vmlock_done

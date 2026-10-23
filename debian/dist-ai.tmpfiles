@@ -11,3 +11,11 @@
 # simply skips these lines (harmless -- the dir is not needed there).
 d /run/dm-vm-lock 1770 root vboxusers -
 f /run/dm-vm-lock/vm.lock 0660 root vboxusers -
+# Work-concurrency slots: a work holder claims one (exclusive flock) on top of the shared
+# vm.lock, capping concurrent VM work at DM_VM_LOCK_WORK_SLOTS (default 2). Pre-create MAX=4
+# (headroom above the default) root-owned, same swap-proofing as vm.lock. Setting the knob
+# above 4 needs a matching slot.N line here (dm-vm-lock fails loud on a missing slot).
+f /run/dm-vm-lock/slot.1 0660 root vboxusers -
+f /run/dm-vm-lock/slot.2 0660 root vboxusers -
+f /run/dm-vm-lock/slot.3 0660 root vboxusers -
+f /run/dm-vm-lock/slot.4 0660 root vboxusers -

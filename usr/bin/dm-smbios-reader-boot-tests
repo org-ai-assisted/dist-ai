@@ -145,6 +145,22 @@ case "${backend}" in
       ;;
 esac
 
+## Serialize the actual VBox boot under the SHARED VM-work lock (class=work): the same mutex the
+## other VBox lanes take, giving leak-exclusion + the N-slot CPU cap across lanes (the lane's own
+## private AMD-V flock in start_vbox_backend only serialises smbios-vs-smbios, invisible to a leak
+## test and the cross-lane cap). ONLY when the EFFECTIVE backend is vbox: the qemu/CI path has no
+## /run/dm-vm-lock and must not try to take it, which is why this is NOT a top-of-script re-exec
+## like the pure-VBox lanes. The backend is already resolved above (lock-free); re-exec so the lock
+## wraps the whole boot, and dm-vm-lock's reentrancy passes the second pass through.
+effective_backend="${backend}"
+if [ "${backend}" = 'auto' ]; then
+   effective_backend="${resolved_backend:-}"
+fi
+if [ "${effective_backend}" = 'vbox' ] && [ -z "${DM_VM_LOCK_HELD:-}" ]; then
+   ## style-ok: R-103 -- intentional re-exec: run this VBox boot test under the VM-work lock.
+   exec dm-vm-lock acquire --class work --ttl "${DM_SMBIOS_READER_BOOT_LOCK_TTL:-3600}" -- "$0" "$@"
+fi
+
 ## Drive dm-smbios-reader-image-test, pointing it at the bundled dm-smbios-reader-qemu (both live in tests_dir).
 ## dm-smbios-reader-image-test returns 0 (PASS) / 5 (FAIL) / 2 (setup); all non-zero propagate
 ## as FAIL, which is what the aggregate runner wants.
