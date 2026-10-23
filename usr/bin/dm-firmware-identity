@@ -66,7 +66,7 @@ firmware_identity_classify() {
 }
 
 main() {
-   local efi='' coreboot='0' secureboot='0' declared=''
+   local efi='' coreboot='0' secureboot='0' declared='' declared_set=0
    while [ "$#" -gt 0 ]; do
       case "$1" in
          --efi)
@@ -87,6 +87,7 @@ main() {
          --declared)
             [ "$#" -ge 2 ] || die 64 "--declared requires a value"
             declared="$2"
+            declared_set=1
             shift 2
             ;;
          *)
@@ -100,12 +101,17 @@ main() {
    case "${efi}" in 0|1) ;; *) die 64 "--efi must be 0 or 1 (got '${efi}')" ;; esac
    case "${coreboot}" in 0|1) ;; *) die 64 "--coreboot must be 0 or 1 (got '${coreboot}')" ;; esac
    case "${secureboot}" in 0|1) ;; *) die 64 "--secureboot must be 0 or 1 (got '${secureboot}')" ;; esac
+   ## An explicitly empty --declared is a usage error, NOT "omitted": match=unknown is reserved
+   ## for a genuine omission, so an empty value cannot slip a mismatch past as unknown.
+   if [ "${declared_set}" -eq 1 ] && [ -z "${declared}" ]; then
+      die 64 "--declared must not be empty"
+   fi
 
    local detected
    detected="$(firmware_identity_classify "${efi}" "${coreboot}" "${secureboot}")"
    printf '%s\n' "detected=${detected}"
 
-   if [ -z "${declared}" ]; then
+   if [ "${declared_set}" -eq 0 ]; then
       printf '%s\n' 'match=unknown'
       return 0
    fi

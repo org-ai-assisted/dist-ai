@@ -119,6 +119,35 @@ check "coreboot bios_vendor -> DETECTED=dasharo-efi (distinct from vbox-efi)" "$
 got=0; has 'MATCH=false' "$(cat -- "${work}/fw")" || got=1
 check "declared vbox-efi but booted coreboot -> MATCH=false (loud mismatch)" "${got}"
 
+## --- a bios_vendor that merely STARTS with 'coreboot' is NOT the dasharo ROM (anchored match) ---
+coreboot_prefix_out='[ -d /sys/firmware/efi ] -> UEFI
+mokutil --sb-state -> SecureBoot disabled
+bios_vendor -> coreboot-notdasharo'
+run_case efi "${coreboot_prefix_out}"
+got=0; has 'DETECTED=vbox-efi' "$(cat -- "${work}/fw")" && ! has 'DETECTED=dasharo' "$(cat -- "${work}/fw")" || got=1
+check "bios_vendor 'coreboot-notdasharo' -> DETECTED=vbox-efi (not dasharo-efi; anchored)" "${got}"
+
+## --- fail CLOSED: an EMPTY probe (gc_run failed) must NOT default to a BIOS identity that
+##     silently MATCHes a --firmware bios lane; it records unverified + MATCH=false. ---
+run_case bios ""
+got=0; has 'DETECTED=unverified' "$(cat -- "${work}/fw")" && has 'MATCH=false' "$(cat -- "${work}/fw")" || got=1
+check "empty probe + declared bios -> DETECTED=unverified MATCH=false (no silent bios MATCH)" "${got}"
+
+## --- fail CLOSED: a MISSING/erroring classifier (empty output) must not leave MATCH empty (which
+##     dm-release-test forwards as null -> the results site reads GREEN); force MATCH=false. ---
+stub_libdir="${work}/stub-bin"
+mkdir --parents -- "${stub_libdir}"
+printf '%s\n' '#!/bin/bash' 'exit 0' > "${stub_libdir}/dm-firmware-identity"   ## prints nothing
+chmod +x -- "${stub_libdir}/dm-firmware-identity"
+saved_lib_dir="${lib_dir}"
+# shellcheck disable=SC2034  ## read by the sourced capture_firmware_lane
+lib_dir="${stub_libdir}"
+run_case efi-secureboot "${efi_sb_out}"
+# shellcheck disable=SC2034
+lib_dir="${saved_lib_dir}"
+got=0; has 'DETECTED=unverified' "$(cat -- "${work}/fw")" && has 'MATCH=false' "$(cat -- "${work}/fw")" || got=1
+check "empty classifier output -> DETECTED=unverified MATCH=false (never null/green)" "${got}"
+
 ## --- no evidence file set: capture is a no-op (does not error) ---
 # shellcheck disable=SC2034  ## read by the sourced capture_firmware_lane
 firmware=efi

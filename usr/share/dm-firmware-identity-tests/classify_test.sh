@@ -108,6 +108,12 @@ rc=0; cli --efi 1 --bogus >/dev/null 2>&1 || rc=$?
 if [ "${rc}" -eq 64 ]; then r=0; else r=1; fi
 check 'CLI: an unknown flag is rejected (64)' "${r}"
 
+## An explicitly empty --declared must be a usage error, NOT silently treated as omitted
+## (match=unknown), so an empty value cannot dodge a mismatch verdict.
+rc=0; cli --efi 1 --declared '' >/dev/null 2>&1 || rc=$?
+if [ "${rc}" -eq 64 ]; then r=0; else r=1; fi
+check 'CLI: an explicitly empty --declared is rejected (64), not treated as omitted' "${r}"
+
 printf '%s\n' "" "$(basename -- "$0"): ${failures} fail"
 [ "${failures}" -eq 0 ] || exit 1
 exit 0
