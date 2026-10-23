@@ -17,6 +17,17 @@
 ##                                (builds auto-lane scratch; AMD-V has its own lock), but
 ##                                collectively block a leak test and are blocked by one.
 ##
+## Bounded work concurrency (CPU-time cap): the shared lock alone is UNBOUNDED, so N full
+## VBox VMs (each dm-vbox-vcpus = online-1 = 7 vCPUs) could boot at once and oversubscribe the
+## host's online cores (8 on the OVH server under nosmt=force), starving the boot-critical
+## window. On top of the shared lock, a work holder also claims one of N pre-created slot files
+## (DM_VM_LOCK_WORK_SLOTS, default 2), each an exclusive flock -- a counting semaphore capping
+## concurrent work at N. leak is untouched (its LOCK_EX on vm.lock excludes all work regardless
+## of slots). N=2 keeps per-VM vCPUs=7 and tolerates the rare 1.75x peak because the vboxadd
+## Restart=on-failure drop-in self-heals a starved oneshot; the vboxadd retry counter is the
+## monitor -- real retry noise under two concurrent full VMs means lower per-VM vCPUs before
+## ever raising N. Reentrant work-under-work does NOT take a second slot (pass-through below).
+##
 ## Wrap any VM-work command: `dm-vm-lock acquire --class <leak|work> --ttl N -- <cmd...>`.
 ## The leaf entry points self-lock (re-exec under this tool) so acquisition is INSIDE the
 ## server-side scripts and cannot be bypassed -- nothing to remember.
@@ -89,6 +100,7 @@ usage:
              --ttl N        hard deadline for <command> via timeout(1) (default ${vm_lock_default_ttl}).
              --wait N       block up to N seconds for the lock (default ${vm_lock_default_wait}).
              --nonblock     fail immediately if the lock is contended.
+                            (work also claims 1 of DM_VM_LOCK_WORK_SLOTS slots, default 2.)
   status   reap stale holders, then list the current holders.
 USAGE
    exit 64
@@ -107,6 +119,54 @@ vm_lock_flock_flag() {
          return 1
          ;;
    esac
+}
+
+## Claim one of N work slots (a counting semaphore bounding concurrent work). Scans slot.1..N
+## trying a NON-blocking exclusive flock on each; the first free slot wins and its fd is held
+## for the command's lifetime (closed in the child so descendants cannot pin it). All taken ->
+## poll until one frees or the wait budget (the same --wait the main lock uses) elapses. flock
+## has no native block-on-any-of-set, and per the standing rule we do NOT hand-roll a fancier
+## primitive: a short poll of a minutes-long VM test is negligible. Uses fixed fd 8 (fd 9 is the
+## shared lock), reused across the scan. Returns 0 (slot held on fd 8) or 75 (capped / timed out).
+vm_lock_acquire_slot() {
+   local slots="$1" wait_budget="$2" nonblock="$3"
+   local i slotfile start deadline poll now remaining
+   poll="${DM_VM_LOCK_SLOT_POLL:-2}"
+   case "${poll}" in ''|*[!0-9]*) die 64 "DM_VM_LOCK_SLOT_POLL must be whole seconds" ;; esac
+   poll="$(( 10#${poll} ))"
+   [ "${poll}" -ge 1 ] || die 64 "DM_VM_LOCK_SLOT_POLL must be >= 1"
+   ## Slot files are a boot-durable precondition (tmpfiles.d), like vm.lock. A missing slot means
+   ## DM_VM_LOCK_WORK_SLOTS exceeds the pre-created count -> fail loud, do NOT silently cap lower.
+   for (( i=1; i<=slots; i++ )); do
+      slotfile="${vm_lock_dir}/slot.${i}"
+      [ -e "${slotfile}" ] \
+         || die 69 "slot file ${slotfile} missing -- raise the slot.N count in dist-ai.tmpfiles or lower DM_VM_LOCK_WORK_SLOTS (requested ${slots})"
+   done
+   start="$(date +%s)"
+   deadline=$(( start + wait_budget ))
+   while :; do
+      for (( i=1; i<=slots; i++ )); do
+         slotfile="${vm_lock_dir}/slot.${i}"
+         exec 8<>"${slotfile}" || die 69 "cannot open ${slotfile}"
+         if flock --exclusive --nonblock 8; then
+            return 0
+         fi
+         ## Slot busy: drop this fd before trying the next so a failed attempt never pins it.
+         exec 8<&-
+      done
+      if [ "${nonblock}" -eq 1 ]; then
+         return 75
+      fi
+      ## --wait is a true DEADLINE. Sleep only up to the REMAINING budget, never a full poll
+      ## interval past it: otherwise a --wait shorter than the poll waits a whole poll and can
+      ## then acquire + run the command (past the stated wait), and a large poll delays the 75
+      ## far past the window it reports. sleep min(poll, remaining).
+      now="$(date +%s)"
+      [ "${now}" -lt "${deadline}" ] || return 75
+      remaining=$(( deadline - now ))
+      [ "${poll}" -lt "${remaining}" ] && remaining="${poll}"
+      sleep "${remaining}"
+   done
 }
 
 ## Sanitize an observability field before it is written to a registry line. The reader
@@ -250,6 +310,10 @@ cmd_acquire() {
    ## O_RDWR, no truncate (the file is shared and may be held; flock needs only an fd).
    exec 9<>"${vm_lock_file}" || die 69 "cannot open ${vm_lock_file} -- is this user in group 'vboxusers'?"
 
+   ## Start of the acquisition window: --wait is the TOTAL budget across the shared lock AND the
+   ## work-slot claim below, so two contended stages cannot double the caller's stated wait.
+   local acq_start
+   acq_start="$(date +%s)"
    local flock_wait=(--timeout "${wait}")
    if [ "${nonblock}" -eq 1 ]; then
       flock_wait=(--nonblock)
@@ -263,8 +327,11 @@ cmd_acquire() {
       die 75 "could not acquire the ${class} VM-work lock within ${wait}s"
    fi
 
-   ## Record holder identity for observability. Best-effort: a failed write never fails the
-   ## run (the flock on fd 9 is the real mutex). cmd= is LAST (may contain spaces).
+   ## Record holder identity for observability BEFORE the slot poll below. A work waiter holds the
+   ## shared lock (so it blocks a leak) while it polls for a slot; writing the record only after a
+   ## slot is claimed would make `status` report "no holders" during that window even though a leak
+   ## is genuinely blocked. Best-effort: a failed write never fails the run (the flock on fd 9 is
+   ## the real mutex). cmd= is LAST (may contain spaces).
    local pid=$$ now deadline session session_id user
    now="$(date +%s)"
    deadline=$(( now + ttl ))
@@ -284,9 +351,31 @@ cmd_acquire() {
       printf '%s\n' \
          "class=${class} session=${session} session_id=${session_id} user=${user} pid=${pid} acquired=$(date -u -d "@${now}" +%FT%TZ) ttl=${ttl} ttl_deadline_epoch=${deadline} cmd=$*" > "${vm_lock_holder_file}"
    ) 2>/dev/null || true
-
    ## Release the registry entry on exit; flock on fd 9 auto-releases when this process ends.
    trap vm_lock_cleanup EXIT
+
+   ## Bounded work concurrency: after the shared lock (which already blocks a leak), claim one of
+   ## N slots so concurrent work cannot oversubscribe the host CPUs. A leak needs no slot -- its
+   ## exclusive lock on fd 9 already excludes all work regardless of slot state.
+   if [ "${class}" = 'work' ]; then
+      local slots slot_wait now_slot
+      slots="${DM_VM_LOCK_WORK_SLOTS:-2}"
+      case "${slots}" in ''|*[!0-9]*) die 64 "DM_VM_LOCK_WORK_SLOTS must be a whole number" ;; esac
+      slots="$(( 10#${slots} ))"
+      [ "${slots}" -ge 1 ] || die 64 "DM_VM_LOCK_WORK_SLOTS must be >= 1"
+      ## Remaining budget = wait minus whatever the shared-lock stage already consumed (clamped >=0).
+      now_slot="$(date +%s)"
+      slot_wait=$(( wait - ( now_slot - acq_start ) ))
+      [ "${slot_wait}" -ge 0 ] || slot_wait=0
+      if ! vm_lock_acquire_slot "${slots}" "${slot_wait}" "${nonblock}"; then
+         printf '%s\n' "${me}: all ${slots} work slots busy; current holders:" >&2
+         cmd_status >&2 || true
+         if [ "${nonblock}" -eq 1 ]; then
+            die 75 "could not claim a work slot (${slots} in use, --nonblock)"
+         fi
+         die 75 "could not claim a work slot (all ${slots} in use) within ${wait}s"
+      fi
+   fi
 
    ## Run the command under the TTL deadline, with the lock fd CLOSED in the child so the
    ## command's descendants (VBoxSVC, a detached GUI) cannot inherit it and pin the lock.
@@ -298,9 +387,12 @@ cmd_acquire() {
    ## remains a residual. NOTE: a VBox VM runs under VBoxSVC (a separate process tree), so a kill
    ## here does NOT stop the VM -- the leaf's own exit/TERM cleanup powers it off; the TTL backstop
    ## is a last resort for an already-wedged holder.
+   ## Close BOTH lock fds in the child: fd 9 (shared/exclusive lock) and fd 8 (work slot, open
+   ## only for class=work; closing an unopened fd is a harmless no-op for leak). A descendant
+   ## (VBoxSVC, a detached GUI) that inherited either would pin the lock/slot past the command.
    local rc=0
    DM_VM_LOCK_HELD="${class}" \
-      timeout --signal=TERM --kill-after="${vm_lock_kill_after}" "${ttl}" "$@" 9<&- &
+      timeout --signal=TERM --kill-after="${vm_lock_kill_after}" "${ttl}" "$@" 9<&- 8<&- &
    vm_lock_child_pid=$!
    trap vm_lock_forward_term TERM INT HUP
    wait "${vm_lock_child_pid}"

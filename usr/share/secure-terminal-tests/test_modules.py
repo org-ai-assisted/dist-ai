@@ -1451,7 +1451,7 @@ except Exception:
     _wd_dump_raised = True
 ok(not _wd_dump_raised, 'crashdiag: the watchdog swallows a broken log in _dump (never raises)')
 
-# hang_threshold_from_env: default / explicit / floored / malformed-falls-back.
+# hang_threshold_from_env: default / explicit / floored / capped / malformed / non-finite.
 _wd_env_prev = os.environ.pop(crashdiag.HANG_WATCHDOG_ENV, None)
 ok(crashdiag.hang_threshold_from_env() == crashdiag.HANG_WATCHDOG_DEFAULT_SECS,
    'crashdiag: hang threshold defaults when the env var is unset')
@@ -1464,6 +1464,19 @@ ok(crashdiag.hang_threshold_from_env() == crashdiag.HANG_WATCHDOG_MIN_SECS,
 os.environ[crashdiag.HANG_WATCHDOG_ENV] = 'not-a-number'
 ok(crashdiag.hang_threshold_from_env() == crashdiag.HANG_WATCHDOG_DEFAULT_SECS,
    'crashdiag: a malformed hang threshold falls back to the default (never disables it)')
+# inf/nan parse as floats but would disable the watchdog (inf -> OverflowError in
+# Event.wait, nan -> comparisons never fire); both must fall back to the default.
+os.environ[crashdiag.HANG_WATCHDOG_ENV] = 'inf'
+ok(crashdiag.hang_threshold_from_env() == crashdiag.HANG_WATCHDOG_DEFAULT_SECS,
+   'crashdiag: an infinite hang threshold falls back to the default (never disables it)')
+os.environ[crashdiag.HANG_WATCHDOG_ENV] = 'nan'
+ok(crashdiag.hang_threshold_from_env() == crashdiag.HANG_WATCHDOG_DEFAULT_SECS,
+   'crashdiag: a NaN hang threshold falls back to the default (never disables it)')
+# A huge finite value passes isfinite but threshold/4.0 would still overflow Event.wait;
+# it must be capped at the maximum, not disable the watchdog.
+os.environ[crashdiag.HANG_WATCHDOG_ENV] = '1e300'
+ok(crashdiag.hang_threshold_from_env() == crashdiag.HANG_WATCHDOG_MAX_SECS,
+   'crashdiag: an enormous hang threshold is capped at the maximum (never disables it)')
 if _wd_env_prev is None:
     os.environ.pop(crashdiag.HANG_WATCHDOG_ENV, None)
 else:

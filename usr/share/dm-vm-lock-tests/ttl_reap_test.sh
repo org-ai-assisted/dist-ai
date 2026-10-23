@@ -31,7 +31,7 @@ cleanup() { safe-rm --recursive --force -- "${tmp}"; }
 trap cleanup EXIT
 
 ## --- TTL self-release ------------------------------------------------------------------
-d1="${tmp}/d1"; mkdir -- "${d1}"; printf '%s' "" > "${d1}/vm.lock"
+d1="${tmp}/d1"; mkdir -- "${d1}"; materialize_lockdir "${d1}"
 export DM_VM_LOCK_DIR="${d1}"
 start=${SECONDS}
 rc=0; "${TOOL}" acquire --class leak --ttl 1 --wait 5 -- sleep 10 2>/dev/null || rc=$?
@@ -42,7 +42,7 @@ rc=0; "${TOOL}" acquire --class leak --nonblock -- true || rc=$?
 check 'the lock is free after a TTL kill' "${rc}"
 
 ## --- registry format -------------------------------------------------------------------
-d2="${tmp}/d2"; mkdir -- "${d2}"; printf '%s' "" > "${d2}/vm.lock"
+d2="${tmp}/d2"; mkdir -- "${d2}"; materialize_lockdir "${d2}"
 export DM_VM_LOCK_DIR="${d2}"
 CLAUDE_RC_SESSION_NAME=devX CLAUDE_CODE_SESSION_ID=uuid-X \
    "${TOOL}" acquire --class work --ttl 30 --wait 5 -- sh -c 'sleep 3' &
@@ -65,7 +65,7 @@ wait "${bgpid}" 2>/dev/null || true
 ## reader (vm_lock_kv) matches leftmost, so an unsanitized session would hijack the pid lookup
 ## and mis-reap the LIVE holder. The written session= must be sanitized AND vm_lock_kv must
 ## read back the REAL wrapper pid, not the injected one.
-d4="${tmp}/d4"; mkdir -- "${d4}"; printf '%s' "" > "${d4}/vm.lock"
+d4="${tmp}/d4"; mkdir -- "${d4}"; materialize_lockdir "${d4}"
 export DM_VM_LOCK_DIR="${d4}"
 CLAUDE_RC_SESSION_NAME='foo pid=123' CLAUDE_CODE_SESSION_ID='id bar=1' \
    "${TOOL}" acquire --class work --ttl 30 --wait 5 -- sh -c 'sleep 3' &
@@ -87,7 +87,7 @@ check 'injection: vm_lock_kv reads the real pid, not the injected 123' "${r}"
 wait "${bgpid}" 2>/dev/null || true
 
 ## --- reaping ---------------------------------------------------------------------------
-d3="${tmp}/d3"; mkdir -- "${d3}"; printf '%s' "" > "${d3}/vm.lock"
+d3="${tmp}/d3"; mkdir -- "${d3}"; materialize_lockdir "${d3}"
 export DM_VM_LOCK_DIR="${d3}"
 printf '%s\n' "class=work session=g session_id=g user=g pid=999999 acquired=2020-01-01T00:00:00Z ttl=60 ttl_deadline_epoch=9999999999 cmd=ghost" \
    > "${d3}/holder.work.999999"

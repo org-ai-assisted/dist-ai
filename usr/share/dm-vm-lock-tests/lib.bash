@@ -36,12 +36,23 @@ check() {
    fi
 }
 
-## A fresh lock dir with a pre-created vm.lock (what the shipped tmpfiles.d materializes).
-## Prints the path; the caller exports DM_VM_LOCK_DIR=<it>.
+## Materialize the deployed lock layout (vm.lock + slot.1..slot.4) in an EXISTING dir -- what the
+## shipped tmpfiles.d creates. Pre-creating the slots is the DEFAULT so every work-class test gets
+## a deployable dir with nothing to remember; a test probing the missing-slot path removes one
+## explicitly. Keep the slot count in sync with debian/dist-ai.tmpfiles.
+materialize_lockdir() {
+   local d="$1" i
+   printf '%s' "" > "${d}/vm.lock"
+   for (( i = 1; i <= 4; i++ )); do
+      printf '%s' "" > "${d}/slot.${i}"
+   done
+}
+
+## A FRESH temp lock dir, fully materialized. Prints the path; the caller exports DM_VM_LOCK_DIR=<it>.
 new_lockdir() {
    local d
    d="$(mktemp --directory --tmpdir dm-vm-lock-test.XXXXXX)"
-   printf '%s' "" > "${d}/vm.lock"
+   materialize_lockdir "${d}"
    printf '%s' "${d}"
 }
 
