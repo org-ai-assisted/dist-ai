@@ -65,17 +65,30 @@ coreboot q35 ROM: switch the board to `emulation/qemu-q35` and force NO_SMM
   code" (hands to edk2). The firmware bring-up works.
 - REGRESSION VERIFIED: stock VBox EFI (no coreboot, `Q35Chipset` off) still boots the Kicksecure
   desktop (1280x800, ~8900 colours) with the rebuilt VBoxDD.so -- the default firmware is unbroken.
-- OPEN (milestone 2): the edk2 UefiPayload does NOT start on q35/ich9 -- after coreboot's handoff
-  the 1024x768 framebuffer stays blank and edk2 emits no serial (worked fine on i440fx/piix3). Needs
-  edk2-payload-on-q35 debugging (enable the UefiPayload DEBUG serial; check what its early init
-  touches on ich9). Until fixed, q35 reaches the payload but not a guest OS.
+- MILESTONE 2 VERIFIED: the full Kicksecure LXQt desktop boots end to end through the q35 ROM
+  (1024x768, 8815 colours, same as the i440fx path) after two further fixes:
+  1. PMBASE (coreboot): the edk2 payload binds `AcpiTimerLib`, so `MicroSecondDelay` (used by
+     CpuDxe MP-init's AP wait) polls the FADT ACPI PM-timer I/O port.  coreboot q35's i82801ix put
+     PMBASE at 0x600 -> PM timer 0x608, but VBox's emulated ACPI PM block is fixed at 0x4000 and is
+     NOT relocated by an ICH9 LPC PMBASE write (the i440fx/piix4 path IS relocated, which is why
+     i440fx at 0xE408 worked).  edk2 then spun forever on a dead 0x608 timer -> BSP wedged right
+     after `AP Vector ... 87000`.  Fix: i82801ix q35 `DEFAULT_PMBASE` 0x600 -> 0x4000
+     (org-ai-assisted/coreboot@ai), so the FADT PM timer (0x4008) matches VBox's live timer.
+  2. Build EDK2 as RELEASE, not DEBUG: a DEBUG payload halts at a benign `DXE_ASSERT` in
+     `DxeTcgPhysicalPresenceLib` (no TPM present) at BdsDxe; RELEASE skips asserts and boots.
+     `deploy-q35-build.sh` forces `CONFIG_EDK2_RELEASE`.
+- The proper long-term fix for #1 is VBox-side (wire the ICH9 LPC PMBASE write to
+  `acpiR3UpdatePmHandlers` so VBox relocates its ACPI PM block like the piix4 path); the coreboot
+  PMBASE workaround is what is currently shipped and verified.
 
 ### Which to use
 
-- Working guest OS today: i440fx. For the Dasharo port, a Dasharo i440fx `vbox_uefi` config is the
-  quickest route to a booting guest (sovereign boot + setup menus are payload-level, so they port).
+- Both work now: i440fx/piix3 (the original path) and q35/ich9 (`Q35Chipset` on) both boot the
+  Kicksecure desktop. For the Dasharo port, a Dasharo q35 `vbox_uefi` config now has a working
+  VBox target; a Dasharo i440fx config is the alternative (sovereign boot + setup menus are
+  payload-level, so they port either way).
 - Upstreamable VBox chipset work: the q35 port above (separable from the CorebootRom/SLP_EN patches;
-  gated, legacy-safe) -- finish milestone 2 for a q35 guest.
+  gated, legacy-safe).
 
 ### Ring-0 gotcha when testing a self-built VBox on a host with the packaged VBox
 
