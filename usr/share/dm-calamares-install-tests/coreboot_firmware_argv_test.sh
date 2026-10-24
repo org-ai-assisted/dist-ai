@@ -182,6 +182,46 @@ check "capture_firmware_lane: coreboot install MATCHes (declares dasharo-efi, no
 got=0; has 'DETECTED=dasharo-efi' "${fw_ev}" || got=1
 check "capture_firmware_lane: coreboot detected=dasharo-efi" "${got}"
 
+## --- cb_reset_nvram regression: coreboot drops the un-reloadable FMAP .nvram before a restart --
+## The coreboot firmware writes the VM .nvram in coreboot FMAP format, which VBox CANNOT reload
+## (VERR_TAR_BAD_CHKSUM_FIELD -> the installed-disk startvm fails). cb_reset_nvram must delete the
+## stale .nvram for the coreboot lane (coreboot boots the installed disk by scanning the ESP, no
+## persistent varstore needed) and be a no-op otherwise. FAILS on pre-fix code (no such function).
+nvram_stub="${work}/vbm-nvram-stub"
+nvram_vmdir="${work}/vmdir"
+mkdir -p "${nvram_vmdir}"
+cat > "${nvram_stub}" <<STUB
+#!/bin/bash
+if [ "\$1" = showvminfo ]; then printf 'CfgFile="%s/testvm.vbox"\n' "${nvram_vmdir}"; fi
+exit 0
+STUB
+chmod +x "${nvram_stub}"
+VBOXMANAGE="${nvram_stub}"
+vm='testvm'
+
+coreboot_rom="${cb_rom}"
+true > "${nvram_vmdir}/testvm.nvram"
+cb_reset_nvram
+got=0; [ -e "${nvram_vmdir}/testvm.nvram" ] && got=1
+check "cb_reset_nvram removes the coreboot FMAP .nvram before a restart" "${got}"
+
+coreboot_rom=''
+true > "${nvram_vmdir}/testvm.nvram"
+cb_reset_nvram
+got=0; [ -e "${nvram_vmdir}/testvm.nvram" ] || got=1
+check "cb_reset_nvram is a no-op without --coreboot-rom (VBox OVMF reloads its own nvram)" "${got}"
+
+## No CfgFile (VM gone) must FAIL at the source, not silently succeed and let startvm fail
+## cryptically later (coderabbit PR #749). Stub showvminfo to emit nothing -> cb_reset_nvram dies.
+nocfg_stub="${work}/vbm-nocfg-stub"
+printf '%s\n' '#!/bin/bash' 'exit 0' > "${nocfg_stub}"
+chmod +x "${nocfg_stub}"
+got=0
+( VBOXMANAGE="${nocfg_stub}"; coreboot_rom="${cb_rom}"; vm='testvm'; cb_reset_nvram ) >/dev/null 2>&1 && got=1
+check "cb_reset_nvram dies when the VM has no CfgFile (fail at source, not silent)" "${got}"
+
+VBOXMANAGE="${vboxmanage_stub}"
+
 printf '%s\n' "" "$(basename -- "$0"): ${pass} pass, ${fail} fail"
 [ "${fail}" -eq 0 ] || exit 1
 exit 0
