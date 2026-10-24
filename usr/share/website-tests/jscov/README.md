@@ -43,7 +43,7 @@ passed, and are NOT in `covered.txt`, because:
   parent; a `new URL` catch valid input never throws; two redundant guards). Reaching 100%
   needs a source-side `/* c8 ignore */`, which belongs with the app.js SOURCE in
   mw-static-generator.
-- the stage tree lives in `~/wiki-deploy`, not in dist-ai CI.
+- the stage tree lives in `~/private-sources/<site>-wiki-static`, not in dist-ai CI.
 Phase 4 (mw-static depends on the core) is the home for wiki-JS 100% gating: there the source,
 its c8-ignores, the stage root and its CI are together. To activate then: pass a stage root, add
 the three `roots/kicksecure-stage.github.io/*.js` paths to `covered.txt`.
