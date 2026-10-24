@@ -211,6 +211,15 @@ cb_reset_nvram
 got=0; [ -e "${nvram_vmdir}/testvm.nvram" ] || got=1
 check "cb_reset_nvram is a no-op without --coreboot-rom (VBox OVMF reloads its own nvram)" "${got}"
 
+## No CfgFile (VM gone) must FAIL at the source, not silently succeed and let startvm fail
+## cryptically later (coderabbit PR #749). Stub showvminfo to emit nothing -> cb_reset_nvram dies.
+nocfg_stub="${work}/vbm-nocfg-stub"
+printf '%s\n' '#!/bin/bash' 'exit 0' > "${nocfg_stub}"
+chmod +x "${nocfg_stub}"
+got=0
+( VBOXMANAGE="${nocfg_stub}"; coreboot_rom="${cb_rom}"; vm='testvm'; cb_reset_nvram ) >/dev/null 2>&1 && got=1
+check "cb_reset_nvram dies when the VM has no CfgFile (fail at source, not silent)" "${got}"
+
 VBOXMANAGE="${vboxmanage_stub}"
 
 printf '%s\n' "" "$(basename -- "$0"): ${pass} pass, ${fail} fail"

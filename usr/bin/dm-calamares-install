@@ -561,12 +561,20 @@ select_install_boot_entry() {
 ## but the coreboot lane is plain --firmware efi.
 cb_reset_nvram() {
    [ -n "${coreboot_rom}" ] || return 0
-   local cfg vmdir
+   local cfg vmdir nvram
    cfg="$("${VBOXMANAGE}" showvminfo "${vm}" --machinereadable 2>/dev/null \
       | sed -n 's/^CfgFile="\(.*\)"$/\1/p')"
-   [ -n "${cfg}" ] || return 0
+   ## A registered VM always has a CfgFile; its absence means the reset cannot run, which would
+   ## leave the un-reloadable FMAP nvram in place -> fail at the source, not cryptically at startvm.
+   [ -n "${cfg}" ] || die "${FAIL_RC}" "cb_reset_nvram: no CfgFile for VM '${vm}' -- cannot drop the coreboot FMAP nvram"
    vmdir="$(dirname -- "${cfg}")"
-   safe-rm --force -- "${vmdir}"/*.nvram 2>/dev/null || true
+   ## Remove each .nvram; no file yet (first boot) is fine, a failed removal is NOT -- the stale
+   ## nvram would then fail the next startvm (VERR_TAR_BAD_CHKSUM_FIELD), so report it here.
+   for nvram in "${vmdir}"/*.nvram; do
+      [ -e "${nvram}" ] || continue
+      safe-rm --force -- "${nvram}" \
+         || die "${FAIL_RC}" "cb_reset_nvram: failed to remove stale coreboot nvram '${nvram}'"
+   done
 }
 
 ## Reboot the installed disk into ROLE (user = default GRUB entry; sysmaint = entry 2),
