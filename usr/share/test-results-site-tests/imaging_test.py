@@ -18,10 +18,11 @@ Canaries:
   - an off-image / oversized rect is clamped, never raises;
   - top_right_rect lands in the top-right corner with a positive size.
 
-Pillow absent -> exit 78 (env-unmet), surfaced distinctly, never folded into a pass.
-Pure logic otherwise: tiny in-memory images, no root/network.
+Pillow (python3-pil) is a REQUIRED dependency, so a failed import is an environment
+bug -> exit 1 (FATAL), never a skip. Pure logic otherwise: tiny in-memory images,
+no root/network.
 
-Exit: 0 all pass, 1 any fail, 78 env-unmet.
+Exit: 0 all pass, 1 any fail (incl. a missing required dependency).
 """
 
 import os
@@ -39,8 +40,9 @@ try:
     from PIL import Image
     from dm_test_results import imaging
 except ImportError as exc:
-    print("test-results-site imaging_test: env-unmet (Pillow): %s" % exc, file=sys.stderr)
-    sys.exit(78)
+    print("test-results-site imaging_test: FATAL: required dependency Pillow "
+          "(python3-pil) not importable: %s" % exc, file=sys.stderr)
+    sys.exit(1)
 
 _failures = 0
 

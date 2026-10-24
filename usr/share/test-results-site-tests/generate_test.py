@@ -18,10 +18,11 @@ asserts the no-false-green contract on the rendered HTML. Status is OBJECTIVE:
   - a text-only step renders with no <img>; a screenshot step renders one;
   - regenerating identical input yields a byte-identical output tree (determinism).
 
-Pillow absent -> exit 78 (env-unmet). Pure logic otherwise: tiny images, no root,
+Pillow (python3-pil) is a REQUIRED dependency, so a failed import is an environment
+bug -> exit 1 (FATAL), never a skip. Pure logic otherwise: tiny images, no root,
 no network.
 
-Exit: 0 all pass, 1 any fail, 78 env-unmet.
+Exit: 0 all pass, 1 any fail (incl. a missing required dependency).
 """
 
 import filecmp
@@ -40,8 +41,9 @@ try:
     from PIL import Image
     from dm_test_results import model, site_classes
 except ImportError as exc:
-    print("generate_test: env-unmet (Pillow): %s" % exc, file=sys.stderr)
-    sys.exit(78)
+    print("generate_test: FATAL: required dependency Pillow (python3-pil) not "
+          "importable: %s" % exc, file=sys.stderr)
+    sys.exit(1)
 
 GEN = os.path.join(os.path.dirname(os.path.dirname(_SELF)), "bin", "test-results-site-generate")
 EPOCH = 1_700_000_000

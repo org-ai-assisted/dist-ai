@@ -35,8 +35,9 @@ def _load():
 try:
     M = _load()
 except ImportError as exc:
-    print("milestone_stage_test: env-unmet (generator deps): %s" % exc, file=sys.stderr)
-    sys.exit(78)
+    print("milestone_stage_test: FATAL: required generator dependency not "
+          "importable: %s" % exc, file=sys.stderr)
+    sys.exit(1)
 
 _failures = 0
 
