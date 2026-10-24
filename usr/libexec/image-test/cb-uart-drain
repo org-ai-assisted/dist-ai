@@ -33,11 +33,15 @@ def drain_once(path):
         while sock.recv(4096):
             pass
     except OSError:
+        # Peer disconnected (the VM powered off / power-cycled mid-install): stop draining
+        # this connection and return; main() loops back and reconnects when the socket
+        # reappears on the next power-on. Not an error we act on -- reconnection is the design.
         pass
     finally:
         try:
             sock.close()
         except OSError:
+            # Best-effort teardown; a close error on an already-dead socket is irrelevant.
             pass
 
 
