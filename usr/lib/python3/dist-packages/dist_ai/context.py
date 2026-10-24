@@ -19,6 +19,7 @@ file that shfmt cannot parse yields tree=None (the rule declines; the gate's
 import contextlib
 import fnmatch
 import io
+import itertools
 import os
 import re
 import subprocess
@@ -101,6 +102,51 @@ def vendored_value(attrs):
     """True if ATTRS (a check_attrs dict) marks the path vendored/generated -- a
     bare set or an explicit =true; an =false / unset / unspecified does not."""
     return any(attrs.get(name) in ("set", "true") for name in _VENDORED_ATTRS)
+
+
+## The conventional "@generated" sentinel marks a file written by a TOOL, not by
+## hand (Phabricator / Gerrit / review-tool vocabulary, understood across the
+## ecosystem). A file carrying it is a build ARTIFACT whose source is edited and
+## regenerated elsewhere, so our STYLE + FORMAT tier cannot usefully demand a fix
+## to it -- the fix must land in the generator and the artifact be regenerated.
+## is_generated therefore exempts it exactly as a linguist-generated path is, but
+## DETECTED FROM CONTENT: the safe path is the DEFAULT, with nothing to add to
+## .gitattributes and no per-commit ALLOW_STYLE_COMMIT to recall, the same way a
+## NUL byte auto-detects a binary (see is_binary). Unlike the ambiguous diff
+## heuristics rejected above, this is a DEDICATED sentinel: a false positive needs
+## a non-generated file to CLAIM "@generated" in its own header -- a reviewable
+## lie, not an accident -- and a false negative merely leaves the file gated
+## normally (fail toward MORE gating). The scan is bounded to the HEADER (the
+## marker conventionally rides the banner just under a copyright block), which
+## keeps that surface tiny and means a file that merely DISCUSSES @generated lower
+## down (this module, its tests) does not self-exempt.
+GENERATED_MARKER = "@generated"
+_GENERATED_HEADER_LINES = 20
+
+
+def has_generated_marker(text):
+    """True if TEXT carries the @generated sentinel within its first
+    _GENERATED_HEADER_LINES lines. TEXT may be str or bytes (bytes are decoded
+    leniently -- the marker is ASCII); None -> False."""
+    if text is None:
+        return False
+    if isinstance(text, (bytes, bytearray)):
+        text = text.decode("utf-8", "replace")
+    head = text.split("\n", _GENERATED_HEADER_LINES)[:_GENERATED_HEADER_LINES]
+    return any(GENERATED_MARKER in line for line in head)
+
+
+def path_has_generated_marker(path):
+    """has_generated_marker over the first _GENERATED_HEADER_LINES lines of the
+    file at PATH, read as bytes so a non-UTF-8 generated artifact still matches.
+    Any OSError -> False (fail toward NOT exempting). One source of truth for the
+    header bound, shared with FileContext.is_generated."""
+    try:
+        with open(path, "rb") as handle:
+            head = b"".join(itertools.islice(handle, _GENERATED_HEADER_LINES))
+    except OSError:
+        return False
+    return has_generated_marker(head)
 
 ## A diff's TRAILING whitespace is SEMANTICALLY significant: a blank context line is
 ## a single leading space, and a line's trailing blanks may be the very change the
@@ -196,6 +242,7 @@ class FileContext:
         self._tree_done = False
         self._binary = None
         self._vendored = None
+        self._generated = None
         self._attrs = None
         self._comment_lines = None
         self._comment_lines_done = False
@@ -334,6 +381,21 @@ class FileContext:
         if self._vendored is None:
             self._vendored = vendored_value(self._query_attrs())
         return self._vendored
+
+    @property
+    def is_generated(self):
+        """True when the file carries the @generated sentinel in its header -- a
+        tool output kept verbatim, exempt from the STYLE + format tier exactly as
+        a linguist-generated path is, but AUTO-DETECTED from content so no
+        .gitattributes line is needed (the safe path is the default; see
+        has_generated_marker). is_binary is tested FIRST, mirroring is_vendored: a
+        binary blob is already exempt and must not be scanned as text. Cached."""
+        if self.is_binary:
+            return False
+        if self._generated is None:
+            text = self.source if self.source is not None else self.data
+            self._generated = has_generated_marker(text)
+        return self._generated
 
     def _query_attrs(self):
         ## One check-attr call for every classification attribute (CLASSIFY_ATTRS),

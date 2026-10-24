@@ -2575,6 +2575,84 @@ else
    failures=$((failures + 1))
 fi
 
+## ---- content-based @generated auto-detect (no .gitattributes) ----
+## A file carrying the conventional "@generated" sentinel in its header is a TOOL
+## output whose source is edited and regenerated elsewhere -- the style + format
+## tier cannot usefully demand a fix to the artifact (the fix lands in the
+## generator). is_generated auto-detects the marker from CONTENT, so such a file is
+## exempt on BOTH fronts (the engine, R-001 included, and the pre-commit-hooks
+## batch) with NO .gitattributes line and no per-commit ALLOW_STYLE_COMMIT: the
+## safe path is the default, exactly as the NUL-byte binary auto-detect above.
+## CANARY: the SAME bytes WITHOUT the marker are flagged, so this asserts a real
+## auto-exemption, not the rule quietly not firing. A marker BELOW the header
+## window does NOT exempt, bounding the false-positive surface. The sentinel is
+## assembled from fragments so no contiguous '@generated' lives in THIS tracked
+## file (its header must stay subject to the gate).
+gate_output_generated() {  ## $1=full file content -> gate output over base..HEAD
+   local content repo base
+   content="$1"
+   repo="$(mktemp --directory --tmpdir="${tmp_root}" repo.XXXXXX)"
+   git -C "${repo}" init --quiet
+   git -C "${repo}" config user.email 'ci-test@example.com'
+   git -C "${repo}" config user.name 'ci-test'
+   git -C "${repo}" commit --quiet --no-verify --allow-empty --message base
+   base="$(git -C "${repo}" rev-parse HEAD)"
+   ## '%s' + the content as the ARGUMENT (R-030): it is pre-decoded data (built
+   ## with $'...'), never a format string, so a '%' or leading '-' in it is literal.
+   printf '%s' "${content}" > "${repo}/gen.sh"
+   chmod +x "${repo}/gen.sh"
+   git -C "${repo}" add gen.sh
+   git -C "${repo}" commit --quiet --no-verify --message blob
+   (
+      cd -- "${repo}" || exit 1
+      "${GATE}" --check --range "${base}"
+   ) 2>&1 || true
+}
+
+## Body: a non-ASCII byte (0xC3 0xA9 -> R-001, engine) and NO final newline
+## (end-of-file-fixer, pre-commit-hooks) -- both fronts in one file. $'...' decodes
+## the octal at run time so THIS tracked file stays ASCII.
+generated_body=$'echo caf\303\251 no-newline'
+generated_marker='## @'"generated"' by a build tool - DO NOT EDIT'
+
+## CANARY: an ordinary header -> the SAME bytes are flagged on both fronts.
+generated_unmarked="$(gate_output_generated \
+   '#!/bin/bash'$'\n''## ordinary header'$'\n'"${generated_body}")"
+if grep --quiet --fixed-strings -- 'R-001 non-ASCII' <<< "${generated_unmarked}" \
+      && grep --quiet --fixed-strings -- 'end-of-file-fixer' <<< "${generated_unmarked}"; then
+   printf '%s\n' 'PASS: an unmarked file is flagged on both fronts (canary)'
+else
+   printf '%s\n' 'FAIL: an unmarked file was not flagged on both fronts' >&2
+   failures=$((failures + 1))
+fi
+
+## The @generated sentinel in the header auto-exempts the whole style + format tier.
+generated_marked="$(gate_output_generated \
+   '#!/bin/bash'$'\n'"${generated_marker}"$'\n'"${generated_body}")"
+assert_gate_tag_absent '@generated auto-detect spares R-001' \
+   'R-001 non-ASCII' "${generated_marked}"
+assert_gate_tag_absent '@generated auto-detect spares end-of-file-fixer' \
+   'end-of-file-fixer' "${generated_marked}"
+if grep --quiet --fixed-strings -- 'all static checks passed' <<< "${generated_marked}"; then
+   printf '%s\n' 'PASS: a @generated-marked file passes the whole static gate with no .gitattributes'
+else
+   printf '%s\n' 'FAIL: a @generated-marked file did not reach a clean gate verdict (auto-detect broken)' >&2
+   failures=$((failures + 1))
+fi
+
+## The marker must ride the HEADER: below the scan window it does NOT exempt, so a
+## file that merely mentions the sentinel deep down is still fully gated.
+generated_deep='#!/bin/bash'$'\n'
+generated_deep+="$(printf '%s\n' "## pad "{1..24})"$'\n'
+generated_deep+="${generated_marker}"$'\n'
+generated_deep_out="$(gate_output_generated "${generated_deep}${generated_body}")"
+if grep --quiet --fixed-strings -- 'R-001 non-ASCII' <<< "${generated_deep_out}"; then
+   printf '%s\n' 'PASS: a @generated marker below the header window does NOT exempt (bounded)'
+else
+   printf '%s\n' 'FAIL: a @generated marker below the header window wrongly exempted the file' >&2
+   failures=$((failures + 1))
+fi
+
 ## ---- commit-message R-001 (check_message_ascii, push mode) ----
 ## The pending commit message is the one text blob that is NOT a tree file. The
 ## gate resolves the base..HEAD message (or, staged, the --message-file) and
@@ -2656,4 +2734,4 @@ if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "test_pre_push_static_style_rules: ${failures} assertion(s) FAILED." >&2
    exit 1
 fi
-printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-070 per-rule id override, R-074, R-026, R-030 format string (injection + fixed format + exemptions), R-030/R-031, R-030/R-031 printf-format waiver, R-030/R-031 composite id override, AST-aware waiver (heredoc-body / trailing-inline / Python-string not honored), R-034, R-034 per-rule id override, R-011, R-051, R-090, R-102, R-103, R-120, R-170, R-180, R-190, R-191, R-192, R-193 (shell forms + systemd/workflow config hosts), R-194, R-195, R-100, R-010, R-212, R-220, R-001 .gitattributes-binary allowlist, R-001 commit-message, trailing-whitespace, CRLF-shebang, untracked-shell-file reporting, double-quote-string-fixer-disabled and imported-package-module exemption enforced as expected."
+printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-070 per-rule id override, R-074, R-026, R-030 format string (injection + fixed format + exemptions), R-030/R-031, R-030/R-031 printf-format waiver, R-030/R-031 composite id override, AST-aware waiver (heredoc-body / trailing-inline / Python-string not honored), R-034, R-034 per-rule id override, R-011, R-051, R-090, R-102, R-103, R-120, R-170, R-180, R-190, R-191, R-192, R-193 (shell forms + systemd/workflow config hosts), R-194, R-195, R-100, R-010, R-212, R-220, R-001 .gitattributes-binary allowlist, R-001 content-based NUL-binary auto-detect, @generated content auto-detect (both fronts, header-bounded), R-001 commit-message, trailing-whitespace, CRLF-shebang, untracked-shell-file reporting, double-quote-string-fixer-disabled and imported-package-module exemption enforced as expected."

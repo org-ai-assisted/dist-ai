@@ -45,11 +45,13 @@ def detect(ctx, include_text=False, include_external=False):
     multi-line output is not a machine record). bash -n runs even when shfmt could
     not parse (that IS the syntax error to report), so it is not tree-gated.
     Raises bash_ast.ShfmtMissing if shfmt is absent."""
-    ## Vendored / generated: third-party code kept verbatim -- our style + format
-    ## rules (R-001 included) do not judge it, exactly as a binary-attributed file
-    ## is exempt. The secret / size / structural checks live in the precommit
-    ## batch, which keeps a vendored path in its scan list regardless.
-    if ctx.is_vendored:
+    ## Vendored / generated: third-party or tool-emitted code kept verbatim -- our
+    ## style + format rules (R-001 included) do not judge it, exactly as a
+    ## binary-attributed file is exempt. is_vendored is the .gitattributes opt-in;
+    ## is_generated auto-detects the @generated sentinel from content (the default
+    ## safe path, nothing to recall). The secret / size / structural checks live in
+    ## the precommit batch, which keeps such a path in its scan list regardless.
+    if ctx.is_vendored or ctx.is_generated:
         return []
     findings = []
     if ctx.source is not None:
@@ -75,10 +77,11 @@ def detect_message(raw, path="(commit message)"):
     ## bash gate honored no such waiver on it. has_waiver reads source, so a
     ## None source means the message can never waive itself.
     ctx = ctxmod.FileContext(path, None, raw=raw)
-    ## A message is not a tree file: never a binary/vendored blob, so no git
-    ## check-attr is run for it.
+    ## A message is not a tree file: never a binary/vendored/generated blob, so no
+    ## git check-attr is run for it and the @generated sentinel never self-exempts.
     ctx._binary = False
     ctx._vendored = False
+    ctx._generated = False
     findings = []
     for rule in ruleset.MESSAGE_RULES:
         if rule.applies(ctx):
@@ -122,8 +125,9 @@ def fix_source(ctx):
     ## fixer's is_data_file skip -- even valid UTF-8 must be left byte-identical
     ## (the text rules already honor this via applies(); the AST rewriters did
     ## not, so a binary-attributed shell file was being rewritten). A vendored /
-    ## generated file is kept verbatim for the same reason.
-    if ctx.is_binary or ctx.is_vendored:
+    ## generated file is kept verbatim for the same reason (is_generated covers a
+    ## @generated artifact auto-detected from content, is_vendored the attribute).
+    if ctx.is_binary or ctx.is_vendored or ctx.is_generated:
         return ctx.source, {}
     counts = {}
     source = ctx.source
