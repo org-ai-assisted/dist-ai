@@ -418,6 +418,16 @@ def run():
               _gcc_failures(root) == [], repr(_gcc_failures(root)))
 
     with tempfile.TemporaryDirectory() as root:
+        # automated-test-results/ exists but holds only goldens/ -- NO generated page -> no-op
+        # (no page references any manifest class yet), even with a style.css missing one.
+        _write(root, 'automated-test-results/goldens/golden-approvals.json', '{}')
+        _write(root, 'style.css', '\n'.join(
+            '.%s{color:#000}' % name
+            for name in sorted(rsite.GENERATED_CLASSES) if name != 'stage'))
+        check('contract is a no-op when the tree has no generated page (goldens only)',
+              _gcc_failures(root) == [], repr(_gcc_failures(root)))
+
+    with tempfile.TemporaryDirectory() as root:
         # Generated tree present + style.css defines every manifest class -> clean.
         _write(root, 'automated-test-results/index.html', '<!doctype html><html></html>')
         _write(root, 'style.css', _all_rules)

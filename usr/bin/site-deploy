@@ -174,27 +174,44 @@ test_rc=0
 suite_out=''
 if [ "${record_and_publish}" = 'true' ]; then
    ## Capture the suite output into a variable so the override WARNING can name the failed
-   ## check(s) even after a long suite's output has scrolled, while `tee /dev/stderr` still
-   ## streams it live. Nothing is persisted. pipefail (set above) carries website-tests' exit.
-   suite_out="$(env "${site_var}=${repo_dir}" "${website_tests}" 2>&1 | tee /dev/stderr)" \
-      || test_rc="$?"
+   ## check(s) even after a long suite's output has scrolled, while `tee /dev/stderr` still streams
+   ## it live. The subshell exits with website-tests' OWN status (PIPESTATUS[0]), not the
+   ## pipeline's, so a tee write hiccup cannot mask a 0/77/78 as a "1" (a green or a
+   ## nothing-verified run must never be taken for an overridable red). The pipe is TESTED by
+   ## `&& ... || ...`, so a failing suite does not trip errexit, and PIPESTATUS survives into the
+   ## `||` branch (an assignment does not reset it). Nothing is persisted.
+   suite_out="$(
+      env "${site_var}=${repo_dir}" "${website_tests}" 2>&1 | tee /dev/stderr \
+         && wt_rc=0 || wt_rc="${PIPESTATUS[0]}"
+      exit "${wt_rc}"
+   )" || test_rc="$?"
 else
    env "${site_var}=${repo_dir}" "${website_tests}" || test_rc="$?"
 fi
 
-## Decide from the suite exit:
+## Decide from the suite result:
 ##  0  -> green: publish (or report, with --check-only).
-##  1  -> the suite RAN TO COMPLETION and found real consistency failures: a KNOWN red. Refuse,
-##        UNLESS --record-and-publish is set AND we are actually publishing. The override never
-##        applies under --check-only, so a gate caller -- the pre-push hook runs `site-deploy
-##        --check-only` -- still refuses a red (and the flag is per-invocation, never ambient).
-##  else (77 SKIP target-absent, 78 SKIP env-unmet, 143 killed, ...) -> nothing was verified to
-##        completion, which is NEVER overridable: publishing on it is the false green this gate
-##        exists to prevent. Refuse regardless of the override.
+##  1 + the 'suite-complete' marker -> the suite ran EVERY lane to the end and found real
+##        consistency failures: a KNOWN complete red. Refuse, UNLESS --record-and-publish is set
+##        AND we are actually publishing. The override never applies under --check-only, so a gate
+##        caller -- the pre-push hook runs `site-deploy --check-only` -- still refuses a red (and
+##        the flag is per-invocation, never ambient).
+##  else -> nothing was verified to completion: a SKIP (77), env-unmet (78), killed, OR an exit 1
+##        WITHOUT the marker (website-tests aborted early -- a missing/failing required unit test,
+##        BEFORE the site checks ran). NEVER overridable: publishing on it is the false green this
+##        gate exists to prevent.
+## Match the marker as a WHOLE LINE, not an unanchored substring: an early-FATAL message echoes the
+## checkout path, so a path CONTAINING the marker text would otherwise forge completion.
+## website-tests prints the marker on its own line, so a whole-line (grep -Fxq) match cannot be
+## spoofed by the marker text appearing as a substring inside another line.
+suite_complete='false'
+if grep --fixed-strings --line-regexp --quiet 'website-tests: suite-complete' <<< "${suite_out}"; then
+   suite_complete='true'
+fi
 if [ "${test_rc}" -eq 0 ]; then
    printf '%s\n' "${me}: suite green" >&2
-elif [ "${test_rc}" -eq 1 ] && [ "${record_and_publish}" = 'true' ] \
-      && [ "${check_only}" != 'true' ]; then
+elif [ "${test_rc}" -eq 1 ] && [ "${suite_complete}" = 'true' ] \
+      && [ "${record_and_publish}" = 'true' ] && [ "${check_only}" != 'true' ]; then
    ## Publish past a KNOWN, COMPLETE red result, loudly. The full captured suite output is
    ## reprinted under the banner so the deploy record names exactly which checks were overridden.
    {
