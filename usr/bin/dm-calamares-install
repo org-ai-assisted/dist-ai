@@ -226,6 +226,16 @@ on_exit() {
       ## VirtualBox GUI" -- the server is headless, so there is no manager window to photograph).
       if [ "${rc}" -eq 0 ]; then
          story_card 71 vm-stopped-final "VM powered off (run complete)"
+         ## Real VirtualBox Manager screenshot (end-of-story). The VM stays registered after
+         ## poweroff, so it is still listed. NON-fatal: on_exit runs in the EXIT trap, where
+         ## die() would skip the result publishing below; the begin-of-story call already
+         ## proved the vbox-host-shot pipeline works this run, so a flaky final grab only warns.
+         if ! story_vbox_manager 72 vbox-manager-final; then
+            printf '%s\n' "${me}: WARNING: vbox-host-shot could not capture the final VirtualBox Manager" >&2
+            if [ -n "${check_log}" ]; then
+               printf '%s\n' "vbox-host-shot: final Manager capture failed" >> "${check_log}" 2>/dev/null || true
+            fi
+         fi
       fi
    fi
    ## Drop best-effort transient frames that came back uniform (success path). The skip-class
@@ -416,6 +426,18 @@ story_card_host() {
    printf '%s\n' "[host evidence -- rendered from VBoxManage, not a screenshot]" \
       "VirtualBox host software" "" "VBoxManage version: ${ver}" "" "${host}" \
       | "${DM_TEXT_TO_PNG:-dm-text-to-png}" "${card}" >/dev/null 2>&1 || true
+}
+
+## Real host-side screenshot of the VirtualBox Manager (machine list + Details pane, our VM
+## selected) via vbox-host-shot (headless labwc + grim; no X11, no GPU, no login session). The
+## begin-of-story call is FATAL (a black/blank/no-grab Manager shot means the GUI pipeline is
+## broken -- surface it before the ~30-50min install, never publish a silent blank); the
+## end-of-story caller keeps it non-fatal (EXIT trap). A no-op without --shot-dir.
+story_vbox_manager() {
+   local nn="$1" name="$2"
+   [ -n "${shot_dir}" ] || return 0
+   vbox-host-shot --vm "${vm}" --vboxmanage "${VBOXMANAGE}" \
+      --out "${shot_dir}/${nn}-${name}.png"
 }
 
 usage() {
@@ -1291,6 +1313,10 @@ main() {
    ## Pre-boot state cards (no framebuffer yet): the defined VM, and the firmware / Secure Boot
    ## varstore state (there is no SB screen to photograph on a normal boot).
    story_card 10 vm-defined "VM defined (pre-boot)"
+   ## Real VirtualBox Manager screenshot (begin-of-story). FATAL: a broken GUI-grab pipeline
+   ## must surface NOW, before the ~30-50min install, not as a silent blank milestone.
+   story_vbox_manager 11 vbox-manager \
+      || die "${FAIL_RC}" "vbox-host-shot could not capture the VirtualBox Manager (vbox-manager)"
    story_card_host 12 vbox-host
    story_card 13 firmware-state "Firmware / Secure Boot varstore state"
    "${VBOXMANAGE}" startvm "${vm}" --type headless >/dev/null
