@@ -135,12 +135,15 @@ run_deploy --check-only --record-and-publish
 check "check-only + override + failure still refuses (non-zero)" "$(refused)" "refused:yes"
 check "check-only + override never pushes" "$(pushed)" "pushed:no"
 
-## 5. The SITE_DEPLOY_RECORD=1 env is equivalent to the flag (publishes past a complete red).
+## 5. The override is FLAG-ONLY: an ambient SITE_DEPLOY_RECORD=1 env must NOT enable it (so it
+## cannot leak into the automated test-results-deploy path, which calls site-deploy with no flag).
+## A failing gate with only the env set still REFUSES and does not push.
 make_gate 1
 safe-rm --force -- "${push_env}"
 out="$(PATH="${bin}:${PATH}" SITE_DEPLOY_WEBSITE_TESTS="${gate}" SITE_DEPLOY_RECORD=1 \
    "${site_deploy}" --repo "${repo_dir}" 2>&1)" && rc=0 || rc="$?"
-check "SITE_DEPLOY_RECORD=1 env enables the override" "$(pushed)" "pushed:yes"
+check "ambient SITE_DEPLOY_RECORD env does NOT enable the override" "$(refused)" "refused:yes"
+check "ambient SITE_DEPLOY_RECORD env does not push" "$(pushed)" "pushed:no"
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 [ "${fail}" -eq 0 ]
