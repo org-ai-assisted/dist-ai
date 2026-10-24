@@ -133,6 +133,9 @@ done
 ## pkill bug -- surface it as "decoy not ready", never let it masquerade as a kill failure.
 check "decoy reached its truncated comm before snap" "${decoy_ready}"
 
+## Rich milestones re-shoot until image-blank-check reports content; stub it to content so this
+## quiesce/shot-ordering test captures once (the retry itself is asserted in its own block below).
+export IMAGE_BLANK_CHECK=true
 rc=0
 snap 01 welcome || rc=$?
 check "snap returns success" "${rc}"
@@ -173,6 +176,26 @@ check "the quiesce actually KILLS the daemon (decoy signalled, not survived)" "$
 got=0
 has '01-welcome.png' "${order_text}" || got=1
 check "the shot path carries the milestone NN-name" "${got}"
+
+## --- retry regression: a rich milestone first captured blank is RE-shot until content -------
+## The live display can be transiently uniform-black right after the quiesce (the coreboot
+## guestcontrol-wait flake), so a rich (must-render) milestone must not accept the first blank
+## frame. Stub image-blank-check to report BLANK once then CONTENT and assert snap re-shot (>=2
+## captures). FAILS on the pre-retry single-shot snap, which accepted the first blank frame.
+true > "${order}"
+ibc_calls="${work}/ibc-calls"
+true > "${ibc_calls}"
+ibc_stub="${work}/ibc-retry"
+# shellcheck disable=SC2016  ## the stub body reads ${IBC_CALLS} at ITS runtime
+printf '%s\n' '#!/bin/bash' 'n="$(wc -l < "${IBC_CALLS}")"' 'printf "x\n" >> "${IBC_CALLS}"' '[ "${n}" -ge 1 ]' > "${ibc_stub}"
+chmod +x "${ibc_stub}"
+export IMAGE_BLANK_CHECK="${ibc_stub}" IBC_CALLS="${ibc_calls}"
+snap 24 live-guestcontrol-ready >/dev/null 2>&1 || true
+shot_count="$(grep -c 'shot .*24-live-guestcontrol-ready.png' -- "${order}" 2>/dev/null || printf '%s' 0)"
+got=0; [ "${shot_count}" -ge 2 ] || got=1
+check "snap re-shoots a rich milestone that first came back blank (retry)" "${got}"
+unset IBC_CALLS
+export IMAGE_BLANK_CHECK=true
 
 ## --- shot-dir UNSET: snap is a no-op (no quiesce, no shot) ---------------------------------
 shot_dir=""

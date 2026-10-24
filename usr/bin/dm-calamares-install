@@ -290,14 +290,27 @@ snap() {
    local nn="$1" name="$2"
    [ -n "${shot_dir}" ] || return 0
    quiesce_notifications
-   ## Wake a DPMS-blanked display before a rich (must-render) capture: a long wait with no input
-   ## -- notably the up-to-300s coreboot guestcontrol wait before live-guestcontrol-ready -- blanks
-   ## the screen, so the frame came back uniform-black and the rich blank-gate FAILED a desktop that
-   ## was actually up. A left-Shift tap (make 2a / break aa) is inert to the GUI but counts as input.
-   "${GUESTCTL}" "${vm}" key 2a aa >/dev/null 2>&1 || true
-   ## Settle: let the compositor repaint the cleared surfaces (and the DPMS wake) before the frame.
-   sleep 1
-   "${GUESTCTL}" "${vm}" shot "${shot_dir}/${nn}-${name}.png" >/dev/null 2>&1 || true
+   local out="${shot_dir}/${nn}-${name}.png" mode tries i
+   mode="$(milestone_blank_mode "${name}")"
+   ## A rich (must-render) milestone can be captured uniform-black if the live display blanked
+   ## during a long no-input wait -- notably the up-to-300s coreboot guestcontrol wait before
+   ## live-guestcontrol-ready. A single key tap does NOT reliably wake the compositor, so WAKE
+   ## (absolute mouse nudge via the usbtablet, inert without a click, plus a Shift tap) and RETRY
+   ## until the frame carries content (same near-black gate main applies to rich shots) or a bounded
+   ## number of tries. Non-rich milestones keep the single best-effort capture. A truly-off display
+   ## still exhausts the retries and leaves a blank frame for main's gate to fail -- no false green.
+   tries=1
+   [ "${mode}" = 'rich' ] && tries=6
+   for (( i = 1; i <= tries; i++ )); do
+      "${GUESTCTL}" "${vm}" move 450 350 >/dev/null 2>&1 || true
+      "${GUESTCTL}" "${vm}" key 2a aa >/dev/null 2>&1 || true
+      ## Settle: let the compositor repaint the cleared surfaces (and the wake) before the frame.
+      sleep 1
+      "${GUESTCTL}" "${vm}" shot "${out}" >/dev/null 2>&1 || true
+      [ "${mode}" = 'rich' ] || return 0
+      "${IMAGE_BLANK_CHECK:-image-blank-check}" "${out}" >/dev/null 2>&1 && return 0
+      sleep 2
+   done
 }
 
 ## Blank disposition for a milestone SCREENSHOT, by its <name>. Three dispositions; every frame
