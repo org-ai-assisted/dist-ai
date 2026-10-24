@@ -1104,6 +1104,28 @@ else
    note_fail "an in-message allow-non-ascii waiver suppressed commit-message R-001"
    printf '%s\n' "${output}" >&2
 fi
+## --detect must NOT read .gitattributes for a NUL-binary file: the engine's vendored check
+## tests is_binary (NUL short-circuit) FIRST, so no git check-attr runs on a binary blob. RED
+## before that ordering fix -- is_vendored queried attributes up front, so --detect over a
+## hostile FIFO .gitattributes blocked git check-attr forever (unguarded path; no
+## hostile_attributes gate). timeout 124 == it hung. (Placed BEFORE the crash-stub case below,
+## which reassigns DET in a subshell and would otherwise trip SC2030/2031 on a later DET read.)
+fifo_repo="$(mktemp --directory)"
+git -C "${fifo_repo}" init --quiet
+{ printf '%s\0' img; printf '%s' body; } > "${fifo_repo}/data.bin"   ## NUL -> git-binary
+mkfifo "${fifo_repo}/.gitattributes"
+## Absolute path: check_attrs keys its cwd off the file's own directory, so the FIFO
+## .gitattributes is read from fifo_repo with no 'cd' subshell needed.
+fifo_rc=0
+timeout --kill-after=5 10 "${DET}" --detect "${fifo_repo}/data.bin" >/dev/null 2>&1 \
+   || fifo_rc=$?
+safe-rm --recursive --force -- "${fifo_repo}"
+if [ "${fifo_rc}" -eq 124 ]; then
+   note_fail "a NUL-binary file under --detect hung reading a FIFO .gitattributes"
+else
+   note_pass "a NUL-binary file under --detect does not read .gitattributes (no FIFO hang)"
+fi
+
 ## Canary for det_msgfile's exit-3 contract: a detector CRASH must fail LOUD, never
 ## fabricate a pass. The absence-asserting cases above ('spares a clean message') would read
 ## a crash's empty output as a spurious PASS under a bare '|| true'. Stub DET to exit 3 and
