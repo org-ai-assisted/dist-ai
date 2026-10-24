@@ -367,5 +367,10 @@ if [ -n "${st_site}" ]; then
    fi
 fi
 
+## Completion signal: reaching here means every lane RAN -- no early FATAL / missing-or-failing
+## required-unit-test abort (those exit 1 BEFORE this point) and no no-checkout SKIP. site-deploy's
+## --record-and-publish keys on this marker so it overrides ONLY a COMPLETE red (exit 1 WITH the
+## marker), never an early exit-1 abort where the site checks never ran.
+printf '%s\n' 'website-tests: suite-complete' >&2
 ## fail dominates; a browser lane that could not run here surfaces as SKIP:env-unmet (78).
 suite_exit "${overall}" 0 "${env_unmet}"

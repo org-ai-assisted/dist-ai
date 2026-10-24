@@ -1922,8 +1922,10 @@ def check_generated_class_contract(root, failures):
     # undefined-classes (sole-class only) blocked every publish from behind a 25-page failure. This
     # asserts /style.css defines EVERY manifest class -- including the st-<status> CO-classes
     # undefined-classes skips by design -- and names the one missing class, not N pages. No-op
-    # where the generated tree is absent, so it never runs on a site that does not use the generator.
-    if not os.path.isdir(os.path.join(root, RESULTS_SUBDIR)):
+    # where no generated PAGE exists, so it never runs on a site that does not use the generator,
+    # nor on a half-built tree that holds only goldens/ (and thus references no manifest class yet).
+    # Gate on the overview index.html the generator always writes, not the bare directory.
+    if not os.path.isfile(os.path.join(root, RESULTS_SUBDIR, 'index.html')):
         return
     try:
         from dm_test_results import site_classes as results_classes
