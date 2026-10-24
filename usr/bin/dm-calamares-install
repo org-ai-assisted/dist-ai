@@ -212,17 +212,29 @@ on_exit() {
          story_card 71 vm-stopped-final "VM powered off (run complete)"
       fi
    fi
-   ## Universal blank FLOOR (success path): every published frame -- the transient boot grabs and
-   ## the finals written HERE that the in-run gate never sees included -- must carry content.
-   ## --uniform-only flags ONLY a truly-uniform near-black/white frame, so a sparse console /
-   ## prompt / card is fine; a pure-black rectangle FAILS the run. Fail-CLOSED + exemption-free:
-   ## it runs over the WHOLE shot dir, so a new/unlisted milestone is covered by default, never
-   ## silently skipped. Success path only -- a run already failing keeps its real rc + reason.
+   ## Drop best-effort transient frames that came back uniform (success path). The skip-class
+   ## grabs (firmware logo window, GRUB flashes, post-unlock/boot transitions, the final
+   ## pre-poweroff frame) have NO guaranteed content: a quiet hardened boot is legitimately black
+   ## between milestones. So a uniform skip frame is DROPPED -- never published as a black
+   ## rectangle (the honesty concern), and never FAILING a correct run (the false-fail a blanket
+   ## floor caused). image-blank-check runs on EVERY frame here (operator's "always check"), but
+   ## the verdict is drop-vs-keep, not pass-vs-fail. The MUST-render milestones are a different
+   ## matter: rich/sparse are gated IN main() above and FAIL on a degenerate frame, so a real
+   ## render failure (black desktop / GUI / LUKS prompt) still fails the run there.
    if [ "${rc}" -eq 0 ] && [ -n "${shot_dir}" ]; then
-      if ! "${IMAGE_BLANK_CHECK:-image-blank-check}" --uniform-only "${shot_dir}" >&2; then
-         printf '%s\n' "${me}: ERROR: a published screenshot is a uniform blank frame (see image-blank-check above); failing the run so no black rectangle rides a green verdict" >&2
-         rc="${FAIL_RC}"
-      fi
+      local blank_f blank_name
+      for blank_f in "${shot_dir}"/*.png; do
+         [ -f "${blank_f}" ] || continue
+         blank_name="${blank_f##*/}"
+         blank_name="${blank_name%.png}"
+         blank_name="${blank_name#*-}"
+         [ "$(milestone_blank_mode "${blank_name}")" = 'skip' ] || continue
+         ## image-blank-check exits NONZERO when the frame is degenerate (uniform).
+         if ! "${IMAGE_BLANK_CHECK:-image-blank-check}" --uniform-only "${blank_f}" >/dev/null 2>&1; then
+            printf '%s\n' "${me}: NOTICE: dropping uniform transient frame ${blank_f##*/} (no content to publish)" >&2
+            safe-rm --force -- "${blank_f}" 2>/dev/null || true
+         fi
+      done
    fi
    exit "${rc}"
 }
@@ -257,23 +269,23 @@ snap() {
    "${GUESTCTL}" "${vm}" shot "${shot_dir}/${nn}-${name}.png" >/dev/null 2>&1 || true
 }
 
-## Blank-gate mode for a milestone SCREENSHOT, by its <name>. This selects the STRICTER
-## near-blank check for the must-render milestones; it is NOT the whole gate. Every published
-## frame is ALSO run through the universal uniform-only FLOOR in on_exit (a 1-colour black/white
-## rectangle fails the run), so an unlisted/new milestone is never silently skipped -- it is
-## floor-gated by default. This per-name mode only promotes the must-be-rich milestones to the
-## tighter near-blank check on top of that floor.
+## Blank disposition for a milestone SCREENSHOT, by its <name>. Three dispositions; every frame
+## is run through image-blank-check (operator's "always check"), but what a uniform frame MEANS
+## differs: a must-render milestone that is blank is a real FAILURE, a best-effort transient that
+## is blank just has nothing to show.
 ##   rich   -- the SETTLED post-quiesce snap() captures (desktop / Calamares GUI / first boot /
 ##             checks) + the restored graphical desktop; a near-black frame there means the GUI did
-##             NOT render -> DEFAULT near-black check. This is where a blank-desktop false-green is
-##             caught. New must-be-rich milestones are added here (a documented maintenance point).
+##             NOT render -> DEFAULT near-blank check (gated in main, FAILS the run). This is where
+##             a blank-desktop false-green is caught. New must-be-rich milestones are added here.
 ##   sparse -- legitimately near-black but non-blank (the LUKS passphrase prompts) -> UNIFORM-ONLY
-##             (only a 1-colour truly-blank frame fails; the 2+ colour prompt passes).
-##   skip   -- everything else: transient host-side story_snap frames (power-on / GRUB / kernel-boot
-##             / installed first-frame / install-host-launched / sysmaint-terminal) that are
-##             legitimately uniform-black at capture; vt-* (gated by require_vt_captures); the
-##             dm-text-to-png cards (gated by the card gate); and the final frames written by the
-##             EXIT trap AFTER this gate runs.
+##             (gated in main; only a 1-colour truly-blank frame FAILS, the 2+ colour prompt passes).
+##   skip   -- everything else: best-effort transient host-side grabs (firmware logo / GRUB /
+##             post-unlock + boot transitions / installed first-frame / the final pre-poweroff
+##             frame) with NO guaranteed content, legitimately uniform-black between milestones on
+##             a quiet hardened boot. on_exit DROPS a uniform skip frame (not published, not
+##             failed); a skip frame WITH content is published. vt-* (gated uniform-only by
+##             require_vt_captures) and the dm-text-to-png cards (gated by the card gate) are
+##             checked on their own paths in main and so are never black here.
 milestone_blank_mode() {
    case "$1" in
       live-guestcontrol-ready|welcome|location|keyboard|partitions|partitions-luks-filled|summary|install-started|install-done|installed-grub-menu|first-boot|mok-reboot-desktop|terminal-open|sysmaint-terminal|check-6-gui-rendered|checks-complete|vt-graphical-restored)

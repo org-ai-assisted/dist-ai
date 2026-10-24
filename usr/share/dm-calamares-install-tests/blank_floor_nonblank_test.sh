@@ -147,37 +147,57 @@ shot_dir=""
 rc=0; story_snap_nonblank 22 firmware-logo 1 || rc=1
 check "nonblank: no shot_dir is a no-op success" "${rc}"
 
-## === on_exit universal FLOOR ===============================================================
+## === on_exit: DROP uniform transient (skip-class) frames; never FAIL on them ================
 ## Drive the REAL on_exit in a subshell (it ends in `exit "${rc}"`); vm_started=false so the
-## whole VM/cleanup block is skipped and only the floor runs.
+## whole VM/cleanup block is skipped and only the drop logic runs. luks-unlocked is a skip-class
+## milestone; live-guestcontrol-ready is rich.
 # shellcheck disable=SC2034
 vm_started="false"
-## on_exit's FAILURE branch reads these; set them so nounset does not abort the subshell before
-## the point under test (the floor). vm_started=false already skips the VM/poweroff block.
+## on_exit's FAILURE branch reads these; set them so nounset does not abort the subshell.
 # shellcheck disable=SC2034
 shot="" check_log="" die_reason="" keep_failed="false"
 
-## success rc=0 (the `rc=0` assignment seeds $?=0 for the subshell) + a content-only dir -> 0.
-sd="${work}/floor-ok"; mkdir -p -- "${sd}"; cp -- "${content_png}" "${sd}/24-live-guestcontrol-ready.png"
+## success + content-only dir -> exits 0, frame kept.
+sd="${work}/drop-ok"; mkdir -p -- "${sd}"; cp -- "${content_png}" "${sd}/24-live-guestcontrol-ready.png"
 shot_dir="${sd}"; rc=0; ( on_exit ) || rc=$?
-check "floor: content-only dir exits 0 (passes)" "${rc}"
+check "on_exit: content-only dir exits 0" "${rc}"
+got=0; [ -s "${sd}/24-live-guestcontrol-ready.png" ] || got=1
+check "on_exit: a content frame is kept" "${got}"
 
-## success rc=0 + a uniform-black frame -> escalates to FAIL_RC (the firmware-logo bug).
-sd="${work}/floor-black"; mkdir -p -- "${sd}"
+## success + a uniform-black SKIP frame -> DROPPED (not published), run stays 0; content kept.
+sd="${work}/drop-skip"; mkdir -p -- "${sd}"
 cp -- "${content_png}" "${sd}/24-live-guestcontrol-ready.png"
-cp -- "${black_png}" "${sd}/22-firmware-logo.png"
+cp -- "${black_png}" "${sd}/49-luks-unlocked.png"
 shot_dir="${sd}"; rc=0; ( on_exit ) || rc=$?
-check "floor: a uniform-black published frame escalates rc to FAIL_RC (5)" "$(( rc == 5 ? 0 : 1 ))"
+check "on_exit: a uniform skip frame does NOT fail the run (exits 0)" "${rc}"
+got=0; [ ! -e "${sd}/49-luks-unlocked.png" ] || got=1
+check "on_exit: the uniform skip frame is DROPPED (not published)" "${got}"
+got=0; [ -s "${sd}/24-live-guestcontrol-ready.png" ] || got=1
+check "on_exit: a sibling content frame is kept" "${got}"
 
-## FAILURE path rc!=0 + a uniform-black frame -> floor is SKIPPED, original rc preserved.
-## `bash -c 'exit 7' || on_exit` seeds $?=7 into on_exit WITHOUT tripping the test's errexit
-## (the `||` makes it a condition); on_exit then runs its failure branch and skips the floor.
+## a skip frame WITH content is KEPT (published).
+sd="${work}/keep-skip"; mkdir -p -- "${sd}"; cp -- "${content_png}" "${sd}/49-luks-unlocked.png"
+shot_dir="${sd}"; rc=0; ( on_exit ) || rc=$?
+got=0; [ -s "${sd}/49-luks-unlocked.png" ] || got=1
+check "on_exit: a skip frame with content is kept" "${got}"
+
+## a uniform RICH frame is NOT dropped by on_exit (main's rich gate owns must-render frames).
+sd="${work}/rich-black"; mkdir -p -- "${sd}"; cp -- "${black_png}" "${sd}/24-live-guestcontrol-ready.png"
+shot_dir="${sd}"; rc=0; ( on_exit ) || rc=$?
+got=0; [ -s "${sd}/24-live-guestcontrol-ready.png" ] || got=1
+check "on_exit: a uniform RICH frame is NOT dropped (main gates it, not on_exit)" "${got}"
+
+## FAILURE path rc!=0 -> success-path only: no drop, real rc preserved.
+sd="${work}/fail-path"; mkdir -p -- "${sd}"; cp -- "${black_png}" "${sd}/49-luks-unlocked.png"
 shot_dir="${sd}"; rc=0; ( bash -c 'exit 7' || on_exit ) || rc=$?
-check "floor: a failing run keeps its real rc (floor is success-path only)" "$(( rc == 7 ? 0 : 1 ))"
+check "on_exit: a failing run keeps its real rc" "$(( rc == 7 ? 0 : 1 ))"
+got=0; [ -s "${sd}/49-luks-unlocked.png" ] || got=1
+check "on_exit: failure path drops nothing (success-path only)" "${got}"
 
-## empty dir -> exits 0 (nothing to flag).
-sd="${work}/floor-empty"; mkdir -p -- "${sd}"; shot_dir="${sd}"; rc=0; ( on_exit ) || rc=$?
-check "floor: empty shot dir exits 0" "${rc}"
+## empty dir -> exits 0.
+# shellcheck disable=SC2034
+sd="${work}/drop-empty"; mkdir -p -- "${sd}"; shot_dir="${sd}"; rc=0; ( on_exit ) || rc=$?
+check "on_exit: empty shot dir exits 0" "${rc}"
 
 printf '%s\n' "" "$(basename -- "$0"): ${pass} pass, ${fail} fail"
 [ "${fail}" -eq 0 ] || exit 1

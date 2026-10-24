@@ -35,11 +35,15 @@ def main(argv):
         sys.stderr.write("usage: make-redact-fixture.py OUTFILE\n")
         return 2
     out = argv[1]
-    image = Image.new("RGB", (960, 140), (0, 0, 0))
+    image = Image.new("RGB", (960, 200), (0, 0, 0))
     draw = ImageDraw.Draw(image)
     font = load_font(30)
     draw.text((6, 8), "ALPHA 12.345678 BRAVO", fill=(255, 255, 255), font=font)
     draw.text((6, 64), "CHARLIE luks-abcd1234ef56aa DELTA",
+              fill=(255, 255, 255), font=font)
+    ## Upper-case LUKS token: proves the redactor is case-INSENSITIVE (a lower-case 'luks-'
+    ## pattern must still mask this), matching how OCR returns unstable case on real frames.
+    draw.text((6, 120), "GOLF LUKS-DEADBEEF01 HOTEL",
               fill=(255, 255, 255), font=font)
     image.save(out)
     return 0
