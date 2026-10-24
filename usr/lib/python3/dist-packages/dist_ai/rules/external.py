@@ -297,6 +297,20 @@ SHELLCHECK_TIMEOUT = _read_shellcheck_timeout()
 SHELLCHECK_FALLBACK_TIMEOUT = SHELLCHECK_TIMEOUT
 
 
+def _shellcheck_no_follow_requested():
+    """True when DIST_AI_SHELLCHECK_NO_FOLLOW asks a WHOLE-TREE / bulk scan to SKIP
+    '--external-sources' following outright. Following is EXPONENTIAL on the deep
+    helper-scripts graph, so over hundreds of files the per-file follow cap
+    (SHELLCHECK_TIMEOUT) stacks into a many-minute, output-silent run that trips the
+    caller's outer timeout -- a guard that never finishes gates nothing. Following adds
+    NO gating signal anyway (SC1091 dropped, SC2034/SC2154/SC2317 advisory), so a bulk
+    caller (the shellcheck-clean-tree guard) that only grades gating findings sets this
+    to run no-follow from the start. Truthy = 1/true/yes/on (case-insensitive); anything
+    else (unset, 0, empty) keeps following ON -- the per-file dev gate is UNCHANGED."""
+    return os.environ.get(
+        "DIST_AI_SHELLCHECK_NO_FOLLOW", "").strip().lower() in ("1", "true", "yes", "on")
+
+
 ## The cap is CPU seconds (RLIMIT_CPU), not wall-clock: a following explosion is
 ## CPU-bound, so CPU time catches it exactly, while a wall cap also expires a clean
 ## file whenever the host is loaded (a ~2600-line script needs ~8s CPU, which is
@@ -395,6 +409,21 @@ def _forced_no_follow_rcfile(rc_file):
         except OSError:
             ## best-effort cleanup: the temp rcfile may already be gone; ignore.
             pass
+
+
+def _run_no_follow_shellcheck(src_dir, rc_file, path):
+    """Run shellcheck with '--external-sources' following FORCED off (a temp rcfile whose
+    first 'external-sources=false' wins, plus a cleared SHELLCHECK_OPTS), while still fully
+    analyzing the file BODY. Shared by the follow-exploded FALLBACK and the bulk
+    DIST_AI_SHELLCHECK_NO_FOLLOW path, so both take exactly one no-follow code path."""
+    with _forced_no_follow_rcfile(rc_file) as nofollow_rc:
+        command = ["shellcheck",
+                   "--source-path=" + src_dir, "--format=json1",
+                   "--rcfile=" + nofollow_rc,
+                   "--enable=" + SHELLCHECK_OPTIONAL, "--", path]
+        env = dict(os.environ)
+        env.pop("SHELLCHECK_OPTS", None)
+        return _run_shellcheck(command, SHELLCHECK_FALLBACK_TIMEOUT, env=env)
 
 ## A '# shellcheck source=' directive into the helper-scripts sibling repo
 ## (repo-tree shape '<repo-parent>/helper-scripts/usr/libexec/helper-scripts/...')
@@ -495,27 +524,30 @@ def _render_shellcheck(path, comments):
     return "\n".join(lines)
 
 
-## SC2034 (assigned, never used) and SC2154 (used, never assigned) are reliable ONLY
-## when shellcheck can follow 'source'. In the degraded no-follow fallback a global
-## SHARED across a source boundary (set here, read in a sourced file, or vice versa) is
-## FALSE-flagged (e.g. systemcheck's ICON/IDENTIFIER). We cannot tell such a false
-## positive from a genuine in-file typo without following the (transitively) sourced
-## files -- exactly the work that exploded. Heuristically re-deriving it from the
-## sourced files' text is a bash parser that lies in BOTH directions (a name in a
-## comment/string excuses a real bug; a quoted/transitive/space path misses a real use),
-## so per the "never reinvent a bash parser -> NOTIFY-only" rule the fallback does NOT
-## gate on SC2034/SC2154: it surfaces them as a VISIBLE ADVISORY note (not silently
-## dropped, so no silent green; not a hard fail, so a load-induced degrade of a valid
-## large file is not blocked). SC1091 is still dropped unconditionally (never a real bug,
-## just "could not follow").
-_FOLLOW_DEPENDENT_VAR_CODES = frozenset({2034, 2154})
+## SC2034 (assigned, never used), SC2154 (used, never assigned) and SC2317 (command
+## appears unreachable) are reliable ONLY when shellcheck can follow 'source'. Without the
+## follow a global SHARED across a source boundary (set here, read in a sourced file, or
+## vice versa) is FALSE-flagged (e.g. systemcheck's ICON/IDENTIFIER), and a function DEFINED
+## here but reached only from the sourced file it shadows looks UNREACHABLE (SC2317) though
+## the sourced caller does reach it (e.g. a *-tests harness that stubs the helpers its
+## sourced tool invokes -- dm-whonix-pair-tests/boot_gateway_nic_test.sh). We cannot tell
+## such a false positive from a genuine in-file typo / dead command without following the
+## (transitively) sourced files -- exactly the work that explodes. Heuristically re-deriving
+## it from the sourced files' text is a bash parser that lies in BOTH directions (a name in a
+## comment/string excuses a real bug; a quoted/transitive/space path misses a real use), so
+## per the "never reinvent a bash parser -> NOTIFY-only" rule the no-follow path does NOT gate
+## on these: it surfaces them as a VISIBLE ADVISORY note (not silently dropped, so no silent
+## green; not a hard fail, so a deliberate bulk no-follow or a load-induced degrade of a valid
+## large file is not blocked). The FOLLOW gate (per-commit / per-push) still gates them. SC1091
+## is dropped unconditionally (never a real bug, just "could not follow").
+_FOLLOW_DEPENDENT_CODES = frozenset({2034, 2154, 2317})
 
 
 def _emit_shellcheck(ctx, proc, src_dir, no_follow):
     """Turn a finished shellcheck PROC into model events. no_follow is the degraded
     (no-following) path: SC1091 'not following' is dropped (the forced consequence of
-    disabling the follow, identical to the absent-sibling drop); SC2034/SC2154 cannot be
-    verified across 'source' boundaries without the follow that exploded, so they are
+    disabling the follow, identical to the absent-sibling drop); SC2034/SC2154/SC2317 cannot
+    be verified across 'source' boundaries without the follow, so they are
     emitted as a NON-GATING advisory NOTE (visible, never silently dropped) rather than
     a fail; every other finding stays a real fail. The normal path drops only the SC1091
     of a genuinely absent helper-scripts sibling (see _is_absent_helper_scripts_source)."""
@@ -534,17 +566,18 @@ def _emit_shellcheck(ctx, proc, src_dir, no_follow):
         return
     if no_follow:
         advisory = [c for c in comments
-                    if c.get("code") in _FOLLOW_DEPENDENT_VAR_CODES]
+                    if c.get("code") in _FOLLOW_DEPENDENT_CODES]
         if advisory:
             yield model.note(
                 "shellcheck",
-                "following timed out on '%s'; these unused/unassigned-variable findings "
-                "could not be verified across 'source' boundaries and are ADVISORY, not "
-                "gating (inspect by hand, or re-run with following):\n%s"
+                "following disabled on '%s'; these findings depend on cross-'source' "
+                "resolution (unused/unassigned variables SC2034/SC2154, unreachable-command "
+                "SC2317) and could not be verified, so they are ADVISORY, not gating "
+                "(inspect by hand, or re-run with following):\n%s"
                 % (ctx.path, _render_shellcheck(ctx.path, advisory)))
         remaining = [c for c in comments
                      if c.get("code") != 1091
-                     and c.get("code") not in _FOLLOW_DEPENDENT_VAR_CODES]
+                     and c.get("code") not in _FOLLOW_DEPENDENT_CODES]
     else:
         ## The git probe for the sibling runs only when there is an unfollowable
         ## source to judge (rc>=1 with an SC1091 'does not exist').
@@ -606,33 +639,35 @@ class Shellcheck(ExternalRule):
         try:
             with ctx.materialized() as (path, src_dir), \
                     _shellcheckrc_for(ctx, src_dir) as rc_file:
-                command = ["shellcheck", "--external-sources",
-                           "--source-path=" + src_dir, "--format=json1"]
-                if rc_file is not None:
-                    command.append("--rcfile=" + rc_file)
-                command += ["--enable=" + SHELLCHECK_OPTIONAL, "--", path]
-                try:
-                    proc = _run_shellcheck(command, SHELLCHECK_TIMEOUT)
-                    degraded = False
-                except subprocess.TimeoutExpired:
-                    ## '--external-sources' following exploded (exponential on the
-                    ## deep helper-scripts graph). Re-run ONCE with following FORCED
-                    ## off via the rcfile (dropping '--external-sources' from argv is
-                    ## NOT enough -- the project rcfile may set external-sources=true,
-                    ## or SHELLCHECK_OPTS=-x, either of which re-enables the follow and
-                    ## re-explodes). shellcheck still fully analyzes the file BODY.
-                    ## SHELLCHECK_OPTS is cleared belt-and-suspenders. The fallback
-                    ## cannot follow, so it returns fast under its smaller cap.
-                    with _forced_no_follow_rcfile(rc_file) as nofollow_rc:
-                        fallback = ["shellcheck",
-                                    "--source-path=" + src_dir, "--format=json1",
-                                    "--rcfile=" + nofollow_rc,
-                                    "--enable=" + SHELLCHECK_OPTIONAL, "--", path]
-                        env = dict(os.environ)
-                        env.pop("SHELLCHECK_OPTS", None)
-                        proc = _run_shellcheck(
-                            fallback, SHELLCHECK_FALLBACK_TIMEOUT, env=env)
+                if _shellcheck_no_follow_requested():
+                    ## Bulk / whole-tree caller: SKIP the exponential '--external-sources'
+                    ## follow from the start, rather than paying the per-file follow cap on
+                    ## every one of hundreds of files (which stacks into a many-minute,
+                    ## output-silent run that trips the caller's outer timeout). Following
+                    ## yields no gating signal here anyway, so the no-follow body analysis is
+                    ## lossless for the verdict and returns fast.
+                    proc = _run_no_follow_shellcheck(src_dir, rc_file, path)
                     degraded = True
+                else:
+                    command = ["shellcheck", "--external-sources",
+                               "--source-path=" + src_dir, "--format=json1"]
+                    if rc_file is not None:
+                        command.append("--rcfile=" + rc_file)
+                    command += ["--enable=" + SHELLCHECK_OPTIONAL, "--", path]
+                    try:
+                        proc = _run_shellcheck(command, SHELLCHECK_TIMEOUT)
+                        degraded = False
+                    except subprocess.TimeoutExpired:
+                        ## '--external-sources' following exploded (exponential on the
+                        ## deep helper-scripts graph). Re-run ONCE with following FORCED
+                        ## off via the rcfile (dropping '--external-sources' from argv is
+                        ## NOT enough -- the project rcfile may set external-sources=true,
+                        ## or SHELLCHECK_OPTS=-x, either of which re-enables the follow and
+                        ## re-explodes). shellcheck still fully analyzes the file BODY.
+                        ## SHELLCHECK_OPTS is cleared belt-and-suspenders. The fallback
+                        ## cannot follow, so it returns fast under its smaller cap.
+                        proc = _run_no_follow_shellcheck(src_dir, rc_file, path)
+                        degraded = True
         except subprocess.TimeoutExpired:
             ## The forced-no-follow fallback itself hung (pathological: a huge file
             ## body, NOT a following explosion). Fail CLOSED and loud -- never a
@@ -651,21 +686,25 @@ class Shellcheck(ExternalRule):
                 "shellcheck",
                 "shellcheck present but could not run (%s); skipping" % exc)
             return
-        if degraded:
-            ## Always VISIBLE -- the degrade is never a silent pass. Honest about the
-            ## COVERAGE lost: without following, shellcheck cannot resolve cross-file
-            ## sources NOR distinguish a missing/typo'd 'source=' from a real one (it
-            ## emits the same SC1091 for both), so those are dropped; and SC2034/SC2154
-            ## cannot be verified across a source boundary, so _emit_shellcheck surfaces
-            ## them as a non-gating advisory NOTE. The same cap applies in CI, so this
-            ## file's cross-file checks are not recovered there either; the BODY is still
-            ## fully checked.
+        if degraded and not _shellcheck_no_follow_requested():
+            ## A per-file follow EXPLOSION (unexpected): always VISIBLE -- the degrade is never
+            ## a silent pass. Honest about the COVERAGE lost: without following, shellcheck cannot
+            ## resolve cross-file sources NOR distinguish a missing/typo'd 'source=' from a real one
+            ## (it emits the same SC1091 for both), so those are dropped; and SC2034/SC2154/SC2317 cannot
+            ## be verified across a source boundary, so _emit_shellcheck surfaces them as a non-gating
+            ## advisory NOTE. The same cap applies in CI, so this file's cross-file checks are not
+            ## recovered there either; the BODY is still fully checked.
+            ##
+            ## A DELIBERATE bulk no-follow (DIST_AI_SHELLCHECK_NO_FOLLOW) suppresses this per-file
+            ## NOTE: the caller opted in knowingly (and would otherwise get one NOTE per file over a
+            ## whole-tree scan -- pure log spam). It is not silent: the caller set the knob, and
+            ## _emit_shellcheck still surfaces any actual SC2034/SC2154/SC2317 downgrade as an advisory NOTE.
             yield model.note(
                 "shellcheck",
                 "shellcheck '--external-sources' following exceeded %gs on '%s'; "
                 "re-checked with following forced off -- cross-file source resolution and "
-                "missing-source detection skipped, and unused/unassigned-variable checks "
-                "(SC2034/SC2154) downgraded to advisory, for this file (body still checked)"
+                "missing-source detection skipped, and cross-source checks "
+                "(SC2034/SC2154/SC2317) downgraded to advisory, for this file (body still checked)"
                 % (SHELLCHECK_TIMEOUT, ctx.path))
         yield from _emit_shellcheck(ctx, proc, src_dir, degraded)
 

@@ -48,6 +48,7 @@ settle="15"
 labwc_pid=""
 vbox_pid=""
 own_runtime_dir=""
+own_config_dir=""
 labwc_log=""
 vbox_log=""
 shot_tmp=""
@@ -71,6 +72,7 @@ cleanup() {
    [ -z "${vbox_pid}" ] || kill -KILL "${vbox_pid}" 2>/dev/null || true
    [ -z "${labwc_pid}" ] || kill -KILL "${labwc_pid}" 2>/dev/null || true
    [ -z "${own_runtime_dir}" ] || safe-rm --recursive --force -- "${own_runtime_dir}" 2>/dev/null || true
+   [ -z "${own_config_dir}" ] || safe-rm --recursive --force -- "${own_config_dir}" 2>/dev/null || true
    [ -z "${labwc_log}" ] || safe-rm --force -- "${labwc_log}" 2>/dev/null || true
    [ -z "${vbox_log}" ] || safe-rm --force -- "${vbox_log}" 2>/dev/null || true
    ## a surviving temp means the grab failed before the move -- never leave a blank/partial frame.
@@ -153,10 +155,14 @@ main() {
    labwc_log="$(mktemp --tmpdir "${me}-labwc.XXXXXX.log")"
    vbox_log="$(mktemp --tmpdir "${me}-vbox.XXXXXX.log")"
 
+   ## Private, EMPTY labwc config dir: with no account autostart, the ONLY client is the Manager
+   ## we launch -- an account's autostart app could otherwise paint into the grab and pass the
+   ## non-blank check as if it were the Manager.
+   own_config_dir="$(mktemp --directory --tmpdir "${me}-cfg.XXXXXX")"
    export WLR_BACKENDS="headless"
    export WLR_LIBINPUT_NO_DEVICES="1"
    export WLR_HEADLESS_OUTPUTS="1"
-   labwc >"${labwc_log}" 2>&1 &
+   labwc --config-dir "${own_config_dir}" >"${labwc_log}" 2>&1 &
    labwc_pid="$!"
 
    ## Private runtime dir -> the compositor's socket is the only wayland-* here; poll for it to
@@ -214,5 +220,6 @@ main() {
 ## Execute only when run directly; a unit test sources this to exercise the pure helpers
 ## (parse_args / vm_uuid) without starting a compositor.
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+   trap cleanup EXIT
    main "$@"
 fi
