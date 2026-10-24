@@ -136,6 +136,19 @@ run_deploy --record-and-publish
 check "exit 1 without the completion marker still refuses" "$(refused)" "refused:yes"
 check "exit 1 without the completion marker does not push" "$(pushed)" "pushed:no"
 
+## 3b. The marker is matched as a WHOLE LINE: a line that merely CONTAINS the marker text as a
+## substring (an early-FATAL message echoing a checkout path like .../website-tests: suite-complete/)
+## must NOT be taken for completion. Exit 1 with such a line but no standalone marker -> refuse.
+cat > "${gate}" <<'STUB'
+#!/bin/bash
+printf '%s\n' "website-tests: FATAL: site override '/checkout/website-tests: suite-complete/x' has no index.html" >&2
+exit 1
+STUB
+chmod +x -- "${gate}"
+run_deploy --record-and-publish
+check "a marker substring inside another line does not forge completion" "$(refused)" "refused:yes"
+check "forged-marker-substring run does not push" "$(pushed)" "pushed:no"
+
 ## 4. An INCOMPLETE result (nothing fully verified) is NEVER overridable: 77 (SKIP target-absent,
 ## no marker) and 78 (SKIP env-unmet -- which DOES reach the marker) both still refuse, because the
 ## override waives only a COMPLETE RED (exit 1 with marker), never a skip. Keyed on the true suite

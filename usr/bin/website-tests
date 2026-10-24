@@ -198,6 +198,12 @@ fi
 
 overall=0
 env_unmet=0
+## install_intact goes false when a shipped REQUIRED checker is missing/unusable: unlike a missing
+## required UNIT test (which exits 1 before any of this), a missing lane checker sets overall=1 and
+## continues, so without this flag it would still reach the suite-complete marker and look like a
+## genuine red. A broken install is NOT a complete red -- suppress the marker so site-deploy's
+## --record-and-publish cannot override it.
+install_intact='true'
 "${tests_dir}/check_site.py" "${roots[@]}" || overall=1
 
 ## SVG active-content safety (generic): every committed .svg/.svgz must be safe to serve
@@ -210,6 +216,7 @@ if [ -f "${tests_dir}/check_svg_safety.py" ]; then
 else
    printf '%s\n' "website-tests: FATAL: check_svg_safety.py not found in ${tests_dir} (required check missing)" >&2
    overall=1
+   install_intact='false'
 fi
 
 ## Browser lanes -- mobile-overflow ("no sideways scroll at a phone viewport"),
@@ -245,6 +252,7 @@ else
    ## test read as a full PASS (silent green) -- FATAL instead.
    printf '%s\n' "website-mobile-tests: FATAL: check_mobile.py not found in ${tests_dir} (required test missing)" >&2
    overall=1
+   install_intact='false'
 fi
 
 if [ "${mobile_rc}" = '77' ]; then
@@ -301,6 +309,7 @@ else
       ## not silently skip the width lane to a green pass.
       printf '%s\n' "website-width-tests: FATAL: check_width.py not found in ${tests_dir} (required test missing)" >&2
       overall=1
+      install_intact='false'
    fi
    if [ -f "${tests_dir}/check_footer.py" ]; then
       footer_rc=0
@@ -316,6 +325,7 @@ else
       ## not silently skip the footer lane to a green pass.
       printf '%s\n' "website-footer-tests: FATAL: check_footer.py not found in ${tests_dir} (required test missing)" >&2
       overall=1
+      install_intact='false'
    fi
    if [ -f "${tests_dir}/check_console.py" ]; then
       console_rc=0
@@ -331,6 +341,7 @@ else
       ## not silently skip the console-error gate to a green pass.
       printf '%s\n' "website-console-tests: FATAL: check_console.py not found in ${tests_dir} (required test missing)" >&2
       overall=1
+      install_intact='false'
    fi
 fi
 
@@ -364,13 +375,17 @@ if [ -n "${st_site}" ]; then
       ## Ships in this same package, so absence is an environment bug, not a skip: FAIL.
       printf '%s\n' 'website-tests: FAIL secure-terminal-shots-inventory not found (required)' >&2
       overall=1
+      install_intact='false'
    fi
 fi
 
-## Completion signal: reaching here means every lane RAN -- no early FATAL / missing-or-failing
-## required-unit-test abort (those exit 1 BEFORE this point) and no no-checkout SKIP. site-deploy's
+## Completion signal: emit ONLY when every required checker was present and the run reached here --
+## no early FATAL / missing-or-failing required-unit-test abort (those exit 1 BEFORE this point), no
+## no-checkout SKIP, and no missing/unusable required LANE checker (install_intact). site-deploy's
 ## --record-and-publish keys on this marker so it overrides ONLY a COMPLETE red (exit 1 WITH the
-## marker), never an early exit-1 abort where the site checks never ran.
-printf '%s\n' 'website-tests: suite-complete' >&2
+## marker) -- never an early abort nor a broken install, where the site checks never fully ran.
+if [ "${install_intact}" = 'true' ]; then
+   printf '%s\n' 'website-tests: suite-complete' >&2
+fi
 ## fail dominates; a browser lane that could not run here surfaces as SKIP:env-unmet (78).
 suite_exit "${overall}" 0 "${env_unmet}"

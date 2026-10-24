@@ -200,12 +200,14 @@ fi
 ##        WITHOUT the marker (website-tests aborted early -- a missing/failing required unit test,
 ##        BEFORE the site checks ran). NEVER overridable: publishing on it is the false green this
 ##        gate exists to prevent.
+## Match the marker as a WHOLE LINE, not an unanchored substring: an early-FATAL message echoes the
+## checkout path, so a path CONTAINING the marker text would otherwise forge completion.
+## website-tests prints the marker on its own line, so a whole-line (grep -Fxq) match cannot be
+## spoofed by the marker text appearing as a substring inside another line.
 suite_complete='false'
-case "${suite_out}" in
-   *'website-tests: suite-complete'*)
-      suite_complete='true'
-      ;;
-esac
+if grep --fixed-strings --line-regexp --quiet 'website-tests: suite-complete' <<< "${suite_out}"; then
+   suite_complete='true'
+fi
 if [ "${test_rc}" -eq 0 ]; then
    printf '%s\n' "${me}: suite green" >&2
 elif [ "${test_rc}" -eq 1 ] && [ "${suite_complete}" = 'true' ] \
