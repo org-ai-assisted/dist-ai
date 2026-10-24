@@ -64,7 +64,15 @@ def check_attrs(cwd, path, source_rev, names):
     '' -> the INDEX (--cached); a commit-ish -> that commit (--attr-source); None
     -> the working tree (plain check-attr). '-z' makes the output machine-parsable
     (NUL-delimited path, attr, value triples) so an odd-byte path or value stays
-    one record. Empty dict on any git error -- fail toward NOT exempting."""
+    one record. Empty dict on any git error -- fail toward NOT exempting.
+
+    The machine-wide attribute sources are SUPPRESSED (GIT_ATTR_NOSYSTEM for
+    /etc/gitattributes; core.attributesFile=/dev/null for the user-global file),
+    so a developer's global Linguist setting cannot silently exempt an unrelated
+    repo from the gate. The repo-local $GIT_DIR/info/attributes still applies --
+    git offers no flag to disable it -- but it is uncommitted and non-propagating,
+    and CI runs the gate in a clean checkout, so it can weaken the gate only on
+    the local machine, where a commit can already be waived outright."""
     if source_rev:
         args = ["--attr-source=%s" % source_rev, "check-attr", "-z"]
     elif source_rev == "":
@@ -73,8 +81,10 @@ def check_attrs(cwd, path, source_rev, names):
         args = ["check-attr", "-z"]
     try:
         out = subprocess.run(
-            ["git", "-C", cwd] + args + list(names) + ["--", path],
-            capture_output=True).stdout
+            ["git", "-C", cwd, "-c", "core.attributesFile=/dev/null"]
+            + args + list(names) + ["--", path],
+            capture_output=True,
+            env={**os.environ, "GIT_ATTR_NOSYSTEM": "1"}).stdout
     except OSError:
         return {}
     ## -z output: path NUL attr NUL value NUL, repeated (trailing NUL -> one empty
@@ -312,7 +322,15 @@ class FileContext:
         from the STYLE + format rules exactly as `binary` is (the engine
         short-circuits on it), while the secret / size / structural checks still
         run. Glob-able, so one line exempts a whole tree and future files under
-        it. Cached."""
+        it. Cached.
+
+        is_binary is tested FIRST: a binary file is already exempt from the text
+        tier and the engine rules decline it, so it is never treated as vendored
+        -- and this keeps the NUL-byte binary short-circuit AHEAD of any git
+        check-attr, so a NUL blob never triggers an attribute read (an unguarded
+        --detect over a hostile FIFO .gitattributes must not hang)."""
+        if self.is_binary:
+            return False
         if self._vendored is None:
             self._vendored = vendored_value(self._query_attrs())
         return self._vendored
