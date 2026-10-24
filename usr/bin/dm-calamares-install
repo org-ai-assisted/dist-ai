@@ -333,6 +333,20 @@ story_snap_nonblank() {
    done
 }
 
+## Redact non-deterministic tokens (a kernel console timestamp like [    3.755312], a per-install
+## LUKS UUID like luks-<uuid>) from a boot-console milestone frame, so the published screenshot is
+## REPRODUCIBLE for golden comparison. Masks ONLY the matching OCR word boxes, not the whole line,
+## so the prompt stays legible and the frame stays non-uniform (the universal blank floor still
+## sees content). Best-effort: a missing tool / OCR hiccup leaves the frame unchanged and never
+## fails a passing run. ${1} is the NN-name.png basename under ${shot_dir}.
+redact_boot_tokens() {
+   local shot="${shot_dir}/$1"
+   [ -n "${shot_dir}" ] && [ -s "${shot}" ] || return 0
+   "${IMAGE_REDACT_TOKENS:-image-redact-tokens}" \
+      --pattern '[0-9]+\.[0-9]{6}' --pattern 'luks-[0-9a-fA-F-]{8,}' \
+      -- "${shot}" >/dev/null 2>&1 || true
+}
+
 ## Render a host-side "state card" for a point with no framebuffer worth a photo (the VM defined
 ## but not booted, the VM powered off, a Secure Boot / MOK state that has no on-screen UI). The
 ## card is a small PNG of selected `VBoxManage showvminfo` fields, captioned so it is never
@@ -498,6 +512,7 @@ reboot_installed() {
    gui_wait_for 'passphrase for disk|please unlock|luks' 120 "LUKS unlock (${role})"
    if [ "${role}" = 'sysmaint' ]; then
       story_snap 63 sysmaint-luks-prompt
+      redact_boot_tokens 63-sysmaint-luks-prompt.png
    fi
    printf '%s' "${passphrase}" | "${GUESTCTL}" "${vm}" type-stdin >/dev/null
    gui_scan 1c 9c
@@ -696,6 +711,24 @@ run_check() {
       sleep 10
    done
    die "${FAIL_RC}" "check ${num} did not complete in ${timeout}s"
+}
+
+## On a fully-PASSING run, record the release-critical check roster to ${check_log} so the
+## PUBLISHED result surfaces WHICH authoritative checks ran and passed -- check 8 (systemcheck
+## --cli --ci) above all. Without this the record keeps only a FAILURE tail, so a green run shows
+## NO evidence the checks ran at all (a reviewer cannot see that systemcheck passed). Honest by
+## construction: the battery is fail-fast + FATAL (a failed check die()s before this runs), so
+## reaching here means every listed check passed. dm-release-test threads a non-empty check_log
+## into the published step's stderr tail -> result.json -> the results page.
+write_pass_roster() {
+   [ -n "${check_log}" ] || return 0
+   local num
+   {
+      printf '%s\n' "release-critical checks -- all PASS (fatal battery: a failed check aborts the run):"
+      for num in "${RELEASE_CHECK_ORDER[@]}"; do
+         printf '%s\n' "check ${num} (${RELEASE_CHECK_DESC[${num}]:-}): ${RELEASE_CHECK_CMD[${num}]:-} -- PASS"
+      done
+   } > "${check_log}" 2>/dev/null || true
 }
 
 ## --- callbacks for the shared release-check battery (release-checks.bsh) ---------
@@ -1349,11 +1382,14 @@ main() {
    printf '%s\n' "${me}: unlock LUKS at boot (check 7)"
    gui_wait_for 'passphrase for disk|please unlock|luks' 120 'LUKS unlock prompt'
    story_snap 47 luks-prompt
+   redact_boot_tokens 47-luks-prompt.png
    printf '%s' "${passphrase}" | "${GUESTCTL}" "${vm}" type-stdin >/dev/null
    story_snap 48 luks-passphrase-typed
+   redact_boot_tokens 48-luks-passphrase-typed.png
    gui_scan 1c 9c
    sleep 3
    story_snap 49 luks-unlocked
+   redact_boot_tokens 49-luks-unlocked.png
 
    printf '%s\n' "${me}: verify the installed system booted (R4)"
    gui_wait_for 'setup wizard|setup-wizard-dist|systemcheck' 180 'installed system first boot'
@@ -1394,6 +1430,8 @@ main() {
       ## R6 upgrade gate can never diverge about what a check is.
       run_release_check_battery cal_exec cal_reboot_sysmaint cal_verify \
          || die "${FAIL_RC}" "release check ${RELEASE_CHECK_FAILED_NUM} (${RELEASE_CHECK_FAILED_REASON}) FAILED"
+      ## Surface the passed-check roster (incl. check 8 systemcheck) in the published record.
+      write_pass_roster
       snap 66 checks-complete
    fi
 

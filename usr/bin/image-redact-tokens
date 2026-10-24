@@ -1,0 +1,131 @@
+#!/usr/bin/python3 -Bsu
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Shell-invocation guard.
+"exec" "bash" "-c" "printf '%s\n' '$0: ERROR: Do not execute this script with bash!' >&2; exit 1"
+
+"""Redact non-deterministic tokens from a screenshot by masking the OCR word boxes whose text
+matches a regex -- a kernel console timestamp ([    3.755312]), a per-install LUKS UUID
+(luks-<uuid>) -- so a published framebuffer screenshot is reproducible for golden comparison.
+
+Only the MATCHING words are filled with a solid block, so the rest of the frame (and its
+non-uniformity, which a blank-gate relies on) is preserved: redacting a timestamp must not turn
+a sparse console frame into an all-black rectangle.
+
+Usage:
+  image-redact-tokens --pattern REGEX [--pattern REGEX]... IMAGE [IMAGE...]
+
+Each image is edited IN PLACE. BEST-EFFORT per image: a tesseract/read/parse failure leaves that
+image UNCHANGED (a redaction miss must never blank or corrupt a frame), and a no-match image is
+left byte-identical. A nonzero exit is returned only for a usage error or when NO image could be
+processed at all, so a caller can log but need never fail a run on a redaction hiccup."""
+
+import argparse
+import re
+import subprocess
+import sys
+
+from PIL import Image, ImageDraw
+
+
+def tesseract_words(path):
+    """Return [(left, top, width, height, text), ...] from tesseract's TSV word boxes.
+
+    --psm 6 (assume a uniform block of text) suits a console/log frame. Raises on a
+    tesseract/OS failure so the caller can treat the frame as best-effort-unchanged."""
+    proc = subprocess.run(
+        ["tesseract", path, "stdout", "--psm", "6", "tsv"],
+        capture_output=True, text=True, check=True,
+    )
+    lines = proc.stdout.splitlines()
+    if not lines:
+        return []
+    header = lines[0].split("\t")
+    col = {name: i for i, name in enumerate(header)}
+    need = ("left", "top", "width", "height", "text")
+    if not all(k in col for k in need):
+        return []
+    words = []
+    for row in lines[1:]:
+        cells = row.split("\t")
+        if len(cells) <= col["text"]:
+            continue
+        text = cells[col["text"]]
+        if not text.strip():
+            continue
+        try:
+            left = int(cells[col["left"]])
+            top = int(cells[col["top"]])
+            width = int(cells[col["width"]])
+            height = int(cells[col["height"]])
+        except ValueError:
+            continue
+        words.append((left, top, width, height, text))
+    return words
+
+
+def redact(path, patterns, pad=2):
+    """Mask every word whose text matches a pattern. Return the number of words masked
+    (0 = nothing to do / best-effort skip)."""
+    try:
+        words = tesseract_words(path)
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        return 0
+    hits = [(l, t, w, h) for (l, t, w, h, text) in words
+            if any(p.search(text) for p in patterns)]
+    if not hits:
+        return 0
+    with Image.open(path) as image:
+        image = image.convert("RGB")
+        draw = ImageDraw.Draw(image)
+        for (left, top, width, height) in hits:
+            draw.rectangle(
+                [left - pad, top - pad, left + width + pad, top + height + pad],
+                fill=(0, 0, 0),
+            )
+        image.save(path)
+    return len(hits)
+
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser(prog="image-redact-tokens", add_help=True)
+    parser.add_argument("--pattern", action="append", default=[], required=True,
+                        help="a Python regex; a word whose OCR text matches it is masked "
+                             "(repeatable)")
+    parser.add_argument("--pad", type=int, default=2,
+                        help="pixels of padding around each masked word box (default 2)")
+    parser.add_argument("images", nargs="+")
+    return parser.parse_args(argv[1:])
+
+
+def main(argv):
+    args = parse_args(argv)
+    try:
+        patterns = [re.compile(p) for p in args.pattern]
+    except re.error as exc:
+        sys.stderr.write("image-redact-tokens: bad pattern: %s\n" % exc)
+        return 2
+    processed = 0
+    total = 0
+    for path in args.images:
+        try:
+            with Image.open(path):
+                pass
+        except (OSError, ValueError):
+            sys.stderr.write("image-redact-tokens: cannot read %s -- left unchanged\n" % path)
+            continue
+        processed += 1
+        total += redact(path, patterns, pad=args.pad)
+    sys.stdout.write("image-redact-tokens: %d image(s), %d word(s) masked\n"
+                     % (processed, total))
+    ## Nonzero only when NOTHING could be processed (every path unreadable) -- a genuine
+    ## caller error -- never merely because no token matched.
+    return 0 if processed else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
