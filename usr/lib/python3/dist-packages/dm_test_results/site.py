@@ -23,20 +23,25 @@ functional verdict was PASS.
 
 from . import compare
 from . import model
-
-## Run-cell statuses. Only STATUS_PASS is green. CSS class = "st-<status>".
-STATUS_PASS = "pass"
-STATUS_FAIL = "fail"
-STATUS_INCONCLUSIVE = "inconclusive"
-STATUS_INCOMPLETE = "incomplete"
-STATUS_NODATA = "nodata"
-STATUS_STALE = "stale"
-STATUS_UNKNOWN = "unknown"
-STATUS_CHANGED = "changed"
-STATUS_NEW = "new"
-
-## The one green status.
-STATUS_GREEN = STATUS_PASS
+## Re-export the pure-data status + CSS-class contract. It lives in a numpy-free leaf module so
+## the required website-tests unit and the deploy-time contract check can import GENERATED_CLASSES
+## without pulling compare -> numpy (not a declared dep of those checks). Callers keep using
+## site.STATUS_*, site.css_class, site.GENERATED_CLASSES unchanged.
+from .site_classes import (  # noqa: F401  -- re-exported for callers of this module
+    ALL_STATUSES,
+    GENERATED_CLASSES,
+    STATUS_CHANGED,
+    STATUS_FAIL,
+    STATUS_GREEN,
+    STATUS_INCOMPLETE,
+    STATUS_INCONCLUSIVE,
+    STATUS_NEW,
+    STATUS_NODATA,
+    STATUS_PASS,
+    STATUS_STALE,
+    STATUS_UNKNOWN,
+    css_class,
+)
 
 ## Default staleness window: a run older than this is shown stale (never green),
 ## so an old result cannot masquerade as a current pass.
@@ -53,10 +58,6 @@ _SHOT_NONGREEN_ORDER = (
     (compare.BUCKET_CHANGED, STATUS_CHANGED),
     (compare.BUCKET_NEW, STATUS_NEW),
 )
-
-
-def css_class(status):
-    return "st-%s" % status
 
 
 def is_green(status):

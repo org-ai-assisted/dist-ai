@@ -394,6 +394,48 @@ def run():
     check('check_undefined_classes invoked from main()',
           'check_undefined_classes(root, failures)' in main_body)
 
+    # check_generated_class_contract: the test-results plane's generator emits a fixed class
+    # manifest (dm_test_results.site.GENERATED_CLASSES); style.css (hand-maintained in a DIFFERENT
+    # repo) must define every one -- including the st-<status> CO-classes undefined-classes skips
+    # by design. No-op where the generated tree is absent. Canary: the .stage drift that shipped
+    # unstyled and silently blocked every Pages publish. Import the numpy-free leaf module (not
+    # dm_test_results.site, which pulls compare -> numpy) so this REQUIRED unit stays runnable
+    # where numpy is absent -- the same no-op-when-absent guarantee the production check keeps.
+    from dm_test_results import site_classes as rsite
+
+    def _gcc_failures(root):
+        failures: list[str] = []
+        check_site.check_generated_class_contract(root, failures)
+        return failures
+
+    _all_rules = '\n'.join('.%s{color:#000}' % name for name in sorted(rsite.GENERATED_CLASSES))
+
+    with tempfile.TemporaryDirectory() as root:
+        # Generated tree absent -> no-op, even with a style.css that defines nothing.
+        _write(root, 'index.html', '<!doctype html><html></html>')
+        _write(root, 'style.css', 'body{color:#000}')
+        check('contract is a no-op without the generated tree',
+              _gcc_failures(root) == [], repr(_gcc_failures(root)))
+
+    with tempfile.TemporaryDirectory() as root:
+        # Generated tree present + style.css defines every manifest class -> clean.
+        _write(root, 'automated-test-results/index.html', '<!doctype html><html></html>')
+        _write(root, 'style.css', _all_rules)
+        check('full manifest coverage passes', _gcc_failures(root) == [], repr(_gcc_failures(root)))
+
+    with tempfile.TemporaryDirectory() as root:
+        # Generated tree present + style.css missing ONE manifest class (stage) -> flagged by name.
+        _write(root, 'automated-test-results/index.html', '<!doctype html><html></html>')
+        _write(root, 'style.css', '\n'.join(
+            '.%s{color:#000}' % name
+            for name in sorted(rsite.GENERATED_CLASSES) if name != 'stage'))
+        fails = _gcc_failures(root)
+        check('missing manifest class flagged by name', any("'stage'" in x for x in fails), repr(fails))
+        check('exactly the missing class flagged', len(fails) == 1, repr(fails))
+
+    check('check_generated_class_contract invoked from main()',
+          'check_generated_class_contract(root, failures)' in main_body)
+
     # check_csp: script-src must not permit inline execution. A page keeps
     # style-src 'unsafe-inline' (inline CSS is untouched) -- the check must read
     # the script-src directive alone, never the whole string.

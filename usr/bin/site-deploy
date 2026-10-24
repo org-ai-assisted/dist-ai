@@ -23,6 +23,24 @@
 ## all. That is treated as FAILURE here, deliberately: a skip means
 ## nothing was verified, and publishing on the strength of a suite that
 ## never ran is exactly the false green this gate exists to prevent.
+##
+## --record-and-publish is the operator-authorized override: run the FULL suite as always, and
+## when it reports a COMPLETE red (exit 1 -- the suite ran and found real consistency failures)
+## publish anyway after a loud WARNING that reprints the suite output, so the deploy log carries an
+## honest record of what was overridden. It is a FLAG, never an env toggle, so it is always a
+## deliberate per-invocation act and cannot leak into the automated test-results-deploy path (which
+## stays strict). Distinct from SITE_DEPLOY_SKIP (a blind pre-push-hook bypass that runs NOTHING
+## and records nothing -- discouraged). Only a complete red is overridable: a SKIP (77), env-unmet
+## (78), killed, or any other incomplete result is NOT -- nothing was fully verified, the false
+## green this gate prevents.
+##
+## Scope boundary (deliberate): website-tests collapses its lanes into one exit (suite-exit.bash),
+## so a check_site family-SKIP or an early FATAL also surface as 1. The override does NOT parse the
+## output to tell a genuine consistency failure from such a collapsed 1 -- that is the operator's
+## call, which is why it is a manual flag with the FULL suite output reprinted in front of them,
+## not an env toggle or an automated behaviour. For a family site (the real deploy target) exit 1
+## means real failures. Re-deriving the distinction by scraping lane lines is the brittle-parser
+## trap and is deliberately not attempted.
 
 set -o errexit
 set -o nounset
@@ -45,12 +63,16 @@ die() {
 usage() {
    printf '%s\n' "${me} -- test a Pages site, then publish it.
 
-  ${me} [--repo DIR] [--remote NAME] [--check-only]
+  ${me} [--repo DIR] [--remote NAME] [--check-only] [--record-and-publish]
 
-  --repo DIR      site checkout (default: current directory)
-  --remote NAME   git remote to push to (default: origin)
-  --check-only    run the suite, do not push
-  -h, --help      show this help
+  --repo DIR             site checkout (default: current directory)
+  --remote NAME          git remote to push to (default: origin)
+  --check-only           run the suite, do not push
+  --record-and-publish   operator override: when the suite reports a COMPLETE red result
+                         (exit 1), print a loud WARNING with the suite output and publish
+                         anyway. A skip/env-unmet/incomplete run (nothing fully verified)
+                         still refuses, as does --check-only. Default off.
+  -h, --help             show this help
 
 Exit 0 = tested and pushed (or tested, with --check-only).
 Non-zero = nothing was published."
@@ -59,6 +81,11 @@ Non-zero = nothing was published."
 repo_dir=''
 remote='origin'
 check_only='false'
+## Operator override, off by default. FLAG-ONLY by design: a per-invocation --record-and-publish is
+## a conscious act that CANNOT leak into the automated test-results-deploy path (which calls
+## site-deploy with no flag), so that path stays strict. An exported env toggle would silently
+## turn the automated path non-strict, so there is none.
+record_and_publish='false'
 
 while [ "$#" -gt 0 ]; do
    case "$1" in
@@ -82,6 +109,10 @@ while [ "$#" -gt 0 ]; do
          ;;
       '--check-only')
          check_only='true'
+         shift
+         ;;
+      '--record-and-publish')
+         record_and_publish='true'
          shift
          ;;
       '-h'|'--help')
@@ -140,16 +171,45 @@ esac
 printf '%s\n' "${me}: testing ${repo_dir}" >&2
 
 test_rc=0
-env "${site_var}=${repo_dir}" "${website_tests}" || test_rc="$?"
-
-if [ "${test_rc}" -eq 77 ]; then
-   die 1 "website-tests SKIPPED (exit 77): it resolved no site checkout, so nothing was verified. Refusing to publish."
+suite_out=''
+if [ "${record_and_publish}" = 'true' ]; then
+   ## Capture the suite output into a variable so the override WARNING can name the failed
+   ## check(s) even after a long suite's output has scrolled, while `tee /dev/stderr` still
+   ## streams it live. Nothing is persisted. pipefail (set above) carries website-tests' exit.
+   suite_out="$(env "${site_var}=${repo_dir}" "${website_tests}" 2>&1 | tee /dev/stderr)" \
+      || test_rc="$?"
+else
+   env "${site_var}=${repo_dir}" "${website_tests}" || test_rc="$?"
 fi
-if [ "${test_rc}" -ne 0 ]; then
+
+## Decide from the suite exit:
+##  0  -> green: publish (or report, with --check-only).
+##  1  -> the suite RAN TO COMPLETION and found real consistency failures: a KNOWN red. Refuse,
+##        UNLESS --record-and-publish is set AND we are actually publishing. The override never
+##        applies under --check-only, so a gate caller -- the pre-push hook runs `site-deploy
+##        --check-only` -- still refuses a red (and the flag is per-invocation, never ambient).
+##  else (77 SKIP target-absent, 78 SKIP env-unmet, 143 killed, ...) -> nothing was verified to
+##        completion, which is NEVER overridable: publishing on it is the false green this gate
+##        exists to prevent. Refuse regardless of the override.
+if [ "${test_rc}" -eq 0 ]; then
+   printf '%s\n' "${me}: suite green" >&2
+elif [ "${test_rc}" -eq 1 ] && [ "${record_and_publish}" = 'true' ] \
+      && [ "${check_only}" != 'true' ]; then
+   ## Publish past a KNOWN, COMPLETE red result, loudly. The full captured suite output is
+   ## reprinted under the banner so the deploy record names exactly which checks were overridden.
+   {
+      printf '%s\n' "${me}: ============================================================"
+      printf '%s\n' "${me}: WARNING: --record-and-publish: publishing PAST a FAILED gate"
+      printf '%s\n' "${me}: website-tests exited ${test_rc}. Full suite output follows:"
+      printf '%s\n' "${suite_out}"
+      printf '%s\n' "${me}: operator authorized this publish despite the above"
+      printf '%s\n' "${me}: ============================================================"
+   } >&2
+elif [ "${test_rc}" -eq 77 ]; then
+   die 1 "website-tests SKIPPED (exit 77): it resolved no site checkout, so nothing was verified. Refusing to publish."
+else
    die 1 "website-tests failed (exit ${test_rc}). Refusing to publish."
 fi
-
-printf '%s\n' "${me}: suite green" >&2
 
 if [ "${check_only}" = 'true' ]; then
    printf '%s\n' "${me}: --check-only, not pushing" >&2

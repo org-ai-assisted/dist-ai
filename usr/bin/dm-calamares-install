@@ -490,15 +490,38 @@ mok_host_enroll() {
 ## the 800x600 early-boot framebuffer. The exact mode does not matter -- the GUI is
 ## driven by OCR text location, not fixed coords. A Shift tap each round wakes a
 ## DPMS-blanked display (a long idle boot leaves it black at 800x600).
+##
+## Resize-nudge fallback: GA's cooperative auto-resize (VBoxDRMClient driving vmwgfx) is
+## the normal path and gets the first stretch untouched. Only if the desktop is STILL at
+## the 800x600 framebuffer past the threshold is a one-shot host setvideomodehint issued --
+## a nudge, NOT a forced pass: a guest whose resize is genuinely dead ignores it and this
+## still dies at the deadline, and the downstream non-degenerate full-res shot gate
+## (image-blank-check) still decides. Writes a RESIZE-NUDGE-USED marker when the nudge was
+## needed, so a green that required it says so. Kills the post-reboot-churn resize flake.
 wait_ready() {
-   local timeout="$1" deadline res width
-   deadline=$(( SECONDS + timeout ))
+   local timeout="$1" deadline res width start nudge_after nudged=0
+   start="${SECONDS}"
+   nudge_after="${DM_CALAMARES_RESIZE_NUDGE_AFTER:-$(( timeout / 3 ))}"
+   deadline=$(( start + timeout ))
    while [ "${SECONDS}" -lt "${deadline}" ]; do
       gui_scan 2a aa
       res="$("${GUESTCTL}" "${vm}" res 2>/dev/null || true)"
       width="${res% *}"
       if [[ "${width}" =~ ^[0-9]+$ ]] && [ "${width}" -ge 1024 ]; then
          return 0
+      fi
+      ## One-shot on SUCCESS only: if the host rejects the hint (VM transiently locked / not
+      ## running) leave nudged=0 so the next poll retries, and do NOT write the marker -- it
+      ## must record a nudge that actually fired, never a failed attempt (no fabricated signal).
+      if [ "${nudged}" -eq 0 ] && [ "$(( SECONDS - start ))" -ge "${nudge_after}" ]; then
+         printf '%s\n' "${me}: NOTICE: full-res auto-resize not reached after ${nudge_after}s -- issuing one-shot setvideomodehint 1280x800 fallback nudge (GA must still honour it; the non-degenerate full-res shot gate still decides)"
+         if "${VBOXMANAGE}" controlvm "${vm}" setvideomodehint 1280 800 32 >/dev/null 2>&1; then
+            nudged=1
+            if [ -n "${shot_dir}" ]; then
+               printf '%s\n' "setvideomodehint 1280x800 fallback nudge issued after ${nudge_after}s (GA cooperative auto-resize did not reach full-res in time)" \
+                  > "${shot_dir}/RESIZE-NUDGE-USED" 2>/dev/null || true
+            fi
+         fi
       fi
       sleep 10
    done
