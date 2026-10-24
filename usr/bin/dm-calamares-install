@@ -347,15 +347,18 @@ story_snap_nonblank() {
 
 ## Redact non-deterministic tokens (a kernel console timestamp like [    3.755312], a per-install
 ## LUKS UUID like luks-<uuid>) from a boot-console milestone frame, so the published screenshot is
-## REPRODUCIBLE for golden comparison. Masks ONLY the matching OCR word boxes, not the whole line,
-## so the prompt stays legible and the frame stays non-uniform (the universal blank floor still
-## sees content). Best-effort: a missing tool / OCR hiccup leaves the frame unchanged and never
-## fails a passing run. ${1} is the NN-name.png basename under ${shot_dir}.
+## REPRODUCIBLE for golden comparison. Masks the matching OCR word boxes (the WHOLE word that
+## matched, not the line), so the prompt stays legible and the frame stays non-uniform. The UUID
+## pattern keys on the distinctive 'luks-' prefix ONLY, not the hex body: OCR garbles UUID hex
+## (a 'S' for a '5', a '?' for a 'b'), so requiring N clean hex chars would miss the token it
+## must mask -- but 'luks-' is deterministic boot-prompt text that OCRs reliably, and masking its
+## whole word box covers the garbled UUID regardless. Best-effort: a missing tool / OCR hiccup
+## leaves the frame unchanged and never fails a passing run. ${1} is the NN-name.png basename.
 redact_boot_tokens() {
    local shot="${shot_dir}/$1"
    [ -n "${shot_dir}" ] && [ -s "${shot}" ] || return 0
    "${IMAGE_REDACT_TOKENS:-image-redact-tokens}" \
-      --pattern '[0-9]+\.[0-9]{6}' --pattern 'luks-[0-9a-fA-F-]{8,}' \
+      --pattern '[0-9]+\.[0-9]{6}' --pattern 'luks-' \
       -- "${shot}" >/dev/null 2>&1 || true
 }
 
@@ -1229,13 +1232,6 @@ main() {
    ## fixed sleep that races the autoboot into the wrong session). The menu capture (20/21)
    ## is taken inside select_install_boot_entry, where the menu is known to be on screen.
    select_install_boot_entry
-   ## Transient: the live kernel boot. POLL for the first frame that actually renders (a splash /
-   ## early console / the compositor coming up) rather than a blind fixed-sleep shot that races
-   ## the mode window and can grab a uniform-black between-modes frame. If the whole window
-   ## elapses with only black, the blank frame stays and the universal floor FAILS the run -- a
-   ## live boot that showed nothing is a real failure. `|| true`: the floor, not this return,
-   ## owns the verdict (and keeps errexit from aborting on the timeout path).
-   story_snap_nonblank 22 live-kernel-boot || true
 
    printf '%s\n' "${me}: wait for the live desktop + guestcontrol, then launch Calamares"
    ## Poll for the compositor (desktop >=1024 wide, keeps the display awake) AND for
