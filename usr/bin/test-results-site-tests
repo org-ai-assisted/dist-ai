@@ -23,7 +23,7 @@ shopt -s shift_verbose
 export LC_ALL=C
 
 ## Canonical suite exit (fail > skip > pass): a per-case skip (77 target-absent /
-## 78 env-unmet, e.g. Pillow absent) surfaces per category, not folded into a pass.
+## 78 env-unmet) surfaces per category, not folded into a pass.
 suite_exit_helper="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")/../share/dist-ai-tests-common/suite-exit.bash"
 [ -r "${suite_exit_helper}" ] || suite_exit_helper='/usr/share/dist-ai-tests-common/suite-exit.bash'
 # shellcheck source=../share/dist-ai-tests-common/suite-exit.bash
