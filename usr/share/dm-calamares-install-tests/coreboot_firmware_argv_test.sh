@@ -151,6 +151,37 @@ check "build_vm (via apply_firmware) wires CorebootRom 1" "${got}"
 got=0; [ "${cb_uart_sock}" = "${HOME}/${me}-cb-uart.sock" ] || got=1
 check "build_vm sets cb_uart_sock under HOME for the COM1 drain" "${got}"
 
+## --- Finding 3 regression: --reinstall + --coreboot-rom re-arms the COM1 drain --------------
+## The reinstall branch returns early (reuses the VM + its persisted coreboot board); it must
+## still set cb_uart_sock or cb_drain_start no-ops and the undrained 16550 wedges the boot.
+reinstall='true'
+coreboot_rom="${cb_rom}"
+iso="${work}/k.iso"
+cb_uart_sock=''
+build_vm >/dev/null 2>&1 || true
+got=0; [ "${cb_uart_sock}" = "${HOME}/${me}-cb-uart.sock" ] || got=1
+check "build_vm --reinstall coreboot re-arms cb_uart_sock (drain not skipped)" "${got}"
+reinstall='false'
+
+## --- Finding 1 regression: a coreboot install declares dasharo-efi, so it MATCHES ------------
+## capture_firmware_lane must declare the coreboot identity (dasharo-efi), NOT vbox-efi, or a
+## SUCCESSFUL coreboot install is reported a firmware MISMATCH and the whole run is marked FAIL.
+## Stub the guest probe to a coreboot boot (EFI=1/SB=0/COREBOOT=1) and drive the REAL
+## dm-firmware-identity. FAILS on the pre-fix code (declared=vbox-efi != detected=dasharo-efi
+## -> MATCH=false).
+# shellcheck disable=SC2317  ## called indirectly by the sourced capture_firmware_lane
+gc_run() { printf '%s\n' 'EFI=1' 'SB=0' 'COREBOOT=1' 'BIOS_VENDOR=coreboot'; }
+live_account='user'
+firmware='efi'
+coreboot_rom="${cb_rom}"
+firmware_evidence_file="${work}/fw-evidence"
+capture_firmware_lane
+fw_ev="$(cat "${firmware_evidence_file}" 2>/dev/null)"
+got=0; has 'MATCH=true' "${fw_ev}" || got=1
+check "capture_firmware_lane: coreboot install MATCHes (declares dasharo-efi, not a false mismatch)" "${got}"
+got=0; has 'DETECTED=dasharo-efi' "${fw_ev}" || got=1
+check "capture_firmware_lane: coreboot detected=dasharo-efi" "${got}"
+
 printf '%s\n' "" "$(basename -- "$0"): ${pass} pass, ${fail} fail"
 [ "${fail}" -eq 0 ] || exit 1
 exit 0

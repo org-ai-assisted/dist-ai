@@ -1200,6 +1200,12 @@ main() {
    parse_args "$@"
 
    rt_guest_valid "${guest}" || { print_usage >&2; die "${SETUP_RC}" "unsupported GUEST '${guest}'"; }
+   ## --coreboot-rom is wired through the kicksecure Calamares lane only; fail CLOSED on any
+   ## other guest rather than accept-then-silently-drop it (matches rt_resolve_coreboot's
+   ## fail-closed stance -- the operator asked for a coreboot subject and must not get a normal one).
+   if [ -n "${coreboot_rom}" ] && [ "${guest}" != 'kicksecure' ]; then
+      print_usage >&2; die "${SETUP_RC}" "--coreboot-rom is kicksecure-only (got GUEST '${guest}')"
+   fi
    desktop="$(rt_desktop_token "${interface}")" || die "${SETUP_RC}" "unsupported INTERFACE '${interface}'"
    case "${channel}" in
       stable|developers)
