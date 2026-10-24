@@ -2443,6 +2443,102 @@ else
    failures=$((failures + 1))
 fi
 
+## ---- vendored/generated allowlist (.gitattributes linguist-vendored / -generated) ----
+## Third-party / generated code kept VERBATIM (a byte-pinned vendored lib with its own
+## drift guard) is exempt from the whole STYLE + FORMAT tier -- R-001 (engine) AND
+## end-of-file-fixer / trailing-whitespace (pre-commit-hooks) -- exactly as a `binary` file
+## is, so a whole vendored tree needs ONE glob line and any future file under it needs
+## nothing (the safe path is the default). Reuses GitHub's own vendored/generated
+## vocabulary. CRITICAL and tested below: the exemption is SCOPED to style -- the secret
+## scanners still run over a vendored file, so a key in it is still caught. The CANARY is
+## the un-attributed case: the SAME bytes must still be flagged.
+gate_output_vendored() {  ## $1=.gitattributes line (empty for none); $2=printf payload
+   local attr payload repo base
+   attr="$1"
+   payload="$2"
+   repo="$(mktemp --directory --tmpdir="${tmp_root}" repo.XXXXXX)"
+   git -C "${repo}" init --quiet
+   git -C "${repo}" config user.email 'ci-test@example.com'
+   git -C "${repo}" config user.name 'ci-test'
+   git -C "${repo}" commit --quiet --no-verify --allow-empty --message base
+   base="$(git -C "${repo}" rev-parse HEAD)"
+   mkdir -p "${repo}/assets/libs/vendor"
+   ## '%s' + the payload as the ARGUMENT (R-030): the payload is pre-decoded data
+   ## (built with $'...'), never a format string, so a leading '-' or a '%' in it
+   ## is literal.
+   printf '%s' "${payload}" > "${repo}/assets/libs/vendor/lib.min.js"
+   if [ -n "${attr}" ]; then
+      printf '%s\n' "${attr}" > "${repo}/.gitattributes"
+      git -C "${repo}" add .gitattributes
+   fi
+   git -C "${repo}" add assets
+   git -C "${repo}" commit --quiet --no-verify --message blob
+   (
+      cd -- "${repo}" || exit 1
+      "${GATE}" --check --range "${base}"
+   ) 2>&1 || true
+}
+
+## A non-ASCII byte (0xC3 0xA9 -> R-001) AND no final newline (end-of-file-fixer) in one
+## file -- the engine and the pre-commit-hooks fronts at once. $'...' decodes the octal
+## escape at run time, so THIS tracked file stays ASCII.
+vendored_payload=$'var caf\303\251=1;no-newline'
+
+vendored_unattributed="$(gate_output_vendored '' "${vendored_payload}")"
+if grep --quiet --fixed-strings -- 'R-001 non-ASCII' <<< "${vendored_unattributed}" \
+      && grep --quiet --fixed-strings -- 'end-of-file-fixer' <<< "${vendored_unattributed}"; then
+   printf '%s\n' 'PASS: an un-attributed vendored-path file is flagged on both fronts (canary)'
+else
+   printf '%s\n' 'FAIL: an un-attributed vendored-path file was not flagged on both fronts' >&2
+   failures=$((failures + 1))
+fi
+
+vendored_marked="$(gate_output_vendored 'assets/libs/** linguist-vendored' "${vendored_payload}")"
+assert_gate_tag_absent 'linguist-vendored spares R-001' \
+   'R-001 non-ASCII' "${vendored_marked}"
+assert_gate_tag_absent 'linguist-vendored spares end-of-file-fixer' \
+   'end-of-file-fixer' "${vendored_marked}"
+if grep --quiet --fixed-strings -- 'all static checks passed' <<< "${vendored_marked}"; then
+   printf '%s\n' 'PASS: a linguist-vendored tree reaches a clean gate verdict'
+else
+   printf '%s\n' 'FAIL: a linguist-vendored tree did not reach a clean gate verdict' >&2
+   failures=$((failures + 1))
+fi
+
+generated_marked="$(gate_output_vendored 'assets/libs/** linguist-generated' "${vendored_payload}")"
+if grep --quiet --fixed-strings -- 'all static checks passed' <<< "${generated_marked}"; then
+   printf '%s\n' 'PASS: linguist-generated is honored identically to linguist-vendored'
+else
+   printf '%s\n' 'FAIL: linguist-generated did not exempt the style tier' >&2
+   failures=$((failures + 1))
+fi
+
+## An explicit '=false' re-includes (Linguist's own override): the SAME bytes flag again,
+## so the exemption keys on the attribute VALUE, not merely its presence.
+vendored_false="$(gate_output_vendored \
+   'assets/libs/** linguist-vendored=false' "${vendored_payload}")"
+if grep --quiet --fixed-strings -- 'R-001 non-ASCII' <<< "${vendored_false}"; then
+   printf '%s\n' 'PASS: linguist-vendored=false re-includes the file (override honored)'
+else
+   printf '%s\n' 'FAIL: linguist-vendored=false did not re-include the file' >&2
+   failures=$((failures + 1))
+fi
+
+## SECURITY: the style exemption must NOT silence the secret scanners. detect-private-key
+## runs over EVERY regular file, vendored or not, so a key in a vendored lib is still
+## caught. The PEM marker is assembled from fragments so THIS tracked file carries no key
+## literal that the gate (or our own pre-commit) would itself flag.
+vendored_rsa='RSA '
+vendored_key_payload="-----BEGIN ${vendored_rsa}PRIVATE KEY-----"$'\n'"MIIfixture"$'\n'"-----END ${vendored_rsa}PRIVATE KEY-----"$'\n'
+vendored_key="$(gate_output_vendored \
+   'assets/libs/** linguist-vendored' "${vendored_key_payload}")"
+if grep --quiet --fixed-strings -- 'detect-private-key' <<< "${vendored_key}"; then
+   printf '%s\n' 'PASS: a vendored file is still secret-scanned (private key caught)'
+else
+   printf '%s\n' 'FAIL: the vendored exemption wrongly silenced detect-private-key' >&2
+   failures=$((failures + 1))
+fi
+
 ## ---- R-001 content-based binary auto-detect (NUL byte, no .gitattributes) ----
 ## A genuine binary (an image, a compiled blob) carries a NUL byte -- git's own binary
 ## heuristic. is_binary auto-detects it, so R-001 and the text tier skip it with NO

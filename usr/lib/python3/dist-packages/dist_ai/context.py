@@ -44,6 +44,54 @@ TEXT_BASENAMES = ("Dockerfile", "Makefile", "COPYING", "README", "LICENSE")
 TEXT_MIME_NEEDLES = ("text/", "x-shellscript", "x-python", "json", "xml",
                      "yaml", "toml", "charset=us-ascii", "charset=utf-8")
 
+## The .gitattributes classification attributes, queried in ONE check-attr call:
+##   binary                -- data, not text: the whole text tier skips it.
+##   linguist-vendored / -generated -- third-party / generated code kept VERBATIM
+##     (a byte-pinned vendored lib with its own drift guard): our STYLE + format
+##     rules skip it, as `binary` does, but the secret / large-file / structural
+##     checks still run (precommit keeps it in the scan list). Reuses GitHub's own
+##     vendored/generated vocabulary, so one glob line exempts a whole tree and
+##     any future file under it, with nothing to recall. An explicit `=false`
+##     re-includes (Linguist's own override).
+CLASSIFY_ATTRS = ("binary", "linguist-vendored", "linguist-generated")
+_VENDORED_ATTRS = ("linguist-vendored", "linguist-generated")
+
+
+def check_attrs(cwd, path, source_rev, names):
+    """{name: value} from `git check-attr` for NAMES on PATH, run in CWD. The
+    attribute source matches the tree the scanned CONTENT came from (source_rev),
+    so a stale / uncommitted .gitattributes cannot govern a blob it does not:
+    '' -> the INDEX (--cached); a commit-ish -> that commit (--attr-source); None
+    -> the working tree (plain check-attr). '-z' makes the output machine-parsable
+    (NUL-delimited path, attr, value triples) so an odd-byte path or value stays
+    one record. Empty dict on any git error -- fail toward NOT exempting."""
+    if source_rev:
+        args = ["--attr-source=%s" % source_rev, "check-attr", "-z"]
+    elif source_rev == "":
+        args = ["check-attr", "-z", "--cached"]
+    else:  ## None: working-tree scan -> the working tree's own .gitattributes
+        args = ["check-attr", "-z"]
+    try:
+        out = subprocess.run(
+            ["git", "-C", cwd] + args + list(names) + ["--", path],
+            capture_output=True).stdout
+    except OSError:
+        return {}
+    ## -z output: path NUL attr NUL value NUL, repeated (trailing NUL -> one empty
+    ## tail field). Key on attr/value; the path echo is ignored (it is our input).
+    fields = out.split(b"\0")
+    result = {}
+    for i in range(0, len(fields) - 2, 3):
+        result[fields[i + 1].decode("utf-8", "replace")] = (
+            fields[i + 2].decode("utf-8", "replace"))
+    return result
+
+
+def vendored_value(attrs):
+    """True if ATTRS (a check_attrs dict) marks the path vendored/generated -- a
+    bare set or an explicit =true; an =false / unset / unspecified does not."""
+    return any(attrs.get(name) in ("set", "true") for name in _VENDORED_ATTRS)
+
 ## A diff's TRAILING whitespace is SEMANTICALLY significant: a blank context line is
 ## a single leading space, and a line's trailing blanks may be the very change the
 ## patch encodes. Stripping either corrupts the patch -- so ONLY the trailing-ws rule
@@ -137,6 +185,8 @@ class FileContext:
         self._tree = None
         self._tree_done = False
         self._binary = None
+        self._vendored = None
+        self._attrs = None
         self._comment_lines = None
         self._comment_lines_done = False
 
@@ -245,43 +295,42 @@ class FileContext:
         entry to pass R-001 -- the safe path is the default, not a thing to
         recall. The .gitattributes `binary` mark remains the explicit opt-out for
         a NUL-FREE data payload (a raw cat-able fixture), queried from the SAME
-        tree as the content (see _query_binary) so an unstaged/uncommitted
+        tree as the content (see _query_attrs) so an unstaged/uncommitted
         .gitattributes cannot exempt a blob it does not actually govern. Cached."""
         if self._binary is None:
             data = self.data
             if data is not None and b"\x00" in data:
                 self._binary = True
             else:
-                self._binary = self._query_binary()
+                self._binary = self._query_attrs().get("binary") == "set"
         return self._binary
 
-    def _query_binary(self):
-        ## '-C <dir-of-file>' so git finds the file's OWN repo regardless of the
-        ## caller's cwd -- otherwise a fixer invoked from another directory
-        ## queried the wrong repo and the .gitattributes exemption failed open.
-        ## The attribute source must match source_rev -- the tree the scanned
-        ## content came from -- or a stale .gitattributes governs a blob it does
-        ## not: '' staged -> the INDEX (--cached); a rev (range) -> the blob's OWN
-        ## commit (--attr-source), else a staged (uncommitted) '.gitattributes ...
-        ## binary' would exempt a HEAD blob it does not govern (an R-001 --range
-        ## bypass); None working tree -> the WORKING-TREE .gitattributes (plain
-        ## check-attr), since --cached there reads stale index attrs for a file
-        ## whose worktree attrs may differ.
-        base = ["git", "-C", os.path.dirname(self.abspath) or "."]
-        if self.source_rev:
-            attr = ["--attr-source=%s" % self.source_rev, "check-attr"]
-        elif self.source_rev == "":
-            attr = ["check-attr", "--cached"]
-        else:  ## None: working-tree scan -> the working tree's own .gitattributes
-            attr = ["check-attr"]
-        try:
-            out = subprocess.run(
-                base + attr + ["binary", "--", self.abspath],
-                capture_output=True, text=True)
-        except OSError:
-            return False
-        return (out.returncode == 0
-                and out.stdout.rstrip("\n").endswith(": binary: set"))
+    @property
+    def is_vendored(self):
+        """True when .gitattributes marks the path linguist-vendored or
+        linguist-generated -- third-party / generated code kept verbatim, exempt
+        from the STYLE + format rules exactly as `binary` is (the engine
+        short-circuits on it), while the secret / size / structural checks still
+        run. Glob-able, so one line exempts a whole tree and future files under
+        it. Cached."""
+        if self._vendored is None:
+            self._vendored = vendored_value(self._query_attrs())
+        return self._vendored
+
+    def _query_attrs(self):
+        ## One check-attr call for every classification attribute (CLASSIFY_ATTRS),
+        ## cached. '-C <dir-of-file>' so git finds the file's OWN repo regardless
+        ## of the caller's cwd -- otherwise a fixer invoked from another directory
+        ## queried the wrong repo and the exemption failed open. The attribute
+        ## source matches source_rev -- the tree the scanned content came from --
+        ## so a stale/uncommitted .gitattributes cannot govern a blob it does not
+        ## (a staged-only 'x binary' exempting a HEAD blob under --range was such a
+        ## bypass).
+        if self._attrs is None:
+            self._attrs = check_attrs(
+                os.path.dirname(self.abspath) or ".", self.abspath,
+                self.source_rev, CLASSIFY_ATTRS)
+        return self._attrs
 
     @property
     def is_diff(self):
