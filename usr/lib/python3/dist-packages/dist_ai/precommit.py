@@ -401,16 +401,12 @@ def _classify(paths, base_cwd, content_cwd, source_rev):
         ## Classify once from the tree the content came from (binary + vendored).
         attrs = context.check_attrs(base_cwd, path, source_rev,
                                     context.CLASSIFY_ATTRS)
-        ## Vendored / generated: third-party or tool-emitted code kept verbatim.
-        ## Skip the whole FORMAT + PARSER tier (end-of-file-fixer,
-        ## trailing-whitespace, BOM, pretty-format-json, check-yaml/json/...)
-        ## exactly as a binary file is skipped -- but it stays in 'scan' above
-        ## (secrets) and in 'paths' for the size / case / symlink / submodule
-        ## checks, which judge the whole set. vendored_value is the .gitattributes
-        ## opt-in; the @generated sentinel is auto-detected from the file's header
-        ## (content), so a generated artifact is exempt with nothing to recall --
-        ## the same default-safe path the engine honors via FileContext.is_generated.
-        if context.vendored_value(attrs) or context.path_has_generated_marker(real):
+        ## Vendored / generated: third-party code kept verbatim. Skip the whole
+        ## FORMAT + PARSER tier (end-of-file-fixer, trailing-whitespace, BOM,
+        ## pretty-format-json, check-yaml/json/...) exactly as a binary file is
+        ## skipped -- but it stays in 'scan' above (secrets) and in 'paths' for the
+        ## size / case / symlink / submodule checks, which judge the whole set.
+        if context.vendored_value(attrs):
             continue
         if _is_text_file(base_cwd, content_cwd, path, attrs):
             lists["text"].append(path)
