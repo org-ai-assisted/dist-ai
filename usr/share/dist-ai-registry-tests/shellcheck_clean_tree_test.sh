@@ -71,10 +71,23 @@ fi
 ## authoritative gate (so the absent-sibling SC1091 tolerance + source-path
 ## resolution match production). Grep the [SC....] findings only; ignore the
 ## gate's non-zero exit from pre-existing non-shellcheck R-debt on untouched files.
+## Run the gate NO-FOLLOW (DIST_AI_SHELLCHECK_NO_FOLLOW=1): '--external-sources' following is
+## EXPONENTIAL on the deep helper-scripts graph, so over the whole tree the per-file follow cap
+## stacks into a many-minute, output-silent run that wedges this guard -- and following yields NO
+## gating signal here anyway (SC1091 is dropped, SC2034/SC2154 are advisory). A DEADLINE backstops
+## it: a guard that cannot COMPLETE gates nothing, so a run that ever re-explodes (e.g. the knob
+## stops being honored) must fail LOUD (timeout rc 124), never silently hang. Generous default so a
+## loaded host does not false-fail the ~5-6min no-follow run; override via DIST_AI_CLEAN_TREE_DEADLINE.
+clean_tree_deadline="${DIST_AI_CLEAN_TREE_DEADLINE:-1200}"
+gate_rc=0
 gate_out="$(
    cd -- "${repo}" || exit 0
-   "${gate}" --check . 2>&1 || true
-)"
+   DIST_AI_SHELLCHECK_NO_FOLLOW=1 timeout --kill-after=10 "${clean_tree_deadline}" "${gate}" --check . 2>&1
+)" || gate_rc=$?
+if [ "${gate_rc}" -eq 124 ]; then
+   printf '%s\n' "FAIL: dist-ai-style --check . did not complete within ${clean_tree_deadline}s -- shellcheck '--external-sources' following re-exploded over the whole tree (a guard that cannot finish gates nothing). Is DIST_AI_SHELLCHECK_NO_FOLLOW still honored?" >&2
+   fail=1
+fi
 
 ## Non-vacuous: the gate must actually have run to a verdict. If it errored out
 ## before checking (empty / no summary), a "no [SC] lines" read would be a false
@@ -161,6 +174,31 @@ y.sh:5:1: info: Expressions don't expand in single quotes. [SC2016]"
 canary_c="$( gating_sc_lines "${advisory_out}" )"
 if [ "${canary_c}" != "y.sh:5:1: info: Expressions don't expand in single quotes. [SC2016]" ]; then
    printf '%s\n' "FAIL(canary C): gating_sc_lines mis-split advisory vs gating findings: [${canary_c}]" >&2
+   fail=1
+fi
+
+## Canary D: DIST_AI_SHELLCHECK_NO_FOLLOW actually DISABLES '--external-sources' following -- the
+## whole point of running this guard no-follow (following is exponential over the tree and gates
+## nothing here). Fast + deterministic on a tiny file with a BROKEN 'source=': with following ON the
+## unfollowable source is a gating SC1091 (the tmp file is in no git repo, so the absent-sibling
+## tolerance does not apply); with the knob set it is dropped (no-follow drops SC1091). On the OLD
+## engine (knob unhonored) SC1091 still fires under the knob, so the second assertion bites -- the
+## canary proves the knob the whole-tree run above depends on, without waiting out that ~5-6min run.
+cat > "${work_dir}/nofollow.sh" <<'NOFOLLOW'
+#!/bin/bash
+# shellcheck source=./nope.sh
+. ./nope.sh
+NOFOLLOW
+follow_out="$( "${gate}" --check "${work_dir}/nofollow.sh" 2>&1 || true )"
+if ! grep --quiet '\[SC1091\]' <<< "$( gating_sc_lines "${follow_out}" )"; then
+   printf '%s\n' 'FAIL(canary D): following ON did not flag the broken source= as a gating SC1091 -- the fixture no longer exercises the knob' >&2
+   printf '%s\n' "${follow_out}" | tail -10 >&2
+   fail=1
+fi
+nofollow_out="$( DIST_AI_SHELLCHECK_NO_FOLLOW=1 "${gate}" --check "${work_dir}/nofollow.sh" 2>&1 || true )"
+if grep --quiet '\[SC1091\]' <<< "$( gating_sc_lines "${nofollow_out}" )"; then
+   printf '%s\n' 'FAIL(canary D): DIST_AI_SHELLCHECK_NO_FOLLOW did NOT disable following (SC1091 still gates) -- the whole-tree guard would re-explode' >&2
+   printf '%s\n' "${nofollow_out}" | tail -10 >&2
    fail=1
 fi
 
