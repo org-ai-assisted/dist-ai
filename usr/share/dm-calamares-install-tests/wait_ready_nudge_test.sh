@@ -86,7 +86,8 @@ sleep() { command sleep 0.2; }
 # shellcheck disable=SC2317  ## called indirectly by the sourced wait_ready
 die() {
    died=1
-   return 0
+   ## Mirror the real die's nonzero contract so wait_ready returns failure (rc), not just a flag.
+   return "${1:-1}"
 }
 
 # shellcheck disable=SC2034
@@ -125,6 +126,7 @@ check "stuck: the nudge fired exactly once (not every poll)" "${got}"
 got=0; [ -s "${marker}" ] || got=1
 check "stuck: RESIZE-NUDGE-USED marker written" "${got}"
 check "stuck: wait_ready still FAILS (nudge is not a forced pass)" "$(( died == 1 ? 0 : 1 ))"
+check "stuck: wait_ready returns a nonzero rc (real die contract, not just a flag)" "$(( rc != 0 ? 0 : 1 ))"
 
 ## --- guest honours the nudge: fire -> full res -> returns 0, marker recorded ---------------
 reset; printf '%s\n' nudge-fixes > "${res_mode}"
@@ -144,6 +146,7 @@ check "nudge-fail: a rejected nudge is RETRIED (not burned after one failure)" "
 got=0; [ ! -e "${marker}" ] || got=1
 check "nudge-fail: NO RESIZE-NUDGE-USED marker written for a failed nudge" "${got}"
 check "nudge-fail: wait_ready still FAILS" "$(( died == 1 ? 0 : 1 ))"
+check "nudge-fail: wait_ready returns a nonzero rc" "$(( rc != 0 ? 0 : 1 ))"
 safe-rm --force -- "${work}/vbox-fail"
 
 printf '%s\n' "" "$(basename -- "$0"): ${pass} pass, ${fail} fail"
