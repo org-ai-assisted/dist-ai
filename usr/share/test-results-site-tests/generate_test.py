@@ -11,15 +11,15 @@
 """Integration + canary tests for the static site generator.
 
 Drives the REAL test-results-site-generate over a synthetic results plane and
-asserts the no-false-green contract on the rendered HTML:
-  - only a finished-fresh-PASS-with-approved-MATCH run carries the green class;
-  - new / fail / no-data runs carry their non-green classes, never green;
-  - a NEW screenshot appears in the NEEDS-APPROVAL section;
+asserts the no-false-green contract on the rendered HTML. Status is OBJECTIVE:
+  - a finished-fresh-PASS run carries the green class, with NO golden-approval step;
+  - fail / no-data / firmware-mismatch runs carry their non-green classes, never green;
+  - every screenshot is published; a failed step's shot never reads green;
   - a text-only step renders with no <img>; a screenshot step renders one;
   - regenerating identical input yields a byte-identical output tree (determinism).
 
-Pillow/numpy absent -> exit 78 (env-unmet). Pure logic otherwise: tiny images,
-no root, no network.
+Pillow absent -> exit 78 (env-unmet). Pure logic otherwise: tiny images, no root,
+no network.
 
 Exit: 0 all pass, 1 any fail, 78 env-unmet.
 """
@@ -38,9 +38,9 @@ if os.path.isdir(_LIB) and _LIB not in sys.path:
 
 try:
     from PIL import Image
-    from dm_test_results import compare, model, site_classes
+    from dm_test_results import model, site_classes
 except ImportError as exc:
-    print("generate_test: env-unmet (Pillow/numpy): %s" % exc, file=sys.stderr)
+    print("generate_test: env-unmet (Pillow): %s" % exc, file=sys.stderr)
     sys.exit(78)
 
 GEN = os.path.join(os.path.dirname(os.path.dirname(_SELF)), "bin", "test-results-site-generate")
@@ -104,66 +104,22 @@ def write_result_multi(run_dir, run_id, lane, version, rc, stop_unix, step_name,
         handle.write(model.dumps(result))
 
 
-def build_plane(root, goldens, approvals_path):
-    import json
-
+def build_plane(root):
+    ## A: green -- PASS, fresh, one published screenshot. No golden, no approval: a finished
+    ## fresh PASS is green on its objective merits (the keystone of the no-human-approval model).
     now = EPOCH
-    approvals = {"schema": compare.APPROVALS_SCHEMA, "approvals": {}}
-
-    ## A: green -- PASS, fresh, one screenshot matching an approved golden.
     a_dir = os.path.join(root, "kicksecure-lxqt-18-2-3-5", "20261006T000000Z")
     write_png(os.path.join(a_dir, "calamares-install.png"), (10, 120, 10))
     write_result(a_dir, "kicksecure-lxqt-18-2-3-5-1", "kicksecure-lxqt", "18.2.3.5",
                  0, now, "calamares-install", "calamares-install.png")
-    ## Golden = the normalized current (same masking the generator applies), as webp.
-    sid_a = "kicksecure-lxqt/calamares-install"
-    rects = [compare.top_right_rect((40, 30))]
-    norm = compare.normalize_image(os.path.join(a_dir, "calamares-install.png"), rects)
-    golden_a = os.path.join(goldens, sid_a + ".webp")
-    os.makedirs(os.path.dirname(golden_a), exist_ok=True)
-    norm.save(golden_a, format="WEBP", lossless=True, quality=100, method=6)
-    approvals["approvals"][sid_a] = {
-        "golden_sha256": compare.sha256_file(golden_a),
-        "status": "approved", "approver": "tester",
-        "approved_utc": "2026-01-01T00:00:00Z", "approved_commit": "0" * 40,
-    }
 
-    ## I: FAIL (rc 5) with a screenshot that MATCHES an approved golden. The visual
-    ## bucket is MATCH but the step FAILED, so the shot chip must NOT read green -- a
-    ## failed step's screenshot showing a pass chip is a fabricated-green signal (the
-    ## "pass -- within tolerance" shown on a real calamares failure screen). Regression.
-    i_dir = os.path.join(root, "kicksecure-lxqt-fail-18-2-3-6", "20261006T000000Z")
-    write_png(os.path.join(i_dir, "calamares-install.png"), (10, 120, 10))
-    write_result(i_dir, "kicksecure-lxqt-fail-18-2-3-6-1", "kicksecure-lxqt-fail",
-                 "18.2.3.6", 5, now, "calamares-install", "calamares-install.png")
-    sid_i = "kicksecure-lxqt-fail/calamares-install"
-    norm_i = compare.normalize_image(os.path.join(i_dir, "calamares-install.png"), rects)
-    golden_i = os.path.join(goldens, sid_i + ".webp")
-    os.makedirs(os.path.dirname(golden_i), exist_ok=True)
-    norm_i.save(golden_i, format="WEBP", lossless=True, quality=100, method=6)
-    approvals["approvals"][sid_i] = {
-        "golden_sha256": compare.sha256_file(golden_i),
-        "status": "approved", "approver": "tester",
-        "approved_utc": "2026-01-01T00:00:00Z", "approved_commit": "0" * 40,
-    }
-
-    ## S: FAIL (rc 5) with a screenshot but NO approved golden -> bucket NEW. The step FAILED,
-    ## but the shot's only visual state is "no approved golden yet" (pending first approval), so
-    ## its chip must render st-new (soft), NOT be repainted red with the step's st-fail. Canary
-    ## for the "fail welcome -- no approved golden yet" over-flagging: pre-fix, any non-pass step
-    ## repainted every shot (NEW included) with the step's FAIL class.
-    s_dir = os.path.join(root, "kicksecure-lxqt-nogolden-18-2-3-6", "20261006T000000Z")
-    write_png(os.path.join(s_dir, "calamares-install.png"), (10, 120, 10))
-    write_result(s_dir, "kicksecure-lxqt-nogolden-18-2-3-6-1", "kicksecure-lxqt-nogolden",
-                 "18.2.3.6", 5, now, "calamares-install", "calamares-install.png")
-
-    ## B: new -- PASS with a screenshot but no golden -> NEW.
+    ## B: a second PASS lane with a shot -> also green (publishes its shot, no approval).
     b_dir = os.path.join(root, "kicksecure-cli-18-2-3-5", "20261006T000000Z")
     write_png(os.path.join(b_dir, "calamares-install.png"), (10, 10, 120))
     write_result(b_dir, "kicksecure-cli-18-2-3-5-1", "kicksecure-cli", "18.2.3.5",
                  0, now, "calamares-install", "calamares-install.png")
 
-    ## C: fail -- rc 5.
+    ## C: fail -- rc 5, no shot.
     c_dir = os.path.join(root, "kicksecure-lxqt-18-2-3-6", "20261006T000000Z")
     write_result(c_dir, "kicksecure-lxqt-18-2-3-6-1", "kicksecure-lxqt", "18.2.3.6",
                  5, now, "calamares-install", None)
@@ -188,32 +144,25 @@ def build_plane(root, goldens, approvals_path):
     _rewrite(os.path.join(f_dir, "result.json"),
              '"path": "calamares-install.png"', '"path": "/etc/hostname"')
 
-    ## G: a result.json whose run.id is the RESERVED name 'goldens' -- must be
-    ## treated as NO-DATA, never allowed to write into / overwrite the goldens dir.
+    ## G: a result.json whose run.id is the RESERVED name 'index.html' -- must get a
+    ## dir-derived id instead, never allowed to overwrite the overview index.html.
     g_dir = os.path.join(root, "reserved-18-2-3-5", "20261006T000000Z")
-    write_result(g_dir, "goldens", "reserved-lane", "18.2.3.5", 0, now,
+    write_result(g_dir, "index.html", "reserved-lane", "18.2.3.5", 0, now,
                  "verify-signature", None)
 
-    ## H: a PASS run that produces NO shot, but an APPROVED golden exists for its
-    ## lane -- the expected screenshot vanished, so the run must NOT read green.
-    h_dir = os.path.join(root, "kicksecure-xfce-18-2-3-5", "20261006T000000Z")
-    write_result(h_dir, "kicksecure-xfce-18-2-3-5-1", "kicksecure-xfce", "18.2.3.5",
-                 0, now, "verify-signature", None)
-    sid_h = "kicksecure-xfce/calamares-install"
-    golden_h = os.path.join(goldens, sid_h + ".webp")
-    os.makedirs(os.path.dirname(golden_h), exist_ok=True)
-    Image.new("RGB", (40, 30), (9, 9, 9)).save(golden_h, "WEBP", lossless=True, method=6)
-    approvals["approvals"][sid_h] = {
-        "golden_sha256": compare.sha256_file(golden_h),
-        "status": "approved", "approver": "dev",
-        "approved_utc": "2026-01-01T00:00:00Z", "approved_commit": "0" * 40,
-    }
+    ## I: FAIL (rc 5) WITH a screenshot. The shot is published, but its chip carries the
+    ## STEP's functional status -- a failed step's screenshot must NOT read green (a green
+    ## chip on a failure screen is a fabricated-green signal). Regression.
+    fail_dir = os.path.join(root, "kicksecure-lxqt-fail-18-2-3-6", "20261006T000000Z")
+    write_png(os.path.join(fail_dir, "calamares-install.png"), (10, 120, 10))
+    write_result(fail_dir, "kicksecure-lxqt-fail-18-2-3-6-1", "kicksecure-lxqt-fail",
+                 "18.2.3.6", 5, now, "calamares-install", "calamares-install.png")
 
-    ## I: structurally malformed result (attachments is a list of strings) -> must
-    ## be NO-DATA, never an uncaught crash that denies the whole site.
-    i_dir = os.path.join(root, "malformed-18-2-3-5", "20261006T000000Z")
-    write_result(i_dir, "malformed-1", "malformed", "18.2.3.5", 0, now, "verify-signature", None)
-    _rewrite(os.path.join(i_dir, "result.json"), '"attachments": []', '"attachments": ["x"]')
+    ## MAL: structurally malformed result (attachments is a list of strings) -> must be
+    ## NO-DATA, never an uncaught crash that denies the whole site.
+    mal_dir = os.path.join(root, "malformed-18-2-3-5", "20261006T000000Z")
+    write_result(mal_dir, "malformed-1", "malformed", "18.2.3.5", 0, now, "verify-signature", None)
+    _rewrite(os.path.join(mal_dir, "result.json"), '"attachments": []', '"attachments": ["x"]')
 
     ## J/K: two runs claiming the SAME run.id -> both must appear (unique page dirs),
     ## neither silently overwritten or dropped.
@@ -245,8 +194,7 @@ def build_plane(root, goldens, approvals_path):
 
     ## N: a step whose stderr log is MULTI-KB. The FULL log must survive to the rendered page:
     ## regression for the 1200-char render cut that showed a systemcheck run starting
-    ## "...emcheck#" mid-word (its head silently dropped). START + END needles bracket a body
-    ## far larger than both the old 1200-char render cut and the old 4 KB emitter cap.
+    ## "...emcheck#" mid-word. START + END needles bracket a body far larger than that cut.
     n_dir = os.path.join(root, "kicksecure-log-18-2-3-5", "20261006T000000Z")
     big_log = "LOGSTART_NEEDLE\n" + ("systemcheck line filler\n" * 400) + "LOGEND_NEEDLE\n"
     n_step = model.make_step(
@@ -299,8 +247,7 @@ def build_plane(root, goldens, approvals_path):
 
     ## Q: a PASS verdict (rc=0) whose captured firmware EVIDENCE proves a WRONG-lane boot
     ## (match False). The guest booted the wrong firmware, so the run must NOT be green -- in
-    ## the overview cell AND the detail header -- even though the verdict is PASS and there is
-    ## no failing shot. The P fixture uses rc=1 (FAIL) and so cannot expose this false green.
+    ## the overview cell AND the detail header -- even though the verdict is PASS.
     q_dir = os.path.join(root, "kicksecure-fwgreen-18-2-3-5", "20261006T000000Z")
     q_env = {"firmware": {
         "declared": "efi-secureboot", "detected": "BIOS",
@@ -332,9 +279,6 @@ def build_plane(root, goldens, approvals_path):
     with open(os.path.join(r_dir, "result.json"), "w", encoding="ascii") as handle:
         handle.write(model.dumps(r_result))
 
-    with open(approvals_path, "w", encoding="ascii") as handle:
-        handle.write(json.dumps(approvals, indent=2) + "\n")
-
 
 def _rewrite(path, old, new):
     with open(path, "r", encoding="ascii") as handle:
@@ -343,13 +287,11 @@ def _rewrite(path, old, new):
         handle.write(text.replace(old, new))
 
 
-def run_generator(root, goldens, approvals_path, site_out, cache_dir=None,
-                  full_rebuild=False):
+def run_generator(root, site_out, cache_dir=None, full_rebuild=False):
     os.makedirs(site_out, exist_ok=True)
     env = dict(os.environ)
     env["SOURCE_DATE_EPOCH"] = str(EPOCH)
-    argv = [GEN, "--results-root", root, "--site-out", site_out,
-            "--goldens-dir", goldens, "--approvals", approvals_path]
+    argv = [GEN, "--results-root", root, "--site-out", site_out]
     ## Pin the incremental cache into the test work dir so the run is hermetic (never touches the
     ## real XDG_CACHE_HOME) and the cache behaviour is exercised deterministically.
     if cache_dir is not None:
@@ -384,15 +326,12 @@ def tree_identical(a, b):
 
 work = tempfile.mkdtemp(prefix="generate_test.")
 plane = os.path.join(work, "plane")
-goldens = os.path.join(work, "goldens")
-approvals_path = os.path.join(work, "approvals.json")
 os.makedirs(plane)
-os.makedirs(goldens)
-build_plane(plane, goldens, approvals_path)
+build_plane(plane)
 
 cache_dir = os.path.join(work, "gen-cache")
 site1 = os.path.join(work, "site1")
-run_generator(plane, goldens, approvals_path, site1, cache_dir=cache_dir)
+run_generator(plane, site1, cache_dir=cache_dir)
 out1 = os.path.join(site1, "automated-test-results")
 overview = read(os.path.join(out1, "index.html"))
 
@@ -407,7 +346,7 @@ check("footer has no intermediate .wrap row-wrapper", 'class="wrap"' not in foot
 check("footer .fbot tagline row present", '<div class="fbot">' in footer_region)
 
 ## Generator-owned CSS class contract (dm_test_results.site_classes.GENERATED_CLASSES): every class
-## generator emits MUST be in the manifest, so a NEW class (the .stage boot caption that shipped
+## the generator emits MUST be in the manifest, so a NEW class (the .stage boot caption that shipped
 ## with no rule and silently blocked every publish) is caught HERE, in dist-ai's own suite, not
 ## later as an opaque undefined-classes failure across every generated page at deploy. The
 ## companion website-tests check (check_generated_class_contract) asserts the served style.css
@@ -454,17 +393,14 @@ check("GENERATED_CLASSES structural set matches the generator's class literals e
 
 ## Overview carries the non-green statuses, and green for exactly the green runs.
 check("overview has green pass cell", "st-pass" in overview)
-check("overview has NEW cell", "st-new" in overview)
 check("overview has FAIL cell", "st-fail" in overview)
 check("overview has NO-DATA cell", "st-nodata" in overview)
 check("overview CSP is strict", "default-src 'none'" in overview and "script-src 'self'" in overview)
 check("overview has no inline script body", "<script>" not in overview)
-
-## The NEW run B (kicksecure-cli) must be listed in NEEDS-APPROVAL.
-needs = overview.split('id="needs-approval"', 1)[-1].split("</section>", 1)[0]
-check("needs-approval lists the NEW shot", "kicksecure-cli/calamares-install" in needs)
-check("needs-approval does not list the approved MATCH run",
-      "kicksecure-lxqt/calamares-install" not in needs)
+## The human golden-approval workflow is GONE: no needs-approval section, no new/changed classes.
+check("overview has NO needs-approval section", 'id="needs-approval"' not in overview)
+check("overview has no st-new class", "st-new" not in overview)
+check("overview has no st-changed class", "st-changed" not in overview)
 
 ## Overview sorts worst-first: a FAIL run appears ABOVE a PASS run in the matrix
 ## (the legend still lists pass first, so scope this to the matrix section).
@@ -474,10 +410,19 @@ pass_pos = matrix_sec.find("kicksecure-lxqt-18-2-3-5-1")  # run A (pass)
 check("overview lists the FAIL run before the PASS run",
       fail_pos != -1 and pass_pos != -1 and fail_pos < pass_pos)
 
-## The green run (A) page shows a screenshot; the text-only run (E) page has none.
+## The green run (A) page shows a screenshot and is green with NO golden-approval step;
+## the text-only run (E) page has none.
 a_page = read(os.path.join(out1, "kicksecure-lxqt-18-2-3-5-1", "index.html"))
 e_page = read(os.path.join(out1, "whonix-text-18-2-3-5-1", "index.html"))
 check("green run page has an <img", "<img" in a_page)
+check("green run page is green (no golden needed)", "st-pass" in a_page)
+check("green run page webp exists",
+      os.path.isfile(os.path.join(out1, "kicksecure-lxqt-18-2-3-5-1",
+                                  "kicksecure-lxqt__calamares-install.webp")))
+check("green run page has no needs-approval state", "st-new" not in a_page and "st-changed" not in a_page)
+check("text-only run page has NO <img", "<img" not in e_page)
+check("text-only run page is still green", "st-pass" in e_page)
+
 ## Provenance digest: run M recorded a sha256, so its detail page shows the exact ISO
 ## digest; run A recorded none, so its page must NOT invent a sha256 line.
 m_page = read(os.path.join(out1, "kicksecure-sha-18-2-3-5-1", "index.html"))
@@ -487,49 +432,23 @@ check("a run with no sha256 shows no sha256 line", "sha256 <code" not in a_page)
 ## overview is the stable landing page and stays indexable.
 check("run detail page is noindex", 'name="robots" content="noindex"' in a_page)
 check("overview page is indexable (no robots noindex)", 'name="robots"' not in overview)
-check("green run page webp exists",
-      os.path.isfile(os.path.join(out1, "kicksecure-lxqt-18-2-3-5-1",
-                                  "kicksecure-lxqt__calamares-install.webp")))
-check("green run page is green", "st-pass" in a_page)
-check("text-only run page has NO <img", "<img" not in e_page)
-check("text-only run page is still green", "st-pass" in e_page)
+## The disambiguating sid (lane/step/<milestone>) is used only for multiple shots; a
+## single-shot run keeps the plain placeholder caption (no <strong> milestone label).
+check("single-shot green run has no milestone label", "<strong>" not in a_page)
 
-## The green run's screenshot must classify MATCH (not NEW/CHANGED) -- i.e. the
-## approved golden path works end to end.
-check("green run page is not flagged new/changed",
-      "st-new" not in a_page and "st-changed" not in a_page)
-
-## I: a FAILED run whose screenshot visually MATCHES its golden must NOT render a green
-## pass chip on the shot -- a failed step's screenshot reading "pass" is a fabricated
-## green (status classes appear only as chip classes; style.css is external). Canary:
-## before the fix, the MATCH bucket mapped straight to a st-pass chip regardless of the
-## step's functional FAIL.
+## I: a FAILED run WITH a published screenshot. The shot is shown (<img), the run is st-fail,
+## and the shot chip carries the step's FAIL status -- NEVER a green pass chip on a failure
+## screen. Canary: a green chip anywhere on a failed run's page is a fabricated-green signal.
 i_page = read(os.path.join(out1, "kicksecure-lxqt-fail-18-2-3-6-1", "index.html"))
-check("failed run with a matching shot still renders an <img", "<img" in i_page)
+check("failed run with a shot still renders an <img", "<img" in i_page)
 check("failed run page is st-fail", "st-fail" in i_page)
 check("failed run page has NO green pass chip (shot not green on a failed step)",
       "st-pass" not in i_page)
 
-## S: a FAILED run whose shot has NO approved golden (bucket NEW) must render the shot as the
-## SOFT st-new "needs approval" state, NOT repainted as the step's red st-fail. This is the
-## "fail welcome -- no approved golden yet" over-flagging. The run itself is still st-fail
-## overall (verdict), so scope the chip assertion to the shot paragraph. Canary: pre-fix the
-## shot chip here was st-fail and no st-new appeared on the page.
-s_page = read(os.path.join(out1, "kicksecure-lxqt-nogolden-18-2-3-6-1", "index.html"))
-check("failed+no-golden shot shows the pending-approval reason",
-      "no approved golden yet" in s_page)
-check("failed+no-golden shot chip is the soft st-new state (not red fail)",
-      'class="chip st-new"' in s_page)
-s_shot_para = (s_page.split("no approved golden yet", 1)[0].rsplit("<p>", 1)[-1]
-               if "no approved golden yet" in s_page else "")
-check("failed+no-golden shot is not repainted as a red st-fail chip",
-      "st-new" in s_shot_para and "st-fail" not in s_shot_para)
-
 ## N: a multi-KB step log survives IN FULL to the rendered page -- both the START (head) and
 ## END (tail) needles must appear. Before the fix the generator re-cut the stored tail to the
-## last 1200 chars, dropping the head (systemcheck output began "...emcheck#" mid-word); this
-## pins that the full stored log is rendered. The <pre> carries the scroll class so a long log
-## stays bounded on the page.
+## last 1200 chars, dropping the head. The <pre> carries the scroll class so a long log stays
+## bounded on the page.
 n_page = read(os.path.join(out1, "kicksecure-log-18-2-3-5-1", "index.html"))
 check("multi-KB log: END (tail) survives to the page", "LOGEND_NEEDLE" in n_page)
 check("multi-KB log: START (head) survives to the page (no 1200-char re-cut)",
@@ -538,7 +457,7 @@ check("step log <pre> is the scrollable class", 'pre class="steplog"' in n_page)
 
 ## O/P: firmware-lane evidence renders on the detail page (the booted lane PROOF, not just the
 ## --firmware label). A matching lane shows a verified panel + the command/output; a contradicting
-## lane shows a loud MISMATCH. Regression for #17 firmware evidence.
+## lane shows a loud MISMATCH.
 o_page = read(os.path.join(out1, "kicksecure-fw-18-2-3-5-1", "index.html"))
 check("firmware panel: heading present", "Firmware lane" in o_page)
 check("firmware panel: detected lane shown", "UEFI+SecureBoot" in o_page)
@@ -549,8 +468,7 @@ check("firmware panel: contradicting lane reads MISMATCH", "MISMATCH" in p_page)
 check("firmware panel: mismatch evidence shown", "FWMISMATCH_NEEDLE" in p_page)
 
 ## Q: a PASS verdict whose firmware EVIDENCE proves a wrong-lane boot (match False) is NOT
-## green -- the detail header AND the overview cell read non-green, not just the panel. Canary:
-## before the classifier fix, run_cell_status returned st-pass for this PASS run.
+## green -- the detail header AND the overview cell read non-green, not just the panel.
 q_page = read(os.path.join(out1, "kicksecure-fwgreen-18-2-3-5-1", "index.html"))
 ## Scope to the run HEADER (hero section): the per-step chip legitimately reads st-pass (the
 ## step functionally passed) -- it is the RUN-level status, shown in the header + overview,
@@ -581,17 +499,14 @@ check("escaping-path run is NO-DATA",
 check("escaping-path run wrote no webp",
       not any(n.endswith(".webp") for n in (os.listdir(f_dir_out) if os.path.isdir(f_dir_out) else [])))
 
-## G: a run whose id is the reserved name 'goldens' never writes into a goldens dir.
-check("reserved run.id did not create out_root/goldens",
-      not os.path.exists(os.path.join(out1, "goldens")))
+## G: a run whose id is the reserved name 'index.html' gets a dir-derived id instead, and the
+## overview index.html is the real overview (the matrix), never overwritten by a run page.
+check("reserved run.id did not overwrite the overview index.html",
+      'id="matrix"' in overview)
+check("reserved run.id rendered under a dir-derived id",
+      os.path.isdir(os.path.join(out1, "reserved-18-2-3-5__20261006T000000Z")))
 
-## H: a PASS run missing its expected approved golden is NOT green.
-h_page = read(os.path.join(out1, "kicksecure-xfce-18-2-3-5-1", "index.html"))
-check("missing-expected-shot run flags unknown", "st-unknown" in h_page)
-check("missing-expected-shot reason is shown",
-      "expected approved golden not produced" in h_page)
-
-## I: a structurally malformed result.json is NO-DATA, and generation did not crash
+## MAL: a structurally malformed result.json is NO-DATA, and generation did not crash
 ## (reaching here proves it). One bad file must not deny the whole site.
 mal_page = os.path.join(out1, "malformed-18-2-3-5__20261006T000000Z", "index.html")
 check("malformed result is NO-DATA (no crash)",
@@ -601,10 +516,6 @@ check("malformed result is NO-DATA (no crash)",
 check("colliding run.id keeps the first run", os.path.isdir(os.path.join(out1, "dup-run-1")))
 check("colliding run.id keeps the second run (dir-derived id)",
       os.path.isdir(os.path.join(out1, "dup-b-18-2-3-5__20261006T000000Z")))
-
-## The green run (with a shot) gets a per-run shots.json manifest for the approver.
-check("per-run shots.json manifest written",
-      os.path.isfile(os.path.join(out1, "kicksecure-lxqt-18-2-3-5-1", "shots.json")))
 
 ## L: the multi-shot "full story" -- all three milestone webps exist, each is labelled
 ## by its milestone name, and they render in filename (capture) order.
@@ -620,15 +531,12 @@ check("full-story milestones render in capture order",
       l_page.find("<strong>welcome</strong>")
       < l_page.find("<strong>partitions</strong>")
       < l_page.find("<strong>first-boot</strong>"))
-## The disambiguating sid (lane/step/<milestone>) is used only for multiple shots; a
-## single-shot run keeps the plain placeholder caption (no <strong> milestone label).
-check("single-shot green run has no milestone label", "<strong>" not in a_page)
 
 ## Determinism: a second generation over identical input is byte-identical. A separate site_out
 ## (its own empty tree) is a cache MISS even sharing the cache dir -- the cached webps are not
 ## present there -- so this still exercises a full build and proves determinism.
 site2 = os.path.join(work, "site2")
-run_generator(plane, goldens, approvals_path, site2, cache_dir=cache_dir)
+run_generator(plane, site2, cache_dir=cache_dir)
 out2 = os.path.join(site2, "automated-test-results")
 check("regeneration is byte-identical (deterministic)", tree_identical(out1, out2))
 
@@ -636,52 +544,34 @@ check("regeneration is byte-identical (deterministic)", tree_identical(out1, out
 ## each run's already-encoded webp -- the dominant method=6 cost -- not re-encode it. Prove the
 ## skip by pinning run A's webp mtime to an old value and asserting it survives an incremental
 ## run (not rewritten) but IS rewritten under --full-rebuild. Byte content stays identical either
-## way. Canary: the pre-F5 generator has no cache and always re-encodes, so "mtime preserved"
-## FAILS on it.
+## way. Canary: the pre-F5 generator has no cache and always re-encodes, so "mtime preserved" FAILS.
 a_webp = os.path.join(out1, "kicksecure-lxqt-18-2-3-5-1", "kicksecure-lxqt__calamares-install.webp")
 check("run A webp has a cache entry",
       os.path.isfile(os.path.join(cache_dir, "kicksecure-lxqt-18-2-3-5-1.json")))
 a_bytes = read_bytes(a_webp)
 os.utime(a_webp, (EPOCH, EPOCH))
-run_generator(plane, goldens, approvals_path, site1, cache_dir=cache_dir)
+run_generator(plane, site1, cache_dir=cache_dir)
 check("incremental re-run REUSED run A webp (not re-encoded)",
       int(os.stat(a_webp).st_mtime) == EPOCH)
 check("incremental re-run kept run A webp byte-identical", read_bytes(a_webp) == a_bytes)
 os.utime(a_webp, (EPOCH, EPOCH))
-run_generator(plane, goldens, approvals_path, site1, cache_dir=cache_dir, full_rebuild=True)
+run_generator(plane, site1, cache_dir=cache_dir, full_rebuild=True)
 check("--full-rebuild re-encoded run A webp", int(os.stat(a_webp).st_mtime) != EPOCH)
 check("--full-rebuild kept run A webp byte-identical", read_bytes(a_webp) == a_bytes)
 
-## Review-fix regressions (ai-review 2026-10-22): the incremental cache must never serve a stale
-## green when a dependency drifts. Each starts from a warm, consistent cache for run A.
-
-## C: a cached webp whose BYTES changed on disk (corruption, partial write) must be re-encoded,
+## A cached webp whose BYTES changed on disk (corruption, partial write) must be re-encoded,
 ## not reused -- the cache records + verifies each webp's sha. Canary: the pre-fix hit checked
 ## only that the filename existed, so it kept the corrupt bytes.
-run_generator(plane, goldens, approvals_path, site1, cache_dir=cache_dir)
+run_generator(plane, site1, cache_dir=cache_dir)
 with open(a_webp, "ab") as handle:
     handle.write(b"corruption")
 os.utime(a_webp, (EPOCH, EPOCH))
-run_generator(plane, goldens, approvals_path, site1, cache_dir=cache_dir)
+run_generator(plane, site1, cache_dir=cache_dir)
 check("a corrupted cached webp is re-encoded, not reused",
       int(os.stat(a_webp).st_mtime) != EPOCH)
 check("a corrupted cached webp is restored to correct bytes", read_bytes(a_webp) == a_bytes)
 
-## A: changing an approved GOLDEN -- stored in a per-lane SUBDIR -- must invalidate the cache, or
-## a run stays green against a golden it no longer matches. Canary: the pre-fix flat listdir
-## hashed NO golden (they are all in subdirs), so a golden change left the fingerprint unchanged.
-golden_a = os.path.join(goldens, "kicksecure-lxqt", "calamares-install.webp")
-golden_bytes = read_bytes(golden_a)
-os.utime(a_webp, (EPOCH, EPOCH))
-with open(golden_a, "ab") as handle:
-    handle.write(b"golden-drift")
-run_generator(plane, goldens, approvals_path, site1, cache_dir=cache_dir)
-check("a changed golden invalidates the cache (run re-processed)",
-      int(os.stat(a_webp).st_mtime) != EPOCH)
-with open(golden_a, "wb") as handle:
-    handle.write(golden_bytes)
-
-## D: one unreadable source screenshot must NOT abort the whole generate -- the fingerprint hash
+## One unreadable source screenshot must NOT abort the whole generate -- the fingerprint hash
 ## degrades per-file like process_run isolates a per-shot read error. (Root bypasses file perms,
 ## so the unreadable state is unprovable there -- skip the assertion, do not fake a pass.)
 if os.geteuid() != 0:
@@ -690,8 +580,8 @@ if os.geteuid() != 0:
     src_mode = os.stat(bad_src).st_mode
     os.chmod(bad_src, 0)
     rc = subprocess.run(  # nosec B603 -- fixed argv, in-tree generator
-        [GEN, "--results-root", plane, "--site-out", site1, "--goldens-dir", goldens,
-         "--approvals", approvals_path, "--cache-dir", cache_dir, "--full-rebuild"],
+        [GEN, "--results-root", plane, "--site-out", site1,
+         "--cache-dir", cache_dir, "--full-rebuild"],
         env={**os.environ, "SOURCE_DATE_EPOCH": str(EPOCH)}).returncode
     os.chmod(bad_src, src_mode)
     if rc == 0:
@@ -703,22 +593,21 @@ else:
     print("ok: unreadable-source check skipped (running as root; perms unprovable)")
 
 ## Restore a clean, consistent cache + output for run A before the downstream checks.
-run_generator(plane, goldens, approvals_path, site1, cache_dir=cache_dir, full_rebuild=True)
+run_generator(plane, site1, cache_dir=cache_dir, full_rebuild=True)
 
-## Stale-artifact cleanup: a '<shot>-golden.webp' is written only while a shot is CHANGED;
-## once the shot becomes MATCH the generator stops emitting it. A file left in the run dir
-## from a prior generate must be REMOVED on regenerate -- else the asset check flags it
-## orphaned and blocks the publish. Plant one in a MATCH run's committed dir, regenerate over
-## the SAME out_root, and assert it is gone while the run's real output is rebuilt.
+## Stale-artifact cleanup: a stray file left in a run dir by a prior generate (an artifact this
+## generate no longer emits, or a planted file) must be REMOVED on regenerate -- else the asset
+## check flags it orphaned and blocks the publish. Plant one in a run's committed dir, regenerate
+## over the SAME out_root, and assert it is gone while the run's real output is rebuilt.
 stale_run = os.path.join(out1, "kicksecure-lxqt-18-2-3-5-1")
-stale_golden = os.path.join(stale_run, "kicksecure-lxqt__calamares-install-golden.webp")
-with open(stale_golden, "wb") as handle:
-    handle.write(b"stale-golden-from-a-prior-generate")
+stray = os.path.join(stale_run, "kicksecure-lxqt__calamares-install-stray.webp")
+with open(stray, "wb") as handle:
+    handle.write(b"stray-artifact-from-a-prior-generate")
 ## Even with the incremental cache warm for this run, an unexpected file in the page dir forces a
 ## full rebuild (orphan-purge is still owed), so the stale artifact is removed.
-run_generator(plane, goldens, approvals_path, site1, cache_dir=cache_dir)
-check("stale per-run -golden.webp removed on regenerate", not os.path.exists(stale_golden))
-check("regenerated MATCH run still rebuilt its page",
+run_generator(plane, site1, cache_dir=cache_dir)
+check("stray per-run artifact removed on regenerate", not os.path.exists(stray))
+check("regenerated run still rebuilt its page",
       os.path.isfile(os.path.join(stale_run, "index.html")))
 
 import shutil  # noqa: E402

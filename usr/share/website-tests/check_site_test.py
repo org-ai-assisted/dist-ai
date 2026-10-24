@@ -418,13 +418,13 @@ def run():
               _gcc_failures(root) == [], repr(_gcc_failures(root)))
 
     with tempfile.TemporaryDirectory() as root:
-        # automated-test-results/ exists but holds only goldens/ -- NO generated page -> no-op
-        # (no page references any manifest class yet), even with a style.css missing one.
-        _write(root, 'automated-test-results/goldens/golden-approvals.json', '{}')
+        # automated-test-results/ exists but holds NO generated page -> no-op (no page references
+        # any manifest class yet), even with a style.css missing one.
+        _write(root, 'automated-test-results/data.json', '{}')
         _write(root, 'style.css', '\n'.join(
             '.%s{color:#000}' % name
             for name in sorted(rsite.GENERATED_CLASSES) if name != 'stage'))
-        check('contract is a no-op when the tree has no generated page (goldens only)',
+        check('contract is a no-op when the tree has no generated page',
               _gcc_failures(root) == [], repr(_gcc_failures(root)))
 
     with tempfile.TemporaryDirectory() as root:
@@ -1376,20 +1376,21 @@ def run():
         check('the complete index footer is not flagged',
               not any(f.startswith('index.html') for f in fails), repr(fails))
 
-    # check_assets must NOT flag a golden reference image (automated-test-results/
-    # goldens/) as orphaned -- goldens are sha256-referenced in golden-approvals.json,
-    # not by any page. A genuinely orphaned image elsewhere is still flagged.
+    # check_assets must NOT flag a published run screenshot: it is referenced by its run
+    # page's <img>, so it is never an orphan. A genuinely orphaned image is still flagged.
     with tempfile.TemporaryDirectory() as root:
         _write(root, 'index.html', '<img src="a.webp">')
         _png(root, 'a.webp')
-        _png(root, 'automated-test-results/goldens/kicksecure-lxqt/calamares-install.webp')
-        check('a golden reference image is not flagged orphaned',
+        _write(root, 'automated-test-results/r1/index.html',
+               '<img src="shot.webp">')
+        _png(root, 'automated-test-results/r1/shot.webp')
+        check('a page-referenced run screenshot is not flagged orphaned',
               _assets_failures(check_site, root) == [], repr(_assets_failures(check_site, root)))
 
     with tempfile.TemporaryDirectory() as root:
         _write(root, 'index.html', '<p>nothing</p>')
         _png(root, 'automated-test-results/stray.webp')
-        check('a non-golden orphaned image under the results tree is still flagged',
+        check('an orphaned image under the results tree is still flagged',
               any('stray.webp' in f for f in _assets_failures(check_site, root)),
               repr(_assets_failures(check_site, root)))
 

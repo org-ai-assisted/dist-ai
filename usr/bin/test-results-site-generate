@@ -10,17 +10,20 @@
 
 """Generate the static test-results verification site from the results plane.
 
-Reads a results plane (<name>/<ts>/result.json + step screenshots), the in-repo
-goldens and golden-approvals.json, normalizes + compares each screenshot, and
-emits a static, strict-CSP site under <site-out>/automated-test-results/: an
-overview matrix (lane x version x builder x provenance) with a prominent
-NEEDS-APPROVAL section and a legend, plus one page per run.
+Reads a results plane (<name>/<ts>/result.json + step screenshots), normalizes
+(masks the clock + any configured privacy rects) and publishes every screenshot,
+and emits a static, strict-CSP site under <site-out>/automated-test-results/: an
+overview matrix (lane x version x builder x provenance) with a legend, plus one
+page per run.
 
-No-false-green: the run-cell status comes from dm_test_results.site, where green
-requires finished + fresh + functional PASS + every screenshot an approved MATCH;
-stale / new / changed / unknown / inconclusive / no-data all render non-green, and
-the age is always shown. A screenshot that cannot be read shows alt text, never a
-silent blank.
+No-false-green: the run-cell status comes from dm_test_results.site and is OBJECTIVE
+-- green requires finished + fresh + functional PASS on the declared firmware lane.
+Screenshots do NOT gate status and there is no human approval step: a blank must-render
+milestone is caught at RUN time (image-blank-check, source-encoded per milestone in
+dm-calamares-install), so a PASS verdict already means every gated shot rendered. Shots
+are always published for inspection; one that cannot be read shows alt text, never a
+silent blank. stale / unknown / inconclusive / no-data all render non-green, age always
+shown.
 
 Deterministic: the generated timestamp is pinned to SOURCE_DATE_EPOCH (or
 --source-date-epoch), ordering is sorted, and normalized shots are re-encoded as
@@ -45,17 +48,17 @@ _LIB = os.path.join(
 if os.path.isdir(_LIB) and _LIB not in sys.path:
     sys.path.insert(0, _LIB)
 
-from dm_test_results import compare, model, site  # noqa: E402
+from dm_test_results import imaging, model, site  # noqa: E402
 
 RESULTS_SUBDIR = "automated-test-results"
 IMAGE_MEDIA_PREFIX = "image/"
 
 ## Incremental-regenerate cache format version. The lossless method=6 webp re-encode dominates
 ## the generate cost, and a deploy re-runs it for every run on every invocation even when nothing
-## changed. The cache lets an unchanged run reuse its already-encoded webps + cached classification
-## instead of re-encoding. BUMP this on ANY change to how a run's page assets or buckets are
-## produced, so a generator change invalidates every cache entry (no stale output served).
-CACHE_FORMAT_VERSION = 1
+## changed. The cache lets an unchanged run reuse its already-encoded webps + cached status
+## instead of re-encoding. BUMP this on ANY change to how a run's page assets are produced,
+## so a generator change invalidates every cache entry (no stale output served).
+CACHE_FORMAT_VERSION = 2
 
 ## Legend: status -> human label. Order is display order on the page.
 STATUS_LABEL = [
@@ -64,9 +67,7 @@ STATUS_LABEL = [
     (site.STATUS_INCONCLUSIVE, "inconclusive"),
     (site.STATUS_INCOMPLETE, "did not finish"),
     (site.STATUS_STALE, "stale (too old)"),
-    (site.STATUS_CHANGED, "changed -- needs re-approval"),
-    (site.STATUS_NEW, "new -- needs approval"),
-    (site.STATUS_UNKNOWN, "unknown / compare error"),
+    (site.STATUS_UNKNOWN, "unknown"),
     (site.STATUS_NODATA, "no data"),
 ]
 
@@ -75,7 +76,7 @@ STATUS_LABEL = [
 ## which is legend/display order (pass first).
 _SORT_ORDER = [
     site.STATUS_FAIL, site.STATUS_UNKNOWN, site.STATUS_INCOMPLETE, site.STATUS_NODATA,
-    site.STATUS_INCONCLUSIVE, site.STATUS_CHANGED, site.STATUS_NEW, site.STATUS_STALE,
+    site.STATUS_INCONCLUSIVE, site.STATUS_STALE,
     site.STATUS_PASS,
 ]
 _SORT_SEVERITY = {status: i for i, status in enumerate(_SORT_ORDER)}
@@ -121,14 +122,13 @@ def esc_log(value):
 
 
 ## Names under the output root the generator owns and must never let a run id
-## shadow (writing into goldens/, or colliding with the overview / approvals file).
-RESERVED_RUN_DIRS = frozenset({"index.html", "goldens", "golden-approvals.json"})
+## shadow (colliding with the overview index.html).
+RESERVED_RUN_DIRS = frozenset({"index.html"})
 
 
 def safe_run_dir(run_id):
     """A run id is written as a directory name; refuse a '/' or '..' (escape) or a
-    reserved name (which would hijack the overview, the approvals file, or the
-    goldens dir)."""
+    reserved name (which would hijack the overview index.html)."""
     if ("/" in run_id or run_id in (".", "..") or run_id == ""
             or run_id in RESERVED_RUN_DIRS):
         raise ValueError("unsafe or reserved run id: %r" % run_id)
@@ -227,7 +227,7 @@ def rects_for(lane, image_size, mask_config):
     if rects:
         return [tuple(rect) for rect in rects]
     ## No configured rect: blank the usual top-right clock corner.
-    return [compare.top_right_rect(image_size)]
+    return [imaging.top_right_rect(image_size)]
 
 
 class RunView:
@@ -239,7 +239,7 @@ class RunView:
         self.result = result
         self.status = status
         self.age = age
-        self.shots = shots  # list of dicts: name, bucket, webp, golden_webp, detail, step
+        self.shots = shots  # list of dicts: sid, step, name, webp
 
     @property
     def is_green(self):
@@ -267,10 +267,9 @@ def desired_run_id(run_dir, result):
         return run_dir_id(run_dir)
 
 
-def process_run(run_dir, result, run_id, out_root, goldens_dir, approvals, mask_config,
-                now_unix, stale_seconds, tolerance, channel_threshold):
-    """Classify a run's screenshots, write their normalized webp into the run's
-    output dir (run_id, already made unique by main), and compute the status."""
+def process_run(run_dir, result, run_id, out_root, mask_config, now_unix, stale_seconds):
+    """Normalize + publish a run's screenshots into the run's output dir (run_id,
+    already made unique by main), and compute the objective status."""
     if not isinstance(result, dict):
         return RunView(run_id, run_dir, None, site.STATUS_NODATA, None, [])
 
@@ -278,45 +277,21 @@ def process_run(run_dir, result, run_id, out_root, goldens_dir, approvals, mask_
     lane = run["lane"]
     page_dir = os.path.join(out_root, run_id)
 
-    ## Rebuild the run dir from scratch: drop stale artifacts a prior generate wrote but
-    ## this one no longer emits -- e.g. a '<shot>-golden.webp' is written ONLY while a shot
-    ## is CHANGED (for the side-by-side); once it becomes MATCH/approved the golden is not
-    ## re-emitted, and the lingering committed file is then flagged orphaned by the asset
-    ## check and blocks the publish. The dir is fully generator-owned. Skip a symlink (match
-    ## prune(): never rmtree THROUGH one).
+    ## Rebuild the run dir from scratch: drop any stale artifact a prior generate wrote but
+    ## this one no longer emits, so a lingering committed file is not flagged orphaned by the
+    ## asset check and does not block the publish. The dir is fully generator-owned. Skip a
+    ## symlink (match prune(): never rmtree THROUGH one).
     if os.path.isdir(page_dir) and not os.path.islink(page_dir):
         shutil.rmtree(page_dir)
 
     shots = []
-    buckets = []
     for step in result["steps"]:
         for attachment in step["attachments"]:
             if not str(attachment.get("mediaType", "")).startswith(IMAGE_MEDIA_PREFIX):
                 continue
-            shot = _process_shot(
-                run_dir, page_dir, lane, step, attachment, goldens_dir, approvals,
-                mask_config, tolerance, channel_threshold,
-            )
-            shots.append(shot)
-            buckets.append(shot["bucket"])
+            shots.append(_process_shot(run_dir, page_dir, lane, step, attachment, mask_config))
 
-    ## No-false-green: if an APPROVED golden exists for this lane but no shot in
-    ## this run produced it, the expected screenshot vanished -- flag it (non-green),
-    ## never let a missing-but-expected shot pass as a clean run.
-    produced = {shot["sid"] for shot in shots}
-    for sid, record in sorted(approvals.items()):
-        if (sid.startswith(lane + "/") and record.get("status") == "approved"
-                and sid not in produced):
-            shots.append({
-                "sid": sid, "step": sid.split("/", 1)[-1], "name": "screenshot",
-                "bucket": compare.BUCKET_UNKNOWN,
-                "detail": {"reason": "expected approved golden not produced by this run"},
-                "webp": None, "golden_webp": None, "exit": None, "status": None,
-                "stdout_tail": "", "stderr_tail": "",
-            })
-            buckets.append(compare.BUCKET_UNKNOWN)
-
-    status, age = site.run_cell_status(result, buckets, now_unix, stale_seconds)
+    status, age = site.run_cell_status(result, now_unix, stale_seconds)
     return RunView(run_id, run_dir, result, status, age, shots)
 
 
@@ -328,8 +303,7 @@ def _screenshot_id(lane, step_name, attachment_name, shot_count):
     return base
 
 
-def _process_shot(run_dir, page_dir, lane, step, attachment, goldens_dir, approvals,
-                  mask_config, tolerance, channel_threshold):
+def _process_shot(run_dir, page_dir, lane, step, attachment, mask_config):
     step_name = step["name"]
     shot_count = sum(
         1 for att in step["attachments"]
@@ -340,61 +314,23 @@ def _process_shot(run_dir, page_dir, lane, step, attachment, goldens_dir, approv
     ## cannot escape run_dir. Still refuse a SYMLINK: its versioned name is safe but
     ## its target could be any file root could read -- never follow it.
     current_path = os.path.join(run_dir, attachment["path"])
-    golden_path = os.path.join(goldens_dir, sid + ".webp") if goldens_dir else None
 
-    base = {
-        "sid": sid, "step": step_name, "name": attachment["name"],
-        "golden_webp": None, "exit": step.get("exit"), "status": step.get("status"),
-        "stdout_tail": step.get("stdout_tail", ""), "stderr_tail": step.get("stderr_tail", ""),
-    }
+    base = {"sid": sid, "step": step_name, "name": attachment["name"], "webp": None}
     if os.path.islink(current_path):
-        base.update(bucket=compare.BUCKET_UNKNOWN,
-                    detail={"reason": "refusing to read a symlinked screenshot"}, webp=None)
         return base
 
-    rects = None
-    out_webp = None
-    golden_webp = None
+    ## Normalize (mask the clock + any configured privacy rects) and publish. A per-shot
+    ## read/encode error leaves webp=None (shown as missing), never aborts the run/site.
     try:
-        current = compare.normalize_image(current_path, None)
-        rects = rects_for(lane, current.size, mask_config)
-        current = compare.normalize_image(current_path, rects)
+        rects = rects_for(lane, imaging.normalize_image(current_path, None).size, mask_config)
+        current = imaging.normalize_image(current_path, rects)
         os.makedirs(page_dir, exist_ok=True)
         out_name = _flatten(sid) + ".webp"
-        out_webp = out_name
         _save_webp(current, os.path.join(page_dir, out_name))
+        base["webp"] = out_name
     except Exception:  # noqa: BLE001 -- any shot error is per-shot, never aborts the run/site
-        out_webp = None
-
-    bucket, detail = compare.classify(
-        sid, current_path, golden_path, approvals, rects=rects,
-        tolerance=tolerance, channel_threshold=channel_threshold,
-    )
-
-    ## For a CHANGED shot, also render the approved golden so the page shows
-    ## before/after of exactly what was compared.
-    if bucket == compare.BUCKET_CHANGED and golden_path and os.path.isfile(golden_path):
-        try:
-            golden_img = compare.normalize_image(golden_path, rects)
-            golden_name = _flatten(sid) + "-golden.webp"
-            _save_webp(golden_img, os.path.join(page_dir, golden_name))
-            golden_webp = golden_name
-        except (FileNotFoundError, OSError):
-            golden_webp = None
-
-    return {
-        "sid": sid,
-        "step": step_name,
-        "name": attachment["name"],
-        "bucket": bucket,
-        "detail": detail,
-        "webp": out_webp,
-        "golden_webp": golden_webp,
-        "exit": step.get("exit"),
-        "status": step.get("status"),
-        "stdout_tail": step.get("stdout_tail", ""),
-        "stderr_tail": step.get("stderr_tail", ""),
-    }
+        base["webp"] = None
+    return base
 
 
 def _flatten(sid):
@@ -423,46 +359,28 @@ def _file_sha256(path):
 
 
 def _path_sha256_or_empty(path):
-    ## Follow a symlink (os.path.isfile is true for a symlink-to-file), because load_approvals /
-    ## load_mask_config follow it -- hashing by content keeps the fingerprint tracking what
-    ## classify actually reads, so an edit to a symlinked approvals/mask invalidates the cache.
+    ## Follow a symlink (os.path.isfile is true for a symlink-to-file), because
+    ## load_mask_config follows it -- hashing by content keeps the fingerprint tracking what
+    ## the generator reads, so an edit to a symlinked mask config invalidates the cache.
     if path and os.path.isfile(path):
         return _file_sha256(path)
     return ""
 
 
-def shared_input_fingerprint(goldens_dir, approvals_path, mask_config_path,
-                             tolerance, channel_threshold):
-    """Digest of every GENERATE-WIDE input that affects a run's page assets or buckets: the
-    cache format version, the approved goldens, the approvals map, the mask config, and the
-    compare thresholds. Folded into every run's fingerprint, so a golden change or a threshold
-    change invalidates the whole cache. Hashes files by raw bytes (no parse-shape assumptions)."""
+def shared_input_fingerprint(mask_config_path):
+    """Digest of every GENERATE-WIDE input that affects a run's page assets: the cache format
+    version and the mask config. Folded into every run's fingerprint, so a mask change
+    invalidates the whole cache. Hashes files by raw bytes (no parse-shape assumptions)."""
     digest = hashlib.sha256()
     digest.update(("cachefmt=%d\0" % CACHE_FORMAT_VERSION).encode("ascii"))
-    digest.update(("approvals=%s\0" % _path_sha256_or_empty(approvals_path)).encode("ascii"))
     digest.update(("mask=%s\0" % _path_sha256_or_empty(mask_config_path)).encode("ascii"))
-    digest.update(("tol=%r;ch=%r\0" % (tolerance, channel_threshold)).encode("ascii"))
-    ## Approved goldens live in per-lane SUBDIRS (goldens_dir/<lane>/<step>.webp) and classify()
-    ## reads each one, so WALK the tree and hash every golden by content, keyed by its path
-    ## relative to goldens_dir. A flat listdir sees only the lane dirs and hashes NO golden,
-    ## leaving a changed/deleted golden invisible to the cache -- a stale MATCH served as green.
-    if goldens_dir and os.path.isdir(goldens_dir):
-        golden_files = []
-        for dirpath, _dirnames, filenames in os.walk(goldens_dir):
-            for name in filenames:
-                full = os.path.join(dirpath, name)
-                if os.path.isfile(full):
-                    golden_files.append((os.path.relpath(full, goldens_dir), full))
-        for rel, full in sorted(golden_files):
-            digest.update(rel.encode("utf-8", "surrogatepass"))
-            digest.update(("=%s\0" % _file_sha256(full)).encode("ascii"))
     return digest.hexdigest()
 
 
 def run_source_fingerprint(run_dir, result, shared_fp):
     """Digest of one run's own inputs -- its result record (steps, attachments, exit/status/tails,
     lane, id, stop time) plus the content of every source screenshot it references. With
-    shared_fp it fully determines the run's page assets and buckets."""
+    shared_fp it fully determines the run's page assets."""
     digest = hashlib.sha256()
     digest.update(shared_fp.encode("ascii"))
     digest.update(b"\0")
@@ -498,7 +416,7 @@ def load_cached_view(cache_dir, run_id, fingerprint, out_root, run_dir, result,
                      now_unix, stale_seconds):
     """A RunView rebuilt from cache when the fingerprint matches AND every cached webp is still
     present on disk; else None (caller does a full build). Status/age are recomputed from the
-    cached buckets + the CURRENT clock, so freshness/stale stay correct with no image work."""
+    CURRENT clock, so freshness/stale stay correct with no image work."""
     path = os.path.join(cache_dir, run_id + ".json")
     try:
         with open(path, "r", encoding="utf-8") as handle:
@@ -516,29 +434,25 @@ def load_cached_view(cache_dir, run_id, fingerprint, out_root, run_dir, result,
     page_dir = os.path.join(out_root, run_id)
     ## The reuse is valid only if the page dir holds EXACTLY the generator-owned files this run
     ## produces, with the SAME BYTES: every cached webp present and matching its recorded sha, and
-    ## NO extra file. A stray file (a stale -golden.webp a prior generate no longer emits, a
-    ## planted artifact) or a changed/corrupt webp means the full build is still owed -- fall back
+    ## NO extra file. A stray file (an artifact a prior generate no longer emits, a planted
+    ## file) or a changed/corrupt webp means the full build is still owed -- fall back
     ## so process_run's rmtree + re-encode run. (In normal operation the inputs that would change
     ## an asset also change the fingerprint; this guards against on-disk drift of the output.)
     expected = {"index.html"}
-    if shots:
-        expected.add("shots.json")
     for shot in shots:
-        for key in ("webp", "golden_webp"):
-            name = shot.get(key)
-            if name:
-                expected.add(name)
-                full = os.path.join(page_dir, name)
-                if not os.path.isfile(full) or _file_sha256(full) != webp_sha.get(name):
-                    return None
+        name = shot.get("webp")
+        if name:
+            expected.add(name)
+            full = os.path.join(page_dir, name)
+            if not os.path.isfile(full) or _file_sha256(full) != webp_sha.get(name):
+                return None
     try:
         present = set(os.listdir(page_dir))
     except OSError:
         return None
     if present - expected:
         return None
-    buckets = [shot.get("bucket") for shot in shots]
-    status, age = site.run_cell_status(result, buckets, now_unix, stale_seconds)
+    status, age = site.run_cell_status(result, now_unix, stale_seconds)
     return RunView(run_id, run_dir, result, status, age, shots)
 
 
@@ -551,10 +465,9 @@ def store_cached_view(cache_dir, run_id, fingerprint, view, out_root):
     page_dir = os.path.join(out_root, run_id)
     webp_sha = {}
     for shot in view.shots:
-        for key in ("webp", "golden_webp"):
-            name = shot.get(key)
-            if name:
-                webp_sha[name] = _file_sha256(os.path.join(page_dir, name))
+        name = shot.get("webp")
+        if name:
+            webp_sha[name] = _file_sha256(os.path.join(page_dir, name))
     try:
         os.makedirs(cache_dir, exist_ok=True)
         payload = json.dumps({"fingerprint": fingerprint, "shots": view.shots,
@@ -593,7 +506,7 @@ def select_keep(views, history):
 
 def prune(out_root, keep_ids):
     """Remove per-run dirs under out_root that are not in keep_ids. Never touches
-    index.html, goldens/, or golden-approvals.json."""
+    the overview index.html."""
     if not os.path.isdir(out_root):
         return
     for entry in sorted(os.listdir(out_root)):
@@ -737,39 +650,14 @@ def render_overview(views, header, footer, generated_utc):
         "</div></section>"
     ) % ("".join(rows) if rows else '<tr><td colspan="7">no runs</td></tr>')
 
-    ## NEEDS-APPROVAL: every NEW/CHANGED shot across all runs.
-    pending = []
-    for view in views:
-        for shot in view.shots:
-            if shot["bucket"] in (compare.BUCKET_NEW, compare.BUCKET_CHANGED):
-                chip_status = (
-                    site.STATUS_NEW if shot["bucket"] == compare.BUCKET_NEW
-                    else site.STATUS_CHANGED
-                )
-                pending.append(
-                    "<li>%s %s / %s (<a href=\"%s/\">%s</a>)</li>"
-                    % (
-                        status_chip(chip_status), esc(view.run_id), esc(shot["sid"]),
-                        esc(view.run_id), esc("open run"),
-                    )
-                )
-    approval = (
-        '<section class="cat" id="needs-approval"><div class="wrap">'
-        '<h2 class="catname">Needs approval</h2>'
-        "%s</div></section>"
-    ) % (
-        "<ul>%s</ul>" % "".join(pending) if pending
-        else "<p>No screenshots are awaiting approval.</p>"
-    )
-
     legend_items = "".join(
         "<li>%s</li>" % status_chip(status) for status, _ in STATUS_LABEL
     )
     legend = (
         '<section class="cat" id="legend"><div class="wrap">'
         '<h2 class="catname">Legend</h2><ul class="legend">%s</ul>'
-        "<p>Only pass is green. Stale, new, changed, unknown, inconclusive and "
-        "no-data are never green, and the age is always shown.</p>"
+        "<p>Only pass is green. Stale, unknown, inconclusive and no-data are never "
+        "green, and the age is always shown.</p>"
         "</div></section>"
     ) % legend_items
 
@@ -777,11 +665,13 @@ def render_overview(views, header, footer, generated_utc):
         '<section class="hero"><div class="wrap">'
         '<p class="kicker">automated test suite</p>'
         "<h1>Test results</h1>"
-        '<p class="line">OS-image install + boot runs, with golden screenshot '
-        "verification. Generated %s.</p></div></section>%s%s%s"
-    ) % (esc(generated_utc), matrix, approval, legend)
+        '<p class="line">OS-image install + boot runs. Status is objective: a run is '
+        "green only when it finished with a PASS verdict on the declared firmware lane "
+        "and is still fresh; every must-render milestone screenshot is checked for a "
+        "blank render at run time. Generated %s.</p></div></section>%s%s"
+    ) % (esc(generated_utc), matrix, legend)
     return page(
-        "Test results", "Automated OS-image test-run results with golden verification.",
+        "Test results", "Automated OS-image install + boot test-run results.",
         header, footer, body,
     )
 
@@ -816,20 +706,8 @@ def render_run(view, header, footer, generated_utc):
     fw_block = _firmware_block(f)
     step_blocks = []
     if isinstance(view.result, dict):
-        step_names = set()
         for step in view.result["steps"]:
-            step_names.add(step["name"])
             step_blocks.append(render_step(view, step))
-        ## Shots not tied to a rendered step are the expected-but-missing goldens
-        ## (an approved golden whose shot this run did not produce); show them so the
-        ## non-green status is explained, never a silent omission.
-        for shot in view.shots:
-            if shot["step"] not in step_names:
-                step_blocks.append(
-                    '<div class="issue"><h3>%s %s</h3><p>%s</p></div>'
-                    % (esc(shot["sid"]), status_chip(_bucket_status_class(shot["bucket"])),
-                       esc(shot["detail"].get("reason", "")))
-                )
     else:
         step_blocks.append(
             '<div class="issue"><h3>No data</h3><p>This run has no readable '
@@ -920,23 +798,10 @@ def _milestone_stage(name):
 
 
 def _shot_html(view, shot, step_status_cls=None):
-    bucket_cls = _bucket_status_class(shot["bucket"])
-    ## A screenshot's visual bucket (golden MATCH/changed/...) is a SEPARATE axis from
-    ## the step's functional pass/fail. A visual MATCH is NOT a functional pass, so never
-    ## show a green pass chip on a shot whose step did not functionally pass -- otherwise
-    ## a FAILED step's screenshot reads green (the "pass -- within tolerance" on a failure
-    ## screen). The visual reason is still shown as context below.
-    shot_cls = bucket_cls
-    ## Never show a GREEN (pass) chip on a shot whose step did not functionally pass -- a visual
-    ## MATCH is not a functional pass, so a failed step's "within tolerance" frame must not read
-    ## green. But a NON-green bucket already carries its own correct meaning: NEW ("no approved
-    ## golden yet") is a soft pending-first-approval state, CHANGED/UNKNOWN their own non-green
-    ## states. Repainting those with the step's FAIL would show a red "fail -- no approved golden
-    ## yet", conflating the visual-regression axis with the functional one. So downgrade ONLY a
-    ## would-be-green shot to the step status; keep every non-green bucket's own class.
-    if (step_status_cls is not None and step_status_cls != site.STATUS_PASS
-            and bucket_cls == site.STATUS_PASS):
-        shot_cls = step_status_cls
+    ## A published shot carries the STEP's functional status chip -- there is no separate
+    ## visual bucket. A blank must-render frame already failed the run at capture time, so a
+    ## shot shown here under a PASS step is a real, non-blank render.
+    shot_cls = step_status_cls if step_status_cls is not None else site.STATUS_PASS
     parts = ["<p>%s" % status_chip(shot_cls)]
     ## Label the milestone (welcome, partitions, first-boot, ...) so a multi-shot "full
     ## story" is readable. A lone unnamed shot carries the placeholder name "screenshot"
@@ -950,8 +815,6 @@ def _shot_html(view, shot, step_status_cls=None):
         stage = _milestone_stage(milestone)
         if stage:
             parts.append(' <span class="stage">(%s)</span>' % esc(stage))
-    if shot["detail"].get("reason"):
-        parts.append(" &mdash; %s" % esc(shot["detail"]["reason"]))
     parts.append("</p>")
     if shot["webp"]:
         parts.append(
@@ -959,15 +822,7 @@ def _shot_html(view, shot, step_status_cls=None):
             % (esc(shot["webp"]), esc(shot["webp"]), esc("screenshot %s" % shot["sid"]))
         )
     else:
-        ## Expected-but-absent shot: flagged, never shown green-with-blank.
         parts.append("<p>screenshot missing or unreadable</p>")
-    if shot["golden_webp"]:
-        parts.append(
-            '<p>approved golden (before):</p>'
-            '<a href="%s"><img loading="lazy" src="%s" alt="%s"></a>'
-            % (esc(shot["golden_webp"]), esc(shot["golden_webp"]),
-               esc("golden %s" % shot["sid"]))
-        )
     return "".join(parts)
 
 
@@ -982,15 +837,6 @@ def _step_status_class(step_status):
     if step_status in (model.STATUS_BROKEN, model.STATUS_SKIPPED):
         return site.STATUS_INCONCLUSIVE
     return site.STATUS_UNKNOWN
-
-
-def _bucket_status_class(bucket):
-    return {
-        compare.BUCKET_MATCH: site.STATUS_PASS,
-        compare.BUCKET_CHANGED: site.STATUS_CHANGED,
-        compare.BUCKET_NEW: site.STATUS_NEW,
-        compare.BUCKET_UNKNOWN: site.STATUS_UNKNOWN,
-    }.get(bucket, site.STATUS_UNKNOWN)
 
 
 def resolve_source_date_epoch(arg_value):
@@ -1010,15 +856,10 @@ def main(argv):
     parser = argparse.ArgumentParser(add_help=True)
     parser.add_argument("--results-root", required=True)
     parser.add_argument("--site-out", required=True)
-    parser.add_argument("--goldens-dir", default=None)
-    parser.add_argument("--approvals", default=None)
     parser.add_argument("--mask-config", default=None)
     parser.add_argument("--chrome-from", default=None)
     parser.add_argument("--stale-days", type=int, default=30)
     parser.add_argument("--history", type=int, default=20)
-    parser.add_argument("--tolerance", type=float, default=compare.DEFAULT_TOLERANCE)
-    parser.add_argument("--channel-threshold", type=int,
-                        default=compare.DEFAULT_CHANNEL_THRESHOLD)
     parser.add_argument("--source-date-epoch", default=None)
     parser.add_argument("--cache-dir", default=None,
                         help="incremental-regenerate cache location "
@@ -1029,8 +870,6 @@ def main(argv):
     args = parser.parse_args(argv)
 
     out_root = os.path.join(args.site_out, RESULTS_SUBDIR)
-    goldens_dir = args.goldens_dir or os.path.join(out_root, "goldens")
-    approvals_path = args.approvals or os.path.join(out_root, "golden-approvals.json")
     now_unix = resolve_source_date_epoch(args.source_date_epoch)
     stale_seconds = args.stale_days * 86400
     generated_utc = datetime.datetime.fromtimestamp(
@@ -1038,11 +877,10 @@ def main(argv):
     ).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     try:
-        approvals = compare.load_approvals(approvals_path)
         mask_config = load_mask_config(args.mask_config)
         header = extract_header(args.chrome_from) if args.chrome_from else _DEFAULT_HEADER
         footer = _FOOTER
-    except (ValueError, compare.CompareError) as exc:
+    except ValueError as exc:
         raise SystemExit("test-results-site-generate: %s" % exc)
 
     os.makedirs(out_root, exist_ok=True)
@@ -1066,14 +904,13 @@ def main(argv):
         assigned.append((run_dir, result, rid))
 
     cache_dir = resolve_cache_dir(args.cache_dir, args.site_out)
-    shared_fp = shared_input_fingerprint(
-        goldens_dir, approvals_path, args.mask_config, args.tolerance, args.channel_threshold)
+    shared_fp = shared_input_fingerprint(args.mask_config)
 
     views = []
     for run_dir, result, rid in assigned:
         ## Incremental fast path: a run whose inputs are byte-identical to a prior generate reuses
-        ## its cached classification + already-encoded webps (status/age recomputed from the clock),
-        ## skipping the dominant method=6 re-encode. A NODATA (non-dict) run is cheap -- never cached.
+        ## its already-encoded webps (status/age recomputed from the clock), skipping the dominant
+        ## method=6 re-encode. A NODATA (non-dict) run is cheap -- never cached.
         view = None
         fingerprint = None
         if isinstance(result, dict):
@@ -1082,10 +919,8 @@ def main(argv):
                 view = load_cached_view(cache_dir, rid, fingerprint, out_root, run_dir,
                                         result, now_unix, stale_seconds)
         if view is None:
-            view = process_run(
-                run_dir, result, rid, out_root, goldens_dir, approvals, mask_config,
-                now_unix, stale_seconds, args.tolerance, args.channel_threshold,
-            )
+            view = process_run(run_dir, result, rid, out_root, mask_config,
+                               now_unix, stale_seconds)
             if fingerprint is not None:
                 store_cached_view(cache_dir, rid, fingerprint, view, out_root)
         views.append(view)
@@ -1102,7 +937,6 @@ def main(argv):
     for view in shown:
         html_text = render_run(view, header, footer, generated_utc)
         _write(os.path.join(out_root, view.run_id, "index.html"), html_text)
-        _write_manifest(out_root, view)
 
     _write(os.path.join(out_root, "index.html"),
            render_overview(shown, header, footer, generated_utc))
@@ -1117,26 +951,6 @@ def _write(path, text):
     with open(tmp, "w", encoding="utf-8") as handle:
         handle.write(text)
     os.replace(tmp, path)
-
-
-def _write_manifest(out_root, view):
-    """A per-run shots.json mapping each screenshot id to its webp + bucket, so the
-    approval tool resolves ids EXACTLY (no lossy filename-unflatten) and can target
-    just the ones needing approval. Only runs with shots get one."""
-    if not view.shots:
-        return
-    shots = [
-        {
-            "sid": shot["sid"],
-            "webp": shot["webp"],
-            "bucket": shot["bucket"],
-            "needs_approval": shot["bucket"] in (compare.BUCKET_NEW, compare.BUCKET_CHANGED),
-        }
-        for shot in sorted(view.shots, key=lambda s: s["sid"])
-    ]
-    path = os.path.join(out_root, view.run_id, "shots.json")
-    payload = json.dumps({"shots": shots}, ensure_ascii=True, indent=2, sort_keys=True) + "\n"
-    _write(path, payload)
 
 
 if __name__ == "__main__":

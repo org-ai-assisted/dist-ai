@@ -7,10 +7,11 @@
 
 ## Suite for the image-test results plane + verification-site tooling: the
 ## dm-test-result/v1 schema model (no-false-green invariants: unknown-default
-## status, summary-vs-steps agreement, honest enum), the golden normalize/compare
-## state machine (MATCH/CHANGED/NEW/UNKNOWN, fail-closed), and the deterministic
-## static-site generator (buckets never green for stale/new/no-data/inconclusive;
-## byte-identical output over identical input). Pure logic -- no root, no network.
+## status, summary-vs-steps agreement, honest enum), screenshot normalization
+## (clock/privacy masking), and the deterministic static-site generator (OBJECTIVE
+## status -- green only for a finished/fresh/PASS run on the declared firmware lane,
+## no human golden-approval step; byte-identical output over identical input). Pure
+## logic -- no root, no network.
 ## Glob-driven: a new *_test.py / *_test.sh under the share dir auto-registers.
 
 set -o errexit

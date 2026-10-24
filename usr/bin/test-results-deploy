@@ -13,9 +13,9 @@
 ##   3. commit the regenerated site + static pages and publish via site-deploy
 ##
 ## RUN AS THE FINAL STEP of a test-run flow (NOT a blind timer -- an hourly oneshot was dropped
-## because its runtime cap SIGTERM'd the website-tests gate mid-run so pushes never landed). It
-## does NOT approve goldens: new/changed shots render as NEW for the human to review + approve
-## (test-results-site-approve), a separate human-mediated step.
+## because its runtime cap SIGTERM'd the website-tests gate mid-run so pushes never landed).
+## Status is OBJECTIVE (no human approval step): the generator publishes every screenshot and
+## a run reads green only on a finished + fresh + PASS verdict on the declared firmware lane.
 ##
 ## CONFIRMED publish: after pushing it POLLS the GitHub Pages build API until the live site is
 ## built AT the pushed commit, and FAILS LOUD otherwise -- a pushed-but-unbuilt, errored, or
@@ -176,8 +176,6 @@ printf '%s\n' "${me}: regenerating the static site into ${pages_repo}"
 "${generate}" \
    --results-root "${staging}/results" \
    --site-out "${pages_repo}" \
-   --goldens-dir "${pages_repo}/automated-test-results/goldens" \
-   --approvals "${pages_repo}/automated-test-results/golden-approvals.json" \
    "${chrome_from[@]}" \
    || die "site generation failed"
 

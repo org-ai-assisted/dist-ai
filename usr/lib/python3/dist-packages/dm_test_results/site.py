@@ -3,39 +3,35 @@
 
 ## AI-Assisted
 
-"""Generation-time classification for the verification site: the run-cell status
-and the no-false-green rule, kept here (pure, directly testable) rather than buried
-in the HTML generator.
+"""Run-cell status for the verification site: objective, decided purely from
+result.json, kept here (pure, directly testable) rather than buried in the HTML
+generator.
 
 A run cell is GREEN only when every one of these holds:
   - a valid result.json was read (not NO-DATA),
-  - the run finished (stage == finished),
+  - the run finished (stage == finished) with a trustworthy (non-future) stop time,
   - the functional verdict is PASS,
-  - the run is not stale (age <= stale window),
-  - every screenshot is MATCH (an approved golden), and there is no UNKNOWN shot.
-Anything else yields a non-green status. Status severity is ordered so the cell
-shows the most serious caveat, but is_green is simply status == pass -- there is no
-path on which stale / new / changed / no-data / inconclusive reads green.
+  - the firmware-lane evidence does not prove a wrong-lane boot, and
+  - the run is not stale (age <= stale window).
 
-Age is ALWAYS carried (age_seconds), so an old green reads as old even when its
-functional verdict was PASS.
+Screenshots do NOT gate status: a blank/degenerate must-render frame is caught at
+RUN time (image-blank-check, per-milestone, source-encoded in dm-calamares-install)
+and fails the run there, so a PASS verdict already means every gated shot rendered.
+There is no human golden-approval step -- shots are always published for inspection,
+and correctness is objective. Age is ALWAYS carried (age_seconds), so an old green
+reads as old even when its functional verdict was PASS.
 """
 
-from . import compare
 from . import model
-## Re-export the status + css_class half of the pure-data contract. It lives in a numpy-free leaf
-## module so the required website-tests unit and the deploy-time contract check can import the
-## manifest without pulling compare -> numpy (not a declared dep of those checks). Callers keep
-## using site.STATUS_*, site.STATUS_GREEN, site.css_class unchanged. The manifest set itself
-## (GENERATED_CLASSES / ALL_STATUSES) is NOT re-exported here -- its consumers (webcheck, the tests)
-## import dm_test_results.site_classes directly, so re-exporting it would be a dead import.
+## Re-export the status + css_class half of the pure-data contract from the numpy-free leaf
+## module, so the required website-tests unit and the deploy-time contract check can import the
+## manifest without pulling the image stack. Callers keep using site.STATUS_*, site.STATUS_GREEN,
+## site.css_class unchanged.
 from .site_classes import (
-    STATUS_CHANGED,
     STATUS_FAIL,
     STATUS_GREEN,
     STATUS_INCOMPLETE,
     STATUS_INCONCLUSIVE,
-    STATUS_NEW,
     STATUS_NODATA,
     STATUS_PASS,
     STATUS_STALE,
@@ -43,14 +39,14 @@ from .site_classes import (
     css_class,
 )
 
-## Public API (also marks css_class, used only via site.css_class by the generator + site_test, as
-## an intentional re-export rather than a dead import).
+## Public API (css_class is used only via site.css_class by the generator + site_test, an
+## intentional re-export rather than a dead import).
 __all__ = [
     'STATUS_PASS', 'STATUS_FAIL', 'STATUS_INCONCLUSIVE', 'STATUS_INCOMPLETE',
-    'STATUS_NODATA', 'STATUS_STALE', 'STATUS_UNKNOWN', 'STATUS_CHANGED', 'STATUS_NEW',
+    'STATUS_NODATA', 'STATUS_STALE', 'STATUS_UNKNOWN',
     'STATUS_GREEN', 'css_class',
     'DEFAULT_STALE_SECONDS', 'CLOCK_SKEW_GRACE_SECONDS',
-    'is_green', 'run_age_seconds', 'run_cell_status', 'run_key', 'needs_approval',
+    'is_green', 'run_age_seconds', 'run_cell_status', 'run_key',
 ]
 
 ## Default staleness window: a run older than this is shown stale (never green),
@@ -61,13 +57,6 @@ DEFAULT_STALE_SECONDS = 30 * 24 * 3600
 ## the generator clock is fine, but one clearly in the future (tampered or badly
 ## skewed) is treated as incomplete so it can never read green via a negative age.
 CLOCK_SKEW_GRACE_SECONDS = 300
-
-## Screenshot buckets that hold a run out of green, most-serious first.
-_SHOT_NONGREEN_ORDER = (
-    (compare.BUCKET_UNKNOWN, STATUS_UNKNOWN),
-    (compare.BUCKET_CHANGED, STATUS_CHANGED),
-    (compare.BUCKET_NEW, STATUS_NEW),
-)
 
 
 def is_green(status):
@@ -105,10 +94,9 @@ def run_age_seconds(result, now_unix):
     return now_unix - stop_unix
 
 
-def run_cell_status(result, shot_buckets, now_unix, stale_seconds=DEFAULT_STALE_SECONDS):
+def run_cell_status(result, now_unix, stale_seconds=DEFAULT_STALE_SECONDS):
     """Return (status, age_seconds). status is one of the STATUS_* values; green iff
-    status == STATUS_PASS. shot_buckets is the list of compare buckets for this run's
-    screenshots (empty for a text-only run)."""
+    status == STATUS_PASS. Decided purely from result.json -- screenshots do not gate."""
     ## NO-DATA: no parseable result at all.
     if not isinstance(result, dict):
         return STATUS_NODATA, None
@@ -134,24 +122,13 @@ def run_cell_status(result, shot_buckets, now_unix, stale_seconds=DEFAULT_STALE_
 
     ## Functional PASS. Firmware EVIDENCE overrides the verdict: if the guest provably
     ## booted a lane other than the one declared (environment.firmware.match is False), the
-    ## run tested the wrong firmware and is never green, regardless of verdict/screenshots.
-    ## A finished run with a clean verdict but a mismatched boot is a false green otherwise.
+    ## run tested the wrong firmware and is never green, regardless of verdict.
     if _firmware_mismatch(result):
         return STATUS_FAIL, age
-
-    ## A shot compare error (UNKNOWN) is the next most serious.
-    bucket_set = set(shot_buckets)
-    if compare.BUCKET_UNKNOWN in bucket_set:
-        return STATUS_UNKNOWN, age
 
     ## A PASS that is too old is shown stale, never green.
     if age > stale_seconds:
         return STATUS_STALE, age
-
-    ## Unapproved visual change holds the run out of green.
-    for bucket, status in _SHOT_NONGREEN_ORDER:
-        if bucket in bucket_set:
-            return status, age
 
     return STATUS_PASS, age
 
@@ -167,12 +144,4 @@ def run_key(result):
         run.get("version", ""),
         run.get("builder", ""),
         prov.get("origin", ""),
-    )
-
-
-def needs_approval(shot_buckets):
-    """True if any screenshot needs a human: NEW (first approval) or CHANGED
-    (re-approval). UNKNOWN is an error, surfaced separately (not an approval task)."""
-    return any(
-        bucket in (compare.BUCKET_NEW, compare.BUCKET_CHANGED) for bucket in shot_buckets
     )
