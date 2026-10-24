@@ -552,12 +552,30 @@ select_install_boot_entry() {
    die "${FAIL_RC}" "GRUB menu not detected"
 }
 
+## coreboot writes its UEFI varstore to the VM .nvram in coreboot FMAP format, which VBox's
+## NVRAM store CANNOT reload on a later power-on (fails VERR_TAR_BAD_CHKSUM_FIELD -> the VM won't
+## start at all). The coreboot UefiPayload boot manager boots the installed disk by SCANNING the
+## ESP -- it needs no persistent UEFI varstore -- so drop the stale .nvram before a restart and
+## let VBox regenerate a fresh default. No-op without --coreboot-rom (VBox's own OVMF reloads its
+## tar-format nvram fine). EFI-only: a coreboot Secure Boot / MOK varstore would need persistence,
+## but the coreboot lane is plain --firmware efi.
+cb_reset_nvram() {
+   [ -n "${coreboot_rom}" ] || return 0
+   local cfg vmdir
+   cfg="$("${VBOXMANAGE}" showvminfo "${vm}" --machinereadable 2>/dev/null \
+      | sed -n 's/^CfgFile="\(.*\)"$/\1/p')"
+   [ -n "${cfg}" ] || return 0
+   vmdir="$(dirname -- "${cfg}")"
+   safe-rm --force -- "${vmdir}"/*.nvram 2>/dev/null || true
+}
+
 ## Reboot the installed disk into ROLE (user = default GRUB entry; sysmaint = entry 2),
 ## unlock LUKS, wait for the desktop, and open a terminal ready for checks.
 reboot_installed() {
    local role="$1"
    "${VBOXMANAGE}" controlvm "${vm}" poweroff 2>/dev/null || true
    sleep 3
+   cb_reset_nvram
    "${VBOXMANAGE}" startvm "${vm}" --type headless >/dev/null
    if [ "${role}" = 'sysmaint' ]; then
       select_installed_sysmaint
@@ -1499,6 +1517,10 @@ main() {
    ## efi-secureboot: the live/install phase ran with Secure Boot OFF (unsigned live GA);
    ## enforce it now, for the installed-system boot, while still powered off.
    enable_secureboot_installed
+   ## coreboot: drop the FMAP-format .nvram the coreboot firmware wrote on the live boot, which
+   ## VBox cannot reload (VERR_TAR_BAD_CHKSUM_FIELD -> this startvm fails). coreboot boots the
+   ## installed disk by scanning the ESP, so no persistent varstore is needed. No-op otherwise.
+   cb_reset_nvram
    "${VBOXMANAGE}" startvm "${vm}" --type headless >/dev/null
    story_snap 42 installed-first-frame
    ## ~5s for the autoboot before the installed GRUB menu. No 'installed-firmware-logo' capture:
