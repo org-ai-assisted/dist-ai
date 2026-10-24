@@ -4,6 +4,7 @@
 ## AI-Assisted
 
 ## Shared library package for the image-test results plane + verification site:
-## the result.json schema single-source-of-truth (model), the golden
-## normalize/compare state machine (compare), used by image-test-result-emit,
+## the result.json schema single-source-of-truth (model), the pure-data status +
+## CSS-class contract (site_classes), the run-cell status logic (site), and
+## screenshot normalization for publishing (imaging). Used by image-test-result-emit,
 ## test-results-site-generate, and their suites.

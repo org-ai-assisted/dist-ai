@@ -7,11 +7,12 @@
 
 NO heavy imports (numpy/Pillow): the generator-owned class manifest must be importable by a
 REQUIRED website-tests unit and by the deploy-time contract check WITHOUT pulling the image
-stack -- `dm_test_results.site` imports `compare`, which imports numpy (not a declared dep of
-the consuming checks), so the manifest lives here instead and `site` re-exports it.
+stack, so the manifest lives here (a numpy-free leaf) and `site` re-exports it.
 """
 
-## Run-cell statuses. Only STATUS_PASS is green. CSS class = "st-<status>".
+## Run-cell statuses. Only STATUS_PASS is green. CSS class = "st-<status>". Status is
+## decided objectively from result.json (finished + fresh + verdict PASS + firmware match),
+## never from a human golden approval -- there is no NEW/CHANGED "needs approval" state.
 STATUS_PASS = "pass"
 STATUS_FAIL = "fail"
 STATUS_INCONCLUSIVE = "inconclusive"
@@ -19,8 +20,6 @@ STATUS_INCOMPLETE = "incomplete"
 STATUS_NODATA = "nodata"
 STATUS_STALE = "stale"
 STATUS_UNKNOWN = "unknown"
-STATUS_CHANGED = "changed"
-STATUS_NEW = "new"
 
 ## The one green status.
 STATUS_GREEN = STATUS_PASS
@@ -30,7 +29,7 @@ STATUS_GREEN = STATUS_PASS
 ## cannot silently reach the site without a matching CSS rule.
 ALL_STATUSES = (
     STATUS_PASS, STATUS_FAIL, STATUS_INCONCLUSIVE, STATUS_INCOMPLETE,
-    STATUS_NODATA, STATUS_STALE, STATUS_UNKNOWN, STATUS_CHANGED, STATUS_NEW,
+    STATUS_NODATA, STATUS_STALE, STATUS_UNKNOWN,
 )
 
 

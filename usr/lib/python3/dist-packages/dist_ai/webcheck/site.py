@@ -33,9 +33,8 @@ import urllib.parse
 from dist_ai.webcheck import config
 
 # The generated test-results output tree (test-results-site-generate's
-# RESULTS_SUBDIR). Its goldens/ holds reference screenshots that are referenced by
-# sha256 in golden-approvals.json, not by any page/style/script -- so the orphaned
-# -image check must not treat them as dead assets.
+# RESULTS_SUBDIR). Every published screenshot lives under a per-run dir and is
+# referenced by its run page's <img>, so nothing here needs an orphan exemption.
 RESULTS_SUBDIR = 'automated-test-results'
 
 # The family of sibling Pages sites: every site's footer must link to all of
@@ -1189,11 +1188,6 @@ def check_assets(root, failures):
     ref_text = []
     for base, dirs, files in os.walk(root):
         _prune_git(dirs)
-        # Golden reference screenshots (automated-test-results/goldens/) are
-        # verification artifacts referenced by sha256 in golden-approvals.json, not
-        # by any page -- never flag them as orphaned.
-        if os.path.basename(base) == RESULTS_SUBDIR and 'goldens' in dirs:
-            dirs.remove('goldens')
         for name in files:
             ext = os.path.splitext(name)[1].lower()
             path = os.path.join(base, name)
