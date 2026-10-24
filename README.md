@@ -46,7 +46,6 @@ operator's private cache (`~/private-cache`), never in the repo or package.
 | `setup-wizard-dist-tests` | shipping | `usr/share/setup-wizard-dist-tests/` |
 | `iso-boot-tests` (fuzz)  | shipping | `usr/share/iso-boot-tests/` |
 | `dm-smbios-reader-boot-tests`    | shipping | `usr/share/dm-smbios-reader-boot-tests/` |
-| `dasharo-vbox-boot-tests` (e2e, opt-in) | shipping | `usr/share/dasharo-vbox-boot-tests/` |
 | `dm-raw-to-iso` (docs)   | shipping | `usr/share/dm-raw-to-iso/` (tool lives in derivative-maker) |
 | `dm-raw-to-iso-tests`    | shipping | `usr/share/dm-raw-to-iso-tests/` |
 | `dm-reproducible-build-tests` | shipping | `usr/share/dm-reproducible-build-tests/` |
@@ -641,43 +640,36 @@ resolves the tool via `DM_RAW_TO_ISO_BIN` (else `DERIVATIVE_MAKER_DIR`), asserts
 ISO's boot structure, and boots it across `bios | efi | efi-secureboot` via the
 `dm-smbios-reader-boot-tests` harness.
 
-## dasharo-vbox-boot-tests (opt-in end-to-end)
+## coreboot firmware swap (opt-in, Dasharo-in-VirtualBox port)
 
-End-to-end regression for the Dasharo-in-VirtualBox port: a patched VirtualBox
-(the `DevEFI` CorebootRom + `DevACPI` SLP_EN fixes from
-`org-ai-assisted/virtualbox`) boots a coreboot + `UefiPayloadPkg` ROM
-(`org-ai-assisted/dasharo`). The UefiPayload publishes a GOP on VBox's linear
-framebuffer, so the firmware renders GRAPHICALLY; the lane captures a milestone
-screenshot sequence (`NN-<milestone>.png`) and verifies the interactive UEFI shell
-on COM1, then `reset -s` powers the VM off via a clean ACPI S5 -- proving functional
-ACPI. The VBoxManage plan + verdict come from the shared `dm-smbios-reader-vbox`
-backend (its `firmware` subcommand), reusing the image-test harness; see
-`usr/share/dasharo-vbox-boot-tests/AGENTS.md` for the firmware-port details.
+The coreboot + `UefiPayloadPkg` ROM (`org-ai-assisted/dasharo`) is a GENERIC EFI firmware --
+a drop-in for VBox's OVMF. A patched VirtualBox (the `DevEFI` CorebootRom + `DevACPI` SLP_EN
+fixes from `org-ai-assisted/virtualbox`) loads it via the `EfiRom`/`CorebootRom` extradata; it
+publishes a GOP on VBox's linear framebuffer and boots a full OS (Kicksecure live ISO -> GRUB ->
+LXQt desktop -> Calamares install), verified.
 
-It is opt-in: registered in `dist-ai-tests-all`'s `e2e_suites` (so CI, which runs
-`--core` only, never gates on it) and it SKIPs unless the boot environment is
-present -- the patched non-hardened VBox build (run as root for `/dev/vboxdrv`)
-plus the ROM, via `DASHARO_COREBOOT_ROM` and `DASHARO_VBOX_BIN`. The backend's pure
-helpers (the coreboot plan builder, the serial verdict predicates) are byte-exact
-unit tested by `dm-smbios-reader-vbox-tests`, and a thin contract smoke test runs on
-every invocation of this lane, so the logic is covered in the generic CI container
-even though the boot itself cannot run there.
-
-Run it on a host that has the artifacts (see the `dasharo` repo for the build
-recipe and the five VBox-vs-QEMU tweaks it bakes in):
+So there is no bespoke lane: the test is the existing default-EFI full Calamares install story
+with ONLY the firmware swapped. `dm-calamares-install --coreboot-rom <rom>` mirrors the proven
+VM recipe (vboxvga, `piix3`/HPET/IOAPIC, the 36-bit-phys cpuid leaf, the `EfiRom`/`CorebootRom`
+extradata) onto its install VM and drains COM1 for the whole run (reconnecting across the
+install's power-cycles). `dm-release-test --coreboot-rom <rom>` forwards it through the normal
+Kicksecure install lane -- same ISO, same walk-through, same result publishing. Both need
+`--firmware efi` and the patched CorebootRom-aware VBoxManage, pointed at with `DASHARO_VBOX_BIN`
+(its bin dir) or `VBOXMANAGE`. Empty `--coreboot-rom` -> the normal lanes are byte-unchanged.
 
 ```
-DASHARO_COREBOOT_ROM=/path/to/coreboot.rom \
 DASHARO_VBOX_BIN=/path/to/VirtualBox/out/linux.amd64/release/bin \
-dasharo-vbox-boot-tests
+dm-release-test kicksecure lxqt --firmware efi \
+  --coreboot-rom /path/to/coreboot.rom
 ```
 
-Set `DASHARO_VBOX_PUBLISH=1` (or `IMAGE_TEST_RESULTS_ROOT`) and run as root to
-publish the verdict + the milestone screenshot sequence to the results plane via the
-shared `image-test` publisher (its directory branch, the same one the image lanes
-use); run `test-results-deploy` from the qube afterwards to render it onto
-https://org-ai-assisted.github.io/automated-test-results/ with the same "full story"
-screenshots as the image boot tests.
+The reusable coreboot argv template (`build_coreboot_rom_argv`, `CB_CPUIDSET`,
+`build_coreboot_vm_plan`, `build_uart_server_argv`) lives in the shared `dm-smbios-reader-vbox`
+backend and is byte-exact unit tested by `dm-smbios-reader-vbox-tests`; the install lane's
+coreboot `modifyvm`/extradata argv is unit tested by `dm-calamares-install-tests`, and the
+`dm-release-test` pass-through by `dm-release-test-tests`. See
+`usr/share/dm-smbios-reader-boot-tests/dasharo-vbox-firmware-port.md` for the firmware-port
+details (the patched VBox, the graphics patches, the i440fx + q35 bring-up).
 
 ## Related
 

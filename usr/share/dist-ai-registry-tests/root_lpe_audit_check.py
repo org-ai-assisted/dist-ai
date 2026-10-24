@@ -69,6 +69,13 @@ def main(argv):
     suppressed = report.get("suppressed", [])
     coverage = report.get("coverage", {})
 
+    ## has() (and reason_of / cols below) match path_sub and op_sub by SUBSTRING,
+    ## not equality. So a NEW fixture whose sink-path basename CONTAINS an existing
+    ## one as a substring silently cross-matches: e.g. adding '.decoparenflush'
+    ## next to '.decoparen' made has(..., ".decoparen") also match '.decoparenflush'
+    ## and flip the original assertion. Rule for fixtures: pick operand basenames
+    ## that are NOT substrings of any other fixture's -- unique full suffixes like
+    ## '.ifheader', '.excepthdr', '.caseguard' -- and canary-run after adding one.
     def has(items, path_sub, rule, op_sub=None, need_reason=False):
         for f in items:
             if path_sub not in f["path"] or f["rule"] != rule:

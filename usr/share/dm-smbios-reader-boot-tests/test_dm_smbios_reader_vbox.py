@@ -1140,16 +1140,6 @@ def test_coreboot_firmware_detected():
     assert not M.coreboot_firmware_detected('')
 
 
-def test_firmware_subparser_accepts_serial_log():
-    ## --serial-log is optional (defaults None -> no log written) and captured on the namespace;
-    ## the dasharo lane passes it so the backend persists COM1 for the coreboot-banner grep.
-    base = ['firmware', '--vm', 'v', '--rom', 'r.rom', '--uart-socket', '/s.sock']
-    ns = M._build_parser().parse_args(base + ['--serial-log', '/tmp/fw.log'])
-    assert ns.serial_log == '/tmp/fw.log'
-    ns_default = M._build_parser().parse_args(base)
-    assert ns_default.serial_log is None
-
-
 def test_coreboot_vm_plan_modifyvm_has_proven_config():
     plan = M.build_coreboot_vm_plan('kick', '/r.rom')
     modify = next(a for a in plan if a[1] == 'modifyvm')
@@ -1184,44 +1174,6 @@ def test_coreboot_vm_plan_threads_vboxmanage():
     plan = M.build_coreboot_vm_plan('kick', '/r.rom', uart_socket='/s.sock',
                                     vboxmanage='/opt/vbm')
     assert all(argv[0] == '/opt/vbm' for argv in plan)
-
-
-def test_firmware_verdict_predicates():
-    assert M.uefi_shell_reached('... UEFI Interactive Shell v2.2 ...')
-    assert not M.uefi_shell_reached('coreboot booting, no shell yet')
-    assert M.s5_shutdown_happened('ACPI: Entering S5 power state (SLP_EN)')
-    assert not M.s5_shutdown_happened('still running')
-
-
-def test_firmware_emit_argv_prints_coreboot_plan(capsys):
-    rc = M.main(['firmware', '--vm', 'cb', '--rom', '/home/admin/cb.rom',
-                 '--uart-socket', '/run/cb.sock', '--emit-argv'])
-    assert rc == M.PASS_RC
-    out = capsys.readouterr().out
-    assert 'createvm --name cb --ostype Other_64' in out
-    assert '--firmware efi' in out and '--chipset piix3' in out
-    assert 'Config/EfiRom /home/admin/cb.rom' in out
-    assert 'Config/CorebootRom 1' in out
-    assert '--uartmode1 server /run/cb.sock' in out
-
-
-def test_firmware_missing_rom_is_setup(tmp_path, capsys):
-    ## No --emit-argv: a nonexistent ROM is a SETUP fault caught before any VBox call.
-    rc = M.main(['firmware', '--vm', 'cb',
-                 '--rom', str(tmp_path / 'absent.rom'),
-                 '--uart-socket', '/run/cb.sock'])
-    assert rc == M.SETUP_RC
-    assert 'ROM not found' in capsys.readouterr().err
-
-
-def test_firmware_vboxmanage_env_default(monkeypatch):
-    ## --vboxmanage defaults to $DM_SMBIOS_READER_VBOXMANAGE so the lane can point at
-    ## the patched source build without a flag.
-    monkeypatch.setenv('DM_SMBIOS_READER_VBOXMANAGE', '/opt/patched/VBoxManage')
-    parser = M._build_parser()
-    args = parser.parse_args(['firmware', '--vm', 'c', '--rom', '/r.rom',
-                              '--uart-socket', '/s.sock', '--emit-argv'])
-    assert args.vboxmanage == '/opt/patched/VBoxManage'
 
 
 ## --- vCPU sizing: online host CPUs minus one, shared via dm-vbox-vcpus ----------------------
