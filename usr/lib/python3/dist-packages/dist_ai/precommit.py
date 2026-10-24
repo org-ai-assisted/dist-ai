@@ -173,42 +173,14 @@ def _broken_staged_symlinks(paths, source_rev, base_cwd):
             "the tree)" % path, path)
 
 
-def _is_binary_attr(base_cwd, path, source_rev):
-    """True if the repo declares PATH binary in .gitattributes -- then it is
-    data, never text, whatever its extension. The attribute source MUST match the
-    tree the scanned CONTENT came from (source_rev), or a stale .gitattributes
-    mis-classifies a file and a content scan (detect-private-key) is skipped:
-      - '' staged: the INDEX blob -> the INDEX .gitattributes (--cached).
-      - a rev (range): the blob's OWN commit -> that rev (--attr-source).
-      - None working tree: the WORKING-TREE file -> the WORKING-TREE
-        .gitattributes (plain check-attr). Using --cached here reads the STALE
-        committed/index attrs, so a worktree that drops a 'id_rsa binary' mark
-        (leaving it unstaged) while staging a real PEM would classify the key
-        binary and skip detect-private-key -- a private-key bypass.
-    Always run in the REAL repo (base_cwd), never the non-git content mirror."""
-    if source_rev:
-        attr = ["--attr-source=%s" % source_rev, "check-attr"]
-    elif source_rev == "":
-        attr = ["check-attr", "--cached"]
-    else:  ## None: working-tree scan -> the working tree's own .gitattributes
-        attr = ["check-attr"]
-    try:
-        out = subprocess.run(
-            ["git"] + attr + ["binary", "--", path],
-            capture_output=True, cwd=base_cwd)
-    except OSError:
-        return False
-    ## Decode with replace: git echoes the PATH back, which may hold non-UTF-8
-    ## bytes -- a strict decode (text=True) would crash the whole scan.
-    return out.stdout.decode("utf-8", "replace").rstrip("\n").endswith(
-        ": binary: set")
-
-
-def _is_text_file(base_cwd, content_cwd, path, source_rev):
-    ## Attribute check in the real repo (base_cwd); the 'file' mime probe on the
-    ## CONTENT (content_cwd = the blob mirror in a git mode), so a file present
-    ## only in the index / a diverged working copy is typed from what ships.
-    if _is_binary_attr(base_cwd, path, source_rev):
+def _is_text_file(base_cwd, content_cwd, path, attrs):
+    ## ATTRS is the file's .gitattributes classification (context.check_attrs),
+    ## read in the REAL repo from the tree the CONTENT came from -- a `binary`
+    ## mark makes it data, never text, whatever its extension. The 'file' mime
+    ## probe runs on the CONTENT (content_cwd = the blob mirror in a git mode), so
+    ## a file present only in the index / a diverged working copy is typed from
+    ## what ships.
+    if attrs.get("binary") == "set":
         return False
     base = os.path.basename(path)
     _, ext = os.path.splitext(base)
@@ -419,14 +391,24 @@ def _classify(paths, base_cwd, content_cwd, source_rev):
             continue
         if not os.path.isfile(real):
             continue
-        ## SECRET scanners run over 'scan' -- EVERY regular file, binary or not.
-        ## Gating them on the binary classification let a '.gitattributes ...
-        ## binary' mark (even an UNTRACKED one, honoured only in a working-tree
-        ## scan) suppress detect-private-key/detect-aws for a real key. A key in a
-        ## file marked binary is exactly what must still be caught, so the attr
-        ## must never decide whether a secret scan runs.
+        ## SECRET scanners run over 'scan' -- EVERY regular file, binary, vendored
+        ## or not. Gating them on classification let a '.gitattributes ... binary'
+        ## mark (even an UNTRACKED one, honoured only in a working-tree scan)
+        ## suppress detect-private-key/detect-aws for a real key. A key in a file
+        ## marked binary -- or vendored -- is exactly what must still be caught, so
+        ## the attr must never decide whether a secret scan runs.
         lists["scan"].append(path)
-        if _is_text_file(base_cwd, content_cwd, path, source_rev):
+        ## Classify once from the tree the content came from (binary + vendored).
+        attrs = context.check_attrs(base_cwd, path, source_rev,
+                                    context.CLASSIFY_ATTRS)
+        ## Vendored / generated: third-party code kept verbatim. Skip the whole
+        ## FORMAT + PARSER tier (end-of-file-fixer, trailing-whitespace, BOM,
+        ## pretty-format-json, check-yaml/json/...) exactly as a binary file is
+        ## skipped -- but it stays in 'scan' above (secrets) and in 'paths' for the
+        ## size / case / symlink / submodule checks, which judge the whole set.
+        if context.vendored_value(attrs):
+            continue
+        if _is_text_file(base_cwd, content_cwd, path, attrs):
             lists["text"].append(path)
             if os.access(real, os.X_OK):
                 lists["exec_text"].append(path)

@@ -212,6 +212,18 @@ on_exit() {
          story_card 71 vm-stopped-final "VM powered off (run complete)"
       fi
    fi
+   ## Universal blank FLOOR (success path): every published frame -- the transient boot grabs and
+   ## the finals written HERE that the in-run gate never sees included -- must carry content.
+   ## --uniform-only flags ONLY a truly-uniform near-black/white frame, so a sparse console /
+   ## prompt / card is fine; a pure-black rectangle FAILS the run. Fail-CLOSED + exemption-free:
+   ## it runs over the WHOLE shot dir, so a new/unlisted milestone is covered by default, never
+   ## silently skipped. Success path only -- a run already failing keeps its real rc + reason.
+   if [ "${rc}" -eq 0 ] && [ -n "${shot_dir}" ]; then
+      if ! "${IMAGE_BLANK_CHECK:-image-blank-check}" --uniform-only "${shot_dir}" >&2; then
+         printf '%s\n' "${me}: ERROR: a published screenshot is a uniform blank frame (see image-blank-check above); failing the run so no black rectangle rides a green verdict" >&2
+         rc="${FAIL_RC}"
+      fi
+   fi
    exit "${rc}"
 }
 
@@ -245,9 +257,12 @@ snap() {
    "${GUESTCTL}" "${vm}" shot "${shot_dir}/${nn}-${name}.png" >/dev/null 2>&1 || true
 }
 
-## Blank-gate mode for a milestone SCREENSHOT, by its <name>. The default is SKIP (fail-SAFE): only
-## an EXPLICITLY-listed name is gated, so an unlisted/new milestone can never false-fail a valid
-## run (the opposite -- gate-everything-unlisted -- false-failed the always-black firmware grabs).
+## Blank-gate mode for a milestone SCREENSHOT, by its <name>. This selects the STRICTER
+## near-blank check for the must-render milestones; it is NOT the whole gate. Every published
+## frame is ALSO run through the universal uniform-only FLOOR in on_exit (a 1-colour black/white
+## rectangle fails the run), so an unlisted/new milestone is never silently skipped -- it is
+## floor-gated by default. This per-name mode only promotes the must-be-rich milestones to the
+## tighter near-blank check on top of that floor.
 ##   rich   -- the SETTLED post-quiesce snap() captures (desktop / Calamares GUI / first boot /
 ##             checks) + the restored graphical desktop; a near-black frame there means the GUI did
 ##             NOT render -> DEFAULT near-black check. This is where a blank-desktop false-green is
@@ -292,6 +307,46 @@ story_snap() {
    "${GUESTCTL}" "${vm}" shot "${shot_dir}/${nn}-${name}.png" >/dev/null 2>&1 || true
 }
 
+## Poll the host framebuffer until it carries content (not a uniform near-black/white frame),
+## then store it as the milestone frame; give up after a bounded window. For a SHORT-LIVED
+## content frame whose moment is hard to time -- the VBox EFI firmware logo renders ~1s after
+## power-on, then blacks out ~1s later for the GRUB mode switch -- a blind single shot races the
+## window and usually grabs black. Polling at ${cadence} catches the frame while it is up and
+## stores the FIRST non-uniform one. On timeout it leaves the last (blank) frame in place, so
+## the universal floor still decides. Best-effort on shot_dir (no dir -> no-op).
+##   nn name [timeout-seconds] [cadence-seconds]
+story_snap_nonblank() {
+   local nn="$1" name="$2"
+   local timeout="${3:-${DM_CALAMARES_NONBLANK_TIMEOUT:-45}}"
+   local cadence="${4:-2}"
+   [ -n "${shot_dir}" ] || return 0
+   local dest="${shot_dir}/${nn}-${name}.png" start="${SECONDS}"
+   while : ; do
+      "${GUESTCTL}" "${vm}" shot "${dest}" >/dev/null 2>&1 || true
+      ## image-blank-check exits 0 when the frame is NOT degenerate (content present).
+      if [ -s "${dest}" ] \
+         && "${IMAGE_BLANK_CHECK:-image-blank-check}" --uniform-only "${dest}" >/dev/null 2>&1; then
+         return 0
+      fi
+      [ "$(( SECONDS - start ))" -lt "${timeout}" ] || return 1
+      sleep "${cadence}"
+   done
+}
+
+## Redact non-deterministic tokens (a kernel console timestamp like [    3.755312], a per-install
+## LUKS UUID like luks-<uuid>) from a boot-console milestone frame, so the published screenshot is
+## REPRODUCIBLE for golden comparison. Masks ONLY the matching OCR word boxes, not the whole line,
+## so the prompt stays legible and the frame stays non-uniform (the universal blank floor still
+## sees content). Best-effort: a missing tool / OCR hiccup leaves the frame unchanged and never
+## fails a passing run. ${1} is the NN-name.png basename under ${shot_dir}.
+redact_boot_tokens() {
+   local shot="${shot_dir}/$1"
+   [ -n "${shot_dir}" ] && [ -s "${shot}" ] || return 0
+   "${IMAGE_REDACT_TOKENS:-image-redact-tokens}" \
+      --pattern '[0-9]+\.[0-9]{6}' --pattern 'luks-[0-9a-fA-F-]{8,}' \
+      -- "${shot}" >/dev/null 2>&1 || true
+}
+
 ## Render a host-side "state card" for a point with no framebuffer worth a photo (the VM defined
 ## but not booted, the VM powered off, a Secure Boot / MOK state that has no on-screen UI). The
 ## card is a small PNG of selected `VBoxManage showvminfo` fields, captioned so it is never
@@ -308,6 +363,27 @@ story_card() {
    card="${shot_dir}/${nn}-${name}.png"
    printf '%s\n' "[state card -- rendered from VBoxManage showvminfo, not a screenshot]" \
       "${title}" "" "${info}" \
+      | "${DM_TEXT_TO_PNG:-dm-text-to-png}" "${card}" >/dev/null 2>&1 || true
+}
+
+## Host / hypervisor evidence card. The OVH server is headless (an onboard BMC VGA chip, no
+## desktop GPU, no display server), so there is NO VirtualBox Manager window to photograph. The
+## honest substitute is the host + hypervisor facts rendered as a card, clearly labelled as
+## rendered facts (not a screenshot). Only STABLE fields are shown -- the volatile "Host time",
+## "Memory available", processor speed are excluded so the card is reproducible (no wall-clock /
+## fluctuating value in the published frame). Best-effort: no shot_dir / no data -> no-op.
+story_card_host() {
+   local nn="$1" name="$2"
+   local card ver host
+   [ -n "${shot_dir}" ] || return 0
+   ver="$("${VBOXMANAGE}" --version 2>/dev/null)" || true
+   host="$("${VBOXMANAGE}" list hostinfo 2>/dev/null \
+      | grep -iE 'Processor (online count|core count|description)|Memory size|Operating system' \
+      | head -10)" || true
+   [ -n "${ver}${host}" ] || return 0
+   card="${shot_dir}/${nn}-${name}.png"
+   printf '%s\n' "[host evidence -- rendered from VBoxManage, not a screenshot]" \
+      "VirtualBox host software" "" "VBoxManage version: ${ver}" "" "${host}" \
       | "${DM_TEXT_TO_PNG:-dm-text-to-png}" "${card}" >/dev/null 2>&1 || true
 }
 
@@ -436,6 +512,7 @@ reboot_installed() {
    gui_wait_for 'passphrase for disk|please unlock|luks' 120 "LUKS unlock (${role})"
    if [ "${role}" = 'sysmaint' ]; then
       story_snap 63 sysmaint-luks-prompt
+      redact_boot_tokens 63-sysmaint-luks-prompt.png
    fi
    printf '%s' "${passphrase}" | "${GUESTCTL}" "${vm}" type-stdin >/dev/null
    gui_scan 1c 9c
@@ -634,6 +711,24 @@ run_check() {
       sleep 10
    done
    die "${FAIL_RC}" "check ${num} did not complete in ${timeout}s"
+}
+
+## On a fully-PASSING run, record the release-critical check roster to ${check_log} so the
+## PUBLISHED result surfaces WHICH authoritative checks ran and passed -- check 8 (systemcheck
+## --cli --ci) above all. Without this the record keeps only a FAILURE tail, so a green run shows
+## NO evidence the checks ran at all (a reviewer cannot see that systemcheck passed). Honest by
+## construction: the battery is fail-fast + FATAL (a failed check die()s before this runs), so
+## reaching here means every listed check passed. dm-release-test threads a non-empty check_log
+## into the published step's stderr tail -> result.json -> the results page.
+write_pass_roster() {
+   [ -n "${check_log}" ] || return 0
+   local num
+   {
+      printf '%s\n' "release-critical checks -- all PASS (fatal battery: a failed check aborts the run):"
+      for num in "${RELEASE_CHECK_ORDER[@]}"; do
+         printf '%s\n' "check ${num} (${RELEASE_CHECK_DESC[${num}]:-}): ${RELEASE_CHECK_CMD[${num}]:-} -- PASS"
+      done
+   } > "${check_log}" 2>/dev/null || true
 }
 
 ## --- callbacks for the shared release-check battery (release-checks.bsh) ---------
@@ -1104,21 +1199,31 @@ main() {
    ## Pre-boot state cards (no framebuffer yet): the defined VM, and the firmware / Secure Boot
    ## varstore state (there is no SB screen to photograph on a normal boot).
    story_card 10 vm-defined "VM defined (pre-boot)"
+   story_card_host 12 vbox-host
    story_card 13 firmware-state "Firmware / Secure Boot varstore state"
    "${VBOXMANAGE}" startvm "${vm}" --type headless >/dev/null
    vm_started="true"
-   story_snap 11 power-on-first-frame
-   ## No firmware-logo capture: a headless VM's firmware draws no splash, so the frame was
-   ## ALWAYS all-black. The firmware-state card (13) already records the firmware / Secure Boot
-   ## state, so nothing is lost.
+   ## Firmware logo: the VBox EFI firmware DOES draw a splash (a ~1024x768 VirtualBox logo) about
+   ## a second after power-on in both efi and efi-secureboot, then blacks out ~1s later for the
+   ## GRUB mode switch. A blind single shot races that short window and usually grabs black, so
+   ## POLL fast over the first few seconds and keep the frame that actually rendered. `|| true`:
+   ## the universal floor owns the verdict (and keeps errexit off the timeout path).
+   story_snap_nonblank 11 firmware-logo 6 0.4 || true
+   ## No "live-kernel-boot" capture: Kicksecure boots SILENTLY (security-misc; no plymouth, no
+   ## console), so the whole window between the GRUB menu and the painted desktop is black BY
+   ## DESIGN -- there is no non-black kernel-boot frame to publish. The boot is evidenced by the
+   ## GRUB captures (20/21) and the live-desktop milestones (24+), not a black rectangle.
    ## Select the install boot entry once GRUB is actually on screen (poll, not a
    ## fixed sleep that races the autoboot into the wrong session). The menu capture (20/21)
    ## is taken inside select_install_boot_entry, where the menu is known to be on screen.
    select_install_boot_entry
-   ## Transient: a frame a few seconds into the live kernel boot (best-effort; may be a splash
-   ## or an early console -- or blank if the window is between modes).
-   sleep 4
-   story_snap 22 live-kernel-boot
+   ## Transient: the live kernel boot. POLL for the first frame that actually renders (a splash /
+   ## early console / the compositor coming up) rather than a blind fixed-sleep shot that races
+   ## the mode window and can grab a uniform-black between-modes frame. If the whole window
+   ## elapses with only black, the blank frame stays and the universal floor FAILS the run -- a
+   ## live boot that showed nothing is a real failure. `|| true`: the floor, not this return,
+   ## owns the verdict (and keeps errexit from aborting on the timeout path).
+   story_snap_nonblank 22 live-kernel-boot || true
 
    printf '%s\n' "${me}: wait for the live desktop + guestcontrol, then launch Calamares"
    ## Poll for the compositor (desktop >=1024 wide, keeps the display awake) AND for
@@ -1277,11 +1382,14 @@ main() {
    printf '%s\n' "${me}: unlock LUKS at boot (check 7)"
    gui_wait_for 'passphrase for disk|please unlock|luks' 120 'LUKS unlock prompt'
    story_snap 47 luks-prompt
+   redact_boot_tokens 47-luks-prompt.png
    printf '%s' "${passphrase}" | "${GUESTCTL}" "${vm}" type-stdin >/dev/null
    story_snap 48 luks-passphrase-typed
+   redact_boot_tokens 48-luks-passphrase-typed.png
    gui_scan 1c 9c
    sleep 3
    story_snap 49 luks-unlocked
+   redact_boot_tokens 49-luks-unlocked.png
 
    printf '%s\n' "${me}: verify the installed system booted (R4)"
    gui_wait_for 'setup wizard|setup-wizard-dist|systemcheck' 180 'installed system first boot'
@@ -1322,6 +1430,8 @@ main() {
       ## R6 upgrade gate can never diverge about what a check is.
       run_release_check_battery cal_exec cal_reboot_sysmaint cal_verify \
          || die "${FAIL_RC}" "release check ${RELEASE_CHECK_FAILED_NUM} (${RELEASE_CHECK_FAILED_REASON}) FAILED"
+      ## Surface the passed-check roster (incl. check 8 systemcheck) in the published record.
+      write_pass_roster
       snap 66 checks-complete
    fi
 
@@ -1330,7 +1440,7 @@ main() {
    ## produced all-white cards).
    if [ -n "${shot_dir}" ]; then
       local card card_shot card_shots=()
-      for card in vm-defined firmware-state vm-stopped-iso-detached mok-cert-enrolled failure-vm-state; do
+      for card in vm-defined vbox-host firmware-state vm-stopped-iso-detached mok-cert-enrolled failure-vm-state; do
          for card_shot in "${shot_dir}"/*-"${card}".png; do
             ## -f (regular file), not -e: a non-matching glob stays literal and drops here (no
             ## nullglob needed), and a directory cannot masquerade as a rendered card.
