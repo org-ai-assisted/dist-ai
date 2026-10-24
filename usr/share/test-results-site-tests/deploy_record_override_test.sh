@@ -5,12 +5,14 @@
 
 ## AI-Assisted
 
-## Guards site-deploy's operator override (--record-and-publish / SITE_DEPLOY_RECORD=1):
+## Guards site-deploy's operator override (--record-and-publish, a FLAG only -- no env form):
 ##  - a FAILED gate WITHOUT the override REFUSES and does not push -- the safe default;
 ##  - a FAILED gate WITH the override prints a loud WARNING naming the failed check(s) and
 ##    publishes anyway, the push carrying SITE_DEPLOY_SKIP=1 so the pre-push hook does not re-gate;
-##  - a SKIP (exit 77) STILL refuses even WITH the override -- nothing verified is never
-##    overridable, only a KNOWN red is.
+##  - a SKIP (77) or env-unmet (78) STILL refuses even WITH the override -- nothing verified is
+##    never overridable, only a KNOWN complete red is;
+##  - an ambient SITE_DEPLOY_RECORD=1 env does NOT enable it (flag-only, so it cannot leak into
+##    the automated test-results-deploy path).
 ##
 ## Drives the REAL site-deploy (no copy): the gate is stubbed via SITE_DEPLOY_WEBSITE_TESTS and
 ## git via PATH so a push is observable without a real repo/remote. Canary: on code lacking the
@@ -127,9 +129,9 @@ for code in 77 78; do
    check "exit ${code} with the override does not push" "$(pushed)" "pushed:no"
 done
 
-## 4. --check-only must reflect the true result even WITH the override: a failing gate refuses
-## (non-zero) and does not push, so a gate caller (the pre-push hook runs `site-deploy
-## --check-only`) cannot inherit a green from an ambient SITE_DEPLOY_RECORD.
+## 4. --check-only must reflect the true result even WITH the override flag: a failing gate
+## refuses (non-zero) and does not push, so a gate caller (the pre-push hook runs `site-deploy
+## --check-only`) never gets a green from a red suite.
 make_gate 1
 run_deploy --check-only --record-and-publish
 check "check-only + override + failure still refuses (non-zero)" "$(refused)" "refused:yes"

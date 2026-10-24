@@ -185,9 +185,9 @@ fi
 ## Decide from the suite exit:
 ##  0  -> green: publish (or report, with --check-only).
 ##  1  -> the suite RAN TO COMPLETION and found real consistency failures: a KNOWN red. Refuse,
-##        UNLESS the operator override is set AND we are actually publishing. The override never
+##        UNLESS --record-and-publish is set AND we are actually publishing. The override never
 ##        applies under --check-only, so a gate caller -- the pre-push hook runs `site-deploy
-##        --check-only` -- can never inherit a green from an inherited SITE_DEPLOY_RECORD.
+##        --check-only` -- still refuses a red (and the flag is per-invocation, never ambient).
 ##  else (77 SKIP target-absent, 78 SKIP env-unmet, 143 killed, ...) -> nothing was verified to
 ##        completion, which is NEVER overridable: publishing on it is the false green this gate
 ##        exists to prevent. Refuse regardless of the override.
