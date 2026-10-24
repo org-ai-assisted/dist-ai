@@ -242,7 +242,9 @@ def make_inlined_host(tmp, lockfile_sh):
     shebang) verbatim into a host script, under a fixed LOCK_NAME, then the host's
     own 'main'. Reads the CURRENT lockfile.sh text, so no drift. The host takes
     its own args ($1 a stand-in installer flag, $2 a hold time) -- $1 must NOT be
-    mis-read as a wrap-mode lock key once inlined."""
+    mis-read as a wrap-mode lock key once inlined. The host echoes ARG1=$1 AFTER
+    the inlined body so the test can prove $1 survived it unchanged (neither
+    consumed nor shifted by a body that mis-fired wrap mode)."""
     body = open(lockfile_sh, encoding='ascii').read().splitlines()
     if body and body[0].startswith('#!'):
         body = body[1:]
@@ -253,6 +255,7 @@ def make_inlined_host(tmp, lockfile_sh):
                'set -o nounset\n'
                'export LOCK_NAME="inlined-host-key"\n'
                + '\n'.join(body) + '\n'
+               'echo "ARG1=${1:-unset}"\n'
                'echo LOCKED\n'
                "sleep \"${2:-0}\"\n")
     return path
@@ -274,10 +277,15 @@ def inline_safety_tests(lockfile_sh, check):
                               timeout=30, env=env)
 
     ## 1) a host invoked WITH an argument self-locks instead of mis-firing wrap
-    ##    mode: it reaches LOCKED and exits 0 (pre-fix: aborts, no LOCKED).
+    ##    mode: it reaches LOCKED and exits 0 (pre-fix: aborts, no LOCKED). Also
+    ##    assert ARG1=installer-flag: the inlined body must leave $1 intact, not
+    ##    consume or shift it. A body that silently ate $1 (without aborting hard)
+    ##    would still print LOCKED and exit 0, so the ARG1 check is what makes this
+    ##    a real canary rather than a bare liveness probe.
     first = hrun(['installer-flag', '0'])
     check('inline: host argument does not mis-fire wrap mode',
-          'LOCKED' in first.stdout and first.returncode == 0,
+          'LOCKED' in first.stdout and first.returncode == 0
+          and 'ARG1=installer-flag' in first.stdout,
           '%r rc=%d' % ((first.stdout + first.stderr).strip()[:120],
                         first.returncode))
 
