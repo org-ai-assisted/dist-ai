@@ -109,6 +109,12 @@ wire() {
 skip_is_fatal() {
    return 1
 }
+## run_suite resolves a per-suite budget via effective_timeout before wiring; stub it to echo
+## the requested timeout so the eval'd run_suite runs without the full timeout-table machinery
+## (a bare 'command not found' here otherwise leaks to stderr and trips the suite's error gate).
+effective_timeout() {
+   printf '%s' "$2"
+}
 
 ## ---- Main: the REAL (guarded) run_suite continues on an unwired suite. ----
 eval "${run_suite_src}"
