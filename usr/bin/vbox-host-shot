@@ -50,6 +50,7 @@ vbox_pid=""
 own_runtime_dir=""
 labwc_log=""
 vbox_log=""
+shot_tmp=""
 
 die() {
    local rc="$1"
@@ -72,6 +73,8 @@ cleanup() {
    [ -z "${own_runtime_dir}" ] || safe-rm --recursive --force -- "${own_runtime_dir}" 2>/dev/null || true
    [ -z "${labwc_log}" ] || safe-rm --force -- "${labwc_log}" 2>/dev/null || true
    [ -z "${vbox_log}" ] || safe-rm --force -- "${vbox_log}" 2>/dev/null || true
+   ## a surviving temp means the grab failed before the move -- never leave a blank/partial frame.
+   [ -z "${shot_tmp}" ] || safe-rm --force -- "${shot_tmp}" 2>/dev/null || true
    return "${rc}"
 }
 
@@ -193,12 +196,19 @@ main() {
    sleep "${settle}"
    kill -0 "${vbox_pid}" 2>/dev/null || die 1 "VirtualBox Manager exited before the grab; log: $(cat "${vbox_log}")"
 
-   grim "${out}" >/dev/null 2>&1 || die 1 "grim failed to capture the compositor output"
+   ## Capture + validate on a TEMP, then move to --out only on success: a failed or blank grab
+   ## must leave NO file at --out, so a non-fatal caller (e.g. an EXIT-trap end-of-story shot)
+   ## can never publish a black rectangle. The move is the single commit point.
+   shot_tmp="$(mktemp --tmpdir "${me}-shot.XXXXXX.png")"
+   grim "${shot_tmp}" >/dev/null 2>&1 || die 1 "grim failed to capture the compositor output"
 
    ## No black rectangles: a blank Manager frame means the GUI did not render -> error, not a
    ## published void (the operator's honesty rule).
-   "${IMAGE_BLANK_CHECK}" "${out}" >/dev/null 2>&1 \
+   "${IMAGE_BLANK_CHECK}" "${shot_tmp}" >/dev/null 2>&1 \
       || die 1 "captured VirtualBox Manager frame is blank/degenerate -- the GUI did not render"
+
+   mv -- "${shot_tmp}" "${out}"
+   shot_tmp=""
 }
 
 ## Execute only when run directly; a unit test sources this to exercise the pure helpers
