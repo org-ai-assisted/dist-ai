@@ -23,13 +23,13 @@ functional verdict was PASS.
 
 from . import compare
 from . import model
-## Re-export the pure-data status + CSS-class contract. It lives in a numpy-free leaf module so
-## the required website-tests unit and the deploy-time contract check can import GENERATED_CLASSES
-## without pulling compare -> numpy (not a declared dep of those checks). Callers keep using
-## site.STATUS_*, site.css_class, site.GENERATED_CLASSES unchanged.
-from .site_classes import (  # noqa: F401  -- re-exported for callers of this module
-    ALL_STATUSES,
-    GENERATED_CLASSES,
+## Re-export the status + css_class half of the pure-data contract. It lives in a numpy-free leaf
+## module so the required website-tests unit and the deploy-time contract check can import the
+## manifest without pulling compare -> numpy (not a declared dep of those checks). Callers keep
+## using site.STATUS_*, site.STATUS_GREEN, site.css_class unchanged. The manifest set itself
+## (GENERATED_CLASSES / ALL_STATUSES) is NOT re-exported here -- its consumers (webcheck, the tests)
+## import dm_test_results.site_classes directly, so re-exporting it would be a dead import.
+from .site_classes import (
     STATUS_CHANGED,
     STATUS_FAIL,
     STATUS_GREEN,
@@ -42,6 +42,16 @@ from .site_classes import (  # noqa: F401  -- re-exported for callers of this mo
     STATUS_UNKNOWN,
     css_class,
 )
+
+## Public API (also marks css_class, used only via site.css_class by the generator + site_test, as
+## an intentional re-export rather than a dead import).
+__all__ = [
+    'STATUS_PASS', 'STATUS_FAIL', 'STATUS_INCONCLUSIVE', 'STATUS_INCOMPLETE',
+    'STATUS_NODATA', 'STATUS_STALE', 'STATUS_UNKNOWN', 'STATUS_CHANGED', 'STATUS_NEW',
+    'STATUS_GREEN', 'css_class',
+    'DEFAULT_STALE_SECONDS', 'CLOCK_SKEW_GRACE_SECONDS',
+    'is_green', 'run_age_seconds', 'run_cell_status', 'run_key', 'needs_approval',
+]
 
 ## Default staleness window: a run older than this is shown stale (never green),
 ## so an old result cannot masquerade as a current pass.
