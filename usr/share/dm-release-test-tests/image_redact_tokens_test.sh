@@ -55,7 +55,9 @@ has() { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac }
 ocr() { tesseract "$1" stdout --psm 6 2>/dev/null; }
 
 ts_pat='[0-9]+\.[0-9]{6}'
-uuid_pat='luks-[0-9a-fA-F]+'
+## Key on the distinctive 'luks-' prefix only (as the lane does): OCR garbles UUID hex, so a
+## hex-strict pattern misses the token -- masking the whole word box of anything 'luks-' does not.
+uuid_pat='luks-'
 
 ## --- matching tokens are masked; marker words survive --------------------------------------
 img="${work}/frame.png"
@@ -80,6 +82,9 @@ check "luks uuid is gone after redaction" "${got}"
 ## lower-case 'luks-...' pattern (OCR returns unstable case on real frames).
 got=0; { has DEADBEEF "${after_ocr}" || has deadbeef "${after_ocr}"; } && got=1
 check "an UPPER-case luks token is masked by a lower-case pattern (case-insensitive)" "${got}"
+## a UUID whose hex OCRs with a non-hex glyph (6df5S68a5) must still be masked by 'luks-'.
+got=0; has 6df5 "${after_ocr}" && got=1
+check "an OCR-garbled uuid (non-hex glyph) is still masked via the luks- prefix" "${got}"
 ## markers on the SAME lines as the tokens must survive (only the token box is masked, not the
 ## whole line -- so the frame keeps content + stays non-uniform).
 got=0; has ALPHA "${after_ocr}" || got=1
