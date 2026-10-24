@@ -63,11 +63,13 @@ fi
 exit 0
 STUB
 
-## VBOXMANAGE: records argv so the test can assert the setvideomodehint nudge (and count it).
+## VBOXMANAGE: records argv (so the test can count the setvideomodehint nudge), and REJECTS the
+## hint with exit 1 when ${work}/vbox-fail exists -- models a VM transiently locked / not running.
 vbox_stub="${work}/vboxmanage"
 cat > "${vbox_stub}" <<STUB
 #!/bin/bash
 printf '%s\n' "\$*" >> '${vbox_log}'
+[ -e '${work}/vbox-fail' ] && exit 1
 exit 0
 STUB
 chmod +x "${guestctl_stub}" "${vbox_stub}"
@@ -133,6 +135,16 @@ check "nudge-fixes: the nudge was issued" "${got}"
 check "nudge-fixes: did not die" "${died}"
 got=0; [ -s "${marker}" ] || got=1
 check "nudge-fixes: RESIZE-NUDGE-USED marker records that a nudge was needed" "${got}"
+
+## --- host REJECTS the hint: no false marker, RETRIED (one-shot not burned on failure), dies ---
+reset; printf '%s\n' stuck > "${res_mode}"; true > "${work}/vbox-fail"
+rc=0; wait_ready 3 || rc=1
+got=0; [ "$(nudge_count)" -ge 2 ] || got=1
+check "nudge-fail: a rejected nudge is RETRIED (not burned after one failure)" "${got}"
+got=0; [ ! -e "${marker}" ] || got=1
+check "nudge-fail: NO RESIZE-NUDGE-USED marker written for a failed nudge" "${got}"
+check "nudge-fail: wait_ready still FAILS" "$(( died == 1 ? 0 : 1 ))"
+safe-rm --force -- "${work}/vbox-fail"
 
 printf '%s\n' "" "$(basename -- "$0"): ${pass} pass, ${fail} fail"
 [ "${fail}" -eq 0 ] || exit 1
