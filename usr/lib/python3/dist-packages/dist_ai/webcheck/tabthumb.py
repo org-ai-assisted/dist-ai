@@ -75,10 +75,9 @@ TABTHUMB_JS = r"""
     if (!secs.length) return;
     const origActive = secs.map(s => s.classList.contains('active'));
     secs.forEach((sec, si) => {
-      const thumb = sec.querySelector('.thumb');
+      const thumb = Array.from(sec.querySelectorAll('.thumb')).find(t => t.querySelector('img'));
       if (!thumb) return;
       const img = thumb.querySelector('img');
-      if (!img) return;
       secs.forEach(s => s.classList.remove('active'));
       sec.classList.add('active');
       const pane = thumb.closest('.tcc-content');
