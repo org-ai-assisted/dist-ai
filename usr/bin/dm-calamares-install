@@ -290,7 +290,12 @@ snap() {
    local nn="$1" name="$2"
    [ -n "${shot_dir}" ] || return 0
    quiesce_notifications
-   ## Settle: let the compositor repaint the cleared surfaces before the frame.
+   ## Wake a DPMS-blanked display before a rich (must-render) capture: a long wait with no input
+   ## -- notably the up-to-300s coreboot guestcontrol wait before live-guestcontrol-ready -- blanks
+   ## the screen, so the frame came back uniform-black and the rich blank-gate FAILED a desktop that
+   ## was actually up. A left-Shift tap (make 2a / break aa) is inert to the GUI but counts as input.
+   "${GUESTCTL}" "${vm}" key 2a aa >/dev/null 2>&1 || true
+   ## Settle: let the compositor repaint the cleared surfaces (and the DPMS wake) before the frame.
    sleep 1
    "${GUESTCTL}" "${vm}" shot "${shot_dir}/${nn}-${name}.png" >/dev/null 2>&1 || true
 }
