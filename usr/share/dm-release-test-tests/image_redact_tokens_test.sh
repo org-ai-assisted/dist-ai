@@ -76,6 +76,10 @@ got=0; has 345678 "${after_ocr}" && got=1
 check "timestamp digits are gone after redaction" "${got}"
 got=0; has abcd1234 "${after_ocr}" && got=1
 check "luks uuid is gone after redaction" "${got}"
+## case-INSENSITIVE: the fixture's UPPER-case 'LUKS-DEADBEEF01' must be masked by the
+## lower-case 'luks-...' pattern (OCR returns unstable case on real frames).
+got=0; { has DEADBEEF "${after_ocr}" || has deadbeef "${after_ocr}"; } && got=1
+check "an UPPER-case luks token is masked by a lower-case pattern (case-insensitive)" "${got}"
 ## markers on the SAME lines as the tokens must survive (only the token box is masked, not the
 ## whole line -- so the frame keeps content + stays non-uniform).
 got=0; has ALPHA "${after_ocr}" || got=1

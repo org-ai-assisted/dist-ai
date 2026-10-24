@@ -79,15 +79,20 @@ def redact(path, patterns, pad=2):
             if any(p.search(text) for p in patterns)]
     if not hits:
         return 0
-    with Image.open(path) as image:
-        image = image.convert("RGB")
-        draw = ImageDraw.Draw(image)
-        for (left, top, width, height) in hits:
-            draw.rectangle(
-                [left - pad, top - pad, left + width + pad, top + height + pad],
-                fill=(0, 0, 0),
-            )
-        image.save(path)
+    ## Best-effort: a PIL open/convert/save failure (corrupt frame, unwritable path) leaves the
+    ## frame UNCHANGED rather than crashing -- a redaction miss must never destroy a frame.
+    try:
+        with Image.open(path) as image:
+            image = image.convert("RGB")
+            draw = ImageDraw.Draw(image)
+            for (left, top, width, height) in hits:
+                draw.rectangle(
+                    [left - pad, top - pad, left + width + pad, top + height + pad],
+                    fill=(0, 0, 0),
+                )
+            image.save(path)
+    except (OSError, ValueError):
+        return 0
     return len(hits)
 
 
@@ -105,7 +110,11 @@ def parse_args(argv):
 def main(argv):
     args = parse_args(argv)
     try:
-        patterns = [re.compile(p) for p in args.pattern]
+        ## Case-INSENSITIVE: OCR reads the same glyphs with unstable case (a LUKS UUID prefix
+        ## comes back as 'luks-'/'Luks-'/'lLuks-' depending on font/size), so a case-sensitive
+        ## token pattern silently misses the thing it must redact. Digit/hex patterns are
+        ## unaffected by the flag.
+        patterns = [re.compile(p, re.IGNORECASE) for p in args.pattern]
     except re.error as exc:
         sys.stderr.write("image-redact-tokens: bad pattern: %s\n" % exc)
         return 2
