@@ -58,6 +58,11 @@ IMAGE_TEST_GC="${IMAGE_TEST_GC:-image-test-gc}"
 ## (rt_eph_reclaim). 0: tear down on every exit.
 DM_RELEASE_TEST_KEEP_FAILED="${DM_RELEASE_TEST_KEEP_FAILED:-1}"
 VBOXMANAGE="${VBOXMANAGE:-VBoxManage}"
+## Dir holding the patched CorebootRom-aware VBoxManage (+ its shared libs), for the opt-in
+## --coreboot-rom lane. Mirrors the dasharo firmware-port selector: a source-built VBoxManage
+## resolves its libs from its own bin dir, so this dir is added to LD_LIBRARY_PATH too. Empty ->
+## the normal lanes use the stock VBOXMANAGE and --coreboot-rom is refused (needs the patch).
+DASHARO_VBOX_BIN="${DASHARO_VBOX_BIN:-}"
 DIST_INSTALLER_CLI="${DIST_INSTALLER_CLI:-dist-installer-cli}"
 ## dist-installer-cli REFUSES to run as root; it must be invoked by a non-root,
 ## passwordless-sudo-capable user (it sudo's internally for apt/modprobe and run_as_target_user
@@ -126,6 +131,11 @@ provision_leak='false'
 ## --iso PATH: test a LOCALLY-BUILT ISO instead of downloading a published release.
 ## Empty = the normal download path; set = built-origin lane (no iso-download).
 local_iso=""
+## --coreboot-rom PATH (kicksecure only): run the SAME default-EFI full Calamares install story,
+## with ONLY the firmware swapped to the coreboot+UefiPayload ROM (a generic EFI firmware). Empty
+## = the normal lanes, byte-unchanged. Forwarded to dm-calamares-install, which needs --firmware
+## efi and the patched CorebootRom-aware VBoxManage (resolved via DASHARO_VBOX_BIN / VBOXMANAGE).
+coreboot_rom=""
 ## origin recorded in the result.json: downloaded (official release) or built (--iso).
 rt_origin="downloaded"
 
@@ -160,7 +170,7 @@ print_usage() {
    printf '%s\n' "Usage:
   ${me} GUEST INTERFACE [--channel stable|developers] [--version VER]
         [--firmware bios|efi|efi-secureboot] [--iso PATH] [--checks] [--dry-run]
-        [--provision-leak]
+        [--coreboot-rom PATH] [--provision-leak]
 
   GUEST      kicksecure | whonix
   INTERFACE  lxqt | xfce | cli (the published desktop flavor)
@@ -175,7 +185,12 @@ The whonix leak lane ALWAYS uses the dedicated persistent persist-leak-GUEST acc
 --dry-run prints the resolved plan and runs nothing.
 --provision-leak (whonix only) is the one-time setup of the leak pair: create the clean
 persist-leak-GUEST account, import the GW+WS pair under it, and pin the version marker
-each run then verifies; it prints the remaining one-time dev-root bake + snapshot step."
+each run then verifies; it prints the remaining one-time dev-root bake + snapshot step.
+--coreboot-rom PATH (kicksecure only) runs the SAME default-EFI full Calamares install story
+with ONLY the firmware swapped to the coreboot+UefiPayload ROM at PATH (a generic EFI firmware,
+a drop-in for VBox's OVMF). Needs --firmware efi and the patched CorebootRom-aware VBoxManage:
+set DASHARO_VBOX_BIN to its bin dir (preferred) or VBOXMANAGE to its path. PATH must be readable
+by the install account. Default empty -> the normal lanes are unchanged."
 }
 
 ## ---------------------------------------------------------------------------
@@ -895,14 +910,44 @@ rt_publish_result() {
 ## lanes
 ## ---------------------------------------------------------------------------
 
+## Resolve the coreboot install run's extra env + flag (TASK B helper; unit-tested by
+## dm-release-test-tests via source). Sets cb_env (a VAR=VAL list spliced into the sudo'd
+## install's `env` prefix) and cb_arg (the --coreboot-rom flag) from coreboot_rom + the
+## patched-VBoxManage selector. A no-op (both empty) without --coreboot-rom; dies if
+## --coreboot-rom was given but NO patched VBoxManage can be resolved -- the stock VBoxManage
+## silently IGNORES CorebootRom, so letting it run would boot VBox's own EFI and pass a wrong
+## subject. DASHARO_VBOX_BIN (a bin dir) is preferred; a non-default VBOXMANAGE is the fallback.
+rt_resolve_coreboot() {
+   cb_env=()
+   cb_arg=()
+   [ -n "${coreboot_rom}" ] || return 0
+   cb_arg=( --coreboot-rom "${coreboot_rom}" )
+   if [ -n "${DASHARO_VBOX_BIN}" ] && [ -x "${DASHARO_VBOX_BIN}/VBoxManage" ]; then
+      ## A source-built VBoxManage resolves its shared libs from its own bin dir.
+      cb_env=(
+         "VBOXMANAGE=${DASHARO_VBOX_BIN}/VBoxManage"
+         "LD_LIBRARY_PATH=${DASHARO_VBOX_BIN}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+      )
+   elif [ "${VBOXMANAGE}" != 'VBoxManage' ]; then
+      cb_env=( "VBOXMANAGE=${VBOXMANAGE}" )
+   else
+      die "${SETUP_RC}" "--coreboot-rom needs the patched CorebootRom-aware VBoxManage: set DASHARO_VBOX_BIN to its bin dir or VBOXMANAGE to its path"
+   fi
+}
+
 rt_lane_kicksecure() {
    local account version iso pass_file vmname rc shot_dir shot_arg check_log
    local -a checks_arg=()
    local -a keep_arg=()
    local -a mok_arg=()
+   local -a cb_env=()
+   local -a cb_arg=()
 
    account="$1"
    version="$2"
+   ## Resolve the opt-in coreboot firmware swap up front (fail fast on a missing patched
+   ## VBoxManage, before the ~30 min install). A no-op on the normal lanes.
+   rt_resolve_coreboot
 
    ## Acquire the EXACT resolved version (pin it; never re-resolve in the lane),
    ## and FAIL the lane if the download/verification fails -- never fall through
@@ -989,12 +1034,14 @@ rt_lane_kicksecure() {
          || log warn "leapctl --create '${account}' failed; --mok-enroll will fail if the privleap comm socket is absent (is the vbox-disk-extract-mok privleap action installed?)"
    fi
 
+   ## cb_env (patched VBoxManage + LD_LIBRARY_PATH) rides the same `env` prefix as the session
+   ## identity; cb_arg adds --coreboot-rom. Both empty on the normal lanes -> the argv is unchanged.
    rc=0
-   sudo -u "${account}" -- "${rt_session_env[@]}" "${DM_CALAMARES_INSTALL}" --vm "${vmname}" \
+   sudo -u "${account}" -- "${rt_session_env[@]}" "${cb_env[@]}" "${DM_CALAMARES_INSTALL}" --vm "${vmname}" \
       --iso "${iso}" --passphrase-file "${pass_file}" --firmware "${firmware}" \
       --shot-dir "${shot_dir}" --check-log "${check_log}" \
       --firmware-evidence-file "${firmware_evidence_file}" \
-      "${checks_arg[@]}" "${keep_arg[@]}" "${mok_arg[@]}" || rc=$?
+      "${cb_arg[@]}" "${checks_arg[@]}" "${keep_arg[@]}" "${mok_arg[@]}" || rc=$?
    sudo -u "${account}" -- safe-rm --force -- "${pass_file}" || true
 
    ## Publish the milestone-shot DIR: the publisher enumerates the valid, non-empty
@@ -1103,6 +1150,12 @@ parse_args() {
             ## release instead of testing the local build -- a false, wrong-subject PASS.
             [ -n "$2" ] || die "${SETUP_RC}" "empty value for --iso (would silently test a downloaded release, not the local build)"
             local_iso="$2"
+            shift 2
+            ;;
+         --coreboot-rom)
+            [ "$#" -ge 2 ] || die "${SETUP_RC}" "missing value for --coreboot-rom"
+            [ -n "$2" ] || die "${SETUP_RC}" "empty value for --coreboot-rom"
+            coreboot_rom="$2"
             shift 2
             ;;
          --checks)

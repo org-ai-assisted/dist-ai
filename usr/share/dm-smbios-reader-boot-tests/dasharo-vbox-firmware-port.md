@@ -1,10 +1,23 @@
 # dasharo-vbox firmware port (coreboot + UefiPayload in VirtualBox)
 
-Boots a coreboot.rom (UefiPayloadPkg) inside a patched VirtualBox 7.2.20 so the
-firmware renders GRAPHICALLY on the VBox framebuffer. The lane attaches no boot
-media: it verifies the interactive UEFI shell on COM1 and a clean ACPI S5, and
-captures the rendered framebuffer. Booting a full OS through the firmware is a
-separate experiment, not what this lane checks. All work is on the OVH server.
+The coreboot + UefiPayloadPkg ROM is a GENERIC EFI firmware -- a drop-in for VBox's OVMF. A
+patched VirtualBox 7.2.20 loads it via the EfiRom/CorebootRom extradata; it renders GRAPHICALLY
+on the VBox framebuffer and boots a full OS (Kicksecure live ISO -> GRUB -> LXQt desktop ->
+Calamares install), verified.
+
+So the TEST is the existing default-EFI full Calamares install story with ONLY the firmware
+swapped: `dm-calamares-install --coreboot-rom <rom>`, driven by `dm-release-test --coreboot-rom
+<rom>` -- same ISO, same install walk-through, same result publishing. It needs `--firmware efi`
+and the patched CorebootRom-aware VBoxManage (point at it with `DASHARO_VBOX_BIN` or `VBOXMANAGE`).
+dm-calamares-install swaps in the proven VM config below and drains COM1 for the whole run,
+reconnecting across the install's power-cycles (an undrained 16550 wedges the guest on its THRE
+poll, and stray serial input cancels GRUB autoboot). All work is on the OVH server.
+
+The earlier bespoke no-OS firmware-shell lane (`dasharo-vbox-boot-tests`: boot the ROM with no
+media, verify the UEFI shell on COM1 + a clean ACPI S5) is RETIRED -- it only ever showed a few
+near-blank frames. The reusable coreboot argv template it validated lives on in the sibling
+`dm-smbios-reader-vbox` (`build_coreboot_rom_argv`, `CB_CPUIDSET`, `build_coreboot_vm_plan`,
+`build_uart_server_argv`), which the install lane mirrors.
 
 ## Patched VirtualBox
 
@@ -12,6 +25,13 @@ separate experiment, not what this lane checks. All work is on the OVH server.
 - Source build: run VM start as `--user root` (hardening needs `/dev/vboxdrv`;
   `--user admin` gets `VERR_VM_DRIVER_NOT_ACCESSIBLE`). Loaded distro vboxdrv
   matches, so concurrent VMs are fine. Hold `dm-vm-lock acquire --class work`.
+  - The fork is built WITH hardening (`Config.kmk: VBOX_WITH_HARDENING := 1`, not
+    overridden) but run IN-PLACE from the admin-owned build dir, where
+    `VBoxHeadless` is not a setuid-root stub -- so the hardened handshake refuses a
+    non-root VM process. Root is the working path. To ALLOW vboxusers (non-root)
+    runs instead, rebuild with `VBOX_WITH_HARDENING=0` in `LocalConfig.kmk` (the
+    standard non-installed dev/test build) or `make install` to a root-owned
+    `/opt/VirtualBox` with setuid stubs; both are substantial, root is fine for test.
 - DevEFI `CorebootRom` patch: loads `EfiRom` as a coreboot image, not OVMF.
   DevACPI `SLP_EN` patch: makes `reset -s` (ACPI S5) actually power the VM off.
 
@@ -21,8 +41,8 @@ Other_64; `--firmware efi --chipset piix3 --hpet on --graphicscontroller vboxvga
 --vram 32`; `--cpuid-set 0x80000008 0x00003024 0x791ef257 0x0000400f 0x00010000`
 (36-bit phys-addr leaf the UefiPayload needs); extradata under
 `VBoxInternal/Devices/efi/0/Config/`: `EfiRom` = ROM abspath, `CorebootRom` = 1.
-`build_coreboot_vm_plan` in `../dm-smbios-reader-boot-tests/dm-smbios-reader-vbox`
-emits exactly this.
+The sibling `dm-smbios-reader-vbox` `build_coreboot_vm_plan` emits exactly this, and
+`dm-calamares-install` mirrors the same recipe onto its install VM.
 
 ## Chipset: two working paths -- i440fx and the q35 port, both boot the Kicksecure desktop
 
@@ -150,7 +170,20 @@ framebuffer. Each patch script is idempotent.
 ## Status / known gaps
 
 - DONE: graphics (GOP on the VBox linear framebuffer, firmware renders) + ACPI S5
-  (`reset -s` powers off). The lane verifies both.
+  (`reset -s` powers off). Now covered implicitly by the full-OS install lane booting through
+  the firmware; the retired shell lane checked them in isolation.
+- DONE -- boot-manager FALLS THROUGH a failed boot device (needed by the Calamares install,
+  which boots the live ISO with an EMPTY target disk attached). The UefiPayload boot manager
+  tried the empty disk FIRST, failed (`Booting from 'SATA: VBOX HARDDISK' failed: Not Found`),
+  and HALTED at "Press any key to continue" instead of trying the ISO -- a blocking
+  `WaitForEvent` with no fall-through (OVMF falls through; this did not). FIX (in our edk2 fork,
+  org-ai-assisted/edk2@ai `ebad826c3` + `0ef1744f2`): `MdeModulePkg/.../BmBoot.c`
+  `EfiBootManagerBoot` boot-fail path Stall-POLLs `ReadKeyStroke` for ~10s then falls through to
+  the next option. NOTE: an `EVT_TIMER` does NOT tick at this BDS stage, so a timer-bounded
+  `WaitForEvent` still hangs -- the fix MUST use `gBS->Stall` + non-blocking `ReadKeyStroke`.
+  VBox legacy `--boot1 dvd` does NOT reorder this (UefiPayload uses its own BootOrder). Without
+  the fork fix, the workaround is to hot-plug the empty target disk only AFTER the live desktop
+  is up, so the firmware boots the ISO disk-free.
 - DONE -- PCI enumeration FIXED + an OS BOOTS THROUGH the firmware. The earlier
   zero-PCI state: VBox's piix3/i440fx has NO ECAM (legacy 0xCF8/0xCFC only; coreboot
   `NO_ECAM_MMCONF_SUPPORT=y`), coreboot emits no `CB_TAG_RB_INFO`, so

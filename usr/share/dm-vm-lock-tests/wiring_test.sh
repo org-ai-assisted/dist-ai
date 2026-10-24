@@ -41,7 +41,7 @@ rec="${work}/calls"
 } > "${stubbin}/dm-vm-lock"
 chmod +x -- "${stubbin}/dm-vm-lock"
 
-## A VBoxManage stub so the VBox-gated lanes (dasharo, smbios --backend vbox) see a VBox host and
+## A VBoxManage stub so the VBox-gated lanes (smbios --backend vbox) see a VBox host and
 ## reach their lock guard. It is never actually run -- the dm-vm-lock stub exits before the boot.
 {
    printf '%s\n' '#!/bin/bash'
@@ -80,13 +80,6 @@ assert_class 'dm-whonix-pair (leak test)'     leak "${bin}/dm-whonix-pair"     -
 assert_class 'dm-calamares-install (VBox)'    work "${bin}/dm-calamares-install" --vm V --iso /nonexistent.iso --passphrase-file "${ppfile}"
 assert_class 'image-test-run (VBox image)'    work "${bin}/image-test-run"     "${conf}"
 assert_class 'dm-iso-build (image build)'     work "${bin}/dm-iso-build"
-
-## The dasharo lane locks around the BOOT (not a top-of-script re-exec): it must first pass the
-## CI-safe pytest smoke + the ROM/VBox guards. Supply a (never-booted) ROM path so it reaches the
-## guarded boot, where the VBoxManage stub lets it proceed to the dm-vm-lock wrapper.
-export DASHARO_COREBOOT_ROM="${work}/fake.rom"; printf '%s' "" > "${DASHARO_COREBOOT_ROM}"
-assert_class 'dasharo-vbox-boot-tests (VBox boot)' work "${bin}/dasharo-vbox-boot-tests"
-unset DASHARO_COREBOOT_ROM
 
 ## The smbios lane locks only when the EFFECTIVE backend is vbox, AFTER a pytest smoke that spawns
 ## PATH-sensitive dm-smbios-reader-image-test subprocesses -- a VBoxManage stub on PATH would make

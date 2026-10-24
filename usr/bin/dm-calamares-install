@@ -39,6 +39,20 @@ disk=""
 passphrase=""
 passphrase_file=""
 firmware="efi"
+## Opt-in experimental: boot via the coreboot+UefiPayload ROM (a generic EFI firmware, a
+## drop-in for VBox's OVMF) instead of VBox's EFI. Set by --coreboot-rom; needs the patched
+## CorebootRom-aware VBOXMANAGE. Default empty -> every default (bios/efi/efi-secureboot) lane
+## is byte-unchanged. See ../share/dm-smbios-reader-boot-tests/dasharo-vbox-firmware-port.md.
+coreboot_rom=""
+## coreboot COM1 drain: VBox exposes a server-socket UART, drained by a bg client for the whole
+## run (the firmware wedges on the 16550 THRE poll without a reader; it also reconnects across
+## the install's power-cycles). PID + socket, reaped in on_exit.
+cb_uart_sock=""
+cb_drain_pid=""
+## coreboot cpuid leaf 0x80000008 (phys/virt address sizes): advertise a sane 36-bit phys-addr
+## width the UefiPayload needs. 5-tuple (leaf eax ebx ecx edx) for VBoxManage --cpuid-set.
+## Mirrors dm-smbios-reader-vbox's CB_CPUIDSET (the reusable coreboot argv template).
+cb_cpuidset=(0x80000008 0x00003024 0x791ef257 0x0000400f 0x00010000)
 reinstall="false"
 checks="false"
 mok_enroll="false"
@@ -108,6 +122,8 @@ vm_nic_indices() {
 on_exit() {
    local rc=$?
    local stuck launch_out
+   ## Reap the coreboot COM1 drain FIRST (best-effort; preserves rc). A no-op without --coreboot-rom.
+   cb_drain_stop
    ## Final frame on a SUCCESSFUL run: the installed system's last on-screen state, captured
    ## while the VM is still alive (before the poweroff below). On a failure the stuck/99 frame
    ## below is the closing frame instead.
@@ -985,6 +1001,10 @@ parse_args() {
             firmware="$2"
             shift 2
             ;;
+         --coreboot-rom)
+            coreboot_rom="$2"
+            shift 2
+            ;;
          --reinstall)
             reinstall="true"
             shift
@@ -1059,6 +1079,14 @@ parse_args() {
          die "${SETUP_RC}" "--firmware must be bios|efi|efi-secureboot, got '${firmware}'"
          ;;
    esac
+   ## coreboot layers on the EFI device (a generic EFI firmware), so it needs --firmware efi.
+   if [ -n "${coreboot_rom}" ]; then
+      [ "${firmware}" = 'efi' ] || { usage >&2; die "${SETUP_RC}" "--coreboot-rom requires --firmware efi"; }
+      local cb_in="${coreboot_rom}"
+      coreboot_rom="$(readlink --canonicalize -- "${cb_in}")" \
+         || die "${SETUP_RC}" "--coreboot-rom path invalid: '${cb_in}'"
+      [ -r "${coreboot_rom}" ] || die "${SETUP_RC}" "coreboot ROM not readable: '${coreboot_rom}'"
+   fi
    ## MOK enrollment is only meaningful under EFI (the opt-in module no-ops on
    ## non-EFI, and modifynvram enrollmok needs a UEFI varstore). It is the point
    ## only under Secure Boot, but a plain-EFI run is a valid dry pass.
@@ -1140,6 +1168,14 @@ apply_firmware() {
       ## Tolerated on a fresh VM whose varstore is not yet initialized (no-op there).
       "${VBOXMANAGE}" modifynvram "${vm}" secureboot --disable >/dev/null 2>&1 || true
    fi
+   ## coreboot layers ON the efi device (a generic EFI firmware, NOT a 4th --firmware token):
+   ## the patched CorebootRom-aware VBoxManage loads EfiRom as a coreboot image instead of OVMF.
+   ## Same VBoxInternal/Devices/efi/0/Config/ namespace as the EFI DMI overrides. Set here so the
+   ## reinstall branch (which also calls apply_firmware) carries the extradata too.
+   if [ -n "${coreboot_rom}" ]; then
+      "${VBOXMANAGE}" setextradata "${vm}" VBoxInternal/Devices/efi/0/Config/EfiRom "${coreboot_rom}" >/dev/null
+      "${VBOXMANAGE}" setextradata "${vm}" VBoxInternal/Devices/efi/0/Config/CorebootRom 1 >/dev/null
+   fi
 }
 
 ## Turn Secure Boot ON for the installed-system boot (efi-secureboot lane only). Runs while the
@@ -1174,9 +1210,22 @@ build_vm() {
    vcpus="$("${lib_dir}/dm-vbox-vcpus" 2>/dev/null || dm-vbox-vcpus)"
    ## vmsvga+128 VRAM: else the desktop never draws headless. usbtablet+USB: give
    ## an absolute pointer so vbox-ctl-local clicks land pre-Guest-Additions.
-   "${VBOXMANAGE}" modifyvm "${vm}" --memory 4096 --cpus "${vcpus}" \
-      --graphicscontroller vmsvga --vram 128 --mouse usbtablet --usb-ohci on \
-      --nic1 nat >/dev/null
+   ## coreboot swaps the graphics recipe for the proven-working board the UefiPayload needs
+   ## (vboxvga, piix3/HPET/IOAPIC, the 36-bit-phys cpuid leaf) and wires COM1 to a host server
+   ## socket the drain reads. WITHOUT --coreboot-rom the argv is byte-unchanged (additive only):
+   ## the --memory/--cpus head and the --mouse/--usb/--nic tail are shared by both paths.
+   local -a modify_args=( --memory 4096 --cpus "${vcpus}" )
+   if [ -n "${coreboot_rom}" ]; then
+      cb_uart_sock="${HOME}/${me}-cb-uart.sock"
+      safe-rm --force -- "${cb_uart_sock}"
+      modify_args+=( --chipset piix3 --ioapic on --hpet on \
+         --graphicscontroller vboxvga --vram 128 --cpuid-set "${cb_cpuidset[@]}" \
+         --uart1 0x3f8 4 --uartmode1 server "${cb_uart_sock}" )
+   else
+      modify_args+=( --graphicscontroller vmsvga --vram 128 )
+   fi
+   modify_args+=( --mouse usbtablet --usb-ohci on --nic1 nat )
+   "${VBOXMANAGE}" modifyvm "${vm}" "${modify_args[@]}" >/dev/null
    apply_firmware
    "${VBOXMANAGE}" createmedium disk --filename "${disk}" --size 25600 \
       --format VDI >/dev/null 2>&1
@@ -1188,6 +1237,34 @@ build_vm() {
       --type hdd --medium "${disk}" >/dev/null
    "${VBOXMANAGE}" storageattach "${vm}" --storagectl IDE --port 0 --device 0 \
       --type dvddrive --medium "${iso}" >/dev/null
+}
+
+## coreboot COM1 drain (only with --coreboot-rom). The UefiPayload floods the 16550, and a VBox
+## server-socket UART with NO host reader blocks the guest on the THRE poll -- wedging the boot
+## before the GOP comes up; stray serial INPUT would also cancel GRUB autoboot. So the standalone
+## cb-uart-drain helper reads+discards COM1 for the whole run and RECONNECTS across the install's
+## power-cycles (live -> install -> reboot -> installed). Started once after the first startvm; its
+## PID goes in cb_drain_pid, reaped by cb_drain_stop. The helper is unidirectional (recv-only).
+cb_drain_start() {
+   [ -n "${coreboot_rom}" ] || return 0
+   [ -n "${cb_uart_sock}" ] || return 0
+   local helper="${lib_dir}/../libexec/image-test/cb-uart-drain"
+   [ -x "${helper}" ] || helper='/usr/libexec/image-test/cb-uart-drain'
+   "${helper}" "${cb_uart_sock}" >/dev/null 2>&1 &
+   cb_drain_pid="$!"
+   printf '%s\n' "${me}: coreboot COM1 drain started (pid ${cb_drain_pid}, socket ${cb_uart_sock})" >&2
+}
+
+## Stop the coreboot COM1 drain and remove its socket. Best-effort, never changes the exit
+## status. We hold the PID, so kill it directly -- no pkill -f (which would self-match this shell).
+cb_drain_stop() {
+   if [ -n "${cb_drain_pid}" ]; then
+      kill "${cb_drain_pid}" 2>/dev/null || true
+      cb_drain_pid=""
+   fi
+   if [ -n "${cb_uart_sock}" ]; then
+      safe-rm --force -- "${cb_uart_sock}" 2>/dev/null || true
+   fi
 }
 
 main() {
@@ -1218,6 +1295,9 @@ main() {
    story_card 13 firmware-state "Firmware / Secure Boot varstore state"
    "${VBOXMANAGE}" startvm "${vm}" --type headless >/dev/null
    vm_started="true"
+   ## Start the coreboot COM1 drain as soon as the VM is up (a no-op without --coreboot-rom). One
+   ## reconnecting drainer survives every later power-cycle (reboot_installed / mok_host_enroll).
+   cb_drain_start
    ## Firmware logo: the VBox EFI firmware DOES draw a splash (a ~1024x768 VirtualBox logo) about
    ## a second after power-on in both efi and efi-secureboot, then blacks out ~1s later for the
    ## GRUB mode switch. A blind single shot races that short window and usually grabs black, so
