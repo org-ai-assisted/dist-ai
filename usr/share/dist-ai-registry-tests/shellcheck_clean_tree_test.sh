@@ -189,7 +189,11 @@ cat > "${work_dir}/nofollow.sh" <<'NOFOLLOW'
 # shellcheck source=./nope.sh
 . ./nope.sh
 NOFOLLOW
-follow_out="$( "${gate}" --check "${work_dir}/nofollow.sh" 2>&1 || true )"
+## Force FOLLOW mode regardless of the caller's environment: if DIST_AI_SHELLCHECK_NO_FOLLOW=1 is
+## exported (a dev/CI shell, or this guard's own gate_out run leaking into a sourced context), this
+## "follow ON" run would silently go no-follow, drop SC1091, and fail the assertion below with a
+## misleading "fixture" message. Unset it so the canary always contrasts follow vs no-follow.
+follow_out="$( env --unset=DIST_AI_SHELLCHECK_NO_FOLLOW "${gate}" --check "${work_dir}/nofollow.sh" 2>&1 || true )"
 if ! grep --quiet '\[SC1091\]' <<< "$( gating_sc_lines "${follow_out}" )"; then
    printf '%s\n' 'FAIL(canary D): following ON did not flag the broken source= as a gating SC1091 -- the fixture no longer exercises the knob' >&2
    printf '%s\n' "${follow_out}" | tail -10 >&2
