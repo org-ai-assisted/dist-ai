@@ -94,6 +94,11 @@ assert_rules 'branch PERSON' policy_branch_ruleset_body \
 assert_rules 'branch BOT' policy_branch_ruleset_body \
    POLICY_RULESET_RULES_BOT \
    'deletion,non_fast_forward'
+## STAGE: staging-site pushes are bot pushes with no matching GPG key,
+## so required_signatures is omitted - same 2-rule shape as MIRROR/BOT.
+assert_rules 'branch STAGE' policy_branch_ruleset_body \
+   POLICY_RULESET_RULES_STAGE \
+   'deletion,non_fast_forward'
 
 ## Tag ruleset, role-by-role. Same dispatch as branch ruleset.
 assert_rules 'tag SOURCE' policy_tag_ruleset_body \
@@ -107,6 +112,9 @@ assert_rules 'tag PERSON' policy_tag_ruleset_body \
    'deletion,non_fast_forward,required_signatures'
 assert_rules 'tag BOT' policy_tag_ruleset_body \
    POLICY_RULESET_RULES_BOT \
+   'deletion,non_fast_forward'
+assert_rules 'tag STAGE' policy_tag_ruleset_body \
+   POLICY_RULESET_RULES_STAGE \
    'deletion,non_fast_forward'
 
 ## Default-arg path: omitting the 4th arg falls back to
