@@ -78,10 +78,13 @@ run_gate(){
    ## workdir or any parent dir whose 'exclude' would drop every covered file -> empty map ->
    ## false green (the self-check cannot catch this, as its own files live outside roots/).
    ## exclude:[] is safe here: --include already scopes the report to exactly the covered set.
+   ## node --test takes a GLOB, never a bare dir: Node 22 loads a bare-dir arg as a MODULE
+   ## (MODULE_NOT_FOUND), unlike Node 20's directory recursion. The glob matches this dir's
+   ## *.test.js (and any nested ones); the selftest below fails loud if this ever regresses.
    c8 --config jscov/c8-config.json --all --check-coverage \
       --statements 100 --branches 100 --functions 100 --lines 100 \
       "${includes[@]}" --reporter text-summary \
-      node --test "${test_dir}/"
+      node --test "${test_dir}/**/*.test.js"
 }
 
 ## Fail-closed self-check: jscov-selftest lists two files but exercises only one; under --all the
