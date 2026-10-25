@@ -189,7 +189,7 @@ mbm() { milestone_blank_mode "$1"; }
 ## RICH = the settled snap() captures (desktop / Calamares GUI / first boot / checks) + the
 ## restored graphical desktop: a near-black frame there is a real render failure.
 for rich in live-guestcontrol-ready welcome location keyboard partitions partitions-luks-filled \
-   summary install-started install-done installed-grub-menu first-boot mok-reboot-desktop \
+   summary install-started install-done first-boot mok-reboot-desktop \
    terminal-open sysmaint-terminal check-6-gui-rendered checks-complete vt-graphical-restored; do
    got=0; [ "$(mbm "${rich}")" = 'rich' ] || got=1
    check "milestone_blank_mode(${rich}) = rich (default near-black gate)" "${got}"
@@ -204,8 +204,10 @@ done
 ## frames (written AFTER the gate). power-on-first-frame / install-host-launched / sysmaint-terminal
 ## MUST be skip -- defaulting them to rich false-failed every --shot-dir run (always-black firmware
 ## grab / transitional frames).
+## installed-grub-menu is a BLIND-timed grab racing GRUB autoboot (like live-grub-menu); a hard
+## rich gate there is a false-fail -- the installed boot is PROVEN by the downstream LUKS + first-boot gates.
 for skip in power-on-first-frame live-kernel-boot live-grub-menu live-grub-entry-selected \
-   install-host-launched installed-first-frame luks-unlocked firmware-state \
+   installed-grub-menu install-host-launched installed-first-frame luks-unlocked firmware-state \
    final-last-frame vt-switched vt-logged-in vt-logged-out vm-defined vm-stopped-iso-detached \
    vm-stopped-final mok-cert-enrolled failure-vm-state; do
    got=0; [ "$(mbm "${skip}")" = 'skip' ] || got=1
