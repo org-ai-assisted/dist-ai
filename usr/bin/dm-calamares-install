@@ -482,7 +482,7 @@ cb_gui_ns_reexec() {
       mount --make-rprivate / 2>/dev/null || true
       for lib in VBoxDD.so VBoxDD2.so VBoxVMM.so; do
          mount --bind "${DM_GUI_NS_STAGE}/${lib}" "/usr/lib/virtualbox/${lib}" \
-            || { printf "%s\n" "dm-calamares-install: ERROR: coreboot ns bind-mount of ${lib} failed" >&2; exit 5; }
+            || { printf "%s\n" "dm-calamares-install: ERROR: coreboot ns bind-mount of ${lib} failed" >&2; safe-rm --recursive --force -- "${DM_GUI_NS_STAGE}" 2>/dev/null || true; exit 5; }
       done
       exec "$@"
    ' -- "$0" "$@"
