@@ -947,6 +947,32 @@ run_det "$(printf '%s\n' \
 assert_not_at "R-063 spares the optional-arg '[ -z ] || check' idiom"  "R-063" 4
 assert_at     "R-063 flags '[ -z OTHER ] || check NAME' (wrong var)"   "R-063" 8
 assert_at     "R-063 flags '[ -n NAME ] || check' (non-empty skip)"    "R-063" 12
+## Decoy emptiness tests that are NOT a bare '[ -z WORD ]': an inner '!'
+## negation, a pipeline '! [ ... ]' negation, and compound '-o' operands each
+## change the truth value so the skip branch no longer implies NAME empty.
+## Each MUST still flag (ai-review claude + agy, R-063 false-negative round).
+run_det "$(printf '%s\n' \
+   '#!/bin/bash' \
+   'inner_neg() {' \
+   '  [ ! -z "${n}" ] || check_variable_name "${n}" || return 1' \
+   '  printf -v "${n}" "%s" "x"' \
+   '}' \
+   'pipeline_neg() {' \
+   '  ! [ -z "${n}" ] || check_variable_name "${n}" || return 1' \
+   '  printf -v "${n}" "%s" "x"' \
+   '}' \
+   'compound_true() {' \
+   '  [ -z "${n}" -o 1 ] || check_variable_name "${n}" || return 1' \
+   '  printf -v "${n}" "%s" "x"' \
+   '}' \
+   'compound_tautology() {' \
+   '  [ -n "${n}" -o -z "${n}" ] || check_variable_name "${n}" || return 1' \
+   '  printf -v "${n}" "%s" "x"' \
+   '}')"
+assert_at "R-063 flags '[ ! -z NAME ]' (inner negation = non-empty)"   "R-063" 4
+assert_at "R-063 flags '! [ -z NAME ]' (pipeline negation)"            "R-063" 8
+assert_at "R-063 flags '[ -z NAME -o 1 ]' (always-true compound)"      "R-063" 12
+assert_at "R-063 flags '[ -n NAME -o -z NAME ]' (tautology)"           "R-063" 16
 ## Class-killer: byte-span containment != execution reachability. A guard reaches a printf ONLY
 ## within one execution region -- a later function body, and any subshell/subst, are boundaries.
 ## (ai-review reviewdrain16 round 3.)

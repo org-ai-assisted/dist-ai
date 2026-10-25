@@ -399,18 +399,28 @@ def _exit_kind(stmt):
 
 
 def _emptiness_test_params(cmd):
-    """Param names tested by a '[ -z WORD ]' / 'test -z WORD' emptiness check,
-    or None if CMD is not one. Used to recognize the optional-argument guard
-    idiom (see _optional_arg_check): when this test is TRUE the checked name is
-    EMPTY, which carries no injectable subscript, so skipping check_variable_name
-    on that branch is sound."""
-    if bash_ast.command_name(cmd) not in ("[", "test"):
+    """Param names tested by a BARE '[ -z WORD ]' / 'test -z WORD' emptiness
+    check, or None if CMD is not EXACTLY that. Used to recognize the optional-
+    argument guard idiom (see _optional_arg_check): the soundness rests on the
+    test being TRUE iff WORD is EMPTY, so only the exact single unary '-z' test
+    qualifies. A '!' negation ('[ ! -z WORD ]' == non-empty) or any extra operand
+    ('[ -z WORD -o 1 ]', '[ -n X -o -z WORD ]') changes the truth value so the
+    skip branch no longer implies "WORD empty" -- those are decoys and must NOT
+    be credited."""
+    name = bash_ast.command_name(cmd)
+    if name not in ("[", "test"):
         return None
     words = bash_ast.args(cmd)[1:]
-    for i, word in enumerate(words):
-        if bash_ast.word_string(word) == "-z" and i + 1 < len(words):
-            return bash_ast.word_param_names(words[i + 1])
-    return None
+    ## 'test -z WORD' is 2 tokens; '[ -z WORD ]' is 3 (trailing ']'). Any other
+    ## arity means a negation, a compound operator, or a second condition.
+    if name == "test":
+        if len(words) != 2:
+            return None
+    elif len(words) != 3 or bash_ast.word_string(words[2]) != "]":
+        return None
+    if bash_ast.word_string(words[0]) != "-z":
+        return None
+    return bash_ast.word_param_names(words[1])
 
 
 def _optional_arg_check(xcmd, or_ops):
@@ -432,7 +442,12 @@ def _optional_arg_check(xcmd, or_ops):
     check_params = set()
     for word in bash_ast.args(check_cmd)[1:]:
         check_params |= bash_ast.word_param_names(word)
-    test_params = _emptiness_test_params((xcmd.get("X") or {}).get("Cmd") or {})
+    ## Pipeline negation '! [ -z WORD ]' flips the test to "non-empty", so the
+    ## skip branch would leave WORD possibly hostile -- reject it.
+    test_stmt = xcmd.get("X") or {}
+    if test_stmt.get("Negated"):
+        return None
+    test_params = _emptiness_test_params(test_stmt.get("Cmd") or {})
     if test_params is None or not check_params or not check_params <= test_params:
         return None
     return check_cmd
