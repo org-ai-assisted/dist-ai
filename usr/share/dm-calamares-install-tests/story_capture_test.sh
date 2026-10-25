@@ -205,7 +205,7 @@ check "cb_gui_ns_reexec is a no-op in framebuffer mode" "$(( rc == 0 ? 0 : 1 ))"
 
 ## --- gui_compositor_stop: restore the overridden global GUI/SuppressMessages -----------------
 ## was-set -> restored to the saved value; absent -> deleted (setextradata with no value).
-story_capture="window"; gui_vm_pid=""; gui_labwc_pid=""; gui_xdg_dir=""; gui_cfg_dir=""
+story_capture="window"; vm_kept=""; gui_vm_pid=""; gui_labwc_pid=""; gui_xdg_dir=""; gui_cfg_dir=""
 true > "${vbox_log}"
 gui_supmsg_was_set="yes"; gui_supmsg_saved="oldsup"
 gui_compositor_stop
@@ -214,14 +214,36 @@ check "gui_compositor_stop restores a previously-set SuppressMessages" "${got}"
 true > "${vbox_log}"
 gui_supmsg_was_set="no"; gui_supmsg_saved=""
 gui_compositor_stop
-got=0; has 'setextradata global GUI/SuppressMessages' "$(cat -- "${vbox_log}")" || got=1
-check "gui_compositor_stop deletes SuppressMessages when it was absent" "${got}"
+## EXACT line, not a substring: a set-with-value ('... SuppressMessages oldsup') also CONTAINS the
+## bare string, so a substring check would miss a failure-to-delete. Delete records it with no value.
+got=0; grep --quiet --line-regexp 'setextradata global GUI/SuppressMessages' "${vbox_log}" || got=1
+check "gui_compositor_stop deletes SuppressMessages when it was absent (exact, no value)" "${got}"
 ## framebuffer mode: gui_compositor_stop is a no-op (nothing was overridden).
 story_capture="framebuffer"
 true > "${vbox_log}"
 gui_compositor_stop
 got=0; [ ! -s "${vbox_log}" ] || got=1
 check "gui_compositor_stop is a no-op in framebuffer mode" "${got}"
+
+## --- vm_kept: a KEPT --keep-failed VM must NOT have its in-process window frontend killed -----
+## (killing VirtualBoxVM would abort the very VM being kept for inspection). Stand in for the
+## frontend with a real sleep; vm_kept=true leaves it alive, vm_kept unset kills it.
+story_capture="window"; gui_labwc_pid=""; gui_xdg_dir=""; gui_cfg_dir=""
+gui_supmsg_was_set="no"; gui_supmsg_saved=""
+vm_kept="true"
+sleep 30 & keep_pid=$!
+gui_vm_pid="${keep_pid}"
+gui_compositor_stop
+got=0; kill -0 "${keep_pid}" 2>/dev/null || got=1
+check "gui_compositor_stop leaves the frontend ALIVE when vm_kept=true" "${got}"
+kill "${keep_pid}" 2>/dev/null || true; wait "${keep_pid}" 2>/dev/null || true
+vm_kept=""
+sleep 30 & kill_pid=$!
+gui_vm_pid="${kill_pid}"
+gui_compositor_stop
+wait "${kill_pid}" 2>/dev/null || true
+got=0; kill -0 "${kill_pid}" 2>/dev/null && got=1
+check "gui_compositor_stop KILLS the frontend when vm_kept is unset" "${got}"
 
 ## --- story_card: renders a state card from showvminfo via dm-text-to-png ---------------------
 true > "${vbox_log}"; true > "${text_log}"

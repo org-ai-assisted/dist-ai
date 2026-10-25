@@ -213,6 +213,9 @@ on_exit() {
             done
          fi
          if [ "${unplugged}" = 'true' ]; then
+            ## VM KEPT: gui_compositor_stop must leave the window frontend + compositor alive
+            ## (window mode runs the VMM in-process, so killing the frontend aborts this VM).
+            vm_kept='true'
             printf '%s\n' "${me}: kept FAILED VM '${vm}' running for inspection, network unplugged (--keep-failed)" >&2
          elif "${VBOXMANAGE}" controlvm "${vm}" poweroff >/dev/null 2>&1; then
             printf '%s\n' "${me}: could not unplug every NIC of FAILED VM '${vm}'; powered it off instead" >&2
@@ -421,6 +424,10 @@ gui_xdg_dir=""
 gui_cfg_dir=""
 gui_supmsg_was_set=""
 gui_supmsg_saved=""
+## set by on_exit when a --keep-failed run KEPT the VM running for inspection: gui_compositor_stop
+## must then NOT kill the VirtualBoxVM frontend (window mode runs the VMM in-process -- killing the
+## frontend would abort the very VM being kept) or tear down its compositor.
+vm_kept=""
 
 ## coreboot + window: re-exec the lane in a private mount namespace with the fork VBoxDD bind-mounted
 ## (root-owned staged copies -- the hardened loader rejects a non-root app-priv lib), then run with
@@ -437,23 +444,34 @@ cb_gui_ns_reexec() {
    forkbin="$(cd -- "$(dirname -- "${VBOXMANAGE}")" && pwd)"
    stage="$(mktemp --directory --tmpdir "${me}-forklibs.XXXXXX")"
    for l in VBoxDD.so VBoxDD2.so VBoxVMM.so; do
-      cp -p "${forkbin}/${l}" "${stage}/${l}"
+      ## A missing lib (incomplete fork build) must die WITH a reason + not leak the stage dir,
+      ## not exit silently under errexit before the on_exit trap is even installed.
+      if ! { cp -p -- "${forkbin}/${l}" "${stage}/${l}" && chmod 0644 "${stage}/${l}"; }; then
+         safe-rm --recursive --force -- "${stage}" 2>/dev/null || true
+         die "${FAIL_RC}" "coreboot window capture: could not stage fork lib '${l}' from '${forkbin}' (incomplete fork build?)"
+      fi
       chown root:root "${stage}/${l}" 2>/dev/null || true
-      chmod 0644 "${stage}/${l}"
    done
    export DM_GUI_NS_HELD=1 DM_GUI_NS_STAGE="${stage}"
    ## Inside the ns the stock tools are coreboot-capable, so drive the lane with them.
    export VBOXMANAGE=/usr/bin/VBoxManage VBOX_EXEC_VBOXMANAGE=/usr/bin/VBoxManage
    # style-ok: R-103 -- intentional re-exec into a mount namespace for the coreboot GUI display.
    ## DM_GUI_NS_STAGE must expand in the INNER namespace shell (exported above), not here.
+   ## A failed bind-mount must ABORT: the inner bash does not inherit errexit, so without this a
+   ## failed bind would exec the lane with the STOCK VBoxDD -- the coreboot device never loads and
+   ## the failure surfaces cryptically much later. '5' = FAIL_RC (the inner shell has no vars).
    # shellcheck disable=SC2016
    exec unshare --mount -- bash -c '
       mount --make-rprivate / 2>/dev/null || true
       for lib in VBoxDD.so VBoxDD2.so VBoxVMM.so; do
-         mount --bind "${DM_GUI_NS_STAGE}/${lib}" "/usr/lib/virtualbox/${lib}"
+         mount --bind "${DM_GUI_NS_STAGE}/${lib}" "/usr/lib/virtualbox/${lib}" \
+            || { printf "%s\n" "dm-calamares-install: ERROR: coreboot ns bind-mount of ${lib} failed" >&2; exit 5; }
       done
       exec "$@"
    ' -- "$0" "$@"
+   ## exec returns only if unshare itself could not launch -- clean up + fail with the reason.
+   safe-rm --recursive --force -- "${stage}" 2>/dev/null || true
+   die "${FAIL_RC}" "coreboot window capture: could not re-exec into a mount namespace (unshare failed)"
 }
 
 ## Start the private headless labwc compositor (maximize-on-map) the VM window renders in, and set
@@ -576,11 +594,16 @@ gate_check_path() {
 ## off by on_exit's existing controlvm poweroff; this reaps the frontend + compositor we started.
 gui_compositor_stop() {
    [ "${story_capture}" = 'window' ] || return 0
+   ## Always restore the global GUI/SuppressMessages we overrode.
    if [ "${gui_supmsg_was_set}" = 'yes' ]; then
       "${VBOXMANAGE}" setextradata global GUI/SuppressMessages "${gui_supmsg_saved}" >/dev/null 2>&1 || true
    elif [ "${gui_supmsg_was_set}" = 'no' ]; then
       "${VBOXMANAGE}" setextradata global GUI/SuppressMessages >/dev/null 2>&1 || true
    fi
+   ## A KEPT --keep-failed VM: leave its frontend + compositor ALIVE (killing the in-process
+   ## VirtualBoxVM would abort the VM being kept for inspection; dm-release-test's next ephemeral
+   ## cleanup reclaims it). Only the SuppressMessages restore above applies.
+   [ "${vm_kept}" = 'true' ] && return 0
    [ -z "${gui_vm_pid}" ] || kill "${gui_vm_pid}" 2>/dev/null || true
    [ -z "${gui_labwc_pid}" ] || kill "${gui_labwc_pid}" 2>/dev/null || true
    sleep 1
