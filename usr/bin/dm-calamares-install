@@ -144,7 +144,7 @@ on_exit() {
       ## IDisplay API, so it needs NO guest additions and works at any boot stage -- so
       ## EVERY failure publishes what was on screen, never an empty results page. Best-effort.
       if [ "${vm_started}" = 'true' ] && [ ! -s "${stuck}" ]; then
-         "${GUESTCTL}" "${vm}" shot "${stuck}" >/dev/null 2>&1 || true
+         capture_frame "${stuck}" >/dev/null 2>&1 || true
       fi
       ## State card at failure time (which VM state died) -- complements the 99 failure frame.
       if [ "${vm_started}" = 'true' ]; then
@@ -262,6 +262,9 @@ on_exit() {
          fi
       done
    fi
+   ## tear down the persistent GUI compositor last -- every capture_frame above needs labwc + the
+   ## VirtualBoxVM window alive to grim-grab; restores global GUI/SuppressMessages, reaps pids/dirs.
+   gui_compositor_stop
    exit "${rc}"
 }
 
@@ -306,7 +309,7 @@ snap() {
       "${GUESTCTL}" "${vm}" key 2a aa >/dev/null 2>&1 || true
       ## Settle: let the compositor repaint the cleared surfaces (and the wake) before the frame.
       sleep 1
-      "${GUESTCTL}" "${vm}" shot "${out}" >/dev/null 2>&1 || true
+      capture_frame "${out}" >/dev/null 2>&1 || true
       [ "${mode}" = 'rich' ] || return 0
       "${IMAGE_BLANK_CHECK:-image-blank-check}" "${out}" >/dev/null 2>&1 && return 0
       sleep 2
@@ -360,7 +363,7 @@ milestone_blank_mode() {
 story_snap() {
    local nn="$1" name="$2"
    [ -n "${shot_dir}" ] || return 0
-   "${GUESTCTL}" "${vm}" shot "${shot_dir}/${nn}-${name}.png" >/dev/null 2>&1 || true
+   capture_frame "${shot_dir}/${nn}-${name}.png" >/dev/null 2>&1 || true
 }
 
 ## Poll the host framebuffer until it carries content (not a uniform near-black/white frame),
@@ -378,7 +381,7 @@ story_snap_nonblank() {
    [ -n "${shot_dir}" ] || return 0
    local dest="${shot_dir}/${nn}-${name}.png" start="${SECONDS}"
    while : ; do
-      "${GUESTCTL}" "${vm}" shot "${dest}" >/dev/null 2>&1 || true
+      capture_frame "${dest}" >/dev/null 2>&1 || true
       ## image-blank-check exits 0 when the frame is NOT degenerate (content present).
       if [ -s "${dest}" ] \
          && "${IMAGE_BLANK_CHECK:-image-blank-check}" --uniform-only "${dest}" >/dev/null 2>&1; then
@@ -387,6 +390,161 @@ story_snap_nonblank() {
       [ "$(( SECONDS - start ))" -lt "${timeout}" ] || return 1
       sleep "${cadence}"
    done
+}
+
+## --- #18: full-VM-window story capture --------------------------------------------------------
+## story_capture=window (default, operator "maximum faithful"): the VM runs in a maximized
+## VirtualBoxVM GUI window inside a private headless labwc compositor the lane owns; every milestone
+## frame is a grim grab of that window (full guest desktop + the real VirtualBox chrome). Driving +
+## OCR stay on vbox-ctl-local (vboxapi, frontend-agnostic). story_capture=framebuffer: the legacy
+## bare-guest-framebuffer grab (vbox-ctl-local shot) -- an escape hatch (STORY_CAPTURE=framebuffer).
+## coreboot: the fork has no GUI frontend, so main() re-execs the whole lane inside a private mount
+## namespace with the fork VBoxDD bind-mounted over /usr/lib/virtualbox and switches to STOCK tools
+## (which then load the CorebootRom-aware device) -- no system mutation, auto-cleanup.
+story_capture="${STORY_CAPTURE:-window}"
+VBOX_VM_BIN="${VBOX_VM_BIN:-VirtualBoxVM}"
+gui_labwc_pid=""
+gui_vm_pid=""
+gui_xdg_dir=""
+gui_cfg_dir=""
+gui_supmsg_was_set=""
+gui_supmsg_saved=""
+
+## coreboot + window: re-exec the lane in a private mount namespace with the fork VBoxDD bind-mounted
+## (root-owned staged copies -- the hardened loader rejects a non-root app-priv lib), then run with
+## STOCK VBOXMANAGE/GUESTCTL so the stock VirtualBoxVM/vboxapi/grim all load the coreboot device.
+## Guarded by DM_GUI_NS_HELD so it re-execs once. No-op for stock lanes or framebuffer mode.
+cb_gui_ns_reexec() {
+   { [ "${story_capture}" = 'window' ] && [ -n "${coreboot_rom}" ] && [ -z "${DM_GUI_NS_HELD:-}" ]; } || return 0
+   local forkbin stage l
+   ## The coreboot fork's VBoxManage is given as an ABSOLUTE path (VBOXMANAGE=/.../bin/VBoxManage);
+   ## its sibling fork .so files live in that same dir. A bare PATH name cannot locate them.
+   if [ "${VBOXMANAGE#/}" = "${VBOXMANAGE}" ]; then
+      die "${FAIL_RC}" "coreboot window capture needs VBOXMANAGE set to the fork's absolute VBoxManage path (got '${VBOXMANAGE}')"
+   fi
+   forkbin="$(cd -- "$(dirname -- "${VBOXMANAGE}")" && pwd)"
+   stage="$(mktemp --directory --tmpdir "${me}-forklibs.XXXXXX")"
+   for l in VBoxDD.so VBoxDD2.so VBoxVMM.so; do
+      cp -p "${forkbin}/${l}" "${stage}/${l}"
+      chown root:root "${stage}/${l}" 2>/dev/null || true
+      chmod 0644 "${stage}/${l}"
+   done
+   export DM_GUI_NS_HELD=1 DM_GUI_NS_STAGE="${stage}"
+   ## Inside the ns the stock tools are coreboot-capable, so drive the lane with them.
+   export VBOXMANAGE=/usr/bin/VBoxManage VBOX_EXEC_VBOXMANAGE=/usr/bin/VBoxManage
+   # style-ok: R-103 -- intentional re-exec into a mount namespace for the coreboot GUI display.
+   ## DM_GUI_NS_STAGE must expand in the INNER namespace shell (exported above), not here.
+   # shellcheck disable=SC2016
+   exec unshare --mount -- bash -c '
+      mount --make-rprivate / 2>/dev/null || true
+      for lib in VBoxDD.so VBoxDD2.so VBoxVMM.so; do
+         mount --bind "${DM_GUI_NS_STAGE}/${lib}" "/usr/lib/virtualbox/${lib}"
+      done
+      exec "$@"
+   ' -- "$0" "$@"
+}
+
+## Start the private headless labwc compositor (maximize-on-map) the VM window renders in, and set
+## WAYLAND_DISPLAY so grim + the launched GUI target it. window mode only. FATAL on failure -- a
+## broken GUI pipeline must surface before the ~40min install, not as silent blank milestones.
+gui_compositor_start() {
+   [ "${story_capture}" = 'window' ] || return 0
+   gui_xdg_dir="$(mktemp --directory --tmpdir "${me}-gui-xdg.XXXXXX")"
+   chmod 0700 -- "${gui_xdg_dir}"
+   export XDG_RUNTIME_DIR="${gui_xdg_dir}"
+   gui_cfg_dir="$(mktemp --directory --tmpdir "${me}-gui-cfg.XXXXXX")"
+   cat > "${gui_cfg_dir}/rc.xml" <<'RCXML'
+<?xml version="1.0"?>
+<labwc_config><windowRules><windowRule identifier="*"><action name="Maximize"/></windowRule></windowRules></labwc_config>
+RCXML
+   WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_HEADLESS_OUTPUTS=1 \
+      labwc --config-dir "${gui_cfg_dir}" >/dev/null 2>&1 &
+   gui_labwc_pid="$!"
+   local sock="" _ cand
+   for _ in $(seq 1 40); do
+      for cand in "${gui_xdg_dir}"/wayland-*; do
+         [ "${cand}" = "${cand%.lock}" ] || continue
+         [ -S "${cand}" ] || continue
+         sock="${cand}"
+         break
+      done
+      [ -n "${sock}" ] && break
+      kill -0 "${gui_labwc_pid}" 2>/dev/null || die "${FAIL_RC}" "story GUI: labwc exited before creating a socket"
+      sleep 0.25
+   done
+   [ -n "${sock}" ] || die "${FAIL_RC}" "story GUI: labwc did not create a wayland socket"
+   export WAYLAND_DISPLAY="${sock##*/}"
+   wlr-randr --output HEADLESS-1 --custom-mode 1920x1080 >/dev/null 2>&1 || true
+   ## suppress VBox hint popups (e.g. "auto capture keyboard") so they are not in the frame; save
+   ## the global value first and restore it in gui_compositor_stop.
+   local cur
+   cur="$("${VBOXMANAGE}" getextradata global GUI/SuppressMessages 2>/dev/null || true)"
+   case "${cur}" in
+      "Value: "*)
+         gui_supmsg_was_set="yes"
+         gui_supmsg_saved="${cur#Value: }"
+         ;;
+      *)
+         gui_supmsg_was_set="no"
+         gui_supmsg_saved=""
+         ;;
+   esac
+   "${VBOXMANAGE}" setextradata global GUI/SuppressMessages \
+      "remindAboutAutoCapture,remindAboutMouseIntegration,remindAboutInputCapture,confirmInputCapture,remindAboutGoingFullscreen,remindAboutGoingSeamless,remindAboutPausedVMInput,remindAboutInaccessibleMedia,remindAboutGuestAdditionsAreNotActive" \
+      >/dev/null 2>&1 || true
+}
+
+## Launch (or re-launch after a power-cycle) the VM in a maximized VirtualBoxVM GUI window in our
+## compositor. The window frontend runs the VM; the lane keeps driving it via vbox-ctl-local.
+gui_vm_launch() {
+   local uuid
+   uuid="$("${VBOXMANAGE}" showvminfo "${vm}" --machinereadable 2>/dev/null | sed -n 's/^UUID="\(.*\)"$/\1/p' | head -1)" || true
+   [ -n "${uuid}" ] || die "${FAIL_RC}" "story GUI: could not resolve a UUID for VM '${vm}'"
+   "${VBOXMANAGE}" setextradata "${uuid}" GUI/LastGuestSizeHint "1920,1040" >/dev/null 2>&1 || true
+   QT_QPA_PLATFORM="wayland" "${VBOX_VM_BIN}" --startvm "${uuid}" >/dev/null 2>&1 &
+   gui_vm_pid="$!"
+}
+
+## Start the VM for a (re)boot: a maximized GUI window (window mode) or headless (framebuffer mode).
+## Replaces the bare `startvm --type headless`; re-launches the GUI window after a power-cycle.
+start_vm_frontend() {
+   if [ "${story_capture}" = 'window' ]; then
+      [ -z "${gui_vm_pid}" ] || kill "${gui_vm_pid}" 2>/dev/null || true
+      gui_vm_pid=""
+      gui_vm_launch
+   else
+      "${VBOXMANAGE}" startvm "${vm}" --type headless >/dev/null
+   fi
+}
+
+## Capture the current milestone frame to $1: the full VBox VM window (grim grab of our compositor,
+## window mode) or the bare guest framebuffer (vbox-ctl-local, framebuffer mode). Best-effort at the
+## call sites (|| true), matching the prior ${GUESTCTL} shot contract.
+capture_frame() {
+   if [ "${story_capture}" = 'window' ]; then
+      grim "$1"
+   else
+      "${GUESTCTL}" "${vm}" shot "$1"
+   fi
+}
+
+## Tear down the story GUI compositor + restore the global SuppressMessages. The VM itself is powered
+## off by on_exit's existing controlvm poweroff; this reaps the frontend + compositor we started.
+gui_compositor_stop() {
+   [ "${story_capture}" = 'window' ] || return 0
+   if [ "${gui_supmsg_was_set}" = 'yes' ]; then
+      "${VBOXMANAGE}" setextradata global GUI/SuppressMessages "${gui_supmsg_saved}" >/dev/null 2>&1 || true
+   elif [ "${gui_supmsg_was_set}" = 'no' ]; then
+      "${VBOXMANAGE}" setextradata global GUI/SuppressMessages >/dev/null 2>&1 || true
+   fi
+   [ -z "${gui_vm_pid}" ] || kill "${gui_vm_pid}" 2>/dev/null || true
+   [ -z "${gui_labwc_pid}" ] || kill "${gui_labwc_pid}" 2>/dev/null || true
+   sleep 1
+   [ -z "${gui_vm_pid}" ] || kill -KILL "${gui_vm_pid}" 2>/dev/null || true
+   [ -z "${gui_labwc_pid}" ] || kill -KILL "${gui_labwc_pid}" 2>/dev/null || true
+   [ -z "${gui_xdg_dir}" ] || safe-rm --recursive --force -- "${gui_xdg_dir}" 2>/dev/null || true
+   [ -z "${gui_cfg_dir}" ] || safe-rm --recursive --force -- "${gui_cfg_dir}" 2>/dev/null || true
+   [ -z "${DM_GUI_NS_STAGE:-}" ] || safe-rm --recursive --force -- "${DM_GUI_NS_STAGE}" 2>/dev/null || true
 }
 
 ## Redact non-deterministic tokens (a kernel console timestamp like [    3.755312], a per-install
@@ -602,7 +760,7 @@ reboot_installed() {
    "${VBOXMANAGE}" controlvm "${vm}" poweroff 2>/dev/null || true
    sleep 3
    cb_reset_nvram
-   "${VBOXMANAGE}" startvm "${vm}" --type headless >/dev/null
+   start_vm_frontend
    if [ "${role}" = 'sysmaint' ]; then
       select_installed_sysmaint
    fi
@@ -1358,6 +1516,10 @@ main() {
       ## style-ok: R-103 -- intentional re-exec: run this VBox install test under the VM-work lock.
       exec dm-vm-lock acquire --class work --ttl "${DM_CALAMARES_LOCK_TTL:-3600}" -- "$0" "$@"
    fi
+   ## coreboot + window story capture: re-exec inside a private mount namespace with the fork VBoxDD
+   ## bind-mounted over /usr/lib/virtualbox, so the stock VirtualBoxVM loads the CorebootRom device.
+   ## No-op for stock lanes / framebuffer mode (and after it has re-exec'd once).
+   cb_gui_ns_reexec "$@"
    trap on_exit EXIT
    ## Clear any stale stuck screenshot left by a PRIOR run of this account, so on_exit can
    ## only ever publish THIS run's failure screen -- never a previous run's error.
@@ -1366,6 +1528,8 @@ main() {
    if [ -n "${shot_dir}" ]; then
       mkdir --parents -- "${shot_dir}" 2>/dev/null || true
    fi
+   ## Start the story GUI compositor (window mode) so every milestone is a full VBox VM window.
+   gui_compositor_start
 
    printf '%s\n' "${me}: build + boot install session"
    build_vm
@@ -1378,7 +1542,7 @@ main() {
       || die "${FAIL_RC}" "vbox-host-shot could not capture the VirtualBox Manager (vbox-manager)"
    story_card_host 12 vbox-host
    story_card 13 firmware-state "Firmware / Secure Boot varstore state"
-   "${VBOXMANAGE}" startvm "${vm}" --type headless >/dev/null
+   start_vm_frontend
    vm_started="true"
    ## Start the coreboot COM1 drain as soon as the VM is up (a no-op without --coreboot-rom). One
    ## reconnecting drainer survives every later power-cycle (reboot_installed / mok_host_enroll).
@@ -1547,7 +1711,7 @@ main() {
    ## VBox cannot reload (VERR_TAR_BAD_CHKSUM_FIELD -> this startvm fails). coreboot boots the
    ## installed disk by scanning the ESP, so no persistent varstore is needed. No-op otherwise.
    cb_reset_nvram
-   "${VBOXMANAGE}" startvm "${vm}" --type headless >/dev/null
+   start_vm_frontend
    story_snap 42 installed-first-frame
    ## ~5s for the autoboot before the installed GRUB menu. No 'installed-firmware-logo' capture:
    ## the headless VM's firmware draws no splash, so that frame was ALWAYS dark (a guaranteed
@@ -1574,7 +1738,7 @@ main() {
    ## --shot: capture the installed first-boot screen for the results plane (proof the
    ## install succeeded). Best-effort: a capture failure must never fail a passing install.
    if [ -n "${shot}" ]; then
-      "${GUESTCTL}" "${vm}" shot "${shot}" >/dev/null 2>&1 || true
+      capture_frame "${shot}" >/dev/null 2>&1 || true
    fi
    ## Installed first boot is the default 'user' boot role, regardless of the live
    ## install session -- quiesce as 'user', not the live account.
