@@ -464,6 +464,18 @@ check("footer heading is <h3> (no <h4> skip under <h2>)",
 check("heading-skip detector catches an h1->h3 skip (canary)",
       heading_skip("<h1>a</h1><h3>b</h3>") == (1, 3))
 
+## Landmark + scrollable a11y: each page carries exactly one <main> (so page content is
+## inside a landmark region), both nav landmarks are NAMED so they are unique, and the
+## scrollable step-log <pre> is keyboard-focusable. Guards the axe landmark-one-main /
+## landmark-unique / region / scrollable-region-focusable findings at the generator.
+check("run page has exactly one <main> landmark",
+      a_page.count("<main>") == 1 and a_page.count("</main>") == 1)
+check("overview has exactly one <main> landmark", overview.count("<main>") == 1)
+check("header nav is a named landmark", '<nav aria-label="Primary">' in a_page)
+check("footer nav is a named landmark", 'nav class="fcols" aria-label="Footer"' in a_page)
+check("scrollable step-log <pre> is keyboard-focusable",
+      'pre class="steplog" tabindex="0"' in a_page)
+
 ## I: a FAILED run WITH a published screenshot. The shot is shown (<img), the run is st-fail,
 ## and the shot chip carries the step's FAIL status -- NEVER a green pass chip on a failure
 ## screen. Canary: a green chip anywhere on a failed run's page is a fabricated-green signal.
