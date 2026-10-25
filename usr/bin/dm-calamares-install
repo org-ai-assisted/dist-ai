@@ -454,7 +454,7 @@ story_card_host() {
 story_vbox_manager() {
    local nn="$1" name="$2"
    [ -n "${shot_dir}" ] || return 0
-   vbox-host-shot --vm "${vm}" --vboxmanage "${VBOXMANAGE}" \
+   vbox-host-shot manager --vm "${vm}" --vboxmanage "${VBOXMANAGE}" \
       --out "${shot_dir}/${nn}-${name}.png"
 }
 

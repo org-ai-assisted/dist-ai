@@ -5,23 +5,34 @@
 
 ## AI-Assisted
 
-## Real screenshot of the VirtualBox Manager host GUI (showing the registered VMs), captured
-## Wayland-natively on a headless server with no desktop GPU and no logged-in session. The tool
-## starts its OWN dedicated headless labwc compositor (wlroots, software-rendered -- no GPU),
-## runs the Manager as that compositor's single Wayland client, grabs it with grim, and tears
-## the compositor down. Self-contained on purpose: it owns the compositor, so it never depends
-## on an interactive desktop session (Kicksecure is Wayland-only -- there is no X11 path, and a
-## cross-user grab of someone else's session is exactly the fragility this avoids). labwc is
-## Kicksecure's own compositor, so the Manager renders in the stack a user would actually run.
+## Real screenshot of a VirtualBox host GUI surface, captured Wayland-natively on a headless
+## server with no desktop GPU and no logged-in session. Two subcommands:
 ##
-## NO fallback. A failure to start the compositor, launch the Manager, or a blank/degenerate
-## grab EXITS NONZERO -- the caller surfaces it rather than publishing a black rectangle (the
-## operator's "black shot / nonzero exit -> error so the AI investigates" rule).
+##   manager    -- the VirtualBox Manager window (the registered-VM list + Details).
+##   vm-window  -- a running guest's VirtualBox VM window (guest display + VBox chrome).
 ##
-## The Manager is forced into the machine-list + Details view via GUI extradata
-## (GUI/Tools/LastItemsSelected + GUI/LastItemSelected + a wide GUI/LastWindowPosition) so the
-## VM list renders deterministically with no human click: VirtualBox otherwise reopens on the
-## persisted global "Welcome" tool, which shows an EMPTY list even with VMs registered.
+## Both share one mechanism: the tool starts its OWN dedicated headless labwc compositor (wlroots,
+## software-rendered -- no GPU), runs the chosen GUI client as that compositor's single Wayland
+## client, grabs it with grim, validates it is not blank, and tears the compositor down. Self-
+## contained on purpose: it owns the compositor, so it never depends on an interactive desktop
+## session (Kicksecure is Wayland-only -- no X11 path, and a cross-user grab of someone else's
+## session is exactly the fragility this avoids). labwc is Kicksecure's own compositor, so the GUI
+## renders in the stack a user would actually run.
+##
+## NO fallback. A failure to start the compositor, launch the client, or a blank/degenerate grab
+## EXITS NONZERO -- the caller surfaces it rather than publishing a black rectangle (the operator's
+## "black shot / nonzero exit -> error so the AI investigates" rule).
+##
+## manager: the Manager is forced into the machine-list + Details view via GUI extradata
+## (GUI/Tools/LastItemsSelected + GUI/LastItemSelected + a wide GUI/LastWindowPosition) so the VM
+## list renders deterministically with no human click (VirtualBox otherwise reopens on the global
+## "Welcome" tool, an EMPTY list even with VMs registered).
+##
+## vm-window: the tool STARTS the VM (VirtualBoxVM --startvm) and owns its lifecycle, like the
+## Manager client; it sizes the VM window to fill the output so the full guest desktop shows, and
+## suppresses VirtualBox's passive hint popups (e.g. "auto capture keyboard") so they are not in
+## the frame. It does NOT itself arrange coreboot/Dasharo firmware -- that a guest renders coreboot
+## is a property of the VM + the VBox build in use, not of this capture tool.
 
 set -o errexit
 set -o nounset
@@ -35,15 +46,20 @@ export LC_ALL=C
 me="${0##*/}"
 VBOXMANAGE="${VBOXMANAGE:-VBoxManage}"
 IMAGE_BLANK_CHECK="${IMAGE_BLANK_CHECK:-image-blank-check}"
+## GUI client binaries (overridable for a source build / fork): the Manager app and the per-VM
+## window frontend. Launched by name from PATH by default.
+VBOX_MANAGER_BIN="${VBOX_MANAGER_BIN:-VirtualBox}"
+VBOX_VM_BIN="${VBOX_VM_BIN:-VirtualBoxVM}"
 
 vm=""
 out=""
 ## user-typical desktop resolution -- the backend is headless either way, so fidelity comes from
-## the resolution and the real labwc/Manager stack, not from a GPU.
+## the resolution and the real labwc/GUI stack, not from a GPU.
 width="1920"
 height="1080"
-## the Manager queries the VM list once early; give VBoxSVC + the GUI time to enumerate and paint.
-settle="15"
+## seconds to let the GUI enumerate + paint before the grab. The Manager queries the VM list once
+## early; a vm-window must also boot the guest to a painted desktop, so each verb sets its own.
+settle=""
 
 labwc_pid=""
 vbox_pid=""
@@ -52,6 +68,15 @@ own_config_dir=""
 labwc_log=""
 vbox_log=""
 shot_tmp=""
+## set to 'yes' by a verb that wants its client window maximized to fill the output (so the full
+## guest desktop shows, no black border). labwc does not honour VirtualBox's window-geometry hint
+## for a VM window, so maximize-on-map is the reliable framing.
+maximize_window=""
+## vm-window: the VM this run STARTED (power it off cleanly on exit, not a process-kill abort) and
+## the global GUI/SuppressMessages we overrode (restore it -- we must not leave global state dirty).
+started_vm_uuid=""
+supmsg_was_set=""
+supmsg_saved=""
 
 die() {
    local rc="$1"
@@ -61,10 +86,27 @@ die() {
 }
 
 ## Tear down everything this tool started, on ANY exit, so a failed capture never leaks a
-## compositor, a Manager process, or a private runtime dir. PIDs are explicit (no pattern
-## match -> no self-kill risk). VBoxSVC is left alone: it is --auto-shutdown and self-reaps.
+## compositor, a GUI process, or a private runtime dir. PIDs are EXPLICIT (the client + the
+## compositor this run launched) -- NEVER a pattern match like `pkill VirtualBoxVM`/`pkill labwc`,
+## which would reach a real VM or a compositor the tool did not start. For vm-window the client is
+## a running VM: killing our own VirtualBoxVM child closes that transient capture VM and leaves any
+## pre-existing VM untouched. VBoxSVC is left alone: it is --auto-shutdown and self-reaps.
 cleanup() {
    local rc=$?
+   ## vm-window started a VM: power it off CLEANLY via the API first (marks it PoweredOff, not the
+   ## Aborted state a bare process-kill of the VM frontend leaves) BEFORE reaping -- never lose
+   ## guest state to a KILL. The frontend then exits on its own; the kills below are a backstop.
+   if [ -n "${started_vm_uuid}" ]; then
+      "${VBOXMANAGE}" controlvm "${started_vm_uuid}" poweroff >/dev/null 2>&1 || true
+      sleep 2
+   fi
+   ## restore the global GUI/SuppressMessages we overrode (set it back, or delete if it was absent),
+   ## so a vm-window capture leaves the user's VirtualBox hint preferences unchanged.
+   if [ "${supmsg_was_set}" = 'yes' ]; then
+      "${VBOXMANAGE}" setextradata global GUI/SuppressMessages "${supmsg_saved}" >/dev/null 2>&1 || true
+   elif [ "${supmsg_was_set}" = 'no' ]; then
+      "${VBOXMANAGE}" setextradata global GUI/SuppressMessages >/dev/null 2>&1 || true
+   fi
    [ -z "${vbox_pid}" ] || kill "${vbox_pid}" 2>/dev/null || true
    [ -z "${labwc_pid}" ] || kill "${labwc_pid}" 2>/dev/null || true
    ## brief grace for a clean client/compositor exit, then hard-reap any straggler we own.
@@ -81,20 +123,26 @@ cleanup() {
 }
 
 usage() {
-   printf '%s\n' "usage: ${me} --vm NAME --out PATH.png [--width N] [--height N] [--settle SECS]
-       [--vboxmanage PATH]
+   printf '%s\n' "usage: ${me} <manager|vm-window> --vm NAME --out PATH.png [--width N] [--height N]
+       [--settle SECS] [--vboxmanage PATH]
 
-Capture a real Wayland screenshot of the VirtualBox Manager (machine list + Details) for the
-host account this runs as, into --out. Exits nonzero (no fallback) if the compositor, the
-Manager, or a non-blank grab cannot be produced.
+Capture a real Wayland screenshot of a VirtualBox host GUI surface, for the host account this
+runs as, into --out. No default subcommand -- one of 'manager' or 'vm-window' is required. Exits
+nonzero (no fallback) if the compositor, the GUI, or a non-blank grab cannot be produced.
 
---vm         VM name or UUID to pre-select in the Manager's list (so Details are shown).
---out        destination PNG (its parent directory must already exist).
---width/--height  headless output resolution (default ${width}x${height}).
---settle     seconds to let the Manager enumerate + paint before the grab (default ${settle})."
+Subcommands:
+  manager      the VirtualBox Manager window (machine list + Details).
+  vm-window    a running guest's VM window (guest display + VBox chrome); STARTS the VM.
+
+Options (both verbs):
+  --vm         manager: VM name/UUID to pre-select (Details shown). vm-window: VM to start+grab (required).
+  --out        destination PNG (its parent directory must already exist).
+  --width/--height  headless output resolution (default ${width}x${height}).
+  --settle     seconds to let the GUI enumerate/boot + paint before the grab (per-verb default)."
 }
 
-parse_args() {
+## Shared flag parser for both verbs. The verb was already shifted off \$@.
+parse_common_args() {
    while [ "$#" -gt 0 ]; do
       case "$1" in
          --vm)
@@ -133,8 +181,7 @@ parse_args() {
    [ -n "${out}" ] || die 2 "--out is required"
 }
 
-## UUID of a VM by name-or-UUID, or empty if it cannot be resolved (then the Manager simply
-## opens with no pre-selection, still showing the list).
+## UUID of a VM by name-or-UUID, or empty if it cannot be resolved.
 vm_uuid() {
    local name="$1"
    [ -n "${name}" ] || return 0
@@ -142,35 +189,45 @@ vm_uuid() {
       | sed -n 's/^UUID="\(.*\)"$/\1/p' | head -1
 }
 
-main() {
-   parse_args "$@"
-
-   ## Always use a PRIVATE runtime dir: the test account has no logind /run/user/<uid>, and an
-   ## isolated dir makes the compositor's socket the only wayland-* here -> unambiguous discovery
-   ## and zero chance of grabbing a neighbouring session's compositor.
+## Start the private headless labwc compositor and set WAYLAND_DISPLAY + the output mode. Sets the
+## globals the cleanup trap reaps. Shared by both verbs -- the single nontrivial lifecycle lives
+## here, in ONE place, so the teardown/kill logic is never duplicated (and so never drifts unsafe).
+start_compositor() {
+   ## Always a PRIVATE runtime dir: the test account has no logind /run/user/<uid>, and an isolated
+   ## dir makes the compositor's socket the only wayland-* here -> unambiguous discovery and zero
+   ## chance of grabbing a neighbouring session's compositor.
    own_runtime_dir="$(mktemp --directory --tmpdir "${me}-xdg.XXXXXX")"
    chmod 0700 -- "${own_runtime_dir}"
    export XDG_RUNTIME_DIR="${own_runtime_dir}"
-
    labwc_log="$(mktemp --tmpdir "${me}-labwc.XXXXXX.log")"
    vbox_log="$(mktemp --tmpdir "${me}-vbox.XXXXXX.log")"
 
-   ## Private, EMPTY labwc config dir: with no account autostart, the ONLY client is the Manager
-   ## we launch -- an account's autostart app could otherwise paint into the grab and pass the
-   ## non-blank check as if it were the Manager.
+   ## Private, EMPTY labwc config dir: with no account autostart, the ONLY client is the one we
+   ## launch -- an account's autostart app could otherwise paint into the grab and pass the
+   ## non-blank check as if it were ours.
    own_config_dir="$(mktemp --directory --tmpdir "${me}-cfg.XXXXXX")"
+   ## Optional: maximize the single client window on map so it fills the output (vm-window framing).
+   if [ "${maximize_window}" = 'yes' ]; then
+      cat > "${own_config_dir}/rc.xml" <<'RCXML'
+<?xml version="1.0"?>
+<labwc_config>
+  <windowRules>
+    <windowRule identifier="*">
+      <action name="Maximize"/>
+    </windowRule>
+  </windowRules>
+</labwc_config>
+RCXML
+   fi
    export WLR_BACKENDS="headless"
    export WLR_LIBINPUT_NO_DEVICES="1"
    export WLR_HEADLESS_OUTPUTS="1"
    labwc --config-dir "${own_config_dir}" >"${labwc_log}" 2>&1 &
    labwc_pid="$!"
 
-   ## Private runtime dir -> the compositor's socket is the only wayland-* here; poll for it to
-   ## appear (nullglob yields nothing until labwc binds it). -S picks the socket, not its .lock.
    local sock="" _ cand
    for _ in $(seq 1 40); do
       for cand in "${XDG_RUNTIME_DIR}"/wayland-*; do
-         ## skip the .lock sidecar; -S then picks the socket itself.
          [ "${cand}" = "${cand%.lock}" ] || continue
          [ -S "${cand}" ] || continue
          sock="${cand}"
@@ -183,42 +240,121 @@ main() {
    [ -n "${sock}" ] || die 1 "labwc did not create a wayland socket within timeout"
    export WAYLAND_DISPLAY="${sock##*/}"
 
-   ## user-typical resolution on the single headless output.
    wlr-randr --output HEADLESS-1 --custom-mode "${width}x${height}" >/dev/null 2>&1 \
       || die 1 "wlr-randr could not set ${width}x${height} on HEADLESS-1"
+}
 
-   ## Deterministic machine-list view (see header). Best-effort: a stale/absent key must not
-   ## block the grab -- the worst case is the welcome screen, which the blank-check does not catch,
-   ## so the view keys are what make the VM list actually render.
+## grim-capture onto a TEMP, validate non-blank, and move to --out only on success: a failed or
+## blank grab must leave NO file at --out, so a non-fatal caller can never publish a black
+## rectangle. The move is the single commit point. \$1 is a human label for the error message.
+grab_and_commit() {
+   local what="$1"
+   kill -0 "${vbox_pid}" 2>/dev/null || die 1 "${what} exited before the grab; log: $(cat "${vbox_log}")"
+   ## Stage the temp IN the destination directory so the final move is an atomic rename (not a
+   ## cross-filesystem copy a reader could observe half-written) -- the single commit point holds
+   ## even when --out is on another filesystem than the default tmpdir.
+   shot_tmp="$(mktemp --tmpdir="$(dirname -- "${out}")" "${me}-shot.XXXXXX.png")"
+   grim "${shot_tmp}" >/dev/null 2>&1 || die 1 "grim failed to capture the compositor output"
+   "${IMAGE_BLANK_CHECK}" "${shot_tmp}" >/dev/null 2>&1 \
+      || die 1 "captured ${what} frame is blank/degenerate -- the GUI did not render"
+   mv -- "${shot_tmp}" "${out}"
+   shot_tmp=""
+}
+
+cmd_manager() {
+   parse_common_args "$@"
+   [ -n "${settle}" ] || settle="15"
+   start_compositor
+
+   ## Deterministic machine-list view (see header). Best-effort: a stale/absent key must not block
+   ## the grab -- the view keys are what make the VM list actually render.
    "${VBOXMANAGE}" setextradata global GUI/Tools/LastItemsSelected "Machines,Details" >/dev/null 2>&1 || true
    "${VBOXMANAGE}" setextradata global GUI/LastWindowPosition "0,0,$((width - 10)),$((height - 20))" >/dev/null 2>&1 || true
    local uuid
    uuid="$(vm_uuid "${vm}")" || true
    [ -z "${uuid}" ] || "${VBOXMANAGE}" setextradata global GUI/LastItemSelected "m=${uuid}" >/dev/null 2>&1 || true
 
-   QT_QPA_PLATFORM="wayland" VirtualBox >"${vbox_log}" 2>&1 &
+   QT_QPA_PLATFORM="wayland" "${VBOX_MANAGER_BIN}" >"${vbox_log}" 2>&1 &
    vbox_pid="$!"
-
    sleep "${settle}"
-   kill -0 "${vbox_pid}" 2>/dev/null || die 1 "VirtualBox Manager exited before the grab; log: $(cat "${vbox_log}")"
+   grab_and_commit "VirtualBox Manager"
+}
 
-   ## Capture + validate on a TEMP, then move to --out only on success: a failed or blank grab
-   ## must leave NO file at --out, so a non-fatal caller (e.g. an EXIT-trap end-of-story shot)
-   ## can never publish a black rectangle. The move is the single commit point.
-   shot_tmp="$(mktemp --tmpdir "${me}-shot.XXXXXX.png")"
-   grim "${shot_tmp}" >/dev/null 2>&1 || die 1 "grim failed to capture the compositor output"
+cmd_vm_window() {
+   parse_common_args "$@"
+   [ -n "${vm}" ] || die 2 "vm-window: --vm is required (the VM to start and capture)"
+   ## a guest boot to a painted desktop takes longer than the Manager's list query.
+   [ -n "${settle}" ] || settle="45"
+   local uuid
+   ## || true: vm_uuid ends in a pipeline whose VBoxManage stage exits nonzero for an unregistered
+   ## VM; under errexit+pipefail an unguarded substitution would exit a bare 1 BEFORE the explicit
+   ## die below, swallowing the diagnostic (mirrors cmd_manager). The [ -n ] check reports it.
+   uuid="$(vm_uuid "${vm}")" || true
+   [ -n "${uuid}" ] || die 2 "vm-window: could not resolve a UUID for VM '${vm}'"
 
-   ## No black rectangles: a blank Manager frame means the GUI did not render -> error, not a
-   ## published void (the operator's honesty rule).
-   "${IMAGE_BLANK_CHECK}" "${shot_tmp}" >/dev/null 2>&1 \
-      || die 1 "captured VirtualBox Manager frame is blank/degenerate -- the GUI did not render"
+   ## fill the output with the VM window so the full guest desktop shows (no black border).
+   maximize_window="yes"
+   start_compositor
 
-   mv -- "${shot_tmp}" "${out}"
-   shot_tmp=""
+   ## Suppress VirtualBox's passive hint popups so they are not in the frame (e.g. the "auto
+   ## capture keyboard" notification). SuppressMessages is a global comma list of GUI hint IDs; save
+   ## the current value first so cleanup restores it (we mutate a persistent global setting).
+   local cur
+   cur="$("${VBOXMANAGE}" getextradata global GUI/SuppressMessages 2>/dev/null || true)"
+   case "${cur}" in
+      "Value: "*)
+         supmsg_was_set="yes"
+         supmsg_saved="${cur#Value: }"
+         ;;
+      *)
+         supmsg_was_set="no"
+         supmsg_saved=""
+         ;;
+   esac
+   "${VBOXMANAGE}" setextradata global GUI/SuppressMessages \
+      "remindAboutAutoCapture,remindAboutMouseIntegration,remindAboutInputCapture,confirmInputCapture,remindAboutGoingFullscreen,confirmGoingFullscreen,remindAboutGoingSeamless,remindAboutPausedVMInput,remindAboutInaccessibleMedia,remindAboutGuestAdditionsAreNotActive,showRuntimeError.warning.HostAudioNotResponding" \
+      >/dev/null 2>&1 || true
+   ## Open the VM window filling the output so the full guest desktop shows (the GA auto-resizes a
+   ## booted desktop to the window). Per-VM window geometry lives in VM extradata.
+   "${VBOXMANAGE}" setextradata "${uuid}" GUI/LastNormalWindowPosition "0,0,${width},${height}" >/dev/null 2>&1 || true
+   "${VBOXMANAGE}" setextradata "${uuid}" GUI/LastGuestSizeHint "${width},$((height - 40))" >/dev/null 2>&1 || true
+
+   ## Pass the resolved UUID as a positional arg (array, never a string through sh -c): no shell/
+   ## argument injection into the launch. Record it so cleanup powers the VM off cleanly.
+   QT_QPA_PLATFORM="wayland" "${VBOX_VM_BIN}" --startvm "${uuid}" >"${vbox_log}" 2>&1 &
+   vbox_pid="$!"
+   started_vm_uuid="${uuid}"
+   sleep "${settle}"
+   grab_and_commit "VirtualBox VM window"
+}
+
+main() {
+   local verb="${1:-}"
+   [ "$#" -eq 0 ] || shift
+   case "${verb}" in
+      manager)
+         cmd_manager "$@"
+         ;;
+      vm-window)
+         cmd_vm_window "$@"
+         ;;
+      --help|-h)
+         usage
+         exit 0
+         ;;
+      "")
+         usage >&2
+         die 2 "a subcommand is required: manager | vm-window"
+         ;;
+      *)
+         usage >&2
+         die 2 "unknown subcommand: ${verb} (expected: manager | vm-window)"
+         ;;
+   esac
 }
 
 ## Execute only when run directly; a unit test sources this to exercise the pure helpers
-## (parse_args / vm_uuid) without starting a compositor.
+## (parse_common_args / vm_uuid) without starting a compositor.
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
    trap cleanup EXIT
    main "$@"
