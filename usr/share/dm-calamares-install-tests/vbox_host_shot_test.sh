@@ -123,6 +123,22 @@ rc=0
 ( main vm-window --out dummy.png ) || rc=$?
 check "vm-window requires --vm (exit 2, before compositor)" "$(ok "${rc}" 2)"
 
+## vm-window with an UNREGISTERED VM must die 2 WITH the diagnostic -- not a bare, message-less
+## errexit exit 1. vm_uuid ends in a pipeline whose VBoxManage stage exits nonzero for an unknown
+## VM; the resolution needs '|| true' so the explicit [ -n uuid ] check can run. FAILS on pre-fix
+## code: without the guard, errexit exits 1 before the die, so rc is 1 and no message is printed.
+vm=""
+rc=0
+err="$( ( main vm-window --vm nosuchvm --out dummy.png ) 2>&1 1>/dev/null )" || rc=$?
+check "vm-window unregistered VM dies 2 (not a bare exit 1)" "$(ok "${rc}" 2)"
+got=1
+case "${err}" in
+   *"could not resolve a UUID"*)
+      got=0
+      ;;
+esac
+check "vm-window unregistered VM prints the diagnostic" "${got}"
+
 printf '%s\n' "" "vbox_host_shot_test: ${pass} pass, ${fail} fail, 0 skip"
 [ "${fail}" -eq 0 ] || exit 1
 exit 0

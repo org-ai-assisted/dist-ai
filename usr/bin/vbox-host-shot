@@ -264,7 +264,10 @@ cmd_vm_window() {
    ## a guest boot to a painted desktop takes longer than the Manager's list query.
    [ -n "${settle}" ] || settle="45"
    local uuid
-   uuid="$(vm_uuid "${vm}")"
+   ## || true: vm_uuid ends in a pipeline whose VBoxManage stage exits nonzero for an unregistered
+   ## VM; under errexit+pipefail an unguarded substitution would exit a bare 1 BEFORE the explicit
+   ## die below, swallowing the diagnostic (mirrors cmd_manager). The [ -n ] check reports it.
+   uuid="$(vm_uuid "${vm}")" || true
    [ -n "${uuid}" ] || die 2 "vm-window: could not resolve a UUID for VM '${vm}'"
 
    ## fill the output with the VM window so the full guest desktop shows (no black border).
