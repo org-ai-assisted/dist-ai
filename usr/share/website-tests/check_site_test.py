@@ -1558,8 +1558,9 @@ def run():
         # so a broken wiki-markup family page fails loudly instead of slipping through.
         _write(root, 'index.html', _mwpage)
         _write(root, _cfg, 'policies: [family]\n')
-        applies, _reason = check_site._family_applies(root)
-        check('policies: [family] forces family policy on wiki-looking markup', applies)
+        policy, _reason = check_site._policy_for(root)
+        check('policies: [family] forces family policy on wiki-looking markup',
+              policy == 'family')
     with tempfile.TemporaryDirectory() as root:
         # family-looking page but policies: [wiki] -> SKIP, with the DECLARED reason
         # (not the heuristic "MediaWiki markup" message).
@@ -1578,12 +1579,105 @@ def run():
         check('main() emits a FAIL line for a malformed config',
               'FAIL ' in err and rc != 77, repr(err))
 
-    check('_family_applies is invoked from main()', '_family_applies(root)' in main_body)
-    _fa_body = inspect.getsource(check_site._family_applies)
-    check('_family_applies consults the declarative config',
-          'config.policies(root)' in _fa_body)
-    check('_family_applies falls back to the markup heuristic',
-          '_looks_like_wiki(root)' in _fa_body)
+    check('_policy_for is invoked from main()', '_policy_for(root)' in main_body)
+    _pf_body = inspect.getsource(check_site._policy_for)
+    check('_policy_for consults the declarative config',
+          'config.policies(root)' in _pf_body)
+    check('_policy_for falls back to the markup heuristic',
+          '_looks_like_wiki(root)' in _pf_body)
+
+    # JOURNAL policy (vendor-neutral academic site): same battery as family MINUS the
+    # family-footer-links assertion, PLUS footer-nav-consistency + a stricter CSP.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _page % '<p>x</p>')
+        _write(root, _cfg, 'policies: [journal]\n')
+        policy, _reason = check_site._policy_for(root)
+        check('policies: [journal] selects the journal policy', policy == 'journal')
+
+    # check_footer under the journal policy: does NOT demand the FAMILY links (vendor-neutral),
+    # but STILL requires the index to have a footer at all.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+               '<title>J</title></head><body><main>x</main>'
+               '<footer><nav class="footer-nav"><a href="./">Home</a></nav></footer>'
+               '</body></html>')
+        failures = []
+        check_site.check_footer(root, failures, require_family_links=False)
+        check('journal check_footer does not demand family links',
+              not any('family link' in f for f in failures), repr(failures))
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+               '<title>J</title></head><body><main>x</main></body></html>')
+        failures = []
+        check_site.check_footer(root, failures, require_family_links=False)
+        check('journal check_footer still requires the index to have a footer',
+              any('no <footer>' in f for f in failures), repr(failures))
+
+    # check_footer_nav: present + identical across pages passes; a dropped/reordered item or a
+    # missing nav fails.
+    _jfoot = ('<footer><nav class="footer-nav"><a href="%(p)s">Home</a>'
+              '<a href="%(p)sabout/">About</a><a href="%(p)sfeed.xml">RSS</a></nav></footer>')
+
+    def _jpage(body, foot):
+        return ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
+                '<title>J</title></head><body><main>%s</main>%s</body></html>' % (body, foot))
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _jpage('home', _jfoot % {'p': './'}))
+        _write(root, 'about/index.html', _jpage('about', _jfoot % {'p': '../'}))
+        failures = []
+        check_site.check_footer_nav(root, failures)
+        check('check_footer_nav passes a consistent footer nav (depth-relative hrefs ok)',
+              failures == [], repr(failures))
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _jpage('home', _jfoot % {'p': './'}))
+        # a page that drops the RSS item -> inconsistent
+        _write(root, 'about/index.html', _jpage('about',
+               '<footer><nav class="footer-nav"><a href="../">Home</a>'
+               '<a href="../about/">About</a></nav></footer>'))
+        failures = []
+        check_site.check_footer_nav(root, failures)
+        check('check_footer_nav flags an inconsistent (dropped-item) footer nav',
+              any('footer nav inconsistent' in f for f in failures), repr(failures))
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _jpage('home', _jfoot % {'p': './'}))
+        _write(root, 'bare/index.html', _jpage('bare', ''))   # no footer nav
+        failures = []
+        check_site.check_footer_nav(root, failures)
+        check('check_footer_nav flags a page missing the footer nav',
+              any('no footer nav' in f for f in failures), repr(failures))
+
+    # check_journal_csp: the final journal policy passes; a weaker script-src, an unsafe-inline,
+    # or a missing Trusted-Types directive fails.
+    _jcsp_ok = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; "
+                "base-uri 'none'; form-action 'none'; object-src 'none'; "
+                "require-trusted-types-for 'script'; trusted-types 'none'")
+
+    def _csp_page(csp):
+        return ('<!doctype html><html lang="en"><head><meta charset="utf-8"><title>J</title>'
+                '<meta http-equiv="Content-Security-Policy" content="%s"></head>'
+                '<body><main>x</main></body></html>' % csp)
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _csp_page(_jcsp_ok))
+        failures = []
+        check_site.check_journal_csp(root, failures)
+        check('check_journal_csp passes the final hardened journal CSP', failures == [],
+              repr(failures))
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _csp_page(_jcsp_ok.replace("script-src 'self'",
+                                                              "script-src 'self' 'unsafe-inline'")))
+        failures = []
+        check_site.check_journal_csp(root, failures)
+        check('check_journal_csp flags unsafe-inline in script-src',
+              any('unsafe-inline' in f for f in failures), repr(failures))
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _csp_page(
+            _jcsp_ok.replace("; require-trusted-types-for 'script'", '')))
+        failures = []
+        check_site.check_journal_csp(root, failures)
+        check('check_journal_csp flags a missing require-trusted-types-for',
+              any('require-trusted-types-for' in f for f in failures), repr(failures))
 
     # Pure-predicate unit tests: these functions were reachable only through fixtures, so a
     # regression in the math/parsing silently mis-gated. Drive them directly on known values.

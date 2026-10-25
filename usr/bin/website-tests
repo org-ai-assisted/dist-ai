@@ -122,6 +122,13 @@ run_required_unit_test ../domsnap-engine/tests/test_host_scrub.py
 [ -v OUTPUT_LIES_REPO ] || OUTPUT_LIES_REPO=''
 [ -v SECURE_TERMINAL_SITE_REPO ] || SECURE_TERMINAL_SITE_REPO=''
 [ -v ORG_AI_ASSISTED_REPO ] || ORG_AI_ASSISTED_REPO=''
+## The journal (computer-security-research) is BUILT by journal-maker; its served tree is
+## the build output (_site, with its own index.html + .github/web-tests.yml policies:[journal]),
+## NOT the source checkout (which has no index.html). So the default points at .../_site; an
+## unset override with no built tree there is simply skipped (add_root), and an explicit
+## override must point at a BUILT tree. The journal deploys via its own CI, so site-deploy does
+## NOT publish it -- this lane only gates the local build.
+[ -v COMPUTER_SECURITY_RESEARCH_REPO ] || COMPUTER_SECURITY_RESEARCH_REPO=''
 ## The defaults below are rooted at ${HOME}. An unset HOME is an UNEXPECTED, scrubbed
 ## environment -- NOT the normal "no site checkout on this host" case -- so it must FAIL,
 ## never be papered over as a SKIP (no unauthorized skips). Record it, then empty HOME so
@@ -162,6 +169,7 @@ add_root(){
 add_root "${OUTPUT_LIES_REPO}"          "${HOME}/private-sources/output-lies.github.io"
 add_root "${SECURE_TERMINAL_SITE_REPO}" "${HOME}/private-sources/secure-terminal.github.io"
 add_root "${ORG_AI_ASSISTED_REPO}"      "${HOME}/private-sources/org-ai-assisted.github.io"
+add_root "${COMPUTER_SECURITY_RESEARCH_REPO}" "${HOME}/private-sources/computer-security-research.github.io/_site"
 
 ## The secure-terminal site alone carries the shot galleries, so resolve its root for the
 ## shot-inventory guard below (only that site gets the check). Same explicit-but-invalid
