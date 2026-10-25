@@ -108,7 +108,17 @@ cat > "${frontend_stub}" <<STUB
 printf '%s\n' "\$*" >> '${frontend_log}'
 exit 0
 STUB
-chmod +x "${guestctl_stub}" "${vbox_stub}" "${text_stub}" "${grim_stub}" "${frontend_stub}"
+
+## image-blank-check stub: record argv (so a test can assert --uniform-only vs rich) and pass (0 =
+## content present / not degenerate), so story_snap_nonblank returns on its first poll.
+ibc_log="${work}/ibc.calls"
+ibc_stub="${work}/image-blank-check"
+cat > "${ibc_stub}" <<STUB
+#!/bin/bash
+printf '%s\n' "\$*" >> '${ibc_log}'
+exit 0
+STUB
+chmod +x "${guestctl_stub}" "${vbox_stub}" "${text_stub}" "${grim_stub}" "${frontend_stub}" "${ibc_stub}"
 
 ## grim is resolved from PATH (capture_frame calls it bare); front-load the stub dir.
 PATH="${work}:${PATH}"
@@ -121,6 +131,7 @@ GUESTCTL="${guestctl_stub}"
 VBOXMANAGE="${vbox_stub}"
 DM_TEXT_TO_PNG="${text_stub}"
 VBOX_VM_BIN="${frontend_stub}"
+IMAGE_BLANK_CHECK="${ibc_stub}"
 
 pass=0; fail=0
 check() { if [ "$2" -eq 0 ]; then pass=$(( pass + 1 )); printf '%s\n' "PASS: $1"; else fail=$(( fail + 1 )); printf '%s\n' "FAIL: $1"; fi; }
@@ -141,6 +152,12 @@ check "capture_frame window mode writes a bare-guest gate sibling via GUESTCTL" 
 ## gate_check_path points the gates at the guest sibling in window mode, the published frame in fb.
 got=0; [ "$(gate_check_path "${shot_dir}/cf-window.png")" = "${shot_dir}/.gate/cf-window.png" ] || got=1
 check "gate_check_path returns the guest sibling in window mode" "${got}"
+## leak guard: a window capture OUTSIDE shot_dir (the failure stuck shot / --shot) writes NO gate
+## sibling -- it is never gated, and a ${HOME}/.gate would leak uncleaned by on_exit.
+true > "${guestctl_log}"
+capture_frame "${work}/outside-stuck.png"
+got=0; { [ -s "${work}/outside-stuck.png" ] && [ ! -e "${work}/.gate" ] && [ ! -s "${guestctl_log}" ]; } || got=1
+check "capture_frame window mode writes NO gate sibling outside shot_dir" "${got}"
 
 story_capture="framebuffer"
 true > "${grim_log}"; true > "${guestctl_log}"
@@ -163,6 +180,25 @@ check "story_snap writes the bare-guest gate sibling" "${got}"
 ## No quiesce: one grim grab + the gate shot, but NONE of snap()'s move/key wake round-trip.
 got=0; { [ "$(grep -c . "${grim_log}")" -eq 1 ] && ! grep --quiet --extended-regexp 'move|key' "${guestctl_log}"; } || got=1
 check "story_snap does one grab + gate shot, no quiesce move/key" "${got}"
+
+## --- story_snap_nonblank rich: poll with the near-blank (rich) check + a DPMS Shift tap --------
+story_capture="window"
+true > "${grim_log}"; true > "${guestctl_log}"; true > "${ibc_log}"
+story_snap_nonblank 73 vt-graphical-restored 5 1 rich
+got=0; [ -s "${shot_dir}/73-vt-graphical-restored.png" ] || got=1
+check "story_snap_nonblank rich writes the published milestone" "${got}"
+got=0; has 'testvm key 2a aa' "$(cat -- "${guestctl_log}")" || got=1
+check "story_snap_nonblank rich taps Shift to wake a DPMS-blanked panel" "${got}"
+## rich uses image-blank-check's near-blank mode (NO --uniform-only), matching main's rich gate.
+got=0; ! grep --quiet -- '--uniform-only' "${ibc_log}" || got=1
+check "story_snap_nonblank rich checks near-blank (no --uniform-only)" "${got}"
+## control: the DEFAULT (uniform) mode passes --uniform-only and does NOT tap Shift.
+true > "${ibc_log}"; true > "${guestctl_log}"
+story_snap_nonblank 11 firmware-logo 5 1
+got=0; grep --quiet -- '--uniform-only' "${ibc_log}" || got=1
+check "story_snap_nonblank default mode checks uniform-only" "${got}"
+got=0; ! grep --quiet --extended-regexp 'key 2a aa' "${guestctl_log}" || got=1
+check "story_snap_nonblank default mode does NOT tap Shift" "${got}"
 
 ## --- start_vm_frontend dispatch -------------------------------------------------------------
 story_capture="window"

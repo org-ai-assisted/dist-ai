@@ -346,10 +346,13 @@ snap() {
 ##             checked on their own paths in main and so are never black here.
 milestone_blank_mode() {
    case "$1" in
-      live-guestcontrol-ready|welcome|location|keyboard|partitions|partitions-luks-filled|summary|install-started|install-done|installed-grub-menu|first-boot|mok-reboot-desktop|terminal-open|sysmaint-terminal|check-6-gui-rendered|checks-complete|vt-graphical-restored)
-         ## installed-grub-menu is hundreds of colours when the menu rendered (only a blank fails);
+      live-guestcontrol-ready|welcome|location|keyboard|partitions|partitions-luks-filled|summary|install-started|install-done|first-boot|mok-reboot-desktop|terminal-open|sysmaint-terminal|check-6-gui-rendered|checks-complete|vt-graphical-restored)
          ## sysmaint-terminal is captured right AFTER open_terminal OCR-confirms the terminal came
-         ## up, so a black frame there is a real failure (symmetric with the user terminal-open).
+         ## up, so a black frame there is a real failure (symmetric with the user terminal-open);
+         ## vt-graphical-restored polls until rendered (story_snap_nonblank rich) so a slow VT
+         ## repaint does not hard-fail it. installed-grub-menu is NOT rich: it is a blind-timed grab
+         ## racing GRUB autoboot (like the skip live-grub-menu), and the installed boot is PROVEN by
+         ## the downstream LUKS-unlock + first-boot gates -- a hard gate here is just a false-fail.
          printf '%s' rich
          ;;
       luks-prompt|luks-passphrase-typed|sysmaint-luks-prompt)
@@ -385,18 +388,32 @@ story_snap() {
 ## stores the FIRST non-uniform one. On timeout it leaves the last (blank) frame in place, so
 ## the universal floor still decides. Best-effort on shot_dir (no dir -> no-op).
 ##   nn name [timeout-seconds] [cadence-seconds]
+##   nn name [timeout-seconds] [cadence-seconds] [check]
+##   check=uniform (default) -- stop when NOT 1-colour; for transient boot/firmware frames gated
+##     UNIFORM-ONLY (or ungated skip frames) that are legitimately near-black between milestones.
+##   check=rich              -- stop when NOT near-black/few-colour, the SAME check main's rich gate
+##     applies, so a rich milestone whose guest frame renders late (slow VT repaint, DPMS blank)
+##     self-heals here instead of hard-failing that gate on one early grab. Taps Shift each poll to
+##     wake a DPMS-blanked panel (a bare VT switch / boot does not), like snap()'s rich retry loop.
 story_snap_nonblank() {
    local nn="$1" name="$2"
    local timeout="${3:-${DM_CALAMARES_NONBLANK_TIMEOUT:-45}}"
    local cadence="${4:-2}"
+   local check="${5:-uniform}"
    [ -n "${shot_dir}" ] || return 0
    local dest="${shot_dir}/${nn}-${name}.png" start="${SECONDS}"
+   ## rich polls with image-blank-check's DEFAULT (near-blank) mode; uniform with --uniform-only.
+   local -a ibc_args=( --uniform-only )
+   [ "${check}" = 'rich' ] && ibc_args=()
    while : ; do
+      if [ "${check}" = 'rich' ]; then
+         "${GUESTCTL}" "${vm}" key 2a aa >/dev/null 2>&1 || true
+      fi
       capture_frame "${dest}" >/dev/null 2>&1 || true
       ## image-blank-check exits 0 when the frame is NOT degenerate (content present). Check the
       ## bare-guest sibling in window mode -- the published window grab is never uniform (chrome).
       if [ -s "${dest}" ] \
-         && "${IMAGE_BLANK_CHECK:-image-blank-check}" --uniform-only "$(gate_check_path "${dest}")" >/dev/null 2>&1; then
+         && "${IMAGE_BLANK_CHECK:-image-blank-check}" "${ibc_args[@]}" "$(gate_check_path "${dest}")" >/dev/null 2>&1; then
          return 0
       fi
       [ "$(( SECONDS - start ))" -lt "${timeout}" ] || return 1
@@ -570,9 +587,14 @@ start_vm_frontend() {
 capture_frame() {
    if [ "${story_capture}" = 'window' ]; then
       grim "$1"
-      local gate="${1%/*}/${gate_subdir}/${1##*/}"
-      mkdir --parents -- "${gate%/*}" 2>/dev/null || true
-      "${GUESTCTL}" "${vm}" shot "${gate}" >/dev/null 2>&1 || true
+      ## Gate sibling ONLY for the gated milestone frames (those under shot_dir). The failure
+      ## stuck shot + --shot live elsewhere, are never read via gate_check_path, and would
+      ## otherwise leak a ${HOME}/.gate that on_exit's shot_dir-scoped cleanup never removes.
+      if [ -n "${shot_dir}" ] && [ "${1%/*}" = "${shot_dir}" ]; then
+         local gate="${shot_dir}/${gate_subdir}/${1##*/}"
+         mkdir --parents -- "${gate%/*}" 2>/dev/null || true
+         "${GUESTCTL}" "${vm}" shot "${gate}" >/dev/null 2>&1 || true
+      fi
    else
       "${GUESTCTL}" "${vm}" shot "$1"
    fi
@@ -1243,10 +1265,12 @@ vt_console_lane() {
    "${GUESTCTL}" "${vm}" chord enter >/dev/null 2>&1 || true
    sleep 2
    story_snap 72 vt-logged-out
-   ## Ctrl+Alt+F7 -> back to the graphical VT (where the LXQt desktop runs).
+   ## Ctrl+Alt+F7 -> back to the graphical VT (where the LXQt desktop runs). Poll until the desktop
+   ## repaints (rich): the switch-back + a DPMS-blanked panel can lag the fixed sleep, and a single
+   ## near-black grab would hard-fail the rich gate on an otherwise-restored desktop.
    "${GUESTCTL}" "${vm}" chord ctrl alt f7 >/dev/null 2>&1 || true
    sleep 3
-   story_snap 73 vt-graphical-restored
+   story_snap_nonblank 73 vt-graphical-restored 30 2 rich || true
 }
 
 clear_stale_vt_captures() {
