@@ -438,6 +438,32 @@ check("overview page is indexable (no robots noindex)", 'name="robots"' not in o
 ## single-shot run keeps the plain placeholder caption (no <strong> milestone label).
 check("single-shot green run has no milestone label", "<strong>" not in a_page)
 
+## Heading-level conformance: no rendered page may SKIP a level (vnu flags "<h3> follows
+## <h1>" / "<h4> follows <h2>"). The run page nests firmware+step <h3> under an
+## <h2 class="catname"> section (hero <h1> -> section <h2> -> <h3>), and the footer
+## heading is <h3> so it never skips after an <h2>. Guards the h1->h3 run-page skip and
+## the h2->h4 footer skip at the generator source.
+_HEADING = re.compile(r"<h([1-6])\b")
+
+
+def heading_skip(html):
+    prev = None
+    for lv in (int(m) for m in _HEADING.findall(html)):
+        if prev is not None and lv > prev + 1:
+            return (prev, lv)
+        prev = lv
+    return None
+
+
+check("run detail page has no heading-level skip", heading_skip(a_page) is None)
+check("overview page has no heading-level skip", heading_skip(overview) is None)
+check('run page nests sections under an <h2 class="catname">', '<h2 class="catname">' in a_page)
+check("footer heading is <h3> (no <h4> skip under <h2>)",
+      "<h3>Family</h3>" in overview and "<h4>Family" not in overview)
+## Canary: the detector must FIRE on a real skip, else it proves nothing.
+check("heading-skip detector catches an h1->h3 skip (canary)",
+      heading_skip("<h1>a</h1><h3>b</h3>") == (1, 3))
+
 ## I: a FAILED run WITH a published screenshot. The shot is shown (<img), the run is st-fail,
 ## and the shot chip carries the step's FAIL status -- NEVER a green pass chip on a failure
 ## screen. Canary: a green chip anywhere on a failed run's page is a fabricated-green signal.
