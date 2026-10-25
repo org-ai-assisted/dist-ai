@@ -556,7 +556,7 @@ _DEFAULT_HEADER = (
 ## the website-tests footer-structure gate now catches.
 _FOOTER = (
     '<footer><div class="ftop"><nav class="fcols"><div class="fcol">'
-    "<h4>Family</h4>"
+    "<h3>Family</h3>"
     '<a href="https://output-lies.github.io">output lies</a>'
     '<a href="https://secure-terminal.github.io">secure-terminal</a>'
     '<a class="self" href="https://org-ai-assisted.github.io" aria-current="page">org-ai-assisted</a>'
@@ -728,7 +728,8 @@ def render_run(view, header, footer, generated_utc):
         "%s"
         '<p class="sub"><a href="../">back to all results</a></p>'
         "</div></section>"
-        '<section class="cat"><div class="wrap">%s<div class="fg">%s</div></div></section>'
+        '<section class="cat"><div class="wrap"><h2 class="catname">Run detail</h2>'
+        "%s<div class=\"fg\">%s</div></div></section>"
     ) % (
         esc(f["lane"]), esc(view.run_id), esc(f["lane"]), esc(f["version"]),
         esc(f["builder"]), esc(f["origin"]), status_chip(view.status),

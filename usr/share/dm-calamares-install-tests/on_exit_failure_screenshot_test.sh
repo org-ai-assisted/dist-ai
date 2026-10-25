@@ -78,6 +78,12 @@ export GUESTCTL_LOG="${guestctl_log}"
 # shellcheck disable=SC1090
 source "${subject}"
 
+## This pins on_exit's failure-screenshot publish, orthogonal to the window-vs-framebuffer capture
+## mechanism (story_capture_test covers that dispatch). Drive the stubbable framebuffer path so
+## capture_frame uses the GUESTCTL shot stub, not a real grim/compositor.
+# shellcheck disable=SC2034
+story_capture="framebuffer"
+
 ## Globals on_exit reads.
 # shellcheck disable=SC2034
 HOME="${work}"

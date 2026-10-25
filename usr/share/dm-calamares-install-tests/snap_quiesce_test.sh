@@ -64,6 +64,12 @@ export ORDER="${order}"
 # shellcheck disable=SC1090
 source "${subject}"
 
+## This pins snap()'s quiesce + capture-floor behaviour, orthogonal to the window-vs-framebuffer
+## capture mechanism (story_capture_test covers that dispatch). Drive the stubbable framebuffer
+## path so capture_frame uses the GUESTCTL shot stub, not a real grim/compositor.
+# shellcheck disable=SC2034
+story_capture="framebuffer"
+
 ## Stub the in-guest exec + the settle. gc_run records the quiesce (role + snippet) AND runs the
 ## snippet LOCALLY -- so the REAL kill command fires against a local decoy, catching a kill form
 ## that silently matches nothing (the 15-char comm-truncation bug). sleep is a no-op.

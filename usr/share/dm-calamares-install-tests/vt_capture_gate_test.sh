@@ -54,6 +54,12 @@ trap cleanup EXIT
 # shellcheck disable=SC1090
 source "${subject}"
 
+## This pins the vt-capture gate, orthogonal to the window-vs-framebuffer capture mechanism
+## (story_capture_test covers that dispatch). Drive the stubbable framebuffer path so capture_frame
+## uses the GUESTCTL shot stub, not a real grim/compositor.
+# shellcheck disable=SC2034
+story_capture="framebuffer"
+
 ## image-blank-check stub: records its argv to BLANK_LOG, exits BLANK_RC (default 0). Lets a case
 ## assert the flag/paths passed and force the blank branch.
 export BLANK_LOG="${work}/blank-args"

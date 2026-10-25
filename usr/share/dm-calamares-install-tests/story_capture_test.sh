@@ -6,13 +6,22 @@
 ## AI-Assisted
 
 ## Pins the contract of the "full story" capture primitives in dm-calamares-install:
-##   story_snap NN name   -- host-side framebuffer frame (GUESTCTL shot), NO quiesce, into
-##                           ${shot_dir}/NN-name.png. For boot/firmware/LUKS/transient screens.
-##   story_card NN name T  -- a rendered state card (VBoxManage showvminfo -> dm-text-to-png) at
-##                           ${shot_dir}/NN-name.png, for points with no framebuffer.
-## Both are best-effort: no ${shot_dir} -> no-op; a capture/render failure never fails the run.
+##   capture_frame PATH   -- window mode (default, operator "maximum faithful"): a grim grab of the
+##                           compositor (full VBox VM window); framebuffer mode: a bare-guest grab
+##                           via GUESTCTL shot. The one seam every milestone capture goes through.
+##   start_vm_frontend    -- window mode: a maximized VirtualBoxVM --startvm GUI window; framebuffer
+##                           mode: the legacy `VBoxManage startvm --type headless`.
+##   story_snap NN name   -- a capture_frame into ${shot_dir}/NN-name.png, NO quiesce.
+##   story_card NN name T -- a rendered state card (showvminfo -> dm-text-to-png), no framebuffer.
+##   cb_gui_ns_reexec     -- coreboot+window only: re-exec into a mount namespace (no-op otherwise).
+##   gui_compositor_stop  -- restore the global GUI/SuppressMessages the GUI capture overrode.
+## Capture/card are best-effort: no ${shot_dir} -> no-op; a failure never fails the run.
 ##
-## Drives the REAL functions (sourced define-only) with recording stubs. No VM, no root.
+## Drives the REAL functions (sourced define-only) with recording stubs. No VM, no root, no labwc.
+
+## vm/shot_dir/coreboot_rom/gui_* are READ by the sourced subject, assigned here to seed it;
+## shellcheck cannot see across the source. File-wide (before the first command).
+# shellcheck disable=SC2034
 
 set -o errexit
 set -o nounset
@@ -43,6 +52,8 @@ trap cleanup EXIT
 guestctl_log="${work}/guestctl.calls"
 vbox_log="${work}/vbox.calls"
 text_log="${work}/text.calls"
+grim_log="${work}/grim.calls"
+frontend_log="${work}/frontend.calls"
 
 ## GUESTCTL: '<vm> shot <path>' writes a fake PNG; records the call.
 guestctl_stub="${work}/guestctl"
@@ -53,19 +64,24 @@ if [ "\${2:-}" = 'shot' ] && [ -n "\${3:-}" ]; then printf PNG > "\${3}"; fi
 exit 0
 STUB
 
-## VBOXMANAGE: 'showvminfo ... --machinereadable' returns fake machine-readable state; records.
+## VBOXMANAGE: showvminfo returns fake machine-readable state incl. a UUID (gui_vm_launch parses
+## it); getextradata returns a canned SuppressMessages value; everything records argv.
 vbox_stub="${work}/vboxmanage"
 cat > "${vbox_stub}" <<STUB
 #!/bin/bash
 printf '%s\n' "\$*" >> '${vbox_log}'
 case "\$*" in
-   *showvminfo*machinereadable*) printf '%s\n' 'VMState="poweroff"' 'firmware="EFI"' 'memory=4096' ;;
+   *showvminfo*machinereadable*)
+      printf '%s\n' 'UUID="5bfdfe22-933f-4875-a6a9-2b9ec88104c5"' "VMState=\"\${STUB_VMSTATE:-running}\"" 'firmware="EFI"' 'memory=4096'
+      ;;
+   *"getextradata global GUI/SuppressMessages"*)
+      printf '%s\n' 'Value: oldsup'
+      ;;
 esac
 exit 0
 STUB
 
-## Stub standing in for the card renderer: emit a PNG at its OUTFILE so story_card's output
-## check is satisfied, and record argv so the test can assert the card path was passed.
+## Card renderer stub: emit a PNG at its OUTFILE and record argv.
 text_stub="${work}/dm-text-to-png"
 cat > "${text_stub}" <<STUB
 #!/bin/bash
@@ -74,37 +90,160 @@ cat >/dev/null
 [ -n "\${1:-}" ] && printf PNG > "\${1}"
 exit 0
 STUB
-chmod +x "${guestctl_stub}" "${vbox_stub}" "${text_stub}"
+
+## grim stub: write a fake PNG at its last arg (the OUTFILE) and record the call.
+grim_stub="${work}/grim"
+cat > "${grim_stub}" <<STUB
+#!/bin/bash
+printf '%s\n' "\$*" >> '${grim_log}'
+for a in "\$@"; do out="\$a"; done
+[ -n "\${out:-}" ] && printf PNG > "\${out}"
+exit 0
+STUB
+
+## VirtualBoxVM frontend stub: record argv; the window frontend is launched in the background.
+frontend_stub="${work}/VirtualBoxVM"
+cat > "${frontend_stub}" <<STUB
+#!/bin/bash
+printf '%s\n' "\$*" >> '${frontend_log}'
+exit 0
+STUB
+chmod +x "${guestctl_stub}" "${vbox_stub}" "${text_stub}" "${grim_stub}" "${frontend_stub}"
+
+## grim is resolved from PATH (capture_frame calls it bare); front-load the stub dir.
+PATH="${work}:${PATH}"
 
 # shellcheck disable=SC1090
 source "${subject}"
 
-# shellcheck disable=SC2034
 vm="testvm"
-# shellcheck disable=SC2034
 GUESTCTL="${guestctl_stub}"
-# shellcheck disable=SC2034
 VBOXMANAGE="${vbox_stub}"
-# shellcheck disable=SC2034
 DM_TEXT_TO_PNG="${text_stub}"
+VBOX_VM_BIN="${frontend_stub}"
 
 pass=0; fail=0
 check() { if [ "$2" -eq 0 ]; then pass=$(( pass + 1 )); printf '%s\n' "PASS: $1"; else fail=$(( fail + 1 )); printf '%s\n' "FAIL: $1"; fi; }
 has() { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac }
 
-## --- story_snap with a shot_dir: host-side frame, correct filename, NO quiesce --------------
-# shellcheck disable=SC2034
 shot_dir="${work}/shots"; mkdir -p -- "${shot_dir}"
-true > "${guestctl_log}"
+
+## --- capture_frame dispatch: window -> grim, framebuffer -> GUESTCTL shot --------------------
+story_capture="window"
+true > "${grim_log}"; true > "${guestctl_log}"
+capture_frame "${shot_dir}/cf-window.png"
+got=0; [ -s "${shot_dir}/cf-window.png" ] && has "${shot_dir}/cf-window.png" "$(cat -- "${grim_log}")" || got=1
+check "capture_frame window mode publishes the full window via grim" "${got}"
+## window mode ALSO writes a bare-guest gate sibling in .gate/ via GUESTCTL -- honest blank-gate
+## input (the published window grab's chrome would defeat image-blank-check).
+got=0; [ -s "${shot_dir}/.gate/cf-window.png" ] && has "${shot_dir}/.gate/cf-window.png" "$(cat -- "${guestctl_log}")" || got=1
+check "capture_frame window mode writes a bare-guest gate sibling via GUESTCTL" "${got}"
+## gate_check_path points the gates at the guest sibling in window mode, the published frame in fb.
+got=0; [ "$(gate_check_path "${shot_dir}/cf-window.png")" = "${shot_dir}/.gate/cf-window.png" ] || got=1
+check "gate_check_path returns the guest sibling in window mode" "${got}"
+
+story_capture="framebuffer"
+true > "${grim_log}"; true > "${guestctl_log}"
+capture_frame "${shot_dir}/cf-fb.png"
+got=0; [ -s "${shot_dir}/cf-fb.png" ] && has 'testvm shot' "$(cat -- "${guestctl_log}")" || got=1
+check "capture_frame framebuffer mode grabs via GUESTCTL shot" "${got}"
+got=0; [ ! -s "${grim_log}" ] || got=1
+check "capture_frame framebuffer mode does NOT invoke grim" "${got}"
+got=0; [ "$(gate_check_path "${shot_dir}/cf-fb.png")" = "${shot_dir}/cf-fb.png" ] || got=1
+check "gate_check_path returns the published frame in framebuffer mode" "${got}"
+
+## --- story_snap: capture_frame into shot_dir/NN-name.png, NO quiesce (window default) --------
+story_capture="window"
+true > "${grim_log}"; true > "${guestctl_log}"
 story_snap 20 live-grub-menu
 got=0; [ -s "${shot_dir}/20-live-grub-menu.png" ] || got=1
-check "story_snap writes shot_dir/NN-name.png" "${got}"
-got=0; has 'testvm shot' "$(cat -- "${guestctl_log}")" || got=1
-check "story_snap captures host-side via GUESTCTL shot" "${got}"
-## No quiesce: story_snap must NOT invoke a gc_run pkill (that is snap()'s job; the quiesce
-## round-trip would miss a transient boot screen). The only GUESTCTL call is the shot.
-got=0; [ "$(grep -c . "${guestctl_log}")" -eq 1 ] || got=1
-check "story_snap does a single GUESTCTL call (no quiesce round-trip)" "${got}"
+check "story_snap writes the published shot_dir/NN-name.png (window/grim)" "${got}"
+got=0; [ -s "${shot_dir}/.gate/20-live-grub-menu.png" ] || got=1
+check "story_snap writes the bare-guest gate sibling" "${got}"
+## No quiesce: one grim grab + the gate shot, but NONE of snap()'s move/key wake round-trip.
+got=0; { [ "$(grep -c . "${grim_log}")" -eq 1 ] && ! grep --quiet --extended-regexp 'move|key' "${guestctl_log}"; } || got=1
+check "story_snap does one grab + gate shot, no quiesce move/key" "${got}"
+
+## --- start_vm_frontend dispatch -------------------------------------------------------------
+story_capture="window"
+true > "${frontend_log}"; true > "${vbox_log}"; gui_vm_pid=""
+start_vm_frontend
+[ -z "${gui_vm_pid}" ] || wait "${gui_vm_pid}" 2>/dev/null || true
+got=0; has '--startvm 5bfdfe22-933f-4875-a6a9-2b9ec88104c5' "$(cat -- "${frontend_log}")" || got=1
+check "start_vm_frontend window mode launches VirtualBoxVM --startvm <uuid>" "${got}"
+got=0; has 'startvm testvm --type headless' "$(cat -- "${vbox_log}")" && got=1
+check "start_vm_frontend window mode does NOT use the headless startvm" "${got}"
+
+story_capture="framebuffer"
+true > "${frontend_log}"; true > "${vbox_log}"
+start_vm_frontend
+got=0; has 'startvm testvm --type headless' "$(cat -- "${vbox_log}")" || got=1
+check "start_vm_frontend framebuffer mode uses VBoxManage startvm --type headless" "${got}"
+got=0; [ ! -s "${frontend_log}" ] || got=1
+check "start_vm_frontend framebuffer mode does NOT launch a GUI window" "${got}"
+
+## Finding 2 regression: window-mode start FAILS FAST (exit FAIL_RC) when the VM never reaches
+## 'running' (STUB_VMSTATE=poweroff, the frontend stub exits) -- not a misleading downstream
+## "GRUB menu not detected" ~40s later. FAILS on pre-fix fire-and-forget code (it returned 0).
+story_capture="window"; gui_vm_pid=""
+export STUB_VMSTATE="poweroff" DM_GUI_READY_TIMEOUT="2"
+rc=0
+( start_vm_frontend ) >/dev/null 2>&1 || rc=$?
+unset STUB_VMSTATE DM_GUI_READY_TIMEOUT
+# shellcheck disable=SC2154  ## FAIL_RC is set by the sourced subject (dm-calamares-install)
+check "start_vm_frontend window mode dies fast when the VM never reaches running" "$(( rc == FAIL_RC ? 0 : 1 ))"
+
+## --- cb_gui_ns_reexec guard: a NO-OP unless window + coreboot --------------------------------
+## (window without a coreboot rom, and framebuffer, must return 0 without re-exec'ing. A real
+## re-exec would replace this process, so a return proves the guard held.)
+story_capture="window"; coreboot_rom=""
+cb_gui_ns_reexec; rc=$?
+check "cb_gui_ns_reexec is a no-op for a stock (non-coreboot) window lane" "$(( rc == 0 ? 0 : 1 ))"
+story_capture="framebuffer"; coreboot_rom="/some/rom"
+cb_gui_ns_reexec; rc=$?
+check "cb_gui_ns_reexec is a no-op in framebuffer mode" "$(( rc == 0 ? 0 : 1 ))"
+
+## --- gui_compositor_stop: restore the overridden global GUI/SuppressMessages -----------------
+## was-set -> restored to the saved value; absent -> deleted (setextradata with no value).
+story_capture="window"; vm_kept=""; gui_vm_pid=""; gui_labwc_pid=""; gui_xdg_dir=""; gui_cfg_dir=""
+true > "${vbox_log}"
+gui_supmsg_was_set="yes"; gui_supmsg_saved="oldsup"
+gui_compositor_stop
+got=0; has 'setextradata global GUI/SuppressMessages oldsup' "$(cat -- "${vbox_log}")" || got=1
+check "gui_compositor_stop restores a previously-set SuppressMessages" "${got}"
+true > "${vbox_log}"
+gui_supmsg_was_set="no"; gui_supmsg_saved=""
+gui_compositor_stop
+## EXACT line, not a substring: a set-with-value ('... SuppressMessages oldsup') also CONTAINS the
+## bare string, so a substring check would miss a failure-to-delete. Delete records it with no value.
+got=0; grep --quiet --line-regexp 'setextradata global GUI/SuppressMessages' "${vbox_log}" || got=1
+check "gui_compositor_stop deletes SuppressMessages when it was absent (exact, no value)" "${got}"
+## framebuffer mode: gui_compositor_stop is a no-op (nothing was overridden).
+story_capture="framebuffer"
+true > "${vbox_log}"
+gui_compositor_stop
+got=0; [ ! -s "${vbox_log}" ] || got=1
+check "gui_compositor_stop is a no-op in framebuffer mode" "${got}"
+
+## --- vm_kept: a KEPT --keep-failed VM must NOT have its in-process window frontend killed -----
+## (killing VirtualBoxVM would abort the very VM being kept for inspection). Stand in for the
+## frontend with a real sleep; vm_kept=true leaves it alive, vm_kept unset kills it.
+story_capture="window"; gui_labwc_pid=""; gui_xdg_dir=""; gui_cfg_dir=""
+gui_supmsg_was_set="no"; gui_supmsg_saved=""
+vm_kept="true"
+sleep 30 & keep_pid=$!
+gui_vm_pid="${keep_pid}"
+gui_compositor_stop
+got=0; kill -0 "${keep_pid}" 2>/dev/null || got=1
+check "gui_compositor_stop leaves the frontend ALIVE when vm_kept=true" "${got}"
+kill "${keep_pid}" 2>/dev/null || true; wait "${keep_pid}" 2>/dev/null || true
+vm_kept=""
+sleep 30 & kill_pid=$!
+gui_vm_pid="${kill_pid}"
+gui_compositor_stop
+wait "${kill_pid}" 2>/dev/null || true
+got=0; kill -0 "${kill_pid}" 2>/dev/null && got=1
+check "gui_compositor_stop KILLS the frontend when vm_kept is unset" "${got}"
 
 ## --- story_card: renders a state card from showvminfo via dm-text-to-png ---------------------
 true > "${vbox_log}"; true > "${text_log}"
@@ -116,13 +255,13 @@ check "story_card reads VBoxManage showvminfo --machinereadable" "${got}"
 got=0; has "${shot_dir}/10-vm-defined.png" "$(cat -- "${text_log}")" || got=1
 check "story_card renders the card via dm-text-to-png" "${got}"
 
-## --- best-effort: no shot_dir -> both are silent no-ops -------------------------------------
-# shellcheck disable=SC2034
+## --- best-effort: no shot_dir -> capture/card are silent no-ops ------------------------------
 shot_dir=""
-true > "${guestctl_log}"; true > "${text_log}"
+story_capture="window"
+true > "${grim_log}"; true > "${guestctl_log}"; true > "${text_log}"
 story_snap 99 nowhere
 story_card 99 nowhere "x"
-got=0; [ ! -s "${guestctl_log}" ] && [ ! -s "${text_log}" ] || got=1
+got=0; [ ! -s "${grim_log}" ] && [ ! -s "${guestctl_log}" ] && [ ! -s "${text_log}" ] || got=1
 check "no shot_dir -> story_snap/story_card are no-ops" "${got}"
 
 printf '%s\n' "" "$(basename -- "$0"): ${pass} pass, ${fail} fail"
