@@ -72,7 +72,7 @@ cat > "${vbox_stub}" <<STUB
 printf '%s\n' "\$*" >> '${vbox_log}'
 case "\$*" in
    *showvminfo*machinereadable*)
-      printf '%s\n' 'UUID="5bfdfe22-933f-4875-a6a9-2b9ec88104c5"' 'VMState="poweroff"' 'firmware="EFI"' 'memory=4096'
+      printf '%s\n' 'UUID="5bfdfe22-933f-4875-a6a9-2b9ec88104c5"' "VMState=\"\${STUB_VMSTATE:-running}\"" 'firmware="EFI"' 'memory=4096'
       ;;
    *"getextradata global GUI/SuppressMessages"*)
       printf '%s\n' 'Value: oldsup'
@@ -133,9 +133,14 @@ story_capture="window"
 true > "${grim_log}"; true > "${guestctl_log}"
 capture_frame "${shot_dir}/cf-window.png"
 got=0; [ -s "${shot_dir}/cf-window.png" ] && has "${shot_dir}/cf-window.png" "$(cat -- "${grim_log}")" || got=1
-check "capture_frame window mode grabs via grim" "${got}"
-got=0; [ ! -s "${guestctl_log}" ] || got=1
-check "capture_frame window mode does NOT touch GUESTCTL" "${got}"
+check "capture_frame window mode publishes the full window via grim" "${got}"
+## window mode ALSO writes a bare-guest gate sibling in .gate/ via GUESTCTL -- honest blank-gate
+## input (the published window grab's chrome would defeat image-blank-check).
+got=0; [ -s "${shot_dir}/.gate/cf-window.png" ] && has "${shot_dir}/.gate/cf-window.png" "$(cat -- "${guestctl_log}")" || got=1
+check "capture_frame window mode writes a bare-guest gate sibling via GUESTCTL" "${got}"
+## gate_check_path points the gates at the guest sibling in window mode, the published frame in fb.
+got=0; [ "$(gate_check_path "${shot_dir}/cf-window.png")" = "${shot_dir}/.gate/cf-window.png" ] || got=1
+check "gate_check_path returns the guest sibling in window mode" "${got}"
 
 story_capture="framebuffer"
 true > "${grim_log}"; true > "${guestctl_log}"
@@ -144,16 +149,20 @@ got=0; [ -s "${shot_dir}/cf-fb.png" ] && has 'testvm shot' "$(cat -- "${guestctl
 check "capture_frame framebuffer mode grabs via GUESTCTL shot" "${got}"
 got=0; [ ! -s "${grim_log}" ] || got=1
 check "capture_frame framebuffer mode does NOT invoke grim" "${got}"
+got=0; [ "$(gate_check_path "${shot_dir}/cf-fb.png")" = "${shot_dir}/cf-fb.png" ] || got=1
+check "gate_check_path returns the published frame in framebuffer mode" "${got}"
 
 ## --- story_snap: capture_frame into shot_dir/NN-name.png, NO quiesce (window default) --------
 story_capture="window"
 true > "${grim_log}"; true > "${guestctl_log}"
 story_snap 20 live-grub-menu
 got=0; [ -s "${shot_dir}/20-live-grub-menu.png" ] || got=1
-check "story_snap writes shot_dir/NN-name.png (window/grim)" "${got}"
-## No quiesce: story_snap must do exactly ONE grim grab, no GUESTCTL round-trip (that is snap()'s).
-got=0; [ "$(grep -c . "${grim_log}")" -eq 1 ] && [ ! -s "${guestctl_log}" ] || got=1
-check "story_snap is a single grab with no quiesce round-trip" "${got}"
+check "story_snap writes the published shot_dir/NN-name.png (window/grim)" "${got}"
+got=0; [ -s "${shot_dir}/.gate/20-live-grub-menu.png" ] || got=1
+check "story_snap writes the bare-guest gate sibling" "${got}"
+## No quiesce: one grim grab + the gate shot, but NONE of snap()'s move/key wake round-trip.
+got=0; { [ "$(grep -c . "${grim_log}")" -eq 1 ] && ! grep --quiet --extended-regexp 'move|key' "${guestctl_log}"; } || got=1
+check "story_snap does one grab + gate shot, no quiesce move/key" "${got}"
 
 ## --- start_vm_frontend dispatch -------------------------------------------------------------
 story_capture="window"
@@ -172,6 +181,17 @@ got=0; has 'startvm testvm --type headless' "$(cat -- "${vbox_log}")" || got=1
 check "start_vm_frontend framebuffer mode uses VBoxManage startvm --type headless" "${got}"
 got=0; [ ! -s "${frontend_log}" ] || got=1
 check "start_vm_frontend framebuffer mode does NOT launch a GUI window" "${got}"
+
+## Finding 2 regression: window-mode start FAILS FAST (exit FAIL_RC) when the VM never reaches
+## 'running' (STUB_VMSTATE=poweroff, the frontend stub exits) -- not a misleading downstream
+## "GRUB menu not detected" ~40s later. FAILS on pre-fix fire-and-forget code (it returned 0).
+story_capture="window"; gui_vm_pid=""
+export STUB_VMSTATE="poweroff" DM_GUI_READY_TIMEOUT="2"
+rc=0
+( start_vm_frontend ) >/dev/null 2>&1 || rc=$?
+unset STUB_VMSTATE DM_GUI_READY_TIMEOUT
+# shellcheck disable=SC2154  ## FAIL_RC is set by the sourced subject (dm-calamares-install)
+check "start_vm_frontend window mode dies fast when the VM never reaches running" "$(( rc == FAIL_RC ? 0 : 1 ))"
 
 ## --- cb_gui_ns_reexec guard: a NO-OP unless window + coreboot --------------------------------
 ## (window without a coreboot rom, and framebuffer, must return 0 without re-exec'ing. A real

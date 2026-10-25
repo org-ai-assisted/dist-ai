@@ -255,12 +255,19 @@ on_exit() {
          blank_name="${blank_name%.png}"
          blank_name="${blank_name#*-}"
          [ "$(milestone_blank_mode "${blank_name}")" = 'skip' ] || continue
-         ## image-blank-check exits NONZERO when the frame is degenerate (uniform).
-         if ! "${IMAGE_BLANK_CHECK:-image-blank-check}" --uniform-only "${blank_f}" >/dev/null 2>&1; then
+         ## image-blank-check exits NONZERO when the frame is degenerate (uniform). Judge the
+         ## bare-guest sibling (window mode) -- the published window grab is never uniform (chrome),
+         ## so a black-guest transient would otherwise be published as chrome-around-black.
+         if ! "${IMAGE_BLANK_CHECK:-image-blank-check}" --uniform-only "$(gate_check_path "${blank_f}")" >/dev/null 2>&1; then
             printf '%s\n' "${me}: NOTICE: dropping uniform transient frame ${blank_f##*/} (no content to publish)" >&2
             safe-rm --force -- "${blank_f}" 2>/dev/null || true
          fi
       done
+   fi
+   ## Drop the bare-guest gate siblings so they are never published -- they exist only for the
+   ## blank-gates above (the floor here + the rich/sparse/vt gates in main).
+   if [ -n "${shot_dir}" ]; then
+      safe-rm --recursive --force -- "${shot_dir}/${gate_subdir}" 2>/dev/null || true
    fi
    ## tear down the persistent GUI compositor last -- every capture_frame above needs labwc + the
    ## VirtualBoxVM window alive to grim-grab; restores global GUI/SuppressMessages, reaps pids/dirs.
@@ -311,7 +318,8 @@ snap() {
       sleep 1
       capture_frame "${out}" >/dev/null 2>&1 || true
       [ "${mode}" = 'rich' ] || return 0
-      "${IMAGE_BLANK_CHECK:-image-blank-check}" "${out}" >/dev/null 2>&1 && return 0
+      ## Check the bare-guest sibling, not the window grab (whose chrome is never near-black).
+      "${IMAGE_BLANK_CHECK:-image-blank-check}" "$(gate_check_path "${out}")" >/dev/null 2>&1 && return 0
       sleep 2
    done
 }
@@ -382,9 +390,10 @@ story_snap_nonblank() {
    local dest="${shot_dir}/${nn}-${name}.png" start="${SECONDS}"
    while : ; do
       capture_frame "${dest}" >/dev/null 2>&1 || true
-      ## image-blank-check exits 0 when the frame is NOT degenerate (content present).
+      ## image-blank-check exits 0 when the frame is NOT degenerate (content present). Check the
+      ## bare-guest sibling in window mode -- the published window grab is never uniform (chrome).
       if [ -s "${dest}" ] \
-         && "${IMAGE_BLANK_CHECK:-image-blank-check}" --uniform-only "${dest}" >/dev/null 2>&1; then
+         && "${IMAGE_BLANK_CHECK:-image-blank-check}" --uniform-only "$(gate_check_path "${dest}")" >/dev/null 2>&1; then
          return 0
       fi
       [ "$(( SECONDS - start ))" -lt "${timeout}" ] || return 1
@@ -403,6 +412,9 @@ story_snap_nonblank() {
 ## (which then load the CorebootRom-aware device) -- no system mutation, auto-cleanup.
 story_capture="${STORY_CAPTURE:-window}"
 VBOX_VM_BIN="${VBOX_VM_BIN:-VirtualBoxVM}"
+## hidden subdir (beside each published frame) holding the bare-guest gate siblings; removed from
+## shot_dir in on_exit so it is never published. See capture_frame / gate_check_path.
+gate_subdir=".gate"
 gui_labwc_pid=""
 gui_vm_pid=""
 gui_xdg_dir=""
@@ -503,6 +515,19 @@ gui_vm_launch() {
    "${VBOXMANAGE}" setextradata "${uuid}" GUI/LastGuestSizeHint "1920,1040" >/dev/null 2>&1 || true
    QT_QPA_PLATFORM="wayland" "${VBOX_VM_BIN}" --startvm "${uuid}" >/dev/null 2>&1 &
    gui_vm_pid="$!"
+   ## Fail FAST with the REAL reason if the window frontend cannot power the VM on. Launch is
+   ## backgrounded, so without this a startvm failure (locked medium, GUI cannot start under the
+   ## headless compositor) only surfaces ~40s later as a misleading "GRUB menu not detected". Poll
+   ## VMState to 'running'; a dead frontend before then is the actual power-on failure.
+   local vmstate="" i ready_secs="${DM_GUI_READY_TIMEOUT:-25}"
+   for (( i = 0; i < ready_secs; i++ )); do
+      vmstate="$("${VBOXMANAGE}" showvminfo "${uuid}" --machinereadable 2>/dev/null | sed -n 's/^VMState="\(.*\)"$/\1/p' | head -1)" || vmstate=""
+      [ "${vmstate}" = 'running' ] && return 0
+      kill -0 "${gui_vm_pid}" 2>/dev/null \
+         || die "${FAIL_RC}" "story GUI: ${VBOX_VM_BIN} exited before VM '${vm}' reached 'running' (VMState='${vmstate:-unknown}') -- the window frontend could not power it on"
+      sleep 1
+   done
+   die "${FAIL_RC}" "story GUI: VM '${vm}' did not reach 'running' within ${ready_secs}s of the ${VBOX_VM_BIN} launch (VMState='${vmstate:-unknown}')"
 }
 
 ## Start the VM for a (re)boot: a maximized GUI window (window mode) or headless (framebuffer mode).
@@ -520,11 +545,30 @@ start_vm_frontend() {
 ## Capture the current milestone frame to $1: the full VBox VM window (grim grab of our compositor,
 ## window mode) or the bare guest framebuffer (vbox-ctl-local, framebuffer mode). Best-effort at the
 ## call sites (|| true), matching the prior ${GUESTCTL} shot contract.
+## WINDOW MODE also writes a bare-GUEST sibling into ${1%/*}/${gate_subdir}/ for the blank-gates:
+## the published window grab includes the VBox chrome (menu/status bar, many colours), so a BLACK
+## guest screen would read as "content" and defeat every image-blank-check gate -- a false green.
+## The gates read the guest sibling (gate_check_path) instead; it is the real render evidence.
 capture_frame() {
    if [ "${story_capture}" = 'window' ]; then
       grim "$1"
+      local gate="${1%/*}/${gate_subdir}/${1##*/}"
+      mkdir --parents -- "${gate%/*}" 2>/dev/null || true
+      "${GUESTCTL}" "${vm}" shot "${gate}" >/dev/null 2>&1 || true
    else
       "${GUESTCTL}" "${vm}" shot "$1"
+   fi
+}
+
+## The blank-gate input for a published milestone frame ${1}: the bare-guest sibling captured in
+## window mode (honest render evidence, no chrome), or ${1} itself in framebuffer mode / if the
+## guest grab is missing (there the published frame already IS the guest framebuffer).
+gate_check_path() {
+   local gate="${1%/*}/${gate_subdir}/${1##*/}"
+   if [ "${story_capture}" = 'window' ] && [ -f "${gate}" ]; then
+      printf '%s' "${gate}"
+   else
+      printf '%s' "$1"
    fi
 }
 
@@ -1203,7 +1247,8 @@ require_vt_captures() {
       done
       [ -n "${vt_shot}" ] \
          || die "${FAIL_RC}" "VT console capture '${vt_name}' is missing (the virtual-terminal lane failed to screenshot)"
-      vt_shots+=("${vt_shot}")
+      ## gate the bare-guest sibling (window mode); the published grab's chrome is never uniform.
+      vt_shots+=("$(gate_check_path "${vt_shot}")")
    done
    "${IMAGE_BLANK_CHECK:-image-blank-check}" --uniform-only "${vt_shots[@]}" \
       || die "${FAIL_RC}" "a VT console grab was blank (the virtual terminal never rendered); see image-blank-check output"
@@ -1811,12 +1856,14 @@ main() {
          ms_name="${ms_name%.png}"
          ms_name="${ms_name#*-}"
          ms_mode="$(milestone_blank_mode "${ms_name}")"
+         ## Gate the bare-guest sibling (window mode) -- the published window grab's VBox chrome is
+         ## always many-coloured, so a black GUEST screen would pass both gates (false green).
          case "${ms_mode}" in
             rich)
-               rich_shots+=("${ms}")
+               rich_shots+=("$(gate_check_path "${ms}")")
                ;;
             sparse)
-               sparse_shots+=("${ms}")
+               sparse_shots+=("$(gate_check_path "${ms}")")
                ;;
          esac
       done
