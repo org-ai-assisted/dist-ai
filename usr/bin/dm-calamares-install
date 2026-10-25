@@ -33,6 +33,36 @@ PASS_RC=0
 FAIL_RC=5
 SETUP_RC=2
 
+## VBoxManage config ops in the post-install power-off window (storageattach --medium none,
+## modifynvram) need the VM powered off AND its session released. The VM reaches that state
+## ASYNCHRONOUSLY after 'controlvm poweroff', so a fixed sleep is not deterministic on a loaded
+## host: the op then races the still-releasing session and fails VBOX_E_INVALID_OBJECT_STATE
+## ("... is already locked for a session (or being unlocked)"). Retry on that transient only,
+## bounded (~30s); any other error, or a genuinely stuck lock, still fails loud via the caller.
+vbox_config_retry() {
+   local tries=0 out
+   while :; do
+      if out="$("${VBOXMANAGE}" "$@" 2>&1)"; then
+         [ -z "${out}" ] || printf '%s\n' "${out}"
+         return 0
+      fi
+      case "${out}" in
+         *'being unlocked'*|*'already locked'*|*VBOX_E_INVALID_OBJECT_STATE*)
+            tries=$(( tries + 1 ))
+            if [ "${tries}" -ge 30 ]; then
+               printf '%s\n' "${out}" >&2
+               return 1
+            fi
+            sleep 1
+            ;;
+         *)
+            printf '%s\n' "${out}" >&2
+            return 1
+            ;;
+      esac
+   done
+}
+
 vm=""
 iso=""
 disk=""
@@ -577,6 +607,25 @@ start_vm_frontend() {
    fi
 }
 
+## Stop the window-mode VM frontend so it releases the VM session lock. In window mode the VMM runs
+## IN-PROCESS in the VirtualBoxVM frontend (gui_vm_pid), which holds the session locked until it
+## exits -- 'controlvm poweroff' powers the guest off but does NOT exit the frontend. A following
+## offline config op (storageattach/modifynvram) needs the VM UNLOCKED, so stop the frontend here,
+## not only at the next start_vm_frontend (which comes after those ops). The compositor stays up for
+## the next gui_vm_launch. No-op in framebuffer/headless mode.
+stop_vm_frontend() {
+   [ "${story_capture}" = 'window' ] || return 0
+   [ -n "${gui_vm_pid}" ] || return 0
+   kill "${gui_vm_pid}" 2>/dev/null || true
+   local i
+   for (( i = 0; i < 15; i++ )); do
+      kill -0 "${gui_vm_pid}" 2>/dev/null || break
+      sleep 1
+   done
+   kill -KILL "${gui_vm_pid}" 2>/dev/null || true
+   gui_vm_pid=""
+}
+
 ## Capture the current milestone frame to $1: the full VBox VM window (grim grab of our compositor,
 ## window mode) or the bare guest framebuffer (vbox-ctl-local, framebuffer mode). Best-effort at the
 ## call sites (|| true), matching the prior ${GUESTCTL} shot contract.
@@ -877,6 +926,7 @@ reboot_installed() {
 mok_host_enroll() {
    printf '%s\n' "${me}: --mok-enroll: read MOK cert off the installed disk (host) + enroll"
    "${VBOXMANAGE}" controlvm "${vm}" poweroff 2>/dev/null || true
+   stop_vm_frontend
    sleep 3
    local der uuid req_dir
    der="$(mktemp --tmpdir "${vm}.XXXXXX.der")"
@@ -899,7 +949,7 @@ mok_host_enroll() {
    safe-rm --force -- "${req_dir}/disk" "${req_dir}/passphrase" 2>/dev/null || true
    [ -s "${der}" ] || die "${FAIL_RC}" "extracted MOK cert '${der}' is empty"
    uuid="$(uuidgen)"
-   "${VBOXMANAGE}" modifynvram "${vm}" enrollmok --mok="${der}" --owner-uuid="${uuid}" >/dev/null \
+   vbox_config_retry modifynvram "${vm}" enrollmok --mok="${der}" --owner-uuid="${uuid}" \
       || die "${FAIL_RC}" "VBoxManage modifynvram enrollmok failed"
    safe-rm --force -- "${der}"
    printf '%s\n' "${me}: MOK enrolled into the UEFI varstore (owner-uuid=${uuid})"
@@ -1508,7 +1558,8 @@ apply_firmware() {
 ## no-op on every other lane.
 enable_secureboot_installed() {
    [ "${firmware}" = 'efi-secureboot' ] || return 0
-   "${VBOXMANAGE}" modifynvram "${vm}" secureboot --enable >/dev/null
+   vbox_config_retry modifynvram "${vm}" secureboot --enable \
+      || die "${FAIL_RC}" "VBoxManage modifynvram secureboot --enable failed (VM not powered-off/unlocked after retries)"
    printf '%s\n' "${me}: Secure Boot enabled for the installed-system boot"
 }
 
@@ -1792,9 +1843,12 @@ main() {
    ## Install is finished at the "all done" page; we power off + detach the ISO +
    ## reboot ourselves, so no need to click the Finish/Done button first.
    "${VBOXMANAGE}" controlvm "${vm}" poweroff 2>/dev/null || true
+   ## window mode: release the in-process frontend's session lock before the offline config ops.
+   stop_vm_frontend
    sleep 3
-   "${VBOXMANAGE}" storageattach "${vm}" --storagectl IDE --port 0 --device 0 \
-      --type dvddrive --medium none >/dev/null
+   vbox_config_retry storageattach "${vm}" --storagectl IDE --port 0 --device 0 \
+      --type dvddrive --medium none \
+      || die "${FAIL_RC}" "VBoxManage storageattach (detach install ISO) failed"
    story_card 41 vm-stopped-iso-detached "Live session powered off, install ISO detached"
    ## efi-secureboot: the live/install phase ran with Secure Boot OFF (unsigned live GA);
    ## enforce it now, for the installed-system boot, while still powered off.

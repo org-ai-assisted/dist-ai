@@ -118,6 +118,16 @@ if [ "${selfcheck_out#*does not meet global threshold}" = "${selfcheck_out}" ]; 
    printf '%s\n' "${selfcheck_out}" >&2
    exit 1
 fi
+## The threshold failure must come from a test that RAN (exercise-a.test.js covers a.js and
+## leaves b.js at 0%), NOT from the test glob matching ZERO files -- zero tests also yields 0%
+## and the SAME "does not meet global threshold" line, a false green. node --test prints a
+## "# pass N" summary; require N >= 1, so a broken glob (wrong Node version, renamed test files)
+## fails loud here instead of masquerading as the intended b.js-unexercised proof.
+if [ -n "${selfcheck_out##*# pass [1-9]*}" ]; then
+   printf '%s\n' 'jscov: FATAL: self-check hit the coverage threshold with NO passing test (# pass 0 / no "# pass N") -- the node --test glob matched zero files, so the 0% failure is a false signal, not the intended --all proof. Self-check output follows:' >&2
+   printf '%s\n' "${selfcheck_out}" >&2
+   exit 1
+fi
 
 ## Real gate: 100% over covered.txt, fail loud on any shortfall.
 run_gate jscov/covered.txt jscov
