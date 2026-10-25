@@ -1,0 +1,21 @@
+# vnu (W3C Nu) accepted-conformance-error baseline for output-lies.github.io. Fields: <path> <message>
+# The gate FAILS only on a NEW error (one not listed here). A listed error is
+# pre-existing conformance debt we tolerate; a listed one that no longer fires is
+# reported as resolved, not required. Re-seed (overwrites) with:
+#   webcheck-vnu-sandbox --write-baseline <site-root>
+analyze/index.html Element "a" is missing required attribute "href".
+analyze/index.html Start tag seen without seeing a doctype first. Expected "<!DOCTYPE html>".
+git-diffs-lie/all/index.html Start tag seen without seeing a doctype first. Expected "<!DOCTYPE html>".
+git-diffs-lie/index.html Element "a" is missing required attribute "href".
+git-diffs-lie/index.html Start tag seen without seeing a doctype first. Expected "<!DOCTYPE html>".
+index.html Element "a" is missing required attribute "href".
+logo-wide.html Element "head" is missing a required instance of child element "title".
+logo-wide.html Start tag seen without seeing a doctype first. Expected "<!DOCTYPE html>".
+logo.html Element "head" is missing a required instance of child element "title".
+logo.html Start tag seen without seeing a doctype first. Expected "<!DOCTYPE html>".
+paste/index.html Element "a" is missing required attribute "href".
+paste/index.html Start tag seen without seeing a doctype first. Expected "<!DOCTYPE html>".
+quiz/index.html Element "a" is missing required attribute "href".
+quiz/index.html Start tag seen without seeing a doctype first. Expected "<!DOCTYPE html>".
+terminal/index.html Element "a" is missing required attribute "href".
+terminal/index.html Start tag seen without seeing a doctype first. Expected "<!DOCTYPE html>".

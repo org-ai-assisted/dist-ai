@@ -1,0 +1,14 @@
+# vnu (W3C Nu) accepted-conformance-error baseline for org-ai-assisted.github.io. Fields: <path> <message>
+# The gate FAILS only on a NEW error (one not listed here). A listed error is
+# pre-existing conformance debt we tolerate; a listed one that no longer fires is
+# reported as resolved, not required. Re-seed (overwrites) with:
+#   webcheck-vnu-sandbox --write-baseline <site-root>
+avatar.html Element "head" is missing a required instance of child element "title".
+avatar.html Start tag seen without seeing a doctype first. Expected "<!DOCTYPE html>".
+index.html Element "a" is missing required attribute "href".
+kicksecure/automated-test-suite/index.html Element "a" is missing required attribute "href".
+logo-wide.html Element "head" is missing a required instance of child element "title".
+logo-wide.html Start tag seen without seeing a doctype first. Expected "<!DOCTYPE html>".
+og.html Element "head" is missing a required instance of child element "title".
+og.html Start tag seen without seeing a doctype first. Expected "<!DOCTYPE html>".
+whonix/automated-test-suite/index.html Element "a" is missing required attribute "href".
