@@ -8,7 +8,7 @@ A standalone/CI lane that unit-tests the sites' first-party JavaScript under jsd
     webcheck-jscov-sandbox <site-root> [<site-root> ...]
 
 The driver stages `jscov/` + each site's `*.js` (as `roots/<site>/<rel>`), syncs into the
-sandbox, and runs `run.sh` (c8 `--check-coverage ... 100` over `covered.txt`, `node --test jscov/`).
+sandbox, and runs `run.sh` (c8 `--check-coverage ... 100` over `covered.txt`, `node --test jscov/**/*.test.js`).
 Needs `provision jstest` (node + jsdom + c8) in the sandbox.
 
 ## Mechanism (how a browser IIFE reaches 100%)
