@@ -4,41 +4,35 @@
 # reported as resolved, not required. Re-seed (overwrites) with:
 #   webcheck-vnu-sandbox --write-baseline <site-root>
 ai-review/index.html Element "a" is missing required attribute "href".
-ai-review/index.html Element "style" not allowed as child of element "noscript" in this context. (Suppressing further errors from this subtree.)
+ai-review/index.html Style rule ".fshare a.sh,.fshare button.sh" not allowed outside an "@scope" rule in a "style" element in "body".
+ai-review/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+ai-review/index.html The heading "h4" (with computed level 4) follows the heading "h2" (with computed level 2), skipping 1 heading level.
 attacks/index.html Element "a" is missing required attribute "href".
-attacks/index.html Element "style" not allowed as child of element "noscript" in this context. (Suppressing further errors from this subtree.)
+attacks/index.html Style rule ".fshare a.sh,.fshare button.sh" not allowed outside an "@scope" rule in a "style" element in "body".
+attacks/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
 chat-view/index.html Attribute "title" not allowed on element "svg" at this point.
-chat-view/index.html CSS: "background": "color-mix(in srgb,#e05fb0 26%,transparent)" is not a "background-color" value.
-chat-view/index.html CSS: "background": "color-mix(in srgb,12%)" is not a "background-color" value.
-chat-view/index.html CSS: "background": "color-mix(in srgb,14%,transparent)" is not a "background-color" value.
-chat-view/index.html CSS: "background": "color-mix(in srgb,16%)" is not a "background-color" value.
-chat-view/index.html CSS: "background": "color-mix(in srgb,16%,transparent)" is not a "background-color" value.
-chat-view/index.html CSS: "background": "color-mix(in srgb,20%,transparent)" is not a "background-color" value.
-chat-view/index.html CSS: "background": "color-mix(in srgb,22%,transparent)" is not a "background-color" value.
-chat-view/index.html CSS: "background": too few values for the property "linear-gradient".
-chat-view/index.html CSS: "border-color": "color-mix(in srgb,32%)" is not a "border-color" value.
-chat-view/index.html CSS: "border-color": "color-mix(in srgb,45%)" is not a "border-color" value.
-chat-view/index.html CSS: "box-shadow": "in" is not a "color" value.
-chat-view/index.html CSS: "font-weight": "650" is not a "font-weight" value.
-chat-view/index.html CSS: The value "break-word" is deprecated
+chat-view/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
 comparison/index.html Element "a" is missing required attribute "href".
-comparison/index.html Element "style" not allowed as child of element "noscript" in this context. (Suppressing further errors from this subtree.)
+comparison/index.html Style rule ".fshare a.sh,.fshare button.sh" not allowed outside an "@scope" rule in a "style" element in "body".
+comparison/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+comparison/index.html The heading "h4" (with computed level 4) follows the heading "h2" (with computed level 2), skipping 1 heading level.
 compatibility/index.html Element "a" is missing required attribute "href".
-compatibility/index.html Element "style" not allowed as child of element "noscript" in this context. (Suppressing further errors from this subtree.)
+compatibility/index.html Style rule ".fshare a.sh,.fshare button.sh" not allowed outside an "@scope" rule in a "style" element in "body".
+compatibility/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
 docs/index.html Element "a" is missing required attribute "href".
-docs/index.html Element "style" not allowed as child of element "noscript" in this context. (Suppressing further errors from this subtree.)
+docs/index.html Style rule ".fshare a.sh,.fshare button.sh" not allowed outside an "@scope" rule in a "style" element in "body".
+docs/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
 human-review/index.html Element "a" is missing required attribute "href".
-human-review/index.html Element "style" not allowed as child of element "noscript" in this context. (Suppressing further errors from this subtree.)
-index.html Attribute "aria-valuemax" not allowed on element "button" at this point.
-index.html Attribute "aria-valuemin" not allowed on element "button" at this point.
-index.html Attribute "aria-valuenow" not allowed on element "button" at this point.
-index.html Bad value "slider" for attribute "role" on element "button".
-index.html CSS: "aspect-ratio": Property "aspect-ratio" doesn't exist.
+human-review/index.html Style rule ".fshare a.sh,.fshare button.sh" not allowed outside an "@scope" rule in a "style" element in "body".
+human-review/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
 index.html Element "a" is missing required attribute "href".
 index.html Element "figcaption" not allowed as child of element "figure" in this context. (Suppressing further errors from this subtree.)
-index.html Element "style" not allowed as child of element "noscript" in this context. (Suppressing further errors from this subtree.)
+index.html Style rule ".fshare a.sh,.fshare button.sh" not allowed outside an "@scope" rule in a "style" element in "body".
+index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
 logo-wide.html Element "head" is missing a required instance of child element "title".
 review/index.html Element "a" is missing required attribute "href".
-review/index.html Element "style" not allowed as child of element "noscript" in this context. (Suppressing further errors from this subtree.)
+review/index.html Style rule ".fshare a.sh,.fshare button.sh" not allowed outside an "@scope" rule in a "style" element in "body".
+review/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
 screenshots/index.html Element "a" is missing required attribute "href".
-screenshots/index.html Element "style" not allowed as child of element "noscript" in this context. (Suppressing further errors from this subtree.)
+screenshots/index.html Style rule ".fshare a.sh,.fshare button.sh" not allowed outside an "@scope" rule in a "style" element in "body".
+screenshots/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
