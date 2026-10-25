@@ -925,6 +925,28 @@ run_det "$(printf '%s\n' \
    '}')"
 assert_not_at "R-063 spares a '{...}' handler whose last stmt returns" "R-063" 4
 assert_not_at "R-063 spares a '|| continue' guard inside its loop"     "R-063" 9
+## Optional-argument idiom: '[ -z "${NAME}" ] || check_variable_name "${NAME}" || return'
+## validates NAME only when it is set, and is SOUND because the skip branch leaves NAME
+## empty (no injectable subscript). Spared only when the emptiness test covers the CHECKED
+## name: a '-z OTHER' decoy, or a '-n' (non-empty) test whose skip branch leaves a possibly
+## hostile NAME, must still flag.
+run_det "$(printf '%s\n' \
+   '#!/bin/bash' \
+   'optarg() {' \
+   '  [ -z "${n}" ] || check_variable_name "${n}" || return 1' \
+   '  printf -v "${n}" "%s" "x"' \
+   '}' \
+   'optarg_wrongvar() {' \
+   '  [ -z "${other}" ] || check_variable_name "${n}" || return 1' \
+   '  printf -v "${n}" "%s" "x"' \
+   '}' \
+   'optarg_nonempty_test() {' \
+   '  [ -n "${n}" ] || check_variable_name "${n}" || return 1' \
+   '  printf -v "${n}" "%s" "x"' \
+   '}')"
+assert_not_at "R-063 spares the optional-arg '[ -z ] || check' idiom"  "R-063" 4
+assert_at     "R-063 flags '[ -z OTHER ] || check NAME' (wrong var)"   "R-063" 8
+assert_at     "R-063 flags '[ -n NAME ] || check' (non-empty skip)"    "R-063" 12
 ## Class-killer: byte-span containment != execution reachability. A guard reaches a printf ONLY
 ## within one execution region -- a later function body, and any subshell/subst, are boundaries.
 ## (ai-review reviewdrain16 round 3.)
