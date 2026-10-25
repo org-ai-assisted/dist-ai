@@ -72,6 +72,11 @@ shot_tmp=""
 ## guest desktop shows, no black border). labwc does not honour VirtualBox's window-geometry hint
 ## for a VM window, so maximize-on-map is the reliable framing.
 maximize_window=""
+## vm-window: the VM this run STARTED (power it off cleanly on exit, not a process-kill abort) and
+## the global GUI/SuppressMessages we overrode (restore it -- we must not leave global state dirty).
+started_vm_uuid=""
+supmsg_was_set=""
+supmsg_saved=""
 
 die() {
    local rc="$1"
@@ -88,6 +93,20 @@ die() {
 ## pre-existing VM untouched. VBoxSVC is left alone: it is --auto-shutdown and self-reaps.
 cleanup() {
    local rc=$?
+   ## vm-window started a VM: power it off CLEANLY via the API first (marks it PoweredOff, not the
+   ## Aborted state a bare process-kill of the VM frontend leaves) BEFORE reaping -- never lose
+   ## guest state to a KILL. The frontend then exits on its own; the kills below are a backstop.
+   if [ -n "${started_vm_uuid}" ]; then
+      "${VBOXMANAGE}" controlvm "${started_vm_uuid}" poweroff >/dev/null 2>&1 || true
+      sleep 2
+   fi
+   ## restore the global GUI/SuppressMessages we overrode (set it back, or delete if it was absent),
+   ## so a vm-window capture leaves the user's VirtualBox hint preferences unchanged.
+   if [ "${supmsg_was_set}" = 'yes' ]; then
+      "${VBOXMANAGE}" setextradata global GUI/SuppressMessages "${supmsg_saved}" >/dev/null 2>&1 || true
+   elif [ "${supmsg_was_set}" = 'no' ]; then
+      "${VBOXMANAGE}" setextradata global GUI/SuppressMessages >/dev/null 2>&1 || true
+   fi
    [ -z "${vbox_pid}" ] || kill "${vbox_pid}" 2>/dev/null || true
    [ -z "${labwc_pid}" ] || kill "${labwc_pid}" 2>/dev/null || true
    ## brief grace for a clean client/compositor exit, then hard-reap any straggler we own.
@@ -231,7 +250,10 @@ RCXML
 grab_and_commit() {
    local what="$1"
    kill -0 "${vbox_pid}" 2>/dev/null || die 1 "${what} exited before the grab; log: $(cat "${vbox_log}")"
-   shot_tmp="$(mktemp --tmpdir "${me}-shot.XXXXXX.png")"
+   ## Stage the temp IN the destination directory so the final move is an atomic rename (not a
+   ## cross-filesystem copy a reader could observe half-written) -- the single commit point holds
+   ## even when --out is on another filesystem than the default tmpdir.
+   shot_tmp="$(mktemp --tmpdir="$(dirname -- "${out}")" "${me}-shot.XXXXXX.png")"
    grim "${shot_tmp}" >/dev/null 2>&1 || die 1 "grim failed to capture the compositor output"
    "${IMAGE_BLANK_CHECK}" "${shot_tmp}" >/dev/null 2>&1 \
       || die 1 "captured ${what} frame is blank/degenerate -- the GUI did not render"
@@ -275,7 +297,20 @@ cmd_vm_window() {
    start_compositor
 
    ## Suppress VirtualBox's passive hint popups so they are not in the frame (e.g. the "auto
-   ## capture keyboard" notification). SuppressMessages is a global comma list of GUI hint IDs.
+   ## capture keyboard" notification). SuppressMessages is a global comma list of GUI hint IDs; save
+   ## the current value first so cleanup restores it (we mutate a persistent global setting).
+   local cur
+   cur="$("${VBOXMANAGE}" getextradata global GUI/SuppressMessages 2>/dev/null || true)"
+   case "${cur}" in
+      "Value: "*)
+         supmsg_was_set="yes"
+         supmsg_saved="${cur#Value: }"
+         ;;
+      *)
+         supmsg_was_set="no"
+         supmsg_saved=""
+         ;;
+   esac
    "${VBOXMANAGE}" setextradata global GUI/SuppressMessages \
       "remindAboutAutoCapture,remindAboutMouseIntegration,remindAboutInputCapture,confirmInputCapture,remindAboutGoingFullscreen,confirmGoingFullscreen,remindAboutGoingSeamless,remindAboutPausedVMInput,remindAboutInaccessibleMedia,remindAboutGuestAdditionsAreNotActive,showRuntimeError.warning.HostAudioNotResponding" \
       >/dev/null 2>&1 || true
@@ -285,9 +320,10 @@ cmd_vm_window() {
    "${VBOXMANAGE}" setextradata "${uuid}" GUI/LastGuestSizeHint "${width},$((height - 40))" >/dev/null 2>&1 || true
 
    ## Pass the resolved UUID as a positional arg (array, never a string through sh -c): no shell/
-   ## argument injection into the launch.
+   ## argument injection into the launch. Record it so cleanup powers the VM off cleanly.
    QT_QPA_PLATFORM="wayland" "${VBOX_VM_BIN}" --startvm "${uuid}" >"${vbox_log}" 2>&1 &
    vbox_pid="$!"
+   started_vm_uuid="${uuid}"
    sleep "${settle}"
    grab_and_commit "VirtualBox VM window"
 }

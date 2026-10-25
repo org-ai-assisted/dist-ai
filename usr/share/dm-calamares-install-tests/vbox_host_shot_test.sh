@@ -14,6 +14,12 @@
 ##    --vm -- all three die before any compositor starts.
 ## The capture path itself (Wayland socket discovery, trap teardown, grim) is e2e-only.
 
+## Option/state vars (vm/out/.../started_vm_uuid/supmsg_*) are READ by the sourced vbox-host-shot
+## (parse_common_args / cleanup), not by this file -- shellcheck cannot see across the source and
+## reports them "appears unused". File-wide SC2034 disable (before the first command so it is
+## file-wide); the vars ARE consumed by the subject.
+# shellcheck disable=SC2034
+
 set -o errexit
 set -o nounset
 set -o pipefail
@@ -138,6 +144,59 @@ case "${err}" in
       ;;
 esac
 check "vm-window unregistered VM prints the diagnostic" "${got}"
+
+## cleanup: a vm-window capture must leave no side effects -- the started VM is powered off CLEANLY
+## (not a KILL abort) and the overridden global GUI/SuppressMessages is restored (coderabbit PR
+## #751). Drive cleanup() directly with a recording VBoxManage stub. sleep is stubbed to a no-op so
+## the trap's grace waits do not slow the suite.
+# shellcheck disable=SC2317  ## reached via the sourced cleanup(), not a literal call
+sleep() {
+   return 0
+}
+vbox_calls="$(mktemp)"
+export VBOX_CALLS="${vbox_calls}"
+# shellcheck disable=SC2317  ## reached via the sourced ${VBOXMANAGE}, not a literal call
+VBoxManage() {
+   printf '%s\n' "$*" >> "${VBOX_CALLS}"
+   return 0
+}
+## case A: SuppressMessages WAS set -> restored to the old value; the started VM is powered off.
+## The pid/dir/log cleanup globals are already empty from the sourced subject, so cleanup acts
+## only on what this case sets (the started VM + the saved SuppressMessages).
+true > "${vbox_calls}"
+started_vm_uuid="the-uuid"
+supmsg_was_set="yes"
+supmsg_saved="oldsup"
+( cleanup ) >/dev/null 2>&1 || true
+calls="$(cat "${vbox_calls}")"
+got=1
+case "${calls}" in
+   *"controlvm the-uuid poweroff"*)
+      got=0
+      ;;
+esac
+check "cleanup powers off the started vm-window VM (clean, not a KILL abort)" "${got}"
+got=1
+case "${calls}" in
+   *"setextradata global GUI/SuppressMessages oldsup"*)
+      got=0
+      ;;
+esac
+check "cleanup restores the overridden global GUI/SuppressMessages" "${got}"
+## case B: SuppressMessages was ABSENT -> deleted (setextradata with no value); no VM to power off.
+true > "${vbox_calls}"
+started_vm_uuid=""
+supmsg_was_set="no"
+supmsg_saved=""
+( cleanup ) >/dev/null 2>&1 || true
+calls="$(cat "${vbox_calls}")"
+got=1
+case "${calls}" in
+   *"setextradata global GUI/SuppressMessages"*)
+      got=0
+      ;;
+esac
+check "cleanup deletes GUI/SuppressMessages when it was absent" "${got}"
 
 printf '%s\n' "" "vbox_host_shot_test: ${pass} pass, ${fail} fail, 0 skip"
 [ "${fail}" -eq 0 ] || exit 1
