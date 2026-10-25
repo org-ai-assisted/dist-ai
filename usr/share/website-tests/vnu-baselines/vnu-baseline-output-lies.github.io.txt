@@ -1,0 +1,34 @@
+# vnu (W3C Nu) accepted-conformance-error baseline for output-lies.github.io. Fields: <path> <message>
+# The gate FAILS only on a NEW error (one not listed here). A listed error is
+# pre-existing conformance debt we tolerate; a listed one that no longer fires is
+# reported as resolved, not required. Re-seed (overwrites) with:
+#   webcheck-vnu-sandbox --write-baseline <site-root>
+analyze/index.html Element "a" is missing required attribute "href".
+analyze/index.html Start tag seen without seeing a doctype first. Expected "<!DOCTYPE html>".
+analyze/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+analyze/index.html The heading "h4" (with computed level 4) follows the heading "h2" (with computed level 2), skipping 1 heading level.
+git-diffs-lie/all/index.html Start tag seen without seeing a doctype first. Expected "<!DOCTYPE html>".
+git-diffs-lie/all/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+git-diffs-lie/index.html Element "a" is missing required attribute "href".
+git-diffs-lie/index.html Start tag seen without seeing a doctype first. Expected "<!DOCTYPE html>".
+git-diffs-lie/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+git-diffs-lie/index.html The heading "h4" (with computed level 4) follows the heading "h2" (with computed level 2), skipping 1 heading level.
+index.html Element "a" is missing required attribute "href".
+index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+index.html The heading "h4" (with computed level 4) follows the heading "h2" (with computed level 2), skipping 1 heading level.
+logo-wide.html Element "head" is missing a required instance of child element "title".
+logo-wide.html Start tag seen without seeing a doctype first. Expected "<!DOCTYPE html>".
+logo.html Element "head" is missing a required instance of child element "title".
+logo.html Start tag seen without seeing a doctype first. Expected "<!DOCTYPE html>".
+paste/index.html Element "a" is missing required attribute "href".
+paste/index.html Start tag seen without seeing a doctype first. Expected "<!DOCTYPE html>".
+paste/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+paste/index.html The heading "h4" (with computed level 4) follows the heading "h2" (with computed level 2), skipping 1 heading level.
+quiz/index.html Element "a" is missing required attribute "href".
+quiz/index.html Start tag seen without seeing a doctype first. Expected "<!DOCTYPE html>".
+quiz/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+quiz/index.html The heading "h4" (with computed level 4) follows the heading "h2" (with computed level 2), skipping 1 heading level.
+terminal/index.html Element "a" is missing required attribute "href".
+terminal/index.html Start tag seen without seeing a doctype first. Expected "<!DOCTYPE html>".
+terminal/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+terminal/index.html The heading "h4" (with computed level 4) follows the heading "h2" (with computed level 2), skipping 1 heading level.

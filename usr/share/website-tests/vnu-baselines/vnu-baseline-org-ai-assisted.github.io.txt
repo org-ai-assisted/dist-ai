@@ -1,0 +1,138 @@
+# vnu (W3C Nu) accepted-conformance-error baseline for org-ai-assisted.github.io. Fields: <path> <message>
+# The gate FAILS only on a NEW error (one not listed here). A listed error is
+# pre-existing conformance debt we tolerate; a listed one that no longer fires is
+# reported as resolved, not required. Re-seed (overwrites) with:
+#   webcheck-vnu-sandbox --write-baseline <site-root>
+automated-test-results/dasharo-vbox-boot-20261021T164511Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/dasharo-vbox-boot-20261021T164511Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/dasharo-vbox-boot-20261023T173901Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/dasharo-vbox-boot-20261023T173901Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/index.html The heading "h4" (with computed level 4) follows the heading "h2" (with computed level 2), skipping 1 heading level.
+automated-test-results/kicksecure-iso-efi__20260930T132018Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-iso-efi__20260930T132018Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-18-2-1-9-20261007T081333Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-18-2-1-9-20261007T081333Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-18-2-3-0-222-g0355db7f4fe1b4a73573d6d61aa50833369a8f26-20261007T152946Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-18-2-3-0-222-g0355db7f4fe1b4a73573d6d61aa50833369a8f26-20261007T152946Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-18-2-3-0-262-gb1dd5133f52d3b8094a66a517b3cd6420a8870f7-20261008T125235Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-18-2-3-0-262-gb1dd5133f52d3b8094a66a517b3cd6420a8870f7-20261008T125235Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-18-2-3-0-378-ga83d9d40d25e49897df9d6a7fe5f881fc392553e-20261008T124338Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-18-2-3-0-378-ga83d9d40d25e49897df9d6a7fe5f881fc392553e-20261008T124338Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-18-2-3-5-20261007T084235Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-18-2-3-5-20261007T084235Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-18-2-3-5__20261006T171028Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-18-2-3-5__20261006T171028Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-bios-18-2-3-3-369-g669cd966b3489b529d98da09626083d2bda36930-20261008T191754Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-bios-18-2-3-3-369-g669cd966b3489b529d98da09626083d2bda36930-20261008T191754Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-bios-18-2-3-3-373-g61410325329e944b3dab1341c19ffa262668e5a3-20261008T212258Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-bios-18-2-3-3-373-g61410325329e944b3dab1341c19ffa262668e5a3-20261008T212258Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-bios-18-2-3-3-374-gcc33c1255e2fa7c7b0b177d0599c5b0dbbd7b92a-20261008T221646Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-bios-18-2-3-3-374-gcc33c1255e2fa7c7b0b177d0599c5b0dbbd7b92a-20261008T221646Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-bios-18-2-3-3-401-g9d86627f7c0f872ed2439cac8b90a5b931abb86e-20261009T104654Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-bios-18-2-3-3-401-g9d86627f7c0f872ed2439cac8b90a5b931abb86e-20261009T104654Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-bios-18-2-3-6-20261008T162006Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-bios-18-2-3-6-20261008T162006Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-bios-18-2-3-6-383-g1feb02d6dfd66cbad070b78b56d0a42dbd6fc1e4-20261009T135336Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-bios-18-2-3-6-383-g1feb02d6dfd66cbad070b78b56d0a42dbd6fc1e4-20261009T135336Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-bios-18-2-3-6-383-g3599390f69030e392ef091fe6f867ad6bc4d134b-20261009T125656Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-bios-18-2-3-6-383-g3599390f69030e392ef091fe6f867ad6bc4d134b-20261009T125656Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-bios-18-2-3-6-383-g580c6f9c31da484427ec4ed6d339646c841cd790-20261010T085519Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-bios-18-2-3-6-383-g580c6f9c31da484427ec4ed6d339646c841cd790-20261010T085519Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-bios-18-2-3-6-383-g91f6cb3670fc933f96ee8029cb5fd74c96e3328c-20261009T214933Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-bios-18-2-3-6-383-g91f6cb3670fc933f96ee8029cb5fd74c96e3328c-20261009T214933Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-bios-18-2-3-6-383-ga2e0f2597105a0101e7d041d2d6f47b3d1c085f1-20261009T204100Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-bios-18-2-3-6-383-ga2e0f2597105a0101e7d041d2d6f47b3d1c085f1-20261009T204100Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-bios-18-2-3-6-394-gaf5d8334b9e3bacd6b62888f0e409257343f1871-20261010T222718Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-bios-18-2-3-6-394-gaf5d8334b9e3bacd6b62888f0e409257343f1871-20261010T222718Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-bios-1974-g8f5fa3b0b722-20261011T175902Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-bios-1974-g8f5fa3b0b722-20261011T175902Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-bios-1981-gb36d96358f27-20261011T221021Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-bios-1981-gb36d96358f27-20261011T221021Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-efi-18-2-3-3-369-g669cd966b3489b529d98da09626083d2bda36930-20261008T181313Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-efi-18-2-3-3-369-g669cd966b3489b529d98da09626083d2bda36930-20261008T181313Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-efi-18-2-3-6-20261008T161552Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-efi-18-2-3-6-20261008T161552Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-efi-18-2-3-6-383-g580c6f9c31da484427ec4ed6d339646c841cd790-20261010T090349Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-efi-18-2-3-6-383-g580c6f9c31da484427ec4ed6d339646c841cd790-20261010T090349Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-efi-18-2-3-6-383-g91f6cb3670fc933f96ee8029cb5fd74c96e3328c-20261009T215804Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-efi-18-2-3-6-383-g91f6cb3670fc933f96ee8029cb5fd74c96e3328c-20261009T215804Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-efi-18-2-3-6-394-gaf5d8334b9e3bacd6b62888f0e409257343f1871-20261011T031551Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-efi-18-2-3-6-394-gaf5d8334b9e3bacd6b62888f0e409257343f1871-20261011T031551Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-efi-18-2-4-2-20261022T081053Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-efi-18-2-4-2-20261022T081053Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-efi-18-2-4-2-20261022T083009Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-efi-18-2-4-2-20261022T083009Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-efi-1974-g8f5fa3b0b722-20261011T180714Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-efi-1974-g8f5fa3b0b722-20261011T180714Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-efi-1981-gb36d96358f27-20261011T221948Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-efi-1981-gb36d96358f27-20261011T221948Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-efi-ai-1974-g8f5fa3b0-20261011T145744Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-efi-ai-1974-g8f5fa3b0-20261011T145744Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-efi-secureboot-18-2-3-3-369-g669cd966b3489b529d98da09626083d2bda36930-20261008T181902Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-efi-secureboot-18-2-3-3-369-g669cd966b3489b529d98da09626083d2bda36930-20261008T181902Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-efi-secureboot-18-2-3-6-20261008T163217Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-efi-secureboot-18-2-3-6-20261008T163217Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-efi-secureboot-18-2-4-2-20261022T080024Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-efi-secureboot-18-2-4-2-20261022T080024Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-efi-secureboot-18-2-4-2-20261023T145419Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-efi-secureboot-18-2-4-2-20261023T145419Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-efi-secureboot-1974-g8f5fa3b0b722-20261011T183903Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-efi-secureboot-1974-g8f5fa3b0b722-20261011T183903Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-efi-secureboot-1981-gb36d96358f27-20261011T222539Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-efi-secureboot-1981-gb36d96358f27-20261011T222539Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-efi-secureboot-2096-g35e4cf4fc28b-20261022T102028Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-efi-secureboot-2096-g35e4cf4fc28b-20261022T102028Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-efi-secureboot-2119-g509ae6c044d7-20261022T203535Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-efi-secureboot-2119-g509ae6c044d7-20261022T203535Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-efi-secureboot-2119-g509ae6c044d7-20261023T053935Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-efi-secureboot-2119-g509ae6c044d7-20261023T053935Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-efi-secureboot-2137-g853b3107b6f3-20261023T082945Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-efi-secureboot-2137-g853b3107b6f3-20261023T082945Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-efi-secureboot-2137-g853b3107b6f3-20261023T183113Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-efi-secureboot-2137-g853b3107b6f3-20261023T183113Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-efi-secureboot-2137-g853b3107b6f3-20261023T233756Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-efi-secureboot-2137-g853b3107b6f3-20261023T233756Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-efi-secureboot-2137-g853b3107b6f3-20261024T052230Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-efi-secureboot-2137-g853b3107b6f3-20261024T052230Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-efi-secureboot-2137-g853b3107b6f3-20261024T054343Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-efi-secureboot-2137-g853b3107b6f3-20261024T054343Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-efi-secureboot-loop-e2e-20261021T142707Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-efi-secureboot-loop-e2e-20261021T142707Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-efi-secureboot-loop-e2e-20261021T144436Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-efi-secureboot-loop-e2e-20261021T144436Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-efi-secureboot-loop-e2e-20261021T145909Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-efi-secureboot-loop-e2e-20261021T145909Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-efi-secureboot-loop-e2e-20261021T151416Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-efi-secureboot-loop-e2e-20261021T151416Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-efi-secureboot-loop-e2e-20261021T153259Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-efi-secureboot-loop-e2e-20261021T153259Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-efi-secureboot-mokfix-20261020T104047Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-efi-secureboot-mokfix-20261020T104047Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-efi-secureboot-sbfinal-20261020T174023Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-efi-secureboot-sbfinal-20261020T174023Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-efi-secureboot-sbfinal2-20261020T194503Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-efi-secureboot-sbfinal2-20261020T194503Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-efi-secureboot-sbverify-20261019T105015Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-efi-secureboot-sbverify-20261019T105015Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/kicksecure-lxqt-efi-secureboot-sdwfix-20261020T143941Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/kicksecure-lxqt-efi-secureboot-sdwfix-20261020T143941Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/whonix-lxqt-18-2-1-9__20261005T213315Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/whonix-lxqt-18-2-1-9__20261005T213315Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+automated-test-results/whonix-lxqt-18-2-3-5__20261004T143049Z/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+automated-test-results/whonix-lxqt-18-2-3-5__20261004T143049Z/index.html The heading "h3" (with computed level 3) follows the heading "h1" (with computed level 1), skipping 1 heading level.
+avatar.html Element "head" is missing a required instance of child element "title".
+avatar.html Start tag seen without seeing a doctype first. Expected "<!DOCTYPE html>".
+index.html Element "a" is missing required attribute "href".
+index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+index.html The heading "h4" (with computed level 4) follows the heading "h2" (with computed level 2), skipping 1 heading level.
+kicksecure/automated-test-suite/index.html Element "a" is missing required attribute "href".
+kicksecure/automated-test-suite/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+kicksecure/automated-test-suite/index.html The heading "h4" (with computed level 4) follows the heading "h2" (with computed level 2), skipping 1 heading level.
+logo-wide.html Element "head" is missing a required instance of child element "title".
+logo-wide.html Start tag seen without seeing a doctype first. Expected "<!DOCTYPE html>".
+og.html Element "head" is missing a required instance of child element "title".
+og.html Start tag seen without seeing a doctype first. Expected "<!DOCTYPE html>".
+whonix/automated-test-suite/index.html Element "a" is missing required attribute "href".
+whonix/automated-test-suite/index.html The "aria-hidden" attribute must not be used on any "label" element that is associated with a labelable element.
+whonix/automated-test-suite/index.html The heading "h4" (with computed level 4) follows the heading "h2" (with computed level 2), skipping 1 heading level.

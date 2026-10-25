@@ -96,6 +96,12 @@ run_required_unit_test check_svg_safety_test.py
 ## imported inside check(), so this runs everywhere without a browser.
 run_required_unit_test check_console_test.py
 
+## Unit regression for the vnu HTML-conformance lane's vnu-free engine (message
+## ASCII-normalization, file:url->path mapping, error/info/problem classification, baseline
+## round-trip, the accept-baseline comparison incl. missing-baseline-fails-closed). vnu itself
+## is sandbox/JRE-only and not invoked by the engine, so this runs everywhere.
+run_required_unit_test check_vnu_test.py
+
 ## Unit regression for the cspell spell-check lane's browser-free logic (issue-line parser,
 ## baseline round-trip, finding_key, scan_root new-vs-baseline, fail-loud error handling).
 ## cspell itself is npm/sandbox-only and STUBBED in the test, so this runs everywhere.
@@ -116,6 +122,13 @@ run_required_unit_test ../domsnap-engine/tests/test_host_scrub.py
 [ -v OUTPUT_LIES_REPO ] || OUTPUT_LIES_REPO=''
 [ -v SECURE_TERMINAL_SITE_REPO ] || SECURE_TERMINAL_SITE_REPO=''
 [ -v ORG_AI_ASSISTED_REPO ] || ORG_AI_ASSISTED_REPO=''
+## The journal (computer-security-research) is BUILT by journal-maker; its served tree is
+## the build output (_site, with its own index.html + .github/web-tests.yml policies:[journal]),
+## NOT the source checkout (which has no index.html). So the default points at .../_site; an
+## unset override with no built tree there is simply skipped (add_root), and an explicit
+## override must point at a BUILT tree. The journal deploys via its own CI, so site-deploy does
+## NOT publish it -- this lane only gates the local build.
+[ -v COMPUTER_SECURITY_RESEARCH_REPO ] || COMPUTER_SECURITY_RESEARCH_REPO=''
 ## The defaults below are rooted at ${HOME}. An unset HOME is an UNEXPECTED, scrubbed
 ## environment -- NOT the normal "no site checkout on this host" case -- so it must FAIL,
 ## never be papered over as a SKIP (no unauthorized skips). Record it, then empty HOME so
@@ -156,6 +169,7 @@ add_root(){
 add_root "${OUTPUT_LIES_REPO}"          "${HOME}/private-sources/output-lies.github.io"
 add_root "${SECURE_TERMINAL_SITE_REPO}" "${HOME}/private-sources/secure-terminal.github.io"
 add_root "${ORG_AI_ASSISTED_REPO}"      "${HOME}/private-sources/org-ai-assisted.github.io"
+add_root "${COMPUTER_SECURITY_RESEARCH_REPO}" "${HOME}/private-sources/computer-security-research.github.io/_site"
 
 ## The secure-terminal site alone carries the shot galleries, so resolve its root for the
 ## shot-inventory guard below (only that site gets the check). Same explicit-but-invalid
@@ -345,22 +359,42 @@ else
    fi
 fi
 
-## Lint lanes (generic): html-tidy validity + stylelint, run CONFINED in the sandbox
-## (the tools live there, not on this host). No browser, so delegated to the separate
-## webcheck-lint-sandbox driver (default confine profile). In-sandbox (cannot nest) or
-## with no sandbox -> env-unmet SKIP, never a silent green.
-lint_driver="${script_dir}/webcheck-lint-sandbox"
-[ -x "${lint_driver}" ] || lint_driver="$(command -v webcheck-lint-sandbox 2>/dev/null || true)"
-if [ "${DIST_AI_IN_SANDBOX:-}" = '1' ]; then
-   printf '%s\n' 'website-lint-tests: SKIP (html-tidy/stylelint; in-sandbox, cannot nest)' >&2
-   env_unmet=1
-elif [ "${WEBSITE_TESTS_NO_SANDBOX:-}" != '1' ] \
-   && [ -n "${lint_driver}" ] && [ -x "${lint_driver}" ] && command -v sandbox >/dev/null 2>&1; then
-   "${lint_driver}" "${roots[@]}" || overall=1
-else
-   printf '%s\n' 'website-lint-tests: SKIP (html-tidy/stylelint; no sandbox)' >&2
-   env_unmet=1
-fi
+## The sandbox-delegated lanes (lint / vnu / lighthouse / axe) share one delegation rule, so a
+## single helper applies it uniformly:
+##   - in-sandbox (cannot nest) OR no sandbox on this host -> env-unmet SKIP (never a silent green)
+##   - sandbox present but the SHIPPED driver missing/non-executable -> FATAL (broken install),
+##     NOT a misleading "no sandbox" SKIP: the webcheck-*-sandbox drivers ship in THIS package
+##     (like check_console.py / secure-terminal-shots-inventory above), so their absence is an
+##     environment bug, per the dist-ai shell-test convention (a required tool absent = exit 1).
+## Sets the globals overall / env_unmet / install_intact. The lint + vnu lanes run CONFINED in
+## the sandbox (tools there, no browser/network); lighthouse + axe run UNCONFINED (real chromium +
+## loopback). Each lane fails CLOSED on a missing per-site baseline inside its driver.
+delegate_sandbox_lane() {
+   local label driver_name driver
+   label="$1"
+   driver_name="$2"
+   shift 2
+   driver="${script_dir}/${driver_name}"
+   [ -x "${driver}" ] || driver="$(command -v "${driver_name}" 2>/dev/null || true)"
+   if [ "${DIST_AI_IN_SANDBOX:-}" = '1' ]; then
+      printf '%s\n' "${label}: SKIP (in-sandbox, cannot nest)" >&2
+      env_unmet=1
+   elif [ "${WEBSITE_TESTS_NO_SANDBOX:-}" = '1' ] || ! command -v sandbox >/dev/null 2>&1; then
+      printf '%s\n' "${label}: SKIP (no sandbox)" >&2
+      env_unmet=1
+   elif [ -n "${driver}" ] && [ -x "${driver}" ]; then
+      "${driver}" "$@" || overall=1
+   else
+      printf '%s\n' "${label}: FATAL: ${driver_name} not found (required; ships in this package)" >&2
+      overall=1
+      install_intact='false'
+   fi
+}
+
+delegate_sandbox_lane 'website-lint-tests (html-tidy/stylelint)' webcheck-lint-sandbox "${roots[@]}"
+delegate_sandbox_lane 'website-vnu-tests (vnu conformance)' webcheck-vnu-sandbox "${roots[@]}"
+delegate_sandbox_lane 'website-lighthouse-tests (lighthouse)' webcheck-lighthouse-sandbox "${roots[@]}"
+delegate_sandbox_lane 'website-axe-tests (axe-core)' webcheck-axe-sandbox "${roots[@]}"
 
 ## Shot-inventory guard (secure-terminal site only): every committed shot is a
 ## page-referenced generator artifact and every gallery reference resolves -- no

@@ -7,8 +7,8 @@
 
 """Declarative per-site test config: `.github/web-tests.yml`.
 
-`policies:` DECLARES which policy a site root is checked under (family vs wiki), so
-check_site runs only the applicable tests instead of inferring from page markup.
+`policies:` DECLARES which policy a site root is checked under (family, journal, or
+wiki), so check_site runs only the applicable tests instead of inferring from page markup.
 
 The markup heuristic (`site._looks_like_wiki`) stays the DEFAULT when a root ships
 no config, so an unconfigured wiki tree is never mis-reported under family policy --
@@ -25,7 +25,7 @@ import os
 # co-located with the served tree root (family sites) so it rides the checkout.
 CONFIG_REL = os.path.join('.github', 'web-tests.yml')
 
-KNOWN_POLICIES = ('family', 'wiki')
+KNOWN_POLICIES = ('family', 'wiki', 'journal')
 
 
 class ConfigError(ValueError):

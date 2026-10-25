@@ -411,11 +411,14 @@ class _FooterAudit(html.parser.HTMLParser):
         return ' '.join(self._buf).lower()
 
 
-def check_footer(root, failures):
-    # EVERY page that has a footer must carry all family links -- the uniform chrome
-    # puts a footer on every page, INCLUDING generated subpages (e.g. the
-    # automated-test-results page). A root-index-only check missed a subpage whose
-    # footer dropped or mislaid them. The top-level index must have a footer at all.
+def check_footer(root, failures, require_family_links=True):
+    # EVERY page must HAVE a footer (the top-level index at minimum), and -- under the
+    # family policy -- every footer must carry all FAMILY links (the uniform chrome puts
+    # a footer on every page, INCLUDING generated subpages). The journal policy passes
+    # require_family_links=False: the journal is deliberately vendor-neutral (NOT in
+    # FAMILY), so injecting the project family links would undermine its independence;
+    # its own footer nav is checked for presence + consistency by check_footer_nav
+    # instead. The footer-EXISTS check and check_footer_structure apply to both.
     for page in html_files(root):
         rel = os.path.relpath(page, root)
         with open(page, encoding='utf-8') as handle:
@@ -425,6 +428,8 @@ def check_footer(root, failures):
         if not audit.saw:
             if rel == 'index.html':
                 failures.append('index.html: no <footer>')
+            continue
+        if not require_family_links:
             continue
         # Check the family links against the union of ALL <footer> regions: content
         # AFTER a footer must not mask a missing link (the whole-tail bug), and an
@@ -827,6 +832,30 @@ def check_csp(root, failures):
                for name in ('script-src-elem', 'script-src-attr')):
             failures.append("%s: CSP allows inline script ('unsafe-inline' in "
                             "script-src / script-src-elem / script-src-attr)" % rel)
+
+
+def check_journal_csp(root, failures):
+    # Journal-only, ON TOP of the generic check_csp. The journal ships one self-hosted
+    # Trusted-Types-safe bundle (assets/journal.js), so its CSP relaxes script-src to 'self'
+    # (NOT 'none') but stays hardened: no 'unsafe-inline'/'unsafe-eval' anywhere, and
+    # Trusted Types ENFORCED (require-trusted-types-for 'script'). Assert that stronger shape
+    # so a later loosening fails here. (Final policy: journal-maker PR #9.)
+    for page in html_files(root):
+        rel = os.path.relpath(page, root)
+        ext = Extractor()
+        with open(page, encoding='utf-8') as handle:
+            ext.feed(handle.read())
+        if ext.csp is None:
+            continue              # a missing CSP meta is already a check_csp failure
+        directives = _csp_directives(ext.csp.lower())
+        if directives.get('script-src') != ["'self'"]:
+            failures.append("%s: journal CSP script-src must be 'self' (got %s)"
+                            % (rel, directives.get('script-src')))
+        for name, toks in directives.items():
+            if "'unsafe-inline'" in toks or "'unsafe-eval'" in toks:
+                failures.append("%s: journal CSP %s permits unsafe-inline/unsafe-eval" % (rel, name))
+        if "'script'" not in directives.get('require-trusted-types-for', []):
+            failures.append("%s: journal CSP missing require-trusted-types-for 'script'" % rel)
 
 
 # A <script> runs its body only when it is a classic or module script (empty
@@ -1417,6 +1446,114 @@ def check_nav(root, failures):
             detail.append('links differ in order or target')
         failures.append('%s: header nav inconsistent with the rest of the site '
                         '(%s)' % (rel, '; '.join(detail)))
+
+
+class _FooterNavAudit(html.parser.HTMLParser):
+    """The ordered (label, href) links of the FIRST <nav class="footer-nav"> that sits INSIDE a
+    <footer>. The journal carries this nav on every page. Requiring it inside a <footer> means a
+    nav moved OUT of the footer no longer satisfies the check (check_footer does not demand a
+    footer on subpages, so a bare matching nav elsewhere would otherwise pass). Both the label
+    sequence AND the per-link href (resolved against the page's location by check_footer_nav) are
+    captured, so a reordered/renamed item OR a retargeted link fails. Parsed, not regex."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self._footer = 0
+        self._nav = 0
+        self._seen = False
+        self._in_a = False
+        self._label = []
+        self._href = ''
+        self.links = []
+
+    def handle_starttag(self, tag, attrs):
+        amap = dict(attrs)
+        classes = (amap.get('class') or '').split()
+        if tag == 'footer':
+            self._footer += 1
+            return
+        # Only a footer-nav INSIDE a <footer> counts (the journal's footer chrome).
+        if tag == 'nav' and 'footer-nav' in classes and self._footer and not self._seen:
+            self._seen = True
+            self._nav = 1
+            return
+        if tag == 'nav' and self._nav:
+            self._nav += 1
+            return
+        if self._nav and tag == 'a':
+            self._in_a = True
+            self._label = []
+            self._href = amap.get('href') or ''
+
+    def handle_data(self, data):
+        if self._in_a:
+            self._label.append(data)
+
+    def handle_endtag(self, tag):
+        if tag == 'a' and self._in_a:
+            self.links.append((''.join(self._label).strip(), self._href))
+            self._in_a = False
+        elif tag == 'nav' and self._nav:
+            self._nav -= 1
+        elif tag == 'footer' and self._footer:
+            self._footer -= 1
+
+    def result(self):
+        return tuple(self.links) if self._seen else None
+
+
+def _footer_nav(markup):
+    audit = _FooterNavAudit()
+    audit.feed(markup)
+    return audit.result()
+
+
+def _footer_nav_resolved(links, rel):
+    """Map a page's footer (label, href) links to (label, site-root-relative target), resolving
+    each depth-relative href against the page's own directory. So the SAME nav rendered at two
+    depths (`../about/` vs `about/`) yields the IDENTICAL resolved tuple -- while a link
+    RETARGETED to a different page changes it (caught here, since check_links only proves the new
+    target exists). An absolute or external href is kept verbatim (nothing to resolve)."""
+    out = []
+    page_dir = posixpath.dirname(rel)
+    for label, href in links:
+        target = href
+        if href and not _is_external(href) and not href.startswith('/') \
+                and not href.startswith('#'):
+            target = posixpath.normpath(posixpath.join(page_dir, href))
+        out.append((label, target))
+    return tuple(out)
+
+
+def check_footer_nav(root, failures):
+    # The journal (vendor-neutral, not in FAMILY) carries its OWN consistent footer navigation,
+    # emitted from journal.toml. Assert PRESENCE on every page (a <nav class="footer-nav"> inside
+    # a <footer>) and cross-page CONSISTENCY of (label, RESOLVED-target) -- NOT a hardcoded item
+    # set, so the footer_links stay journal.toml-driven; a dropped / renamed / reordered item OR a
+    # retargeted link fails. Replaces the family-footer-links assertion for the journal policy.
+    navs = {}
+    missing = []
+    for page in html_files(root):
+        rel = os.path.relpath(page, root)
+        with open(page, encoding='utf-8') as handle:
+            links = _footer_nav(handle.read())
+        if not links:
+            missing.append(rel)
+        else:
+            navs[rel] = _footer_nav_resolved(links, rel)
+    for rel in sorted(missing):
+        failures.append('%s: no footer nav (expected a <nav class="footer-nav"> inside a '
+                        '<footer>, with links)' % rel)
+    if len(set(navs.values())) <= 1:
+        return
+    counts: dict[tuple, int] = {}
+    for nav in navs.values():
+        counts[nav] = counts.get(nav, 0) + 1
+    canonical = max(counts, key=counts.__getitem__)
+    for rel, nav in sorted(navs.items()):
+        if nav != canonical:
+            failures.append('%s: footer nav inconsistent with the rest of the site '
+                            '(label/target %s vs %s)' % (rel, list(nav), list(canonical)))
 
 
 class _TocAudit(html.parser.HTMLParser):
@@ -2188,22 +2325,29 @@ def _looks_like_wiki(root):
     return len(probe.tokens) >= _WIKI_SIGNATURE_QUORUM
 
 
-def _family_applies(root):
-    """True when check_site's family policy should run against `root`.
+def _policy_for(root):
+    """The consistency-suite policy for `root`: 'family' | 'journal', or None to SKIP.
 
     The declarative `.github/web-tests.yml` `policies:` is authoritative when present;
     with no config, fall back to the markup heuristic (a wiki tree with no config is
-    still skipped, never mis-reported). Returns (applies, reason_when_skipped)."""
+    still skipped, never mis-reported). Returns (policy_or_None, reason_when_skipped).
+
+    'journal' is the vendor-neutral academic site (computer-security-research): the SAME
+    battery as 'family' MINUS the FAMILY-footer-links assertion (the journal is not in
+    FAMILY), PLUS its own footer-nav-consistency + stricter-CSP assertions. Every general
+    check (links, wording, nav, CSP, a11y, SEO, ...) stays enabled for both policies."""
     declared = config.policies(root)
     if declared is not None:
+        if 'journal' in declared:
+            return 'journal', ''
         if 'family' in declared:
-            return True, ''
-        return False, ('web-tests.yml policies=%s -- family policy not selected for '
-                       'this site' % ','.join(declared))
+            return 'family', ''
+        return None, ('web-tests.yml policies=%s -- no family/journal policy selected '
+                      'for this site' % ','.join(declared))
     if _looks_like_wiki(root):
-        return False, ('no web-tests.yml; markup matches a MediaWiki site -- the family '
-                       'policy does not apply (declare policies: [wiki])')
-    return True, ''
+        return None, ('no web-tests.yml; markup matches a MediaWiki site -- the family '
+                      'policy does not apply (declare policies: [wiki])')
+    return 'family', ''
 
 
 def main():
@@ -2216,32 +2360,33 @@ def main():
     # But a NAMED root that does not resolve is a mistyped target -> FAIL loud, never a silent
     # drop that lets a surviving root exit 0 (the silent-green class).
     roots = cli.require_existing_dirs(argv_roots, 'website-tests')
-    # Applicability guard: the family policy runs only where it is selected -- by the
-    # site's `.github/web-tests.yml` `policies:` (authoritative) or, absent that, by the
-    # markup heuristic. A malformed config FAILS LOUD (never a silent wrong-policy run).
+    # Applicability guard: a consistency policy (family | journal) runs only where it is
+    # selected -- by the site's `.github/web-tests.yml` `policies:` (authoritative) or,
+    # absent that, by the markup heuristic (a wiki tree is skipped). A malformed config
+    # FAILS LOUD (never a silent wrong-policy run).
     applicable = []
     config_failures = 0
     for root in roots:
         name = os.path.basename(root)
         try:
-            applies, reason = _family_applies(root)
+            policy, reason = _policy_for(root)
         except config.ConfigError as exc:
             sys.stderr.write('FAIL %s: %s\n' % (name, exc))
             config_failures += 1
             continue
-        if applies:
-            applicable.append(root)
+        if policy is not None:
+            applicable.append((root, policy))
         else:
             sys.stderr.write('website-tests: SKIP %s (%s)\n' % (name, reason))
     if not applicable:
         if config_failures:
             sys.stderr.write('website-tests: %d failure(s)\n' % config_failures)
             return 1
-        sys.stderr.write('website-tests: SKIP (no family-policy site root given)\n')
+        sys.stderr.write('website-tests: SKIP (no family/journal-policy site root given)\n')
         return 77
-    by_name = {os.path.basename(r): r for r in applicable}
+    by_name = {os.path.basename(r): r for r, _policy in applicable}
     total = config_failures
-    for root in applicable:
+    for root, policy in applicable:
         failures: list[str] = []
         # A subsite (git-diffs-lie) verifies its off-mount absolute links against
         # its parent site's checkout when that is also present.
@@ -2260,8 +2405,15 @@ def main():
         # not per-subpage ones. check_footer (family links) and check_footer_structure
         # run on EVERY page, so a generated subpage's footer cannot drift unchecked.
         check_freshness(root, failures)
-        check_footer(root, failures)
+        # Family policy requires the FAMILY footer links on every page; the journal is
+        # vendor-neutral (not in FAMILY), so it drops ONLY that assertion and instead has
+        # its own footer-nav-consistency check + the stricter journal CSP assertion. The
+        # footer-EXISTS check and footer-structure apply to both.
+        check_footer(root, failures, require_family_links=(policy == 'family'))
         check_footer_structure(root, failures)
+        if policy == 'journal':
+            check_footer_nav(root, failures)
+            check_journal_csp(root, failures)
         check_banner(root, failures)
         check_csp(root, failures)
         check_no_inline_script(root, failures)
