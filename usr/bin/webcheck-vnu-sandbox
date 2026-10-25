@@ -1,0 +1,158 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## style-ok: no-has -- standalone host/sandbox driver; does not source helper-scripts.
+
+## Run the CONFINED W3C Nu (vnu) HTML-conformance REGRESSION lane over each site tree,
+## inside the review sandbox qube under bwrap (no network; vnu + a JRE live there). Sibling
+## of webcheck-lint-sandbox (html-tidy + stylelint) -- vnu needs no browser and no network,
+## so it runs under a plain sandbox-confine profile (not --profile playwright, unlike the
+## axe/lighthouse lanes which need chromium + loopback).
+##
+##   webcheck-vnu-sandbox <site-root> [<site-root> ...]            # gate vs baseline
+##   webcheck-vnu-sandbox --write-baseline <site-root> [...]       # (re)seed baselines
+##
+## Baselines live in usr/share/website-tests/vnu-baselines/ (committed, per site).
+## Exit: 0 all clean (no NEW errors), 1 a new error / missing baseline / unauditable page,
+## 77 vnu/JRE absent and un-provisionable (treated as failure here, never a silent pass).
+##
+## The pinned vnu.jar is provisioned by `provision vnu` (pinned + sha256 + VT, pushed into
+## the sandbox); this driver stages a copy INTO the run dir so it is bound under --workdir,
+## not dependent on a ~/.local bind in the confine profile.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+readonly SANDBOX_WORKDIR="/home/user/webcheck-vnu-sandbox-run.$$"
+## Where `provision vnu` stages the verified jar in the sandbox.
+readonly SANDBOX_VNU_JAR='/home/user/.local/libexec/private-ai-config/vnu.jar'
+
+die(){
+   printf '%s\n' "webcheck-vnu-sandbox: $1" >&2
+   exit 1
+}
+
+write_baseline=0
+if [ "${1:-}" = '--write-baseline' ]; then
+   write_baseline=1
+   shift
+fi
+[ "$#" -gt 0 ] || die 'usage: webcheck-vnu-sandbox [--write-baseline] <site-root> [...]'
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+if [ -d "${script_dir}/../share/website-tests" ]; then
+   tests_dir="${script_dir}/../share/website-tests"
+   core_src="${script_dir}/../lib/python3/dist-packages/dist_ai"
+else
+   tests_dir='/usr/share/website-tests'
+   core_src='/usr/lib/python3/dist-packages/dist_ai'
+fi
+baselines_src="${tests_dir}/vnu-baselines"
+[ -d "${core_src}/webcheck" ] || die "missing webcheck core: ${core_src}/webcheck"
+
+command -v sandbox >/dev/null 2>&1 \
+   || die 'the review sandbox (sandbox command) is not available on this host'
+## `sandbox` requires a target; the local review sandbox is the forget-proof default.
+: "${QUBE_CTL_TARGET:=temp-claude}"
+export QUBE_CTL_TARGET
+
+sandbox exec --pid-scope own -- type sandbox-confine >/dev/null 2>&1 \
+   || die 'sandbox is missing sandbox-confine (bwrap confinement)'
+
+## Provision vnu (pinned + sha256 + VT jar + a JRE) if absent. A failed provision fails the
+## gate, never skips (mirrors webcheck-axe-sandbox). The safe path is the DEFAULT: self-heal.
+if ! sandbox exec --pid-scope own -- test -f "${SANDBOX_VNU_JAR}" >/dev/null 2>&1; then
+   printf '%s\n' 'webcheck-vnu-sandbox: provisioning vnu in the sandbox (one-time)...' >&2
+   provision --target "${QUBE_CTL_TARGET}" vnu >&2 \
+      || die "sandbox is not provisioned for vnu and provisioning failed (provision --target ${QUBE_CTL_TARGET} vnu)"
+   sandbox exec --pid-scope own -- test -f "${SANDBOX_VNU_JAR}" >/dev/null 2>&1 \
+      || die 'vnu jar still absent after provisioning'
+fi
+
+## --- stage the webcheck core, the baselines, and each site root, then run confined --------
+
+staging="$(mktemp --directory)"
+synced=0
+cleanup(){
+   # shellcheck disable=SC2317  # invoked indirectly via the EXIT trap
+   safe-rm --recursive --force -- "${staging}" || true
+   # shellcheck disable=SC2317
+   if [ "${synced}" = '1' ]; then
+      sandbox exec --pid-scope own -- safe-rm --recursive --force -- "${SANDBOX_WORKDIR}" >/dev/null 2>&1 || true
+   fi
+   # shellcheck disable=SC2317
+   return 0
+}
+trap cleanup EXIT
+
+staged_pylib="${staging}/usr/lib/python3/dist-packages"
+mkdir --parents -- "${staged_pylib}" "${staging}/baselines" "${staging}/roots"
+cp --archive -- "${core_src}" "${staged_pylib}/dist_ai"
+if [ -d "${baselines_src}" ]; then
+   cp --archive -- "${baselines_src}/." "${staging}/baselines/"
+fi
+
+declare -a remote_roots=()
+declare -A seen_base=()
+for root in "$@"; do
+   [ -f "${root}/index.html" ] || die "not a site root (no index.html): ${root}"
+   root="$(readlink --canonicalize -- "${root}")"
+   base="$(basename -- "${root}")"
+   if [ -n "${seen_base[${base}]:-}" ]; then
+      die "duplicate site-root basename '${base}' -- roots must have distinct names"
+   fi
+   seen_base[${base}]=1
+   rsync --archive --exclude='.git' -- "${root}/" "${staging}/roots/${base}/"
+   remote_roots+=( "roots/${base}" )
+done
+
+sandbox sync --delete "${staging}" "$(basename -- "${SANDBOX_WORKDIR}")" >&2 \
+   || die 'failed to sync the staging tree into the sandbox'
+synced=1
+
+## Stage the provisioned jar INTO the run dir so it is bound under --workdir (no dependency
+## on a ~/.local bind in the confine profile). java comes from the bound /usr.
+sandbox exec --pid-scope own -- cp -- "${SANDBOX_VNU_JAR}" "${SANDBOX_WORKDIR}/vnu.jar" \
+   || die 'could not stage vnu.jar into the run dir'
+
+## Relative paths throughout (CWD is the --workdir), so nothing leaks an absolute host path.
+declare -a mod_args=( --baseline-dir baselines )
+[ "${write_baseline}" = '1' ] && mod_args+=( --write-baseline )
+
+rc=0
+sandbox exec --pid-scope own -- sandbox-confine --workdir "${SANDBOX_WORKDIR}" -- \
+   env PYTHONPATH=usr/lib/python3/dist-packages VNU_JAR=vnu.jar \
+   python3 -Bsu -m dist_ai.webcheck.vnu "${mod_args[@]}" "${remote_roots[@]}" || rc="$?"
+
+## A 77 SKIP from inside the sandbox means vnu did not actually run (jar/JRE missing) -- which
+## defeats the purpose after we provisioned it. Treat it as failure, never a pass.
+if [ "${rc}" = '77' ]; then
+   printf '%s\n' 'webcheck-vnu-sandbox: the lane SKIPped inside the sandbox (vnu did not run) -- treating as failure' >&2
+   rc=1
+fi
+
+## Seeded baselines are written inside the sandbox; copy each back to the committed dir so the
+## operator can review + commit the diff. `sandbox pull` moves the bytes verbatim.
+if [ "${write_baseline}" = '1' ] && [ "${rc}" = '0' ]; then
+   mkdir --parents -- "${baselines_src}"
+   for remote_root in "${remote_roots[@]}"; do
+      base="$(basename -- "${remote_root}")"
+      bfile="vnu-baseline-${base}.txt"
+      if sandbox exec --pid-scope own -- test -f "${SANDBOX_WORKDIR}/baselines/${bfile}"; then
+         sandbox pull "${SANDBOX_WORKDIR}/baselines/${bfile}" "${baselines_src}/" \
+            || die "failed to copy back ${bfile}"
+         printf '%s\n' "seeded ${baselines_src}/${bfile}" >&2
+      fi
+   done
+fi
+
+exit "${rc}"
