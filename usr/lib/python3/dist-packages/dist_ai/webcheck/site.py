@@ -1449,23 +1449,31 @@ def check_nav(root, failures):
 
 
 class _FooterNavAudit(html.parser.HTMLParser):
-    """The ordered link LABELS of the FIRST <nav class="footer-nav">. The journal carries
-    this nav on every page; its hrefs are depth-relative (../../), so only the label
-    SEQUENCE is the stable cross-page invariant (a dropped, renamed or reordered item
-    changes it). Parsed, not regex, so attribute quoting / nesting are handled uniformly."""
+    """The ordered (label, href) links of the FIRST <nav class="footer-nav"> that sits INSIDE a
+    <footer>. The journal carries this nav on every page. Requiring it inside a <footer> means a
+    nav moved OUT of the footer no longer satisfies the check (check_footer does not demand a
+    footer on subpages, so a bare matching nav elsewhere would otherwise pass). Both the label
+    sequence AND the per-link href (resolved against the page's location by check_footer_nav) are
+    captured, so a reordered/renamed item OR a retargeted link fails. Parsed, not regex."""
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
+        self._footer = 0
         self._nav = 0
         self._seen = False
         self._in_a = False
         self._label = []
-        self.labels = []
+        self._href = ''
+        self.links = []
 
     def handle_starttag(self, tag, attrs):
         amap = dict(attrs)
         classes = (amap.get('class') or '').split()
-        if tag == 'nav' and 'footer-nav' in classes and not self._seen:
+        if tag == 'footer':
+            self._footer += 1
+            return
+        # Only a footer-nav INSIDE a <footer> counts (the journal's footer chrome).
+        if tag == 'nav' and 'footer-nav' in classes and self._footer and not self._seen:
             self._seen = True
             self._nav = 1
             return
@@ -1475,6 +1483,7 @@ class _FooterNavAudit(html.parser.HTMLParser):
         if self._nav and tag == 'a':
             self._in_a = True
             self._label = []
+            self._href = amap.get('href') or ''
 
     def handle_data(self, data):
         if self._in_a:
@@ -1482,13 +1491,15 @@ class _FooterNavAudit(html.parser.HTMLParser):
 
     def handle_endtag(self, tag):
         if tag == 'a' and self._in_a:
-            self.labels.append(''.join(self._label).strip())
+            self.links.append((''.join(self._label).strip(), self._href))
             self._in_a = False
         elif tag == 'nav' and self._nav:
             self._nav -= 1
+        elif tag == 'footer' and self._footer:
+            self._footer -= 1
 
     def result(self):
-        return tuple(self.labels) if self._seen else None
+        return tuple(self.links) if self._seen else None
 
 
 def _footer_nav(markup):
@@ -1497,25 +1508,42 @@ def _footer_nav(markup):
     return audit.result()
 
 
+def _footer_nav_resolved(links, rel):
+    """Map a page's footer (label, href) links to (label, site-root-relative target), resolving
+    each depth-relative href against the page's own directory. So the SAME nav rendered at two
+    depths (`../about/` vs `about/`) yields the IDENTICAL resolved tuple -- while a link
+    RETARGETED to a different page changes it (caught here, since check_links only proves the new
+    target exists). An absolute or external href is kept verbatim (nothing to resolve)."""
+    out = []
+    page_dir = posixpath.dirname(rel)
+    for label, href in links:
+        target = href
+        if href and not _is_external(href) and not href.startswith('/') \
+                and not href.startswith('#'):
+            target = posixpath.normpath(posixpath.join(page_dir, href))
+        out.append((label, target))
+    return tuple(out)
+
+
 def check_footer_nav(root, failures):
-    # The journal (vendor-neutral, not in FAMILY) carries its OWN consistent footer
-    # navigation, emitted from journal.toml. Assert PRESENCE on every page and cross-page
-    # CONSISTENCY (same labels, same order) -- NOT a hardcoded item set, so the footer_links
-    # stay journal.toml-driven; a dropped / renamed / reordered item fails. Replaces the
-    # family-footer-links assertion for the journal policy (see check_footer).
+    # The journal (vendor-neutral, not in FAMILY) carries its OWN consistent footer navigation,
+    # emitted from journal.toml. Assert PRESENCE on every page (a <nav class="footer-nav"> inside
+    # a <footer>) and cross-page CONSISTENCY of (label, RESOLVED-target) -- NOT a hardcoded item
+    # set, so the footer_links stay journal.toml-driven; a dropped / renamed / reordered item OR a
+    # retargeted link fails. Replaces the family-footer-links assertion for the journal policy.
     navs = {}
     missing = []
     for page in html_files(root):
         rel = os.path.relpath(page, root)
         with open(page, encoding='utf-8') as handle:
-            nav = _footer_nav(handle.read())
-        if not nav:
+            links = _footer_nav(handle.read())
+        if not links:
             missing.append(rel)
         else:
-            navs[rel] = nav
+            navs[rel] = _footer_nav_resolved(links, rel)
     for rel in sorted(missing):
-        failures.append('%s: no footer nav (expected a <nav class="footer-nav"> with links)'
-                        % rel)
+        failures.append('%s: no footer nav (expected a <nav class="footer-nav"> inside a '
+                        '<footer>, with links)' % rel)
     if len(set(navs.values())) <= 1:
         return
     counts: dict[tuple, int] = {}
@@ -1525,7 +1553,7 @@ def check_footer_nav(root, failures):
     for rel, nav in sorted(navs.items()):
         if nav != canonical:
             failures.append('%s: footer nav inconsistent with the rest of the site '
-                            '(labels/order %s vs %s)' % (rel, list(nav), list(canonical)))
+                            '(label/target %s vs %s)' % (rel, list(nav), list(canonical)))
 
 
 class _TocAudit(html.parser.HTMLParser):

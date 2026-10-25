@@ -1647,6 +1647,29 @@ def run():
         check_site.check_footer_nav(root, failures)
         check('check_footer_nav flags a page missing the footer nav',
               any('no footer nav' in f for f in failures), repr(failures))
+    # A footer-nav OUTSIDE a <footer> is NOT accepted (a nav moved out of the footer must not
+    # satisfy the check, since check_footer does not demand a footer on subpages).
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _jpage('home', _jfoot % {'p': './'}))
+        _write(root, 'loose/index.html', _jpage(
+            'loose', '<nav class="footer-nav"><a href="../">Home</a></nav>'))  # not in <footer>
+        failures = []
+        check_site.check_footer_nav(root, failures)
+        check('check_footer_nav rejects a footer-nav outside a <footer>',
+              any('no footer nav' in f and 'loose/index.html' in f for f in failures),
+              repr(failures))
+    # A link RETARGETED to a different valid page (labels unchanged) fails: resolved targets differ
+    # even though check_links would pass (the new target exists).
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _jpage('home', _jfoot % {'p': './'}))
+        _write(root, 'about/index.html', _jpage('about',
+               '<footer><nav class="footer-nav"><a href="../">Home</a>'
+               '<a href="../other/">About</a>'            # same label, DIFFERENT target
+               '<a href="../feed.xml">RSS</a></nav></footer>'))
+        failures = []
+        check_site.check_footer_nav(root, failures)
+        check('check_footer_nav flags a retargeted footer link (resolved target differs)',
+              any('footer nav inconsistent' in f for f in failures), repr(failures))
 
     # check_journal_csp: the final journal policy passes; a weaker script-src, an unsafe-inline,
     # or a missing Trusted-Types directive fails.

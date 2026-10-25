@@ -359,70 +359,42 @@ else
    fi
 fi
 
-## Lint lanes (generic): html-tidy validity + stylelint, run CONFINED in the sandbox
-## (the tools live there, not on this host). No browser, so delegated to the separate
-## webcheck-lint-sandbox driver (default confine profile). In-sandbox (cannot nest) or
-## with no sandbox -> env-unmet SKIP, never a silent green.
-lint_driver="${script_dir}/webcheck-lint-sandbox"
-[ -x "${lint_driver}" ] || lint_driver="$(command -v webcheck-lint-sandbox 2>/dev/null || true)"
-if [ "${DIST_AI_IN_SANDBOX:-}" = '1' ]; then
-   printf '%s\n' 'website-lint-tests: SKIP (html-tidy/stylelint; in-sandbox, cannot nest)' >&2
-   env_unmet=1
-elif [ "${WEBSITE_TESTS_NO_SANDBOX:-}" != '1' ] \
-   && [ -n "${lint_driver}" ] && [ -x "${lint_driver}" ] && command -v sandbox >/dev/null 2>&1; then
-   "${lint_driver}" "${roots[@]}" || overall=1
-else
-   printf '%s\n' 'website-lint-tests: SKIP (html-tidy/stylelint; no sandbox)' >&2
-   env_unmet=1
-fi
+## The sandbox-delegated lanes (lint / vnu / lighthouse / axe) share one delegation rule, so a
+## single helper applies it uniformly:
+##   - in-sandbox (cannot nest) OR no sandbox on this host -> env-unmet SKIP (never a silent green)
+##   - sandbox present but the SHIPPED driver missing/non-executable -> FATAL (broken install),
+##     NOT a misleading "no sandbox" SKIP: the webcheck-*-sandbox drivers ship in THIS package
+##     (like check_console.py / secure-terminal-shots-inventory above), so their absence is an
+##     environment bug, per the dist-ai shell-test convention (a required tool absent = exit 1).
+## Sets the globals overall / env_unmet / install_intact. The lint + vnu lanes run CONFINED in
+## the sandbox (tools there, no browser/network); lighthouse + axe run UNCONFINED (real chromium +
+## loopback). Each lane fails CLOSED on a missing per-site baseline inside its driver.
+delegate_sandbox_lane() {
+   local label driver_name driver
+   label="$1"
+   driver_name="$2"
+   shift 2
+   driver="${script_dir}/${driver_name}"
+   [ -x "${driver}" ] || driver="$(command -v "${driver_name}" 2>/dev/null || true)"
+   if [ "${DIST_AI_IN_SANDBOX:-}" = '1' ]; then
+      printf '%s\n' "${label}: SKIP (in-sandbox, cannot nest)" >&2
+      env_unmet=1
+   elif [ "${WEBSITE_TESTS_NO_SANDBOX:-}" = '1' ] || ! command -v sandbox >/dev/null 2>&1; then
+      printf '%s\n' "${label}: SKIP (no sandbox)" >&2
+      env_unmet=1
+   elif [ -n "${driver}" ] && [ -x "${driver}" ]; then
+      "${driver}" "$@" || overall=1
+   else
+      printf '%s\n' "${label}: FATAL: ${driver_name} not found (required; ships in this package)" >&2
+      overall=1
+      install_intact='false'
+   fi
+}
 
-## vnu W3C HTML-conformance lane (generic, baseline-relative), run CONFINED in the sandbox
-## (vnu + a JRE live there; no browser, no network). Delegated to webcheck-vnu-sandbox, same
-## confine profile as the lint lane. In-sandbox (cannot nest) or no sandbox -> env-unmet SKIP.
-vnu_driver="${script_dir}/webcheck-vnu-sandbox"
-[ -x "${vnu_driver}" ] || vnu_driver="$(command -v webcheck-vnu-sandbox 2>/dev/null || true)"
-if [ "${DIST_AI_IN_SANDBOX:-}" = '1' ]; then
-   printf '%s\n' 'website-vnu-tests: SKIP (vnu conformance; in-sandbox, cannot nest)' >&2
-   env_unmet=1
-elif [ "${WEBSITE_TESTS_NO_SANDBOX:-}" != '1' ] \
-   && [ -n "${vnu_driver}" ] && [ -x "${vnu_driver}" ] && command -v sandbox >/dev/null 2>&1; then
-   "${vnu_driver}" "${roots[@]}" || overall=1
-else
-   printf '%s\n' 'website-vnu-tests: SKIP (vnu conformance; no sandbox)' >&2
-   env_unmet=1
-fi
-
-## Lighthouse performance / a11y / best-practices lane (baseline-relative), run in the sandbox
-## (lighthouse + chromium live there). UNCONFINED (needs a real chromium + loopback), delegated
-## to webcheck-lighthouse-sandbox. Fails CLOSED on a missing per-site baseline (seed first).
-lh_driver="${script_dir}/webcheck-lighthouse-sandbox"
-[ -x "${lh_driver}" ] || lh_driver="$(command -v webcheck-lighthouse-sandbox 2>/dev/null || true)"
-if [ "${DIST_AI_IN_SANDBOX:-}" = '1' ]; then
-   printf '%s\n' 'website-lighthouse-tests: SKIP (lighthouse; in-sandbox, cannot nest)' >&2
-   env_unmet=1
-elif [ "${WEBSITE_TESTS_NO_SANDBOX:-}" != '1' ] \
-   && [ -n "${lh_driver}" ] && [ -x "${lh_driver}" ] && command -v sandbox >/dev/null 2>&1; then
-   "${lh_driver}" "${roots[@]}" || overall=1
-else
-   printf '%s\n' 'website-lighthouse-tests: SKIP (lighthouse; no sandbox)' >&2
-   env_unmet=1
-fi
-
-## axe-core accessibility lane (baseline-relative), run in the sandbox. UNCONFINED (chromium +
-## loopback + axe.min.js from the global node_modules), delegated to webcheck-axe-sandbox.
-## Fails CLOSED on a missing per-site baseline (seed first).
-axe_driver="${script_dir}/webcheck-axe-sandbox"
-[ -x "${axe_driver}" ] || axe_driver="$(command -v webcheck-axe-sandbox 2>/dev/null || true)"
-if [ "${DIST_AI_IN_SANDBOX:-}" = '1' ]; then
-   printf '%s\n' 'website-axe-tests: SKIP (axe-core; in-sandbox, cannot nest)' >&2
-   env_unmet=1
-elif [ "${WEBSITE_TESTS_NO_SANDBOX:-}" != '1' ] \
-   && [ -n "${axe_driver}" ] && [ -x "${axe_driver}" ] && command -v sandbox >/dev/null 2>&1; then
-   "${axe_driver}" "${roots[@]}" || overall=1
-else
-   printf '%s\n' 'website-axe-tests: SKIP (axe-core; no sandbox)' >&2
-   env_unmet=1
-fi
+delegate_sandbox_lane 'website-lint-tests (html-tidy/stylelint)' webcheck-lint-sandbox "${roots[@]}"
+delegate_sandbox_lane 'website-vnu-tests (vnu conformance)' webcheck-vnu-sandbox "${roots[@]}"
+delegate_sandbox_lane 'website-lighthouse-tests (lighthouse)' webcheck-lighthouse-sandbox "${roots[@]}"
+delegate_sandbox_lane 'website-axe-tests (axe-core)' webcheck-axe-sandbox "${roots[@]}"
 
 ## Shot-inventory guard (secure-terminal site only): every committed shot is a
 ## page-referenced generator artifact and every gallery reference resolves -- no

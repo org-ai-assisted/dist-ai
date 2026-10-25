@@ -50,7 +50,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import List, Optional, Set, Tuple
 
 from dist_ai.webcheck.mobile import _skip
 
@@ -120,6 +120,12 @@ def classify(messages, root: str) -> Tuple[Set[Key], int, List[str]]:
         mtype = str(msg.get('type', ''))
         if mtype == 'error':
             path = _rel_path(str(msg.get('url', '')), root)
+            # Deliberate: a (path, message) SET collapses repeated occurrences of the same error
+            # on one page, so a NEW instance of an already-baselined message on that page does not
+            # fail. Line numbers churn the baseline on any edit above them, so they are not in the
+            # key. A per-(path,message) occurrence COUNT would catch same-message increases -- but
+            # do NOT add it here piecemeal: it is being unified with the wiki vnu TYPE/COUNT-DELTA
+            # gate (one count model across family/journal/wiki), tracked as a follow-up.
             keys.add((path, normalize_message(msg.get('message', ''))))
         elif mtype == 'info':
             info += 1
@@ -209,10 +215,15 @@ def run_vnu(vnu_cmd: List[str], root: str) -> Tuple[Set[Key], int, List[str]]:
         raise RuntimeError('vnu exited %d (env fault, not a conformance result): %s'
                            % (proc.returncode, _safe_terminal((proc.stderr or '')[:500])))
     try:
-        report = json.loads(proc.stderr or '{}')
-    except json.JSONDecodeError as exc:
-        raise RuntimeError('vnu did not emit parseable JSON on stderr: %s' % exc)
-    return classify(report.get('messages', []), root)
+        report = json.loads(proc.stderr)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise RuntimeError('vnu did not emit parseable JSON on stderr: %s' % exc) from exc
+    # A validator that exits 0 without a messages array (empty/truncated report) must NOT read
+    # as 'clean' -- that would let a baselined site pass with no validation run (a false green).
+    # The vnu JSON contract makes `messages` mandatory, so its absence is a hard fault.
+    if not isinstance(report, dict) or not isinstance(report.get('messages'), list):
+        raise RuntimeError('vnu produced no messages array (empty or incomplete JSON report)')
+    return classify(report['messages'], root)
 
 
 def _baseline_path(baseline_dir: Path, root: str) -> Path:
@@ -226,7 +237,14 @@ def check_roots(roots: List[str], baseline_dir: str) -> int:
     vnu_cmd = resolve_vnu()
     if vnu_cmd is None:
         _skip('vnu not found (set VNU_JAR + a JRE, or put a `vnu` launcher on PATH)')
-    roots = [os.path.abspath(r) for r in roots if os.path.isdir(r)]
+    # A NAMED root that is not a directory is a mistyped target -> FAIL loud, never silently
+    # filtered out (which would let check_roots pass after checking only the surviving roots).
+    missing = [r for r in roots if not os.path.isdir(r)]
+    if missing:
+        sys.stderr.write('vnu: FATAL: not a site tree (not a directory): %s\n'
+                         % ', '.join(missing))
+        return 1
+    roots = [os.path.abspath(r) for r in roots]
     if not roots:
         _skip('no site root found')
 
@@ -263,7 +281,12 @@ def write_roots(roots: List[str], baseline_dir: str) -> int:
     vnu_cmd = resolve_vnu()
     if vnu_cmd is None:
         _skip('vnu not found (set VNU_JAR + a JRE, or put a `vnu` launcher on PATH)')
-    roots = [os.path.abspath(r) for r in roots if os.path.isdir(r)]
+    missing = [r for r in roots if not os.path.isdir(r)]
+    if missing:
+        sys.stderr.write('vnu: FATAL: not a site tree (not a directory): %s\n'
+                         % ', '.join(missing))
+        return 2
+    roots = [os.path.abspath(r) for r in roots]
     if not roots:
         _skip('no site root found')
 
