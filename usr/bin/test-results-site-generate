@@ -646,7 +646,7 @@ def render_overview(views, header, footer, generated_utc):
         "<h2 class=\"catname\">Runs</h2>"
         '<div class="matrix-wrap"><table class="matrix"><thead><tr><th>lane</th>'
         "<th>version</th><th>builder</th><th>provenance</th><th>status</th>"
-        "<th>age</th><th></th></tr></thead><tbody>%s</tbody></table></div>"
+        '<th>age</th><th aria-label="Details"></th></tr></thead><tbody>%s</tbody></table></div>'
         "</div></section>"
     ) % ("".join(rows) if rows else '<tr><td colspan="7">no runs</td></tr>')
 

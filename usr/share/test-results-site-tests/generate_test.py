@@ -471,6 +471,7 @@ check("heading-skip detector catches an h1->h3 skip (canary)",
 check("run page has exactly one <main> landmark",
       a_page.count("<main>") == 1 and a_page.count("</main>") == 1)
 check("overview has exactly one <main> landmark", overview.count("<main>") == 1)
+check("overview matrix has no empty table header", "<th></th>" not in overview)
 check("header nav is a named landmark", '<nav aria-label="Primary">' in a_page)
 check("footer nav is a named landmark", 'nav class="fcols" aria-label="Footer"' in a_page)
 check("scrollable step-log <pre> is keyboard-focusable",
