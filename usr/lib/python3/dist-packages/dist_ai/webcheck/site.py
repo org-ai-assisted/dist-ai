@@ -414,8 +414,8 @@ class _FooterAudit(html.parser.HTMLParser):
 def check_footer(root, failures, require_family_links=True):
     # EVERY page must HAVE a footer (the top-level index at minimum), and -- under the
     # family policy -- every footer must carry all FAMILY links (the uniform chrome puts
-    # a footer on every page, INCLUDING generated subpages). The journal policy passes
-    # require_family_links=False: the journal is deliberately vendor-neutral (NOT in
+    # a footer on every page, INCLUDING generated subpages). The previews policy passes
+    # require_family_links=False: the previews site is deliberately vendor-neutral (NOT in
     # FAMILY), so injecting the project family links would undermine its independence;
     # its own footer nav is checked for presence + consistency by check_footer_nav
     # instead. The footer-EXISTS check and check_footer_structure apply to both.
@@ -834,9 +834,9 @@ def check_csp(root, failures):
                             "script-src / script-src-elem / script-src-attr)" % rel)
 
 
-def check_journal_csp(root, failures):
-    # Journal-only, ON TOP of the generic check_csp. The journal ships one self-hosted
-    # Trusted-Types-safe bundle (assets/journal.js), so its CSP relaxes script-src to 'self'
+def check_previews_csp(root, failures):
+    # Previews-site-only, ON TOP of the generic check_csp. The site ships one self-hosted
+    # Trusted-Types-safe bundle (assets/site.js), so its CSP relaxes script-src to 'self'
     # (NOT 'none') but stays hardened: no 'unsafe-inline'/'unsafe-eval' anywhere, and
     # Trusted Types ENFORCED (require-trusted-types-for 'script'). Assert that stronger shape
     # so a later loosening fails here. (Final policy: journal-maker PR #9.)
@@ -849,13 +849,13 @@ def check_journal_csp(root, failures):
             continue              # a missing CSP meta is already a check_csp failure
         directives = _csp_directives(ext.csp.lower())
         if directives.get('script-src') != ["'self'"]:
-            failures.append("%s: journal CSP script-src must be 'self' (got %s)"
+            failures.append("%s: previews CSP script-src must be 'self' (got %s)"
                             % (rel, directives.get('script-src')))
         for name, toks in directives.items():
             if "'unsafe-inline'" in toks or "'unsafe-eval'" in toks:
-                failures.append("%s: journal CSP %s permits unsafe-inline/unsafe-eval" % (rel, name))
+                failures.append("%s: previews CSP %s permits unsafe-inline/unsafe-eval" % (rel, name))
         if "'script'" not in directives.get('require-trusted-types-for', []):
-            failures.append("%s: journal CSP missing require-trusted-types-for 'script'" % rel)
+            failures.append("%s: previews CSP missing require-trusted-types-for 'script'" % rel)
 
 
 # A <script> runs its body only when it is a classic or module script (empty
@@ -1450,7 +1450,7 @@ def check_nav(root, failures):
 
 class _FooterNavAudit(html.parser.HTMLParser):
     """The ordered (label, href) links of the FIRST <nav class="footer-nav"> that sits INSIDE a
-    <footer>. The journal carries this nav on every page. Requiring it inside a <footer> means a
+    <footer>. The previews site carries this nav on every page. Requiring it inside a <footer> means a
     nav moved OUT of the footer no longer satisfies the check (check_footer does not demand a
     footer on subpages, so a bare matching nav elsewhere would otherwise pass). Both the label
     sequence AND the per-link href (resolved against the page's location by check_footer_nav) are
@@ -1472,7 +1472,7 @@ class _FooterNavAudit(html.parser.HTMLParser):
         if tag == 'footer':
             self._footer += 1
             return
-        # Only a footer-nav INSIDE a <footer> counts (the journal's footer chrome).
+        # Only a footer-nav INSIDE a <footer> counts (the previews site's footer chrome).
         if tag == 'nav' and 'footer-nav' in classes and self._footer and not self._seen:
             self._seen = True
             self._nav = 1
@@ -1526,11 +1526,11 @@ def _footer_nav_resolved(links, rel):
 
 
 def check_footer_nav(root, failures):
-    # The journal (vendor-neutral, not in FAMILY) carries its OWN consistent footer navigation,
-    # emitted from journal.toml. Assert PRESENCE on every page (a <nav class="footer-nav"> inside
+    # The previews site (vendor-neutral, not in FAMILY) carries its OWN consistent footer navigation,
+    # emitted from site.toml. Assert PRESENCE on every page (a <nav class="footer-nav"> inside
     # a <footer>) and cross-page CONSISTENCY of (label, RESOLVED-target) -- NOT a hardcoded item
-    # set, so the footer_links stay journal.toml-driven; a dropped / renamed / reordered item OR a
-    # retargeted link fails. Replaces the family-footer-links assertion for the journal policy.
+    # set, so the footer_links stay site.toml-driven; a dropped / renamed / reordered item OR a
+    # retargeted link fails. Replaces the family-footer-links assertion for the previews policy.
     navs = {}
     missing = []
     for page in html_files(root):
@@ -2326,23 +2326,23 @@ def _looks_like_wiki(root):
 
 
 def _policy_for(root):
-    """The consistency-suite policy for `root`: 'family' | 'journal', or None to SKIP.
+    """The consistency-suite policy for `root`: 'family' | 'previews', or None to SKIP.
 
     The declarative `.github/web-tests.yml` `policies:` is authoritative when present;
     with no config, fall back to the markup heuristic (a wiki tree with no config is
     still skipped, never mis-reported). Returns (policy_or_None, reason_when_skipped).
 
-    'journal' is the vendor-neutral academic site (computer-security-research): the SAME
-    battery as 'family' MINUS the FAMILY-footer-links assertion (the journal is not in
+    'previews' is the vendor-neutral academic site (computer-security-research): the SAME
+    battery as 'family' MINUS the FAMILY-footer-links assertion (the previews site is not in
     FAMILY), PLUS its own footer-nav-consistency + stricter-CSP assertions. Every general
     check (links, wording, nav, CSP, a11y, SEO, ...) stays enabled for both policies."""
     declared = config.policies(root)
     if declared is not None:
-        if 'journal' in declared:
-            return 'journal', ''
+        if 'previews' in declared:
+            return 'previews', ''
         if 'family' in declared:
             return 'family', ''
-        return None, ('web-tests.yml policies=%s -- no family/journal policy selected '
+        return None, ('web-tests.yml policies=%s -- no family/previews policy selected '
                       'for this site' % ','.join(declared))
     if _looks_like_wiki(root):
         return None, ('no web-tests.yml; markup matches a MediaWiki site -- the family '
@@ -2360,7 +2360,7 @@ def main():
     # But a NAMED root that does not resolve is a mistyped target -> FAIL loud, never a silent
     # drop that lets a surviving root exit 0 (the silent-green class).
     roots = cli.require_existing_dirs(argv_roots, 'website-tests')
-    # Applicability guard: a consistency policy (family | journal) runs only where it is
+    # Applicability guard: a consistency policy (family | previews) runs only where it is
     # selected -- by the site's `.github/web-tests.yml` `policies:` (authoritative) or,
     # absent that, by the markup heuristic (a wiki tree is skipped). A malformed config
     # FAILS LOUD (never a silent wrong-policy run).
@@ -2382,7 +2382,7 @@ def main():
         if config_failures:
             sys.stderr.write('website-tests: %d failure(s)\n' % config_failures)
             return 1
-        sys.stderr.write('website-tests: SKIP (no family/journal-policy site root given)\n')
+        sys.stderr.write('website-tests: SKIP (no family/previews-policy site root given)\n')
         return 77
     by_name = {os.path.basename(r): r for r, _policy in applicable}
     total = config_failures
@@ -2405,15 +2405,15 @@ def main():
         # not per-subpage ones. check_footer (family links) and check_footer_structure
         # run on EVERY page, so a generated subpage's footer cannot drift unchecked.
         check_freshness(root, failures)
-        # Family policy requires the FAMILY footer links on every page; the journal is
+        # Family policy requires the FAMILY footer links on every page; the previews site is
         # vendor-neutral (not in FAMILY), so it drops ONLY that assertion and instead has
-        # its own footer-nav-consistency check + the stricter journal CSP assertion. The
+        # its own footer-nav-consistency check + the stricter previews CSP assertion. The
         # footer-EXISTS check and footer-structure apply to both.
         check_footer(root, failures, require_family_links=(policy == 'family'))
         check_footer_structure(root, failures)
-        if policy == 'journal':
+        if policy == 'previews':
             check_footer_nav(root, failures)
-            check_journal_csp(root, failures)
+            check_previews_csp(root, failures)
         check_banner(root, failures)
         check_csp(root, failures)
         check_no_inline_script(root, failures)
