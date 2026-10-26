@@ -50,7 +50,7 @@ command -v sandbox >/dev/null 2>&1 \
 : "${QUBE_CTL_TARGET:=temp-claude}"
 export QUBE_CTL_TARGET
 
-sandbox exec --pid-scope own -- type sandbox-confine >/dev/null 2>&1 \
+sandbox exec --pid-scope private -- type sandbox-confine >/dev/null 2>&1 \
    || die 'sandbox is missing sandbox-confine (bwrap confinement)'
 
 helper="${tests_dir}/webcheck-lint-built-tree.sh"
@@ -67,7 +67,7 @@ cleanup(){
    safe-rm --recursive --force -- "${staging}" || true
    # shellcheck disable=SC2317
    if [ "${synced}" = '1' ]; then
-      sandbox exec --pid-scope own -- safe-rm --recursive --force -- "${SANDBOX_WORKDIR}" >/dev/null 2>&1 || true
+      sandbox exec --pid-scope private -- safe-rm --recursive --force -- "${SANDBOX_WORKDIR}" >/dev/null 2>&1 || true
    fi
    # shellcheck disable=SC2317
    return 0
@@ -98,7 +98,7 @@ synced=1
 
 overall=0
 for remote_root in "${remote_roots[@]}"; do
-   sandbox exec --pid-scope own -- sandbox-confine --workdir "${SANDBOX_WORKDIR}" -- \
+   sandbox exec --pid-scope private -- sandbox-confine --workdir "${SANDBOX_WORKDIR}" -- \
       bash lint/webcheck-lint-built-tree.sh "${remote_root}" lint/stylelint.config.json \
       || overall=1
 done

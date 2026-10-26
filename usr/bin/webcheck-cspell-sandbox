@@ -66,7 +66,7 @@ command -v sandbox >/dev/null 2>&1 \
    || die 'the review sandbox (sandbox command) is not available on this host'
 : "${QUBE_CTL_TARGET:=temp-claude}"
 export QUBE_CTL_TARGET
-sandbox exec --pid-scope own -- type sandbox-confine >/dev/null 2>&1 \
+sandbox exec --pid-scope private -- type sandbox-confine >/dev/null 2>&1 \
    || die 'sandbox is missing sandbox-confine (bwrap confinement)'
 
 ## --- provision cspell (idempotent, forget-proof: the safe path is the DEFAULT) ---------------
@@ -76,16 +76,16 @@ sandbox exec --pid-scope own -- type sandbox-confine >/dev/null 2>&1 \
 ## CSPELL_PKG exactly, so the guard must enforce the SAME version, else a different 8.x already on
 ## PATH (or a node-20-incompatible 10.x) silently runs the lane on an unpinned cspell. `cspell
 ## --version` prints just the version string, e.g. "8.19.4" (grep -Fx: fixed-string whole-line).
-if ! sandbox exec --pid-scope own -- sh -c "cspell --version 2>/dev/null | grep -Fxq '${CSPELL_VERSION}'"; then
+if ! sandbox exec --pid-scope private -- sh -c "cspell --version 2>/dev/null | grep -Fxq '${CSPELL_VERSION}'"; then
    printf '%s\n' "webcheck-cspell-sandbox: installing pinned ${CSPELL_PKG} in the sandbox (one-time)..." >&2
-   if ! sandbox exec --pid-scope own -- sh -c 'command -v npm >/dev/null 2>&1'; then
+   if ! sandbox exec --pid-scope private -- sh -c 'command -v npm >/dev/null 2>&1'; then
       printf '%s\n' 'webcheck-cspell-sandbox: installing nodejs + npm in the sandbox (signed apt)...' >&2
-      sandbox exec --pid-scope shared -- sudo apt-get install --yes nodejs npm >&2 \
+      sandbox exec --pid-scope host -- sudo apt-get install --yes nodejs npm >&2 \
          || die 'could not install nodejs/npm in the sandbox'
    fi
-   sandbox exec --pid-scope shared -- sudo npm install --global --no-fund --no-audit --ignore-scripts "${CSPELL_PKG}" >&2 \
+   sandbox exec --pid-scope host -- sudo npm install --global --no-fund --no-audit --ignore-scripts "${CSPELL_PKG}" >&2 \
       || die "'npm install -g ${CSPELL_PKG}' failed in the sandbox"
-   sandbox exec --pid-scope own -- sh -c "cspell --version 2>/dev/null | grep -Fxq '${CSPELL_VERSION}'" \
+   sandbox exec --pid-scope private -- sh -c "cspell --version 2>/dev/null | grep -Fxq '${CSPELL_VERSION}'" \
       || die "cspell ${CSPELL_VERSION} still absent after install"
 fi
 
@@ -98,7 +98,7 @@ cleanup(){
    safe-rm --recursive --force -- "${staging}" || true
    # shellcheck disable=SC2317
    if [ "${synced}" = '1' ]; then
-      sandbox exec --pid-scope own -- safe-rm --recursive --force -- "${SANDBOX_WORKDIR}" >/dev/null 2>&1 || true
+      sandbox exec --pid-scope private -- safe-rm --recursive --force -- "${SANDBOX_WORKDIR}" >/dev/null 2>&1 || true
    fi
    # shellcheck disable=SC2317
    return 0
@@ -143,7 +143,7 @@ declare -a mod_args=( --baseline-dir cspell-baselines --config cspell-assets/csp
 ## Confined (bwrap): no network needed at scan time. cspell (a global npm bin) + plain python3
 ## resolve on PATH inside the confine, as c8 does for the jscov lane. cwd = the synced workdir.
 rc=0
-sandbox exec --pid-scope own -- sandbox-confine --workdir "${SANDBOX_WORKDIR}" -- env \
+sandbox exec --pid-scope private -- sandbox-confine --workdir "${SANDBOX_WORKDIR}" -- env \
    "PYTHONPATH=usr/lib/python3/dist-packages" \
    python3 -Bsu -m dist_ai.webcheck.spelling "${mod_args[@]}" "${remote_roots[@]}" || rc="$?"
 
@@ -154,7 +154,7 @@ if [ "${write_baseline}" = '1' ] && [ "${rc}" = '0' ]; then
    for root in "$@"; do
       base="$(basename -- "$(readlink --canonicalize -- "${root}")")"
       bfile="cspell-baseline-${base}.txt"
-      if sandbox exec --pid-scope own -- test -f "${SANDBOX_WORKDIR}/cspell-baselines/${bfile}"; then
+      if sandbox exec --pid-scope private -- test -f "${SANDBOX_WORKDIR}/cspell-baselines/${bfile}"; then
          sandbox pull "${SANDBOX_WORKDIR}/cspell-baselines/${bfile}" "${baselines_src}/" \
             || die "failed to copy back ${bfile}"
          printf '%s\n' "seeded ${baselines_src}/${bfile}" >&2

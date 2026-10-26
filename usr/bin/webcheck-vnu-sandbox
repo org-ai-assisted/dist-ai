@@ -65,16 +65,16 @@ command -v sandbox >/dev/null 2>&1 \
 : "${QUBE_CTL_TARGET:=temp-claude}"
 export QUBE_CTL_TARGET
 
-sandbox exec --pid-scope own -- type sandbox-confine >/dev/null 2>&1 \
+sandbox exec --pid-scope private -- type sandbox-confine >/dev/null 2>&1 \
    || die 'sandbox is missing sandbox-confine (bwrap confinement)'
 
 ## Provision vnu (pinned + sha256 + VT jar + a JRE) if absent. A failed provision fails the
 ## gate, never skips (mirrors webcheck-axe-sandbox). The safe path is the DEFAULT: self-heal.
-if ! sandbox exec --pid-scope own -- test -f "${SANDBOX_VNU_JAR}" >/dev/null 2>&1; then
+if ! sandbox exec --pid-scope private -- test -f "${SANDBOX_VNU_JAR}" >/dev/null 2>&1; then
    printf '%s\n' 'webcheck-vnu-sandbox: provisioning vnu in the sandbox (one-time)...' >&2
    provision --target "${QUBE_CTL_TARGET}" vnu >&2 \
       || die "sandbox is not provisioned for vnu and provisioning failed (provision --target ${QUBE_CTL_TARGET} vnu)"
-   sandbox exec --pid-scope own -- test -f "${SANDBOX_VNU_JAR}" >/dev/null 2>&1 \
+   sandbox exec --pid-scope private -- test -f "${SANDBOX_VNU_JAR}" >/dev/null 2>&1 \
       || die 'vnu jar still absent after provisioning'
 fi
 
@@ -87,7 +87,7 @@ cleanup(){
    safe-rm --recursive --force -- "${staging}" || true
    # shellcheck disable=SC2317
    if [ "${synced}" = '1' ]; then
-      sandbox exec --pid-scope own -- safe-rm --recursive --force -- "${SANDBOX_WORKDIR}" >/dev/null 2>&1 || true
+      sandbox exec --pid-scope private -- safe-rm --recursive --force -- "${SANDBOX_WORKDIR}" >/dev/null 2>&1 || true
    fi
    # shellcheck disable=SC2317
    return 0
@@ -121,7 +121,7 @@ synced=1
 
 ## Stage the provisioned jar INTO the run dir so it is bound under --workdir (no dependency
 ## on a ~/.local bind in the confine profile). java comes from the bound /usr.
-sandbox exec --pid-scope own -- cp -- "${SANDBOX_VNU_JAR}" "${SANDBOX_WORKDIR}/vnu.jar" \
+sandbox exec --pid-scope private -- cp -- "${SANDBOX_VNU_JAR}" "${SANDBOX_WORKDIR}/vnu.jar" \
    || die 'could not stage vnu.jar into the run dir'
 
 ## Relative paths throughout (CWD is the --workdir), so nothing leaks an absolute host path.
@@ -129,7 +129,7 @@ declare -a mod_args=( --baseline-dir baselines )
 [ "${write_baseline}" = '1' ] && mod_args+=( --write-baseline )
 
 rc=0
-sandbox exec --pid-scope own -- sandbox-confine --workdir "${SANDBOX_WORKDIR}" -- \
+sandbox exec --pid-scope private -- sandbox-confine --workdir "${SANDBOX_WORKDIR}" -- \
    env PYTHONPATH=usr/lib/python3/dist-packages VNU_JAR=vnu.jar \
    python3 -Bsu -m dist_ai.webcheck.vnu "${mod_args[@]}" "${remote_roots[@]}" || rc="$?"
 
@@ -147,7 +147,7 @@ if [ "${write_baseline}" = '1' ] && [ "${rc}" = '0' ]; then
    for remote_root in "${remote_roots[@]}"; do
       base="$(basename -- "${remote_root}")"
       bfile="vnu-baseline-${base}.txt"
-      if sandbox exec --pid-scope own -- test -f "${SANDBOX_WORKDIR}/baselines/${bfile}"; then
+      if sandbox exec --pid-scope private -- test -f "${SANDBOX_WORKDIR}/baselines/${bfile}"; then
          sandbox pull "${SANDBOX_WORKDIR}/baselines/${bfile}" "${baselines_src}/" \
             || die "failed to copy back ${bfile}"
          printf '%s\n' "seeded ${baselines_src}/${bfile}" >&2
