@@ -2208,8 +2208,12 @@ def render_sitemap(root, host):
     return '\n'.join(lines) + '\n'
 
 
-def render_robots(host):
-    """The canonical robots.txt text for a site (trailing newline included)."""
+def render_robots(host, no_index=False):
+    """The canonical robots.txt text for a site (trailing newline included). A
+    no-index site (every page carries a noindex meta) blocks all crawling and
+    advertises no sitemap, so a bare Disallow is its canonical robots."""
+    if no_index:
+        return 'User-agent: *\nDisallow: /\n'
     return ('User-agent: *\n'
             'Allow: /\n'
             '\n'
@@ -2254,8 +2258,11 @@ def check_seo(root):
         problems.append('index.html has no <link rel="canonical">; SEO '
                         'generation needs it to derive the host')
         return problems
+    # A site with no indexable pages (every page noindex) is a no-index site:
+    # its canonical sitemap is empty and its robots blocks all crawling.
+    no_index = not seo_page_urls(root, host)
     for name, want in (('sitemap.xml', render_sitemap(root, host)),
-                       ('robots.txt', render_robots(host))):
+                       ('robots.txt', render_robots(host, no_index))):
         try:
             with open(os.path.join(root, name), encoding='utf-8') as handle:
                 have = handle.read()

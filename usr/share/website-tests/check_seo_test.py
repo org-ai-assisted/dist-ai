@@ -254,6 +254,29 @@ def run():
         check('a directory with no index.html is not a site root',
               cs.check_seo(root) == [], repr(cs.check_seo(root)))
 
+    # check_seo: a no-index site (every page noindex) has a Disallow robots and
+    # an empty sitemap. The old always-Allow render_robots mis-flagged such a site.
+    with tempfile.TemporaryDirectory() as root:
+        noindex = ('<!doctype html>\n<html lang="en">\n'
+                   '<meta name="robots" content="noindex">\n'
+                   '<link rel="canonical" href="https://%s/">\n'
+                   '<header class="nav"></header>\n' % host)
+        _write(root, 'index.html', noindex)
+        _write(root, 'sub/index.html',
+               '<meta name="robots" content="noindex">'
+               '<header class="nav"></header>')
+        with open(os.path.join(root, 'sitemap.xml'), 'w', encoding='utf-8') as h:
+            h.write(cs.render_sitemap(root, host))        # empty: all noindex
+        with open(os.path.join(root, 'robots.txt'), 'w', encoding='utf-8') as h:
+            h.write(cs.render_robots(host, no_index=True))
+        check('a no-index site is clean (Disallow robots, empty sitemap)',
+              cs.check_seo(root) == [], repr(cs.check_seo(root)))
+        with open(os.path.join(root, 'robots.txt'), 'w', encoding='utf-8') as h:
+            h.write(cs.render_robots(host))               # Allow -- wrong here
+        check('an Allow robots on a no-index site is flagged stale',
+              any('robots.txt stale' in p for p in cs.check_seo(root)),
+              repr(cs.check_seo(root)))
+
     # the gate must be wired into main() -- read the real function source wherever
     # it lives (the core module), not a fixed file path, so the CLI-shim split does
     # not blind this guard.
