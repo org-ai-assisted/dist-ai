@@ -398,6 +398,110 @@ def _exit_kind(stmt):
     return name if name in _ENFORCING_EXIT else None
 
 
+## Parameter-expansion fields that MODIFY the expanded value (vs a plain
+## '$n' / '${n}'): a suffix/prefix/pattern op ('${n%%*}', '${n:-x}'),
+## substring, replacement, index, length, or indirection. Any of these means
+## the word's value is no longer "the parameter's value", so '[ -z WORD ]'
+## being true no longer implies the NAMED parameter is empty.
+_MODIFIED_PARAM_FIELDS = ("Exp", "Slice", "Repl", "Index", "Length", "Excl")
+
+
+def _plain_param_name(word):
+    """The single parameter name WORD plainly expands, or None. 'Plain' = the
+    word is EXACTLY one UNMODIFIED parameter expansion -- '$n', '${n}', or their
+    double-quoted forms -- with no modifier ('${n%%*}', '${n:-x}', '${#n}',
+    '${n[0]}', '${!n}'), no literal text ('x${n}'), no second expansion, and no
+    command/arith substitution. Only such a word makes '[ -z WORD ]' true IFF
+    the named parameter is empty -- the invariant the optional-arg guard relies
+    on. '${n%%*}' expands empty for ANY value of n, so crediting it would let a
+    hostile 'printf -v "${n}"' target slip past R-063."""
+    names = []
+    for node in bash_ast.iter_nodes(word):
+        if not isinstance(node, dict):
+            continue
+        node_type = node.get("Type")
+        if node_type == "ParamExp":
+            if any(node.get(field) for field in _MODIFIED_PARAM_FIELDS):
+                return None
+            value = (node.get("Param") or {}).get("Value")
+            if not value:
+                return None
+            names.append(value)
+        elif node_type in ("CmdSubst", "ArithmExp", "ArithmCmd"):
+            return None
+        elif node_type == "Lit" and node.get("Value"):
+            return None
+    return names[0] if len(names) == 1 else None
+
+
+def _emptiness_test_params(cmd):
+    """Param names tested by a BARE '[ -z WORD ]' / 'test -z WORD' emptiness
+    check, or None if CMD is not EXACTLY that. Used to recognize the optional-
+    argument guard idiom (see _optional_arg_check): the soundness rests on the
+    test being TRUE iff the NAMED parameter is EMPTY, so only the exact single
+    unary '-z' test of a PLAIN expansion qualifies. A '!' negation
+    ('[ ! -z WORD ]' == non-empty), any extra operand ('[ -z WORD -o 1 ]',
+    '[ -n X -o -z WORD ]'), or a MODIFIED operand ('[ -z "${n%%*}" ]', which is
+    empty for any n) changes the truth value so the skip branch no longer
+    implies "the named parameter is empty" -- those are decoys and must NOT be
+    credited."""
+    name = bash_ast.command_name(cmd)
+    if name not in ("[", "test"):
+        return None
+    words = bash_ast.args(cmd)[1:]
+    ## 'test -z WORD' is 2 tokens; '[ -z WORD ]' is 3 (trailing ']'). Any other
+    ## arity means a negation, a compound operator, or a second condition.
+    if name == "test":
+        if len(words) != 2:
+            return None
+    elif len(words) != 3 or bash_ast.word_string(words[2]) != "]":
+        return None
+    if bash_ast.word_string(words[0]) != "-z":
+        return None
+    operand_name = _plain_param_name(words[1])
+    if operand_name is None:
+        return None
+    return {operand_name}
+
+
+def _optional_arg_check(xcmd, or_ops):
+    """The check_variable_name CallExpr in the optional-argument guard idiom
+    '[ -z "${NAME}" ] || check_variable_name "${NAME}"' (the left side of an outer
+    '... || <exit>'), or None. SOUND because the only branch that skips the check
+    is the one where NAME is empty, and an empty printf -v target has no '$(...)'
+    subscript to run. Requires the emptiness test to cover every parameter the
+    check validates, so a decoy '[ -z "${OTHER}" ] || check_variable_name NAME'
+    (where NAME could still be hostile when OTHER is empty) is NOT credited."""
+    if xcmd.get("Type") != "BinaryCmd" or xcmd.get("Op") not in or_ops:
+        return None
+    ystmt = xcmd.get("Y") or {}
+    if ystmt.get("Negated"):
+        return None
+    check_cmd = ystmt.get("Cmd") or {}
+    if bash_ast.command_name(check_cmd) != "check_variable_name":
+        return None
+    ## The checked operand must itself be a PLAIN expansion of the name: a
+    ## modified 'check_variable_name "${n%%*}"' validates the stripped value,
+    ## not n, while the later 'printf -v "${n}"' uses n raw -- so crediting it
+    ## would cover a name that was never actually checked. Fail closed on any
+    ## non-plain check operand.
+    check_params = set()
+    for word in bash_ast.args(check_cmd)[1:]:
+        checked_name = _plain_param_name(word)
+        if checked_name is None:
+            return None
+        check_params.add(checked_name)
+    ## Pipeline negation '! [ -z WORD ]' flips the test to "non-empty", so the
+    ## skip branch would leave WORD possibly hostile -- reject it.
+    test_stmt = xcmd.get("X") or {}
+    if test_stmt.get("Negated"):
+        return None
+    test_params = _emptiness_test_params(test_stmt.get("Cmd") or {})
+    if test_params is None or not check_params or not check_params <= test_params:
+        return None
+    return check_cmd
+
+
 def _offset_in_any(offset, spans):
     return any(start <= offset < end for start, end in spans)
 
@@ -576,12 +680,23 @@ def check_variable_name_sites(tree):
         if xstmt.get("Negated"):
             continue
         left = xstmt.get("Cmd") or {}
-        if bash_ast.command_name(left) != "check_variable_name":
-            continue
+        ## Two recognized shapes, both ending in '... || <exit>':
+        ##   direct:       check_variable_name NAME || <exit>
+        ##   optional-arg: [ -z "${NAME}" ] || check_variable_name NAME || <exit>
+        ## The second is the idiom for an OPTIONAL name (validated only when set);
+        ## it is sound because the skip branch leaves NAME empty, which has no
+        ## injectable subscript. _optional_arg_check enforces the soundness
+        ## constraint (emptiness test covers the checked name).
+        if bash_ast.command_name(left) == "check_variable_name":
+            check = left
+        else:
+            check = _optional_arg_check(left, or_ops)
+            if check is None:
+                continue
         exit_kind = _exit_kind(node.get("Y"))
         if exit_kind is None:
             continue
-        offset = (left.get("Pos") or {}).get("Offset")
+        offset = (check.get("Pos") or {}).get("Offset")
         if offset is None:
             continue
         ## The exit must actually leave the printf's path: 'return' needs an enclosing
@@ -594,7 +709,7 @@ def check_variable_name_sites(tree):
                 and not _innermost_reaches(offset, loop_spans, barrier_spans):
             continue
         params = set()
-        for word in bash_ast.args(left)[1:]:
+        for word in bash_ast.args(check)[1:]:
             params |= bash_ast.word_param_names(word)
         sites.append((offset, enclosing_container_span(tree, offset), params))
     return sites

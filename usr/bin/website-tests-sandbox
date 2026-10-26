@@ -97,7 +97,7 @@ export WEBCHECK_BROWSERS
 ## provision fails the gate, never skips.
 engines_present(){
    local missing='' eng pat
-   sandbox exec --pid-scope own -- test -x "${SANDBOX_VENV_PY}" >/dev/null 2>&1 || return 1
+   sandbox exec --pid-scope private -- test -x "${SANDBOX_VENV_PY}" >/dev/null 2>&1 || return 1
    for eng in ${WEBCHECK_BROWSERS}; do
       case "${eng}" in
          chromium)
@@ -116,7 +116,7 @@ engines_present(){
             ;;
       esac
       ## A matching engine dir in the Playwright browser cache is the tell.
-      sandbox exec --pid-scope own -- bash -lc "compgen -G \"\${HOME}/.cache/ms-playwright/${pat}\" >/dev/null" \
+      sandbox exec --pid-scope private -- bash -lc "compgen -G \"\${HOME}/.cache/ms-playwright/${pat}\" >/dev/null" \
          >/dev/null 2>&1 || missing="${missing} ${eng}"
    done
    [ -z "${missing}" ]
@@ -131,7 +131,7 @@ if ! engines_present; then
       || die "Playwright engine(s) still absent after provisioning (wanted: ${WEBCHECK_BROWSERS})"
 fi
 
-sandbox exec --pid-scope own -- type sandbox-confine >/dev/null 2>&1 \
+sandbox exec --pid-scope private -- type sandbox-confine >/dev/null 2>&1 \
    || die 'sandbox is missing sandbox-confine (bwrap confinement)'
 
 ## Stage the browser runners AND the importable webcheck core (preserving the real
@@ -152,7 +152,7 @@ cleanup(){
    # minimally-provisioned sandbox lacks safe-rm).
    # shellcheck disable=SC2317
    if [ "${synced}" = '1' ]; then
-      sandbox exec --pid-scope own -- safe-rm --recursive --force -- "${SANDBOX_WORKDIR}" >/dev/null 2>&1 || true
+      sandbox exec --pid-scope private -- safe-rm --recursive --force -- "${SANDBOX_WORKDIR}" >/dev/null 2>&1 || true
    fi
    # shellcheck disable=SC2317
    return 0
@@ -205,7 +205,7 @@ run_lane(){
    ## sandbox-confine --clearenv's the namespace (allowlist only), so WEBCHECK_BROWSERS
    ## is carried across as an `env` prefix on the command itself (only check_mobile.py
    ## reads it; harmless to the other lanes).
-   sandbox exec --pid-scope own -- sandbox-confine --profile playwright --workdir "${SANDBOX_WORKDIR}" -- \
+   sandbox exec --pid-scope private -- sandbox-confine --profile playwright --workdir "${SANDBOX_WORKDIR}" -- \
       env WEBCHECK_BROWSERS="${WEBCHECK_BROWSERS}" \
       "${SANDBOX_VENV_PY}" "usr/share/website-tests/${runner}" "${remote_roots[@]}" || rc="$?"
    ## A lane must actually run: 77 (SKIP) from inside the sandbox means Playwright did

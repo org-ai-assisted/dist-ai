@@ -82,11 +82,11 @@ export QUBE_CTL_TARGET
 
 ## 1) Playwright venv + chromium engine. Provision once if absent; a failed provision fails the
 ##    gate, never skips (mirrors website-tests-sandbox).
-if ! sandbox exec --pid-scope own -- test -x "${SANDBOX_VENV_PY}" >/dev/null 2>&1; then
+if ! sandbox exec --pid-scope private -- test -x "${SANDBOX_VENV_PY}" >/dev/null 2>&1; then
    printf '%s\n' 'webcheck-axe-sandbox: provisioning Playwright in the sandbox (one-time)...' >&2
    provision --target "${QUBE_CTL_TARGET}" playwright >&2 \
       || die "sandbox is not provisioned for Playwright and provisioning failed (provision --target ${QUBE_CTL_TARGET} playwright)"
-   sandbox exec --pid-scope own -- test -x "${SANDBOX_VENV_PY}" >/dev/null 2>&1 \
+   sandbox exec --pid-scope private -- test -x "${SANDBOX_VENV_PY}" >/dev/null 2>&1 \
       || die 'Playwright venv still absent after provisioning'
 fi
 
@@ -96,7 +96,7 @@ fi
 axe_present(){
    local candidate
    for candidate in "${AXE_SOURCE_CANDIDATES[@]}"; do
-      if sandbox exec --pid-scope own -- test -f "${candidate}" >/dev/null 2>&1; then
+      if sandbox exec --pid-scope private -- test -f "${candidate}" >/dev/null 2>&1; then
          return 0
       fi
    done
@@ -105,12 +105,12 @@ axe_present(){
 
 if ! axe_present; then
    printf '%s\n' 'webcheck-axe-sandbox: installing axe-core in the sandbox (one-time)...' >&2
-   if ! sandbox exec --pid-scope own -- sh -c 'command -v npm >/dev/null 2>&1' >/dev/null 2>&1; then
+   if ! sandbox exec --pid-scope private -- sh -c 'command -v npm >/dev/null 2>&1' >/dev/null 2>&1; then
       printf '%s\n' 'webcheck-axe-sandbox: installing nodejs + npm in the sandbox (signed apt)...' >&2
-      sandbox exec --pid-scope shared -- sudo apt-get install --yes nodejs npm >&2 \
+      sandbox exec --pid-scope host -- sudo apt-get install --yes nodejs npm >&2 \
          || die 'could not install nodejs/npm in the sandbox'
    fi
-   sandbox exec --pid-scope shared -- sudo npm install --global --no-fund --no-audit axe-core >&2 \
+   sandbox exec --pid-scope host -- sudo npm install --global --no-fund --no-audit axe-core >&2 \
       || die "'npm install -g axe-core' failed in the sandbox"
    axe_present || die 'axe.min.js still absent after installing axe-core'
 fi
@@ -119,7 +119,7 @@ fi
 ## guesswork). The first candidate that exists wins.
 axe_source=''
 for candidate in "${AXE_SOURCE_CANDIDATES[@]}"; do
-   if sandbox exec --pid-scope own -- test -f "${candidate}" >/dev/null 2>&1; then
+   if sandbox exec --pid-scope private -- test -f "${candidate}" >/dev/null 2>&1; then
       axe_source="${candidate}"
       break
    fi
@@ -135,7 +135,7 @@ cleanup(){
    safe-rm --recursive --force -- "${staging}" || true
    # shellcheck disable=SC2317
    if [ "${synced}" = '1' ]; then
-      sandbox exec --pid-scope own -- safe-rm --recursive --force -- "${SANDBOX_WORKDIR}" >/dev/null 2>&1 || true
+      sandbox exec --pid-scope private -- safe-rm --recursive --force -- "${SANDBOX_WORKDIR}" >/dev/null 2>&1 || true
    fi
    # shellcheck disable=SC2317
    return 0
@@ -170,7 +170,7 @@ declare -a mod_args=( --baseline-dir "${SANDBOX_WORKDIR}/baselines" )
 [ "${write_baseline}" = '1' ] && mod_args+=( --write-baseline )
 
 rc=0
-sandbox exec --pid-scope own -- env \
+sandbox exec --pid-scope private -- env \
    "PYTHONPATH=${SANDBOX_WORKDIR}/usr/lib/python3/dist-packages" \
    "AXE_SOURCE=${axe_source}" \
    "${SANDBOX_VENV_PY}" -Bsu -m dist_ai.webcheck.axe "${mod_args[@]}" "${remote_roots[@]}" || rc="$?"
@@ -190,7 +190,7 @@ if [ "${write_baseline}" = '1' ] && [ "${rc}" = '0' ]; then
    while IFS= read -r remote_root; do
       base="$(basename -- "${remote_root}")"
       bfile="axe-baseline-${base}.txt"
-      if sandbox exec --pid-scope own -- test -f "${SANDBOX_WORKDIR}/baselines/${bfile}"; then
+      if sandbox exec --pid-scope private -- test -f "${SANDBOX_WORKDIR}/baselines/${bfile}"; then
          ## Pull as a FILE, byte-faithful. `sandbox exec` STDOUT strips terminal-unsafe bytes
          ## (the qube is untrusted) -- a CSS child combinator '>' in a selector target becomes
          ## '_', silently corrupting the baseline so every gate run then reports every page as a
