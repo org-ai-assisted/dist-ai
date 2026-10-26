@@ -973,6 +973,23 @@ assert_at "R-063 flags '[ ! -z NAME ]' (inner negation = non-empty)"   "R-063" 4
 assert_at "R-063 flags '! [ -z NAME ]' (pipeline negation)"            "R-063" 8
 assert_at "R-063 flags '[ -z NAME -o 1 ]' (always-true compound)"      "R-063" 12
 assert_at "R-063 flags '[ -n NAME -o -z NAME ]' (tautology)"           "R-063" 16
+## Modified parameter expansions in either operand break the "test true <=>
+## NAME empty" / "check validates NAME" invariant: '${n%%*}' expands empty for
+## any n, so '[ -z "${n%%*}" ]' is always true and skips the check; and
+## 'check_variable_name "${n%%*}"' validates the stripped value, not n. Both
+## must still flag -- only a PLAIN '${n}' is credited. (ai-review coderabbit.)
+run_det "$(printf '%s\n' \
+   '#!/bin/bash' \
+   'mod_in_test() {' \
+   '  [ -z "${n%%*}" ] || check_variable_name "${n}" || return 1' \
+   '  printf -v "${n}" "%s" "x"' \
+   '}' \
+   'mod_in_check() {' \
+   '  [ -z "${n}" ] || check_variable_name "${n%%*}" || return 1' \
+   '  printf -v "${n}" "%s" "x"' \
+   '}')"
+assert_at "R-063 flags '[ -z \${n%%*} ]' (always-empty modified test)"  "R-063" 4
+assert_at "R-063 flags 'check \${n%%*}' (modified check operand)"       "R-063" 8
 ## Class-killer: byte-span containment != execution reachability. A guard reaches a printf ONLY
 ## within one execution region -- a later function body, and any subshell/subst, are boundaries.
 ## (ai-review reviewdrain16 round 3.)

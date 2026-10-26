@@ -398,15 +398,53 @@ def _exit_kind(stmt):
     return name if name in _ENFORCING_EXIT else None
 
 
+## Parameter-expansion fields that MODIFY the expanded value (vs a plain
+## '$n' / '${n}'): a suffix/prefix/pattern op ('${n%%*}', '${n:-x}'),
+## substring, replacement, index, length, or indirection. Any of these means
+## the word's value is no longer "the parameter's value", so '[ -z WORD ]'
+## being true no longer implies the NAMED parameter is empty.
+_MODIFIED_PARAM_FIELDS = ("Exp", "Slice", "Repl", "Index", "Length", "Excl")
+
+
+def _plain_param_name(word):
+    """The single parameter name WORD plainly expands, or None. 'Plain' = the
+    word is EXACTLY one UNMODIFIED parameter expansion -- '$n', '${n}', or their
+    double-quoted forms -- with no modifier ('${n%%*}', '${n:-x}', '${#n}',
+    '${n[0]}', '${!n}'), no literal text ('x${n}'), no second expansion, and no
+    command/arith substitution. Only such a word makes '[ -z WORD ]' true IFF
+    the named parameter is empty -- the invariant the optional-arg guard relies
+    on. '${n%%*}' expands empty for ANY value of n, so crediting it would let a
+    hostile 'printf -v "${n}"' target slip past R-063."""
+    names = []
+    for node in bash_ast.iter_nodes(word):
+        if not isinstance(node, dict):
+            continue
+        node_type = node.get("Type")
+        if node_type == "ParamExp":
+            if any(node.get(field) for field in _MODIFIED_PARAM_FIELDS):
+                return None
+            value = (node.get("Param") or {}).get("Value")
+            if not value:
+                return None
+            names.append(value)
+        elif node_type in ("CmdSubst", "ArithmExp", "ArithmCmd"):
+            return None
+        elif node_type == "Lit" and node.get("Value"):
+            return None
+    return names[0] if len(names) == 1 else None
+
+
 def _emptiness_test_params(cmd):
     """Param names tested by a BARE '[ -z WORD ]' / 'test -z WORD' emptiness
     check, or None if CMD is not EXACTLY that. Used to recognize the optional-
     argument guard idiom (see _optional_arg_check): the soundness rests on the
-    test being TRUE iff WORD is EMPTY, so only the exact single unary '-z' test
-    qualifies. A '!' negation ('[ ! -z WORD ]' == non-empty) or any extra operand
-    ('[ -z WORD -o 1 ]', '[ -n X -o -z WORD ]') changes the truth value so the
-    skip branch no longer implies "WORD empty" -- those are decoys and must NOT
-    be credited."""
+    test being TRUE iff the NAMED parameter is EMPTY, so only the exact single
+    unary '-z' test of a PLAIN expansion qualifies. A '!' negation
+    ('[ ! -z WORD ]' == non-empty), any extra operand ('[ -z WORD -o 1 ]',
+    '[ -n X -o -z WORD ]'), or a MODIFIED operand ('[ -z "${n%%*}" ]', which is
+    empty for any n) changes the truth value so the skip branch no longer
+    implies "the named parameter is empty" -- those are decoys and must NOT be
+    credited."""
     name = bash_ast.command_name(cmd)
     if name not in ("[", "test"):
         return None
@@ -420,7 +458,10 @@ def _emptiness_test_params(cmd):
         return None
     if bash_ast.word_string(words[0]) != "-z":
         return None
-    return bash_ast.word_param_names(words[1])
+    operand_name = _plain_param_name(words[1])
+    if operand_name is None:
+        return None
+    return {operand_name}
 
 
 def _optional_arg_check(xcmd, or_ops):
@@ -439,9 +480,17 @@ def _optional_arg_check(xcmd, or_ops):
     check_cmd = ystmt.get("Cmd") or {}
     if bash_ast.command_name(check_cmd) != "check_variable_name":
         return None
+    ## The checked operand must itself be a PLAIN expansion of the name: a
+    ## modified 'check_variable_name "${n%%*}"' validates the stripped value,
+    ## not n, while the later 'printf -v "${n}"' uses n raw -- so crediting it
+    ## would cover a name that was never actually checked. Fail closed on any
+    ## non-plain check operand.
     check_params = set()
     for word in bash_ast.args(check_cmd)[1:]:
-        check_params |= bash_ast.word_param_names(word)
+        checked_name = _plain_param_name(word)
+        if checked_name is None:
+            return None
+        check_params.add(checked_name)
     ## Pipeline negation '! [ -z WORD ]' flips the test to "non-empty", so the
     ## skip branch would leave WORD possibly hostile -- reject it.
     test_stmt = xcmd.get("X") or {}
