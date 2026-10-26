@@ -114,6 +114,10 @@ forbidden=(
    'SOURCE:'
    'enable Dependabot alerts'
    'enable Dependabot security updates'
+   ## PROJECT keeps Actions on, so version updates are allowed: the
+   ## delete-the-file skip line is emitted only on SOURCE/STAGE. (Old code
+   ## emitted it for every non-mirror kind, including PROJECT.)
+   'Dependabot version updates: delete .github/dependabot.yml'
 )
 run_case 'computer-security-research' 'PROJECT-new'
 

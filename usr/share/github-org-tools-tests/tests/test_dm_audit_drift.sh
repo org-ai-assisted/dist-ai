@@ -36,6 +36,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 if [ "${CI:-}" != "true" ]; then
    printf '%s\n' \
@@ -175,6 +176,22 @@ expect_drift 'Whonix' 'source-dependabot-yml-present' \
 ## toward.
 expect_drift 'Whonix' 'source-dependabot-fixes-on' \
    'Dependabot security updates on SOURCE is drift' 'enabled:'
+
+## PROJECT keeps Actions on, so version updates are ALLOWED there: a present
+## .github/dependabot.yml on a PROJECT repo is NOT drift (old code flagged
+## every non-mirror kind). secure-terminal carries an unrelated actions-scope
+## drift in the base fixtures, so assert the SPECIFIC version-updates DRIFT
+## line is ABSENT rather than a clean exit. Fails on pre-change code, which
+## emitted it for PROJECT.
+load_case 'project-dependabot-yml-present'
+proj_out="$(ORGS_OVERRIDE='secure-terminal' dm-github-org-policy --audit 2>&1 || true)"
+if grep --quiet --fixed-strings -- 'Dependabot version updates are ON' <<< "${proj_out}"; then
+   printf '%s\n' 'FAIL: PROJECT dependabot.yml present wrongly flagged as version-updates drift' >&2
+   printf '%s\n' "${proj_out}" >&2
+   fail=1
+else
+   printf '%s\n' 'PASS: PROJECT dependabot.yml present is not version-updates drift'
+fi
 
 ## Control: the unmodified fixtures match policy, so --audit must pass.
 ## Without this, a tool that ALWAYS failed would satisfy every case
