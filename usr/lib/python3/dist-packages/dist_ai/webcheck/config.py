@@ -25,7 +25,7 @@ import os
 # co-located with the served tree root (family sites) so it rides the checkout.
 CONFIG_REL = os.path.join('.github', 'web-tests.yml')
 
-KNOWN_POLICIES = ('family', 'wiki', 'journal')
+KNOWN_POLICIES = ('family', 'wiki', 'previews')
 
 
 class ConfigError(ValueError):

@@ -1590,11 +1590,11 @@ def run():
     # family-footer-links assertion, PLUS footer-nav-consistency + a stricter CSP.
     with tempfile.TemporaryDirectory() as root:
         _write(root, 'index.html', _page % '<p>x</p>')
-        _write(root, _cfg, 'policies: [journal]\n')
+        _write(root, _cfg, 'policies: [previews]\n')
         policy, _reason = check_site._policy_for(root)
-        check('policies: [journal] selects the journal policy', policy == 'journal')
+        check('policies: [previews] selects the previews policy', policy == 'previews')
 
-    # check_footer under the journal policy: does NOT demand the FAMILY links (vendor-neutral),
+    # check_footer under the previews policy: does NOT demand the FAMILY links (vendor-neutral),
     # but STILL requires the index to have a footer at all.
     with tempfile.TemporaryDirectory() as root:
         _write(root, 'index.html',
@@ -1604,7 +1604,7 @@ def run():
                '</body></html>')
         failures = []
         check_site.check_footer(root, failures, require_family_links=False)
-        check('journal check_footer does not demand family links',
+        check('previews check_footer does not demand family links',
               not any('family link' in f for f in failures), repr(failures))
     with tempfile.TemporaryDirectory() as root:
         _write(root, 'index.html',
@@ -1612,7 +1612,7 @@ def run():
                '<title>J</title></head><body><main>x</main></body></html>')
         failures = []
         check_site.check_footer(root, failures, require_family_links=False)
-        check('journal check_footer still requires the index to have a footer',
+        check('previews check_footer still requires the index to have a footer',
               any('no <footer>' in f for f in failures), repr(failures))
 
     # check_footer_nav: present + identical across pages passes; a dropped/reordered item or a
@@ -1671,7 +1671,7 @@ def run():
         check('check_footer_nav flags a retargeted footer link (resolved target differs)',
               any('footer nav inconsistent' in f for f in failures), repr(failures))
 
-    # check_journal_csp: the final journal policy passes; a weaker script-src, an unsafe-inline,
+    # check_previews_csp: the final previews policy passes; a weaker script-src, an unsafe-inline,
     # or a missing Trusted-Types directive fails.
     _jcsp_ok = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; "
                 "base-uri 'none'; form-action 'none'; object-src 'none'; "
@@ -1684,22 +1684,22 @@ def run():
     with tempfile.TemporaryDirectory() as root:
         _write(root, 'index.html', _csp_page(_jcsp_ok))
         failures = []
-        check_site.check_journal_csp(root, failures)
-        check('check_journal_csp passes the final hardened journal CSP', failures == [],
+        check_site.check_previews_csp(root, failures)
+        check('check_previews_csp passes the final hardened previews CSP', failures == [],
               repr(failures))
     with tempfile.TemporaryDirectory() as root:
         _write(root, 'index.html', _csp_page(_jcsp_ok.replace("script-src 'self'",
                                                               "script-src 'self' 'unsafe-inline'")))
         failures = []
-        check_site.check_journal_csp(root, failures)
-        check('check_journal_csp flags unsafe-inline in script-src',
+        check_site.check_previews_csp(root, failures)
+        check('check_previews_csp flags unsafe-inline in script-src',
               any('unsafe-inline' in f for f in failures), repr(failures))
     with tempfile.TemporaryDirectory() as root:
         _write(root, 'index.html', _csp_page(
             _jcsp_ok.replace("; require-trusted-types-for 'script'", '')))
         failures = []
-        check_site.check_journal_csp(root, failures)
-        check('check_journal_csp flags a missing require-trusted-types-for',
+        check_site.check_previews_csp(root, failures)
+        check('check_previews_csp flags a missing require-trusted-types-for',
               any('require-trusted-types-for' in f for f in failures), repr(failures))
 
     # Pure-predicate unit tests: these functions were reachable only through fixtures, so a
