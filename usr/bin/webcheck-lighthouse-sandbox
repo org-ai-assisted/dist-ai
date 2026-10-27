@@ -52,8 +52,17 @@ fi
 baselines_src="${tests_dir}/lighthouse-baselines"
 [ -d "${core_src}/webcheck" ] || die "missing webcheck core: ${core_src}/webcheck"
 
-command -v sandbox >/dev/null 2>&1 \
-   || die 'the review sandbox (sandbox command) is not available on this host'
+## Lighthouse stays SANDBOX-only (no local-first): its perf scores are noisy
+## outside the controlled sandbox, so it must not run in an arbitrary CI/host
+## env. When the sandbox is unreachable (no sandbox, or we are inside it and
+## cannot nest), this lane is env-unmet -> exit 77 (the launcher treats 77 as
+## SKIP), never a masked failure.
+if [ "${DIST_AI_IN_SANDBOX:-}" = '1' ] || [ "${WEBSITE_TESTS_NO_SANDBOX:-}" = '1' ] \
+   || ! command -v sandbox >/dev/null 2>&1; then
+   printf '%s\n' 'webcheck-lighthouse-sandbox: no usable sandbox -- SKIP (77)' >&2
+   ## style-ok: allow-skip: env-unmet -- lighthouse is sandbox-only (perf noise) and no usable sandbox here; launcher maps 77 to SKIP
+   exit 77
+fi
 : "${QUBE_CTL_TARGET:=temp-claude}"
 export QUBE_CTL_TARGET
 

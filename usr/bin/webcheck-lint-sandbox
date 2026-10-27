@@ -43,8 +43,34 @@ if [ "$#" -eq 0 ]; then
    die 'usage: webcheck-lint-sandbox <site-root> [<site-root> ...]'
 fi
 
-command -v sandbox >/dev/null 2>&1 \
-   || die 'the review sandbox (sandbox command) is not available on this host'
+helper="${tests_dir}/webcheck-lint-built-tree.sh"
+sl_config="${tests_dir}/lint-assets/stylelint.config.json"
+[ -f "${helper}" ]    || die "missing confined helper: ${helper}"
+[ -f "${sl_config}" ] || die "missing stylelint config: ${sl_config}"
+
+## Local-first: when tidy + stylelint + node resolve on this host, run the lint
+## helper DIRECTLY per site root -- no sandbox. Lets the lane run in CI / in
+## sandbox-direct, not only delegate. WEBCHECK_NO_LOCAL=1 forces the sandbox path.
+if [ "${WEBCHECK_NO_LOCAL:-}" != '1' ] && command -v tidy >/dev/null 2>&1 \
+   && command -v stylelint >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then
+   lint_rc=0
+   for root in "$@"; do
+      [ -f "${root}/index.html" ] || die "not a site root (no index.html): ${root}"
+      bash "${helper}" "${root}" "${sl_config}" || lint_rc=1
+   done
+   exit "${lint_rc}"
+fi
+
+## No local linters. Reach the review sandbox -- unless we are inside it already
+## (cannot nest) or there is none: then the lane is env-unmet, so exit 77 (the
+## launcher treats 77 as SKIP). Never a masked failure: a lane that RAN exits
+## 0/non-77 above.
+if [ "${DIST_AI_IN_SANDBOX:-}" = '1' ] || [ "${WEBSITE_TESTS_NO_SANDBOX:-}" = '1' ] \
+   || ! command -v sandbox >/dev/null 2>&1; then
+   printf '%s\n' 'webcheck-lint-sandbox: tidy/stylelint absent locally and no usable sandbox -- SKIP (77)' >&2
+   ## style-ok: allow-skip: env-unmet -- tidy/stylelint absent locally and no usable sandbox; launcher maps 77 to SKIP, never a masked pass
+   exit 77
+fi
 
 ## `sandbox` requires a target; the local review sandbox is the forget-proof default.
 : "${QUBE_CTL_TARGET:=temp-claude}"
@@ -52,11 +78,6 @@ export QUBE_CTL_TARGET
 
 sandbox exec --pid-scope private -- type sandbox-confine >/dev/null 2>&1 \
    || die 'sandbox is missing sandbox-confine (bwrap confinement)'
-
-helper="${tests_dir}/webcheck-lint-built-tree.sh"
-sl_config="${tests_dir}/lint-assets/stylelint.config.json"
-[ -f "${helper}" ]    || die "missing confined helper: ${helper}"
-[ -f "${sl_config}" ] || die "missing stylelint config: ${sl_config}"
 
 ## Stage the confined helper + the stylelint config + each site root (no .git) into one
 ## tree, sync it in, run the lane per root confined. Basenames must be unique across roots.

@@ -370,24 +370,33 @@ fi
 ## the sandbox (tools there, no browser/network); lighthouse + axe run UNCONFINED (real chromium +
 ## loopback). Each lane fails CLOSED on a missing per-site baseline inside its driver.
 delegate_sandbox_lane() {
-   local label driver_name driver
+   local label driver_name driver rc
    label="$1"
    driver_name="$2"
    shift 2
    driver="${script_dir}/${driver_name}"
    [ -x "${driver}" ] || driver="$(command -v "${driver_name}" 2>/dev/null || true)"
-   if [ "${DIST_AI_IN_SANDBOX:-}" = '1' ]; then
-      printf '%s\n' "${label}: SKIP (in-sandbox, cannot nest)" >&2
-      env_unmet=1
-   elif [ "${WEBSITE_TESTS_NO_SANDBOX:-}" = '1' ] || ! command -v sandbox >/dev/null 2>&1; then
-      printf '%s\n' "${label}: SKIP (no sandbox)" >&2
-      env_unmet=1
-   elif [ -n "${driver}" ] && [ -x "${driver}" ]; then
-      "${driver}" "$@" || overall=1
-   else
+   if [ -z "${driver}" ] || [ ! -x "${driver}" ]; then
       printf '%s\n' "${label}: FATAL: ${driver_name} not found (required; ships in this package)" >&2
       overall=1
       install_intact='false'
+      return
+   fi
+   ## Each driver is LOCAL-FIRST: it runs its tool DIRECTLY where the tool
+   ## resolves (a CI runner with it installed, or in-sandbox-direct where it is
+   ## provisioned) and otherwise delegates to the review sandbox -- so a lane is
+   ## no longer SKIPped merely because `sandbox` is absent or we are in-sandbox.
+   ## The driver exits 77 ONLY when it can neither run locally NOR reach a usable
+   ## sandbox: a genuine env-unmet SKIP, never a masked failure. A lane that RAN
+   ## and found problems exits non-zero, non-77. So: 77 -> SKIP, 0 -> pass,
+   ## anything else -> fail.
+   rc=0
+   "${driver}" "$@" || rc="$?"
+   if [ "${rc}" = '77' ]; then
+      printf '%s\n' "${label}: SKIP (tool absent locally and no usable sandbox)" >&2
+      env_unmet=1
+   elif [ "${rc}" != '0' ]; then
+      overall=1
    fi
 }
 

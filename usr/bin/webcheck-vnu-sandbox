@@ -59,8 +59,41 @@ fi
 baselines_src="${tests_dir}/vnu-baselines"
 [ -d "${core_src}/webcheck" ] || die "missing webcheck core: ${core_src}/webcheck"
 
-command -v sandbox >/dev/null 2>&1 \
-   || die 'the review sandbox (sandbox command) is not available on this host'
+## Local-first: run vnu DIRECTLY where it resolves (a `vnu` launcher, or VNU_JAR +
+## java) -- no sandbox, no staging. This is what lets the lane run in CI (vnu
+## installed) and in-sandbox-direct, not only ever delegate. resolve_vnu() exits
+## 77 when vnu is absent here; fall through to the sandbox path below.
+## WEBCHECK_NO_LOCAL=1 forces the sandbox path (regression test / orchestrator).
+if [ "${WEBCHECK_NO_LOCAL:-}" != '1' ]; then
+   declare -a local_args=( --baseline-dir "${baselines_src}" )
+   if [ "${write_baseline}" = '1' ]; then
+      local_args+=( --write-baseline )
+   fi
+   # Capture the probe's stderr; replay it only if the lane actually RAN (rc != 77).
+   # On a 77 fall-through, discard it so the delegated run is not preceded by a
+   # misleading "vnu not found / SKIP" line.
+   local_err="$(mktemp)"
+   local_rc=0
+   PYTHONPATH="${core_src%/dist_ai}" python3 -Bsu -m dist_ai.webcheck.vnu \
+      "${local_args[@]}" "$@" 2>"${local_err}" || local_rc="$?"
+   if [ "${local_rc}" != '77' ]; then
+      cat -- "${local_err}" >&2
+      safe-rm -f -- "${local_err}"
+      exit "${local_rc}"
+   fi
+   safe-rm -f -- "${local_err}"
+fi
+
+## No local vnu. Reach the review sandbox -- unless we are inside it already
+## (cannot nest) or there is none: then the lane is genuinely env-unmet, so exit
+## 77 (the launcher treats 77 as SKIP). Never a masked failure: a lane that RAN
+## exits 0/non-77 above.
+if [ "${DIST_AI_IN_SANDBOX:-}" = '1' ] || [ "${WEBSITE_TESTS_NO_SANDBOX:-}" = '1' ] \
+   || ! command -v sandbox >/dev/null 2>&1; then
+   printf '%s\n' 'webcheck-vnu-sandbox: vnu absent locally and no usable sandbox -- SKIP (77)' >&2
+   ## style-ok: allow-skip: env-unmet -- no local vnu and no usable sandbox; launcher maps 77 to SKIP, never a masked pass (a lane that RAN exits 0/non-77 above)
+   exit 77
+fi
 ## `sandbox` requires a target; the local review sandbox is the forget-proof default.
 : "${QUBE_CTL_TARGET:=temp-claude}"
 export QUBE_CTL_TARGET

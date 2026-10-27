@@ -72,8 +72,48 @@ fi
 baselines_src="${tests_dir}/axe-baselines"
 [ -d "${core_src}/webcheck" ] || die "missing webcheck core: ${core_src}/webcheck"
 
-command -v sandbox >/dev/null 2>&1 \
-   || die 'the review sandbox (sandbox command) is not available on this host'
+## Local-first: when the Playwright venv + axe-core resolve in THIS environment
+## (in-sandbox-direct, where provision placed them), run axe DIRECTLY -- no nested
+## sandbox. Mirrors the browser lanes' local-first. resolve/absence -> exit 77;
+## fall through to the sandbox path. WEBCHECK_NO_LOCAL=1 forces the sandbox path.
+if [ "${WEBCHECK_NO_LOCAL:-}" != '1' ] && [ -x "${SANDBOX_VENV_PY}" ]; then
+   local_axe=''
+   for candidate in "${AXE_SOURCE_CANDIDATES[@]}"; do
+      if [ -f "${candidate}" ]; then
+         local_axe="${candidate}"
+         break
+      fi
+   done
+   if [ -n "${local_axe}" ]; then
+      declare -a local_args=( --baseline-dir "${baselines_src}" )
+      if [ "${write_baseline}" = '1' ]; then
+         local_args+=( --write-baseline )
+      fi
+      # Capture stderr; replay only if the lane RAN (rc != 77), so a 77
+      # fall-through does not print a misleading "axe absent / SKIP" line.
+      local_err="$(mktemp)"
+      local_rc=0
+      PYTHONPATH="${core_src%/dist_ai}" AXE_SOURCE="${local_axe}" \
+         "${SANDBOX_VENV_PY}" -Bsu -m dist_ai.webcheck.axe \
+         "${local_args[@]}" "$@" 2>"${local_err}" || local_rc="$?"
+      if [ "${local_rc}" != '77' ]; then
+         cat -- "${local_err}" >&2
+         safe-rm -f -- "${local_err}"
+         exit "${local_rc}"
+      fi
+      safe-rm -f -- "${local_err}"
+   fi
+fi
+
+## No local axe. Reach the review sandbox -- unless we are inside it already
+## (cannot nest) or there is none: then env-unmet, exit 77 (launcher treats as
+## SKIP). Never a masked failure: a lane that RAN exits 0/non-77 above.
+if [ "${DIST_AI_IN_SANDBOX:-}" = '1' ] || [ "${WEBSITE_TESTS_NO_SANDBOX:-}" = '1' ] \
+   || ! command -v sandbox >/dev/null 2>&1; then
+   printf '%s\n' 'webcheck-axe-sandbox: no local Playwright/axe and no usable sandbox -- SKIP (77)' >&2
+   ## style-ok: allow-skip: env-unmet -- no local Playwright/axe and no usable sandbox; launcher maps 77 to SKIP, never a masked pass
+   exit 77
+fi
 ## `sandbox` requires a target; the local review sandbox is the forget-proof default.
 : "${QUBE_CTL_TARGET:=temp-claude}"
 export QUBE_CTL_TARGET
