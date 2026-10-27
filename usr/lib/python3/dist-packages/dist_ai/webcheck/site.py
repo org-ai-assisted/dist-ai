@@ -892,7 +892,11 @@ def check_page_metadata(root, failures):
         if rel == RESULTS_SUBDIR or rel.startswith(RESULTS_SUBDIR + '/'):
             continue
         with open(page, encoding='utf-8', errors='replace') as handle:
-            head = handle.read()
+            text = handle.read()
+        # Scan the <head> ONLY: a required tag's substring appearing in body or
+        # code-sample text (e.g. a displayed `application/ld+json` snippet) must
+        # not satisfy the check -- the tag has to be a real head element.
+        head = text.split('</head>', 1)[0]
         for needle, label in _PREVIEWS_REQUIRED_META:
             if needle not in head:
                 failures.append('%s: missing %s (previews perfect-SEO bar)'

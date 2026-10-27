@@ -1433,15 +1433,25 @@ def run():
             '<link rel="manifest" href="m.webmanifest">')
         tmpl = '<!doctype html><html><head>%s</head><body>x</body></html>'
         _write(root, 'index.html', tmpl % full_head)
-        fails = []
+        fails: list = []
         check_site.check_page_metadata(root, fails)
         check('a complete previews page passes page-metadata', fails == [], repr(fails))
         _write(root, 'index.html', tmpl % full_head.replace(
             '<link rel="manifest" href="m.webmanifest">', ''))
-        fails2 = []
+        fails2: list = []
         check_site.check_page_metadata(root, fails2)
         check('a previews page missing the manifest link is flagged',
               any('PWA manifest' in f for f in fails2), repr(fails2))
+        # Head-only scan: a required substring appearing in BODY/code text must
+        # NOT satisfy the check (the tag has to be a real head element).
+        _write(root, 'index.html',
+               '<!doctype html><html><head>%s</head><body>'
+               'sample: property="og:title" shown as text</body></html>'
+               % full_head.replace('<meta property="og:title" content="t">', ''))
+        fails3: list = []
+        check_site.check_page_metadata(root, fails3)
+        check('og:title present only in body text is still flagged',
+              any('og:title' in f for f in fails3), repr(fails3))
 
     # applicability guard: the FAMILY-policy checker must SKIP a MediaWiki/wiki site (the
     # kicksecure/whonix stage sites), not emit a wall of false family-rule failures on it.
@@ -1639,7 +1649,7 @@ def run():
                '<title>J</title></head><body><main>x</main>'
                '<footer><nav class="footer-nav"><a href="./">Home</a></nav></footer>'
                '</body></html>')
-        failures = []
+        failures: list = []
         check_site.check_footer(root, failures, require_family_links=False)
         check('previews check_footer does not demand family links',
               not any('family link' in f for f in failures), repr(failures))
