@@ -131,11 +131,62 @@ def run() -> int:
     ck("baseline_dir" in inspect.signature(ax.check_roots).parameters,
        "check_roots takes baseline_dir")
 
-    # a missing chromium ENGINE is an env-unmet SKIP(77), not a hard FAIL -- check() guards the
-    # launch like the sibling lanes (canary on the guard source).
+    # check() must SURFACE a launch failure to the caller (raise _EngineUnavailable), never decide
+    # SKIP itself -- only the caller knows whether anything has been audited yet.
     _check_src = inspect.getsource(ax.check)
-    ck("except Exception as exc" in _check_src and "chromium engine unavailable" in _check_src,
-       "check() turns a missing chromium engine into a SKIP, not a FAIL")
+    ck("except Exception as exc" in _check_src and "_EngineUnavailable" in _check_src,
+       "check() raises _EngineUnavailable on a launch failure (caller decides SKIP vs FAIL)")
+
+    # chromium-launch failure semantics: an env-unmet SKIP(77) is honest ONLY when nothing has been
+    # audited yet. A launch failure AFTER an earlier docroot ran is a mid-run fault -> hard
+    # overall=1, never a silent SKIP (the masked-failure the local-first lanes close). Drive
+    # check_roots with _serve_and_audit stubbed (no browser); seed a fake playwright so the
+    # import guard passes on a host without the engine.
+    import types as _types
+    sys.modules.setdefault("playwright", _types.ModuleType("playwright"))
+    sys.modules.setdefault("playwright.async_api", _types.ModuleType("playwright.async_api"))
+    _orig_sna = ax._serve_and_audit
+
+    def _raise_engine(*_a, **_k):
+        raise ax._EngineUnavailable("simulated launch failure")
+
+    with tempfile.TemporaryDirectory() as _bdir, \
+            tempfile.TemporaryDirectory() as _r1, \
+            tempfile.TemporaryDirectory() as _r2, \
+            tempfile.NamedTemporaryFile(suffix=".js", delete=False) as _axe:
+        _axe_js = _axe.name
+        os.environ["AXE_SOURCE"] = _axe_js
+        try:
+            # present (empty) baseline for the first root so its clean audit passes (rc=0), isolating
+            # the mid-run engine failure as the ONLY thing that can set overall=1 in case (B).
+            Path(_bdir, "axe-baseline-%s.txt" % os.path.basename(_r1)).write_text(
+                "", encoding="utf-8")
+
+            # (A) engine down from the start -> nothing audited -> SKIP(77).
+            ax._serve_and_audit = _raise_engine
+            try:
+                ax.check_roots([_r1], _bdir)
+                ck(False, "engine down from the start -> SKIP(77)")
+            except SystemExit as exc:
+                ck(exc.code == 77, "engine down from the start -> SKIP(77), not a FAIL")
+
+            # (B) first docroot audits clean, the SECOND fails to launch -> hard overall=1, no SKIP.
+            _calls = {"n": 0}
+
+            def _sna_second_fails(*_a, **_k):
+                _calls["n"] += 1
+                if _calls["n"] == 1:
+                    return (set(), [])          # first docroot: clean audit
+                raise ax._EngineUnavailable("simulated mid-run launch failure")
+
+            ax._serve_and_audit = _sna_second_fails
+            _rc = ax.check_roots([_r1, _r2], _bdir)
+            ck(_rc == 1,
+               "engine down AFTER a docroot audited -> hard overall=1, not SKIP: rc=%r" % _rc)
+        finally:
+            ax._serve_and_audit = _orig_sna
+            os.environ.pop("AXE_SOURCE", None)
+            os.unlink(_axe_js)
 
     # _skip raises SystemExit(77) (the shared env-unmet contract).
     try:

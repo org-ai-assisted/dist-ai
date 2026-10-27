@@ -58,6 +58,12 @@ from dist_ai.webcheck.mobile import (
 # (page path, axe rule id, normalized target selector).
 Key = Tuple[str, str, str]
 
+
+class _EngineUnavailable(Exception):
+    """chromium failed to launch. The CALLER decides SKIP vs FAIL: an env-unmet
+    SKIP(77) is only honest when NOTHING has been audited yet. Once a docroot has
+    run, a launch failure is a mid-run fault (overall=1), never a silent SKIP."""
+
 _CTRL_CHARS = re.compile(r'[\x00-\x1f\x7f-\x9f]')
 
 
@@ -228,10 +234,10 @@ async def check(base: str, paths: List[str], axe_source: str, settle_ms: int = 1
         try:
             browser = await p.chromium.launch()
         except Exception as exc:          # noqa: BLE001 -- engine not installed
-            # Match the sibling browser lanes: python3-playwright present but the chromium ENGINE
-            # absent is an env-unmet SKIP(77), never a hard FAIL. _skip raises SystemExit(77),
-            # which propagates cleanly out of asyncio.run.
-            _skip('chromium engine unavailable: %s' % exc)
+            # python3-playwright present but the chromium ENGINE absent is env-unmet. Surface it to
+            # the caller, which SKIP(77)s only if nothing has been audited yet; a launch failure
+            # after an earlier docroot already ran is a mid-run fault, not a silent SKIP.
+            raise _EngineUnavailable(str(exc)) from exc
         for path in paths:
             url = base.rstrip("/") + "/" + path.lstrip("/")
             try:
@@ -334,9 +340,21 @@ def check_roots(roots: List[str], baseline_dir: str, settle_ms: int = 1000,
         _skip('python3-playwright not installed')
 
     overall = 0
+    audited = 0
     for docroot, entry in _docroots(roots).items():
         site = os.path.basename(os.path.normpath(docroot))
-        fresh, problems = _serve_and_audit(docroot, entry, axe_source, settle_ms, hard_timeout)
+        try:
+            fresh, problems = _serve_and_audit(docroot, entry, axe_source, settle_ms, hard_timeout)
+        except _EngineUnavailable as exc:
+            if audited == 0:
+                _skip('chromium engine unavailable: %s' % exc)  # nothing ran -> env-unmet SKIP(77)
+            # chromium launched for an earlier docroot but not this one: a mid-run fault, not a
+            # silent SKIP. Fail hard and stop -- the remaining docroots cannot run either.
+            print("%s: FAIL    chromium engine became unavailable mid-run: %s" % (site, exc),
+                  file=sys.stderr)
+            overall = 1
+            break
+        audited += 1
         bpath = _baseline_path(Path(baseline_dir), docroot)
         present = bpath.is_file()
         baseline = parse_baseline(bpath.read_text(encoding="utf-8")) if present else set()
@@ -375,9 +393,18 @@ def write_roots(roots: List[str], baseline_dir: str, settle_ms: int = 1000,
     except ImportError:
         _skip('python3-playwright not installed')
 
+    audited = 0
     for docroot, entry in _docroots(roots).items():
         site = os.path.basename(os.path.normpath(docroot))
-        fresh, problems = _serve_and_audit(docroot, entry, axe_source, settle_ms, hard_timeout)
+        try:
+            fresh, problems = _serve_and_audit(docroot, entry, axe_source, settle_ms, hard_timeout)
+        except _EngineUnavailable as exc:
+            if audited == 0:
+                _skip('chromium engine unavailable: %s' % exc)  # nothing seeded -> env-unmet SKIP(77)
+            print("axe: refusing to seed -- chromium became unavailable mid-run after %d site(s): %s"
+                  % (audited, exc), file=sys.stderr)
+            return 2
+        audited += 1
         if problems:
             print("axe: refusing to seed %s -- %d page(s) unauditable: %s"
                   % (site, len(problems), "; ".join(problems)), file=sys.stderr)
