@@ -598,7 +598,13 @@ def _tesseract_fingerprint():
     appear/disappear or a version bump -- else a run generated while tesseract was absent would keep
     its fail-closed (no-sidecar) result after tesseract returns, and a version change would serve
     stale redacted text. (A non-masked lane does not OCR, but keying globally is simplest and only
-    forces a cheap re-encode on the rare tesseract change.)"""
+    forces a cheap re-encode on the rare tesseract change.)
+
+    Scope: this keys on the engine VERSION, the realistic invalidator. Deeper OCR-config drift under
+    a FIXED version (swapped traineddata, a changed TESSDATA_PREFIX mid-deploy) is NOT tracked -- the
+    incremental cache is a best-effort speedup, --full-rebuild is the escape, and neither drift
+    direction leaks unmasked content (a cached sidecar is already redacted; a cached no-sidecar shows
+    nothing), so the fail-CLOSED security property holds regardless."""
     try:
         import subprocess
         out = subprocess.run(["tesseract", "--version"], capture_output=True, text=True,
