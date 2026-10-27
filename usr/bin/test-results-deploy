@@ -43,7 +43,7 @@ pages_repo="${TEST_RESULTS_PAGES_REPO:-${HOME}/private-sources/org-ai-assisted.g
 staging_base="${TEST_RESULTS_STAGING_DIR:-${HOME}/.cache/test-results-deploy}"
 ## Confirm-published poll budget (seconds): GitHub Pages builds the pushed branch ASYNCHRONOUSLY,
 ## so a successful push is not yet a live site. Poll this long for the build to land at our commit.
-confirm_timeout="${TEST_RESULTS_CONFIRM_TIMEOUT:-600}"
+confirm_timeout="${TEST_RESULTS_CONFIRM_TIMEOUT:-1200}"
 ## Seconds between build-API polls. Prod keeps 15s; a hermetic test overrides it so the
 ## multi-poll path (a stale errored build clearing before our commit builds) runs in ~1s.
 confirm_poll_interval="${TEST_RESULTS_CONFIRM_POLL_INTERVAL:-15}"
@@ -53,12 +53,16 @@ die() {
    exit 1
 }
 
-## Confirm the pushed commit is LIVE: poll the GitHub Pages build API until the latest build is
-## status=built at ${want}. Returns 0 only on a confirmed built-at-our-commit; 1 on an errored
-## build or timeout. A pushed commit is NOT a deployed site (Pages builds async), so this is what
-## makes "published" mean "actually built live", not merely "pushed" -- no silent stale publish.
+## Confirm the pushed commit is LIVE. Pages here is build_type=workflow (dev1306's migration),
+## under which the legacy /pages/builds API is FROZEN and never reflects a workflow deploy -- so
+## the authoritative "deployed at ${want}" signal is the github-pages DEPLOYMENT for that exact sha
+## reaching a 'success' status. A legacy branch build ALSO records a github-pages deployment, so
+## this one check covers both models (no build_type branch). Returns 0 on a confirmed success
+## deployment; 1 on a failure/error deployment or timeout. A pushed commit is NOT a deployed site
+## (Pages deploys async), so this makes "published" mean "actually live", never merely "pushed" --
+## no silent stale publish.
 confirm_published() {
-   local want="$1" url owner_repo rec parsed status commit deadline
+   local want="$1" url owner_repo deadline deps dep_id state
    if ! command -v github-api >/dev/null 2>&1; then
       printf '%s\n' "${me}: github-api not found -- cannot confirm publish" >&2
       return 1
@@ -67,8 +71,8 @@ confirm_published() {
       printf '%s\n' "${me}: jq not found -- cannot confirm publish" >&2
       return 1
    fi
-   ## owner/repo for the Pages build API: an explicit override (a non-github mirror, or a test),
-   ## else derived from origin's github URL.
+   ## owner/repo for the Pages API: an explicit override (a non-github mirror, or a test), else
+   ## derived from origin's github URL.
    owner_repo="${TEST_RESULTS_PAGES_OWNER_REPO:-}"
    if [ -z "${owner_repo}" ]; then
       url="$(git remote get-url origin 2>/dev/null)" || return 1
@@ -80,19 +84,22 @@ confirm_published() {
    fi
    deadline=$(( $(date +%s) + confirm_timeout ))
    while :; do
-      rec="$(github-api GET "/repos/${owner_repo}/pages/builds/latest" 2>/dev/null)" || rec=""
-      parsed="$(printf '%s' "${rec}" | jq -r '(.status // "") + " " + (.commit // "")' 2>/dev/null)" || parsed=""
-      status="${parsed%% *}"
-      commit="${parsed##* }"
-      if [ "${status}" = "built" ] && [ "${commit}" = "${want}" ]; then
-         return 0
-      fi
-      ## Reject an errored build only when it is OUR commit. A stale errored build for a
-      ## DIFFERENT commit is still the "latest" until our push builds; aborting on it would
-      ## fail before our commit can finish -- keep polling instead.
-      if [ "${status}" = "errored" ] && [ "${commit}" = "${want}" ]; then
-         printf '%s\n' "${me}: GitHub Pages build ERRORED (commit ${commit})" >&2
-         return 1
+      ## The github-pages deployment(s) created for EXACTLY our pushed sha; newest id wins. Empty
+      ## until the deploy workflow registers one -- keep polling (not yet an error).
+      deps="$(github-api GET "/repos/${owner_repo}/deployments?environment=github-pages&sha=${want}&per_page=20" 2>/dev/null)" || deps=""
+      dep_id="$(printf '%s' "${deps}" | jq -r 'map(.id) | max // empty' 2>/dev/null)" || dep_id=""
+      if [ -n "${dep_id}" ]; then
+         ## Latest status of that deployment (the statuses list is newest-first).
+         state="$(github-api GET "/repos/${owner_repo}/deployments/${dep_id}/statuses?per_page=10" 2>/dev/null | jq -r '.[0].state // ""' 2>/dev/null)" || state=""
+         if [ "${state}" = "success" ]; then
+            return 0
+         fi
+         ## A terminal failure of OUR deployment is fatal; a transient (pending/in_progress/queued)
+         ## or absent status keeps polling until the deadline.
+         if [ "${state}" = "failure" ] || [ "${state}" = "error" ]; then
+            printf '%s\n' "${me}: GitHub Pages deployment ${dep_id} for ${want} reported '${state}'" >&2
+            return 1
+         fi
       fi
       [ "$(date +%s)" -lt "${deadline}" ] || return 1
       sleep "${confirm_poll_interval}"

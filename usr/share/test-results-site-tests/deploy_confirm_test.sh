@@ -8,8 +8,10 @@
 ## Drives the REAL test-results-deploy to its CONFIRM-PUBLISHED step with PATH stubs
 ## (sandbox / site-deploy / generate / github-api) and a local file:// origin, so the real
 ## pull / generator / push / network never run. Guards the regression where a pushed-but-unbuilt
-## or stale publish read as success: confirm_published must FAIL LOUD unless GitHub Pages reports
-## status=built AT the pushed commit. Hermetic: no root, no network.
+## or stale publish read as success: confirm_published must FAIL LOUD unless the github-pages
+## DEPLOYMENT for the pushed commit reports a 'success' status. (Pages is build_type=workflow:
+## the legacy /pages/builds API is frozen and must NOT be used -- that was the false-"not
+## confirmed"-while-live bug this guards.) Hermetic: no root, no network.
 
 set -o errexit
 set -o nounset
@@ -102,33 +104,49 @@ chmod +x "${bindir}/generate-noop"
 printf '%s\n' '#!/bin/bash' 'exit 0' > "${bindir}/site-deploy-noop"
 chmod +x "${bindir}/site-deploy-noop"
 
-## github-api stub reports a canned pages/builds/latest. $1 = status, $2 = commit.
+## github-api stub for confirm_published's deployment-status checks. Dispatches on the request
+## path: a '/deployments/<id>/statuses' request returns the status array (.state); any other
+## (the '/deployments?...&sha=...' list) returns the deployment array (.id).
+## make_ghapi <deployments-json-array> <statuses-json-array>.
 make_ghapi() {
-   {
-      printf '%s\n' '#!/bin/bash'
-      printf '%s\n' "printf '%s\n' '{\"status\":\"$1\",\"commit\":\"$2\"}'"
-      printf '%s\n' 'exit 0'
-   } > "${bindir}/github-api"
+   local deps="$1" statuses="$2"
+   cat > "${bindir}/github-api" <<EOF
+#!/bin/bash
+for a in "\$@"; do
+   case "\$a" in
+      */statuses*) printf '%s\n' '${statuses}'; exit 0 ;;
+   esac
+done
+printf '%s\n' '${deps}'
+exit 0
+EOF
    chmod +x "${bindir}/github-api"
 }
 
-## Stateful github-api stub: errored at a DIFFERENT commit on the 1st poll, then built at
-## our commit. Exercises the poll-continuation path -- a stale errored build must not abort
-## the poll before our commit lands. Call counter persists in ${bindir}.
+## Stateful stub: the deployment for our sha exists, but its latest status is a non-terminal
+## 'in_progress' on the 1st poll and 'success' on the 2nd. Exercises the poll-continuation path
+## -- a transient status must NOT abort the poll before the deploy finishes. Counter in ${bindir}.
 make_ghapi_seq() {
    local counter="${bindir}/.ghapi_calls"
    safe-rm --force -- "${counter}"
-   ## Unquoted heredoc: ${counter}/${head_sha} expand now; \$-escaped refs stay literal for
-   ## the stub to evaluate at run time.
+   ## Unquoted heredoc: ${counter} expands now; \$-escaped refs stay literal for run time.
    cat > "${bindir}/github-api" <<EOF
 #!/bin/bash
-c='${counter}'
-n=0; [ -f "\${c}" ] && n="\$(cat "\${c}")"; n=\$((n + 1)); printf %s "\${n}" > "\${c}"
-if [ "\${n}" -eq 1 ]; then
-   printf '%s\n' '{"status":"errored","commit":"ffffffffffffffffffffffffffffffffffffffff"}'
-else
-   printf '%s\n' '{"status":"built","commit":"${head_sha}"}'
-fi
+for a in "\$@"; do
+   case "\$a" in
+      */statuses*)
+         c='${counter}'
+         n=0; [ -f "\${c}" ] && n="\$(cat "\${c}")"; n=\$((n + 1)); printf %s "\${n}" > "\${c}"
+         if [ "\${n}" -eq 1 ]; then
+            printf '%s\n' '[{"state":"in_progress"}]'
+         else
+            printf '%s\n' '[{"state":"success"}]'
+         fi
+         exit 0
+         ;;
+   esac
+done
+printf '%s\n' '[{"id":104}]'
 exit 0
 EOF
    chmod +x "${bindir}/github-api"
@@ -149,31 +167,33 @@ run_deploy() {
       "${deploy}" 2>&1
 }
 
-## 1. Pages built OUR commit -> confirmed live, exit 0.
-make_ghapi built "${head_sha}"
+## 1. github-pages deployment for OUR sha reports success -> confirmed live, exit 0.
+make_ghapi '[{"id":101}]' '[{"state":"success"}]'
 rc=0; out="$(run_deploy)" || rc=$?
-check "built at our commit -> confirmed live" "${out}" "confirmed live at ${head_sha}"
-check_rc "built at our commit -> exit 0" "${rc}" zero
+check "deployment success at our commit -> confirmed live" "${out}" "confirmed live at ${head_sha}"
+check_rc "deployment success -> exit 0" "${rc}" zero
 
-## 2. Pages built a DIFFERENT commit -> publish NOT confirmed (fail loud, no stale false-green).
-make_ghapi built "0000000000000000000000000000000000000000"
+## 2. NO deployment for our sha (another commit deployed, or not registered yet) -> poll times
+##    out, publish NOT confirmed (no stale false-green). This is the exact live bug: the legacy
+##    build API would have reported an OLD commit "built" and falsely confirmed; keying on OUR
+##    sha's deployment cannot.
+make_ghapi '[]' '[]'
 rc=0; out="$(run_deploy)" || rc=$?
-check "built at other commit -> NOT confirmed" "${out}" "publish NOT confirmed"
-check_rc "built at other commit -> non-zero exit" "${rc}" nonzero
+check "no deployment for our commit -> NOT confirmed" "${out}" "publish NOT confirmed"
+check_rc "no deployment -> non-zero exit" "${rc}" nonzero
 
-## 3. Build ERRORED at our commit -> publish NOT confirmed.
-make_ghapi errored "${head_sha}"
+## 3. Deployment for our sha reports failure -> publish NOT confirmed (fail loud).
+make_ghapi '[{"id":103}]' '[{"state":"failure"}]'
 rc=0; out="$(run_deploy)" || rc=$?
-check "errored build -> NOT confirmed" "${out}" "publish NOT confirmed"
-check_rc "errored build -> non-zero exit" "${rc}" nonzero
+check "deployment failure at our commit -> NOT confirmed" "${out}" "publish NOT confirmed"
+check_rc "deployment failure -> non-zero exit" "${rc}" nonzero
 
-## 4. Stale errored build for a DIFFERENT commit, then OUR commit builds -> confirmed live.
-##    Regression: the errored branch must gate on commit==want, else it aborts the poll before
-##    our commit lands. Pre-fix subject returns 1 on the 1st (errored) poll here.
+## 4. Transient in_progress then success -> confirmed live. Regression: a non-terminal status
+##    must not abort the poll before the deploy finishes.
 make_ghapi_seq
 rc=0; out="$(run_deploy)" || rc=$?
-check "stale errored (other commit) then built at ours -> confirmed live" "${out}" "confirmed live at ${head_sha}"
-check_rc "stale errored then built -> exit 0" "${rc}" zero
+check "deployment in_progress then success -> confirmed live" "${out}" "confirmed live at ${head_sha}"
+check_rc "transient then success -> exit 0" "${rc}" zero
 
 if [ "${fail}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${fail} assertion(s) (${pass} passed)." >&2
