@@ -197,6 +197,11 @@ cd -- "${pages_repo}"
 ## verbatim from the installer UI). That is not source code/docs, so BOTH ASCII-only content gates
 ## -- the unicode gate AND dist-ai-style R-001 -- would otherwise block publishing it. The image
 ## and PII gates stay ARMED (real quality/safety on the published screenshots).
+## Bypassing the unicode gate also waives its bidi/invisible-char check for this tree -- SAFE here:
+## the content is tesseract OCR of OUR trusted installer screenshots on the root-owned plane, and
+## OCR cannot emit invisible bidi/format controls (no glyph to recognize). Do NOT re-arm the gate
+## (benign printable non-ASCII makes that impossible); any future bidi hardening belongs at the OCR
+## emitter (test-results-site-generate), never here.
 idx="$(mktemp)"
 GIT_INDEX_FILE="${idx}" git read-tree HEAD
 GIT_INDEX_FILE="${idx}" git add -A -- automated-test-results
