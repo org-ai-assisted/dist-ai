@@ -99,6 +99,10 @@ expect_rc "--spec with an absent token -> fail"      1 "${assert_bin}" --spec "$
 ## --spec that yields only comments/blanks asserts nothing -> usage error.
 printf '%s\n' '# only a comment' '' > "${work}/spec_empty.txt"
 expect_rc "--spec of only comments asserts nothing (usage)" 2 "${assert_bin}" --spec "${work}/spec_empty.txt" -- "${img}"
+## A non-UTF-8 golden is a BROKEN golden -> exit 2 (not an uncaught UnicodeDecodeError traceback + exit 1).
+## A rendered PNG's bytes are not valid UTF-8 (its header is not), so reuse it as a binary spec.
+cp -- "${img}" "${work}/spec_binary.txt"
+expect_rc "non-UTF-8 --spec is a broken golden (exit 2)" 2 "${assert_bin}" --spec "${work}/spec_binary.txt" -- "${img}"
 
 ## image-ocr-sidecar writes <image>.ocr.txt carrying the OCR text.
 "${sidecar_bin}" -- "${img}" >/dev/null 2>&1

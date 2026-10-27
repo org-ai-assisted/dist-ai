@@ -79,7 +79,9 @@ def main(argv):
     if args.spec:
         try:
             expected.extend(read_spec(args.spec))
-        except OSError as exc:
+        except (OSError, UnicodeError) as exc:
+            ## A non-UTF-8 golden raises UnicodeDecodeError (a ValueError, not OSError): that is a
+            ## BROKEN golden, so exit 2 per the contract -- not an uncaught traceback + exit 1.
             sys.stderr.write("image-text-assert: cannot read spec %s -- %s\n" % (args.spec, exc))
             return 2
     ## Fail closed: an empty expectation (no tokens, or only empty/whitespace ones) would
