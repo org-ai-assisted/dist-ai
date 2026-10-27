@@ -317,6 +317,42 @@ def build_plane(root):
     with open(os.path.join(v_dir, "result.json"), "w", encoding="ascii") as handle:
         handle.write(model.dumps(v_result))
 
+    ## X: an untrusted result.json whose attachment path is a 4301-digit run (a safe component the
+    ## model accepts). The capture-order parser must NOT int() the whole string (CPython caps int()
+    ## at 4300 digits -> ValueError) and crash the WHOLE site -- the run is isolated, site generates.
+    x_dir = os.path.join(root, "kicksecure-bigNN-18-2-3-5", "20261006T000000Z")
+    x_atts = [model.make_attachment("blob", "image/png", ("9" * 4301) + ".png")]
+    x_step = model.make_step(name="calamares-install", status=model.step_status_from_rc(0),
+                             exit_code=0, attachments=x_atts)
+    x_result = model.build_result(
+        run_id="kicksecure-bigNN-18-2-3-5-1", lane="kicksecure-bigNN", version="18.2.3.5",
+        builder="dm-release-test", mode="calamares-install", origin=model.ORIGIN_DOWNLOADED,
+        rc=0, generated_unix=now, stop_unix=now, steps=[x_step])
+    os.makedirs(x_dir, exist_ok=True)
+    with open(os.path.join(x_dir, "result.json"), "w", encoding="ascii") as handle:
+        handle.write(model.dumps(x_result))
+
+    ## Y: an equal-NN shot/card tie where result.json lists the CARD first. The render tiebreak is
+    ## attachments[] order (seq), so the card must render before the same-NN shot -- not "all shots
+    ## then all cards".
+    y_dir = os.path.join(root, "kicksecure-tie-18-2-3-5", "20261006T000000Z")
+    write_png(os.path.join(y_dir, "calamares-install-10-shot.png"), (15, 15, 15))
+    with open(os.path.join(y_dir, "10-card.card.txt"), "w", encoding="utf-8") as handle:
+        handle.write("TIECARDNEEDLE powered-off state")
+    y_atts = [
+        model.make_attachment("tiecard", "text/plain", "10-card.card.txt"),
+        model.make_attachment("tieshot", "image/png", "calamares-install-10-shot.png"),
+    ]
+    y_step = model.make_step(name="calamares-install", status=model.step_status_from_rc(0),
+                             exit_code=0, attachments=y_atts)
+    y_result = model.build_result(
+        run_id="kicksecure-tie-18-2-3-5-1", lane="kicksecure-tie", version="18.2.3.5",
+        builder="dm-release-test", mode="calamares-install", origin=model.ORIGIN_DOWNLOADED,
+        rc=0, generated_unix=now, stop_unix=now, steps=[y_step])
+    os.makedirs(y_dir, exist_ok=True)
+    with open(os.path.join(y_dir, "result.json"), "w", encoding="ascii") as handle:
+        handle.write(model.dumps(y_result))
+
 
 def _rewrite(path, old, new):
     with open(path, "r", encoding="ascii") as handle:
@@ -325,7 +361,7 @@ def _rewrite(path, old, new):
         handle.write(text.replace(old, new))
 
 
-def run_generator(root, site_out, cache_dir=None, full_rebuild=False):
+def run_generator(root, site_out, cache_dir=None, full_rebuild=False, mask_config=None):
     os.makedirs(site_out, exist_ok=True)
     env = dict(os.environ)
     env["SOURCE_DATE_EPOCH"] = str(EPOCH)
@@ -336,6 +372,8 @@ def run_generator(root, site_out, cache_dir=None, full_rebuild=False):
         argv += ["--cache-dir", cache_dir]
     if full_rebuild:
         argv += ["--full-rebuild"]
+    if mask_config is not None:
+        argv += ["--mask-config", mask_config]
     subprocess.run(  # nosec B603 -- fixed argv, in-tree generator
         argv, check=True, env=env,
     )
@@ -601,6 +639,19 @@ check("state card produced NO webp (text, not an image)",
 check("card at NN=00 renders before the NN=01 welcome shot",
       "CARDNEEDLE" in v_page and v_page.index("CARDNEEDLE") < v_page.index("<strong>welcome</strong>"))
 
+## X: a 4301-digit attachment path did NOT crash the generate (if _milestone_order int()'d the
+## whole string the subprocess would have exited 1 and every assertion here would be unreached).
+## The run is isolated and rendered.
+check("huge-digit NN path run generated (no site crash)",
+      os.path.isfile(os.path.join(out1, "kicksecure-bigNN-18-2-3-5-1", "index.html")))
+
+## Y: equal-NN tie -- the card listed first in attachments[] renders before the same-NN shot
+## (seq tiebreak = attachments order, not shots-then-cards).
+y_page = read(os.path.join(out1, "kicksecure-tie-18-2-3-5-1", "index.html"))
+check("equal-NN tie renders the card (listed first) before the shot",
+      "TIECARDNEEDLE" in y_page
+      and y_page.index("TIECARDNEEDLE") < y_page.index("<strong>tieshot</strong>"))
+
 ## F: an escaping attachment path is rejected -> NO-DATA, and nothing is read or
 ## copied from the escaping target (no webp written for that run).
 f_id = "escape-18-2-3-5__20261006T000000Z"
@@ -721,6 +772,53 @@ run_generator(plane, site1, cache_dir=cache_dir)
 check("stray per-run artifact removed on regenerate", not os.path.exists(stray))
 check("regenerated run still rebuilt its page",
       os.path.isfile(os.path.join(stale_run, "index.html")))
+
+## Privacy-mask + orphan-OCR suppression: a dedicated generate with a mask config. OCR publishes
+## the recognized TEXT, which a pixel mask cannot blank, so (a) a privacy-masked lane publishes NO
+## OCR sidecar, and (b) an ORPHAN .ocr.txt (no matching shot) is never rendered as a card (which
+## would embed the text and bypass the suppression). A non-masked lane still publishes its OCR.
+mask_plane = os.path.join(work, "maskplane")
+mask_site = os.path.join(work, "masksite")
+## Masked lane: a welcome shot + its OCR sidecar carrying a secret.
+m1 = os.path.join(mask_plane, "kicksecure-masked-18-2-3-5", "20261006T000000Z")
+write_png(os.path.join(m1, "01-welcome.png"), (20, 120, 20))
+with open(os.path.join(m1, "01-welcome.png.ocr.txt"), "w", encoding="utf-8") as handle:
+    handle.write("MASKEDOCRSECRET welcome text")
+m1_atts = [model.make_attachment("welcome", "image/png", "01-welcome.png"),
+           model.make_attachment("welcome", "text/plain", "01-welcome.png.ocr.txt")]
+m1_step = model.make_step(name="calamares-install", status=model.step_status_from_rc(0),
+                          exit_code=0, attachments=m1_atts)
+with open(os.path.join(m1, "result.json"), "w", encoding="ascii") as handle:
+    handle.write(model.dumps(model.build_result(
+        run_id="kicksecure-masked-18-2-3-5-1", lane="kicksecure-masked", version="18.2.3.5",
+        builder="dm-release-test", mode="calamares-install", origin=model.ORIGIN_DOWNLOADED,
+        rc=0, generated_unix=EPOCH, stop_unix=EPOCH, steps=[m1_step])))
+## Orphan OCR on a NON-masked lane: a .ocr.txt text attachment with NO matching image shot.
+m2 = os.path.join(mask_plane, "kicksecure-orphan-18-2-3-5", "20261006T000000Z")
+os.makedirs(m2, exist_ok=True)
+with open(os.path.join(m2, "zz.png.ocr.txt"), "w", encoding="utf-8") as handle:
+    handle.write("ORPHANOCRSECRET")
+m2_atts = [model.make_attachment("stray", "text/plain", "zz.png.ocr.txt")]
+m2_step = model.make_step(name="calamares-install", status=model.step_status_from_rc(0),
+                          exit_code=0, attachments=m2_atts)
+with open(os.path.join(m2, "result.json"), "w", encoding="ascii") as handle:
+    handle.write(model.dumps(model.build_result(
+        run_id="kicksecure-orphan-18-2-3-5-1", lane="kicksecure-orphan", version="18.2.3.5",
+        builder="dm-release-test", mode="calamares-install", origin=model.ORIGIN_DOWNLOADED,
+        rc=0, generated_unix=EPOCH, stop_unix=EPOCH, steps=[m2_step])))
+mask_cfg = os.path.join(work, "mask.json")
+with open(mask_cfg, "w", encoding="ascii") as handle:
+    handle.write('{"kicksecure-masked": [[0, 0, 40, 30]]}')
+run_generator(mask_plane, mask_site, mask_config=mask_cfg)
+mask_out = os.path.join(mask_site, "automated-test-results")
+masked_page = read(os.path.join(mask_out, "kicksecure-masked-18-2-3-5-1", "index.html"))
+orphan_page = read(os.path.join(mask_out, "kicksecure-orphan-18-2-3-5-1", "index.html"))
+check("masked lane still renders its screenshot", "<img" in masked_page)
+check("masked lane publishes NO OCR link", ">OCR text<" not in masked_page)
+check("masked lane OCR secret not in the page", "MASKEDOCRSECRET" not in masked_page)
+check("masked lane OCR secret not copied into the page dir",
+      not any("ocr.txt" in n for n in os.listdir(os.path.join(mask_out, "kicksecure-masked-18-2-3-5-1"))))
+check("orphan OCR is NOT rendered as a card (secret absent)", "ORPHANOCRSECRET" not in orphan_page)
 
 import shutil  # noqa: E402
 
