@@ -158,9 +158,14 @@ reinstall='true'
 coreboot_rom="${cb_rom}"
 iso="${work}/k.iso"
 cb_uart_sock=''
+true > "${vbox_calls}"
 build_vm >/dev/null 2>&1 || true
 got=0; [ "${cb_uart_sock}" = "${HOME}/${me}-cb-uart.sock" ] || got=1
 check "build_vm --reinstall coreboot re-arms cb_uart_sock (drain not skipped)" "${got}"
+## The reinstall branch reuses the VM; it MUST re-apply --audio-driver none so a VM that predates
+## the audio-off fix cannot raise the HostAudioNotResponding popup over the capture.
+got=0; has 'modifyvm testvm --audio-driver none' "$(cat -- "${vbox_calls}")" || got=1
+check "build_vm --reinstall re-applies --audio-driver none" "${got}"
 reinstall='false'
 
 ## --- Finding 1 regression: a coreboot install declares dasharo-efi, so it MATCHES ------------

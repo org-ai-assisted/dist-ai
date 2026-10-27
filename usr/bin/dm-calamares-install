@@ -1655,6 +1655,11 @@ build_vm() {
       ## firmware, and re-attach the ISO (the prior run detached it) so Calamares
       ## erase-reinstalls over the disk under the new firmware.
       apply_firmware
+      ## A VM reused across --reinstall may predate (or otherwise differ from) the new-VM
+      ## audio-off setting; re-apply it so no audio device exists here either -> the headless
+      ## host's unresponsive audio backend cannot raise the HostAudioNotResponding modal over
+      ## the capture. Matches the --audio-driver none in the createvm path below.
+      "${VBOXMANAGE}" modifyvm "${vm}" --audio-driver none >/dev/null
       ## The reused VM keeps its coreboot board + COM1-server config from the first build;
       ## re-arm the drain (cb_drain_start no-ops on an empty cb_uart_sock, leaving the 16550
       ## undrained -> the THRE-poll boot wedge). The socket path is deterministic, matching
