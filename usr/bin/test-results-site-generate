@@ -48,7 +48,7 @@ _LIB = os.path.join(
 if os.path.isdir(_LIB) and _LIB not in sys.path:
     sys.path.insert(0, _LIB)
 
-from dm_test_results import imaging, model, site  # noqa: E402
+from dm_test_results import imaging, model, ocr, site  # noqa: E402
 
 RESULTS_SUBDIR = "automated-test-results"
 IMAGE_MEDIA_PREFIX = "image/"
@@ -94,7 +94,9 @@ def _validation_of(attachment):
 ## v3: shots carry validation + a copied OCR sidecar, and runs carry state-card text panels.
 ## v4: shots/cards carry a capture-order key (interleaved render) + OCR publication is suppressed
 ## for privacy-masked lanes -- both change a run's published assets, so old entries must not be reused.
-CACHE_FORMAT_VERSION = 4
+## v5: privacy-masked lanes get PER-RECT OCR redaction (re-OCR + drop in-rect tokens) instead of a
+## whole-lane drop, so a masked lane's published OCR asset differs from a v4 entry.
+CACHE_FORMAT_VERSION = 5
 
 ## Legend: status -> human label. Order is display order on the page.
 STATUS_LABEL = [
@@ -326,11 +328,11 @@ def process_run(run_dir, result, run_id, out_root, mask_config, now_unix, stale_
     shots = []
     cards = []
     ## OCR sidecars publish the RECOGNIZED TEXT of a frame, which a pixel privacy mask cannot blank
-    ## (the mask hides image regions; the text is not spatial). So when a lane has CONFIGURED privacy
-    ## rects -- i.e. the operator is masking something sensitive, not just the default clock corner --
-    ## do NOT publish its OCR sidecars, or the masked content would leak as plain text. Default
-    ## clock-only masking (no lane entry) is not sensitive, so OCR still publishes there.
-    ocr_publishable = not mask_config.get(lane)
+    ## (the mask hides image regions; the text is not spatial). A lane with CONFIGURED privacy rects
+    ## gets PER-RECT redaction: re-OCR the shot and drop only the tokens that overlap a rect, still
+    ## publishing the rest (operator decision). A lane with only the default clock mask (no entry)
+    ## is not sensitive, so its run-time OCR sidecar is published verbatim.
+    lane_rects = mask_config.get(lane)
     for step in result["steps"]:
         ## `seq` is each attachment's index in attachments[], carried onto shots/cards so an
         ## equal-NN tie breaks in attachments[] order (not "all shots then all cards").
@@ -354,9 +356,16 @@ def process_run(run_dir, result, run_id, out_root, mask_config, now_unix, stale_
         for seq, attachment in text_atts:
             path = str(attachment.get("path", ""))
             if path.endswith(OCR_SUFFIX):
-                paired = step_shots.get(path[:-len(OCR_SUFFIX)])
-                if paired is not None and ocr_publishable:
-                    ocr_name = _attach_ocr(run_dir, page_dir, paired["sid"], path)
+                shot_path = path[:-len(OCR_SUFFIX)]
+                paired = step_shots.get(shot_path)
+                if paired is not None:
+                    if lane_rects:
+                        ## Privacy-masked lane: re-OCR + drop tokens inside a rect (per-rect redaction).
+                        ocr_name = _attach_redacted_ocr(
+                            run_dir, page_dir, paired["sid"], shot_path, lane_rects)
+                    else:
+                        ## Not privacy-masked: publish the run-time OCR sidecar verbatim.
+                        ocr_name = _attach_ocr(run_dir, page_dir, paired["sid"], path)
                     if ocr_name:
                         paired["ocr"] = ocr_name
             else:
@@ -453,6 +462,52 @@ def _read_text_asset(run_dir, path):
     if len(data) > MAX_TEXT_ASSET_BYTES:
         data = data[:MAX_TEXT_ASSET_BYTES]
     return data.decode("utf-8", errors="replace")
+
+
+def _tokens_overlap_rect(left, top, width, height, rect):
+    """True if a tesseract word box (left, top, width, height) overlaps a privacy mask rect
+    (x, y, w, h). Half-open intervals: touching edges do NOT overlap. Both are in native image
+    pixel space (normalize_image does not resize), so the comparison is direct."""
+    x, y, rect_w, rect_h = rect[0], rect[1], rect[2], rect[3]
+    return left < x + rect_w and left + width > x and top < y + rect_h and top + height > y
+
+
+def _redact_ocr_text(words, rects):
+    """Join the OCR word tokens whose box does NOT overlap ANY privacy mask rect, in tesseract's
+    reading order. Fail-closed PER TOKEN: a token whose box overlaps a rect AT ALL is dropped (a
+    pixel mask cannot blank recognized text, so an overlapping token could leak masked content).
+    Tokens outside every rect are kept, so the rest of the frame's OCR still publishes."""
+    kept = []
+    for left, top, width, height, text in words:
+        if any(_tokens_overlap_rect(left, top, width, height, rect) for rect in rects):
+            continue
+        kept.append(text)
+    return " ".join(kept)
+
+
+def _attach_redacted_ocr(run_dir, page_dir, sid, shot_rel_path, rects):
+    """Publish a PER-RECT-REDACTED OCR sidecar for a privacy-masked lane: re-OCR the shot for word
+    boxes, drop every token overlapping a configured rect, and write the surviving text. Used
+    instead of copying the run-time .ocr.txt (which is the UNmasked full text). Fail-closed: if
+    tesseract is unavailable or the OCR/read fails, publish NO sidecar (never the unmasked text).
+    Returns the served basename, or None."""
+    src = os.path.join(run_dir, shot_rel_path)
+    if os.path.islink(src) or not os.path.isfile(src):
+        return None
+    try:
+        words = ocr.tesseract_words(src)
+    except Exception:  # noqa: BLE001 -- fail-closed: ANY OCR error (no tesseract, CalledProcessError,
+        ## bad image) publishes NO sidecar, never the unmasked run-time text.
+        return None
+    redacted = _redact_ocr_text(words, rects)
+    out_name = _flatten(sid) + OCR_SUFFIX
+    try:
+        os.makedirs(page_dir, exist_ok=True)
+        with open(os.path.join(page_dir, out_name), "w", encoding="utf-8") as out:
+            out.write(redacted)
+    except OSError:
+        return None
+    return out_name
 
 
 def _attach_ocr(run_dir, page_dir, sid, path):

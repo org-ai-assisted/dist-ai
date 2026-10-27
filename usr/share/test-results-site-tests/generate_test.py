@@ -28,6 +28,7 @@ Exit: 0 all pass, 1 any fail (incl. a missing required dependency).
 import filecmp
 import os
 import re
+import shutil
 import subprocess  # nosec B404 -- drives the in-tree generator, fixed argv
 import sys
 import tempfile
@@ -46,6 +47,22 @@ except ImportError as exc:
     sys.exit(1)
 
 GEN = os.path.join(os.path.dirname(os.path.dirname(_SELF)), "bin", "test-results-site-generate")
+
+
+def _import_generator():
+    """Import the generator as a module to unit-test its pure helpers (its bash-guard line is an
+    inert string under Python import; main() runs only under __main__)."""
+    import importlib.machinery
+    import importlib.util
+
+    loader = importlib.machinery.SourceFileLoader("trs_generate", GEN)
+    spec = importlib.util.spec_from_loader("trs_generate", loader)
+    assert spec is not None
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
 EPOCH = 1_700_000_000
 ## A recognizable 64-hex ISO digest the detail page must surface (run M).
 SHA256_M = "0123456789abcdef" * 4
@@ -773,17 +790,39 @@ check("stray per-run artifact removed on regenerate", not os.path.exists(stray))
 check("regenerated run still rebuilt its page",
       os.path.isfile(os.path.join(stale_run, "index.html")))
 
-## Privacy-mask + orphan-OCR suppression: a dedicated generate with a mask config. OCR publishes
-## the recognized TEXT, which a pixel mask cannot blank, so (a) a privacy-masked lane publishes NO
-## OCR sidecar, and (b) an ORPHAN .ocr.txt (no matching shot) is never rendered as a card (which
-## would embed the text and bypass the suppression). A non-masked lane still publishes its OCR.
+## Per-rect OCR redaction (deterministic unit test, no tesseract): _redact_ocr_text keeps tokens
+## whose box is OUTSIDE every privacy rect and drops any that overlap -- fail-closed per token. This
+## is the operator's rule ("a masked-rect token absent, an unmasked token present on the same
+## frame") at the function level, free of OCR flake.
+_gen = _import_generator()
+## Rect at (0,0,50,20). Tokens: SECRET fully inside; PUBLIC fully outside; EDGE straddling the edge.
+_words = [
+    (5, 5, 20, 10, "SECRETTOKEN"),     # inside the rect -> dropped
+    (100, 100, 30, 10, "PUBLICTOKEN"),  # outside -> kept
+    (40, 5, 30, 10, "EDGETOKEN"),       # overlaps the right edge of the rect -> dropped (fail-closed)
+]
+_redacted = _gen._redact_ocr_text(_words, [[0, 0, 50, 20]])
+check("per-rect redaction drops an in-rect token", "SECRETTOKEN" not in _redacted)
+check("per-rect redaction keeps an out-of-rect token", "PUBLICTOKEN" in _redacted)
+check("per-rect redaction drops an edge-overlapping token (fail-closed)", "EDGETOKEN" not in _redacted)
+check("per-rect redaction keeps tokens that only TOUCH an edge",
+      "TOUCHTOKEN" in _gen._redact_ocr_text([(50, 0, 10, 10, "TOUCHTOKEN")], [[0, 0, 50, 20]]))
+
+## Orphan-OCR + masked-lane e2e: a dedicated generate with a mask config.
 mask_plane = os.path.join(work, "maskplane")
 mask_site = os.path.join(work, "masksite")
-## Masked lane: a welcome shot + its OCR sidecar carrying a secret.
+## Masked lane: a real UI frame (so re-OCR reads text) + its run-time OCR sidecar.
+baseline = os.path.join(os.path.dirname(os.path.dirname(_SELF)), "share",
+                        "dm-smbios-reader-boot-tests", "render-baselines",
+                        "kicksecure-calamares-1280x800", "welcome.png")
 m1 = os.path.join(mask_plane, "kicksecure-masked-18-2-3-5", "20261006T000000Z")
-write_png(os.path.join(m1, "01-welcome.png"), (20, 120, 20))
+os.makedirs(m1, exist_ok=True)
+if os.path.isfile(baseline):
+    shutil.copyfile(baseline, os.path.join(m1, "01-welcome.png"))
+else:
+    write_png(os.path.join(m1, "01-welcome.png"), (20, 120, 20))
 with open(os.path.join(m1, "01-welcome.png.ocr.txt"), "w", encoding="utf-8") as handle:
-    handle.write("MASKEDOCRSECRET welcome text")
+    handle.write("MASKEDOCRSECRET welcome text")   # run-time (unmasked) sidecar -- must NOT publish verbatim
 m1_atts = [model.make_attachment("welcome", "image/png", "01-welcome.png"),
            model.make_attachment("welcome", "text/plain", "01-welcome.png.ocr.txt")]
 m1_step = model.make_step(name="calamares-install", status=model.step_status_from_rc(0),
@@ -806,21 +845,42 @@ with open(os.path.join(m2, "result.json"), "w", encoding="ascii") as handle:
         run_id="kicksecure-orphan-18-2-3-5-1", lane="kicksecure-orphan", version="18.2.3.5",
         builder="dm-release-test", mode="calamares-install", origin=model.ORIGIN_DOWNLOADED,
         rc=0, generated_unix=EPOCH, stop_unix=EPOCH, steps=[m2_step])))
+## Mask the whole top band (the Calamares title) but leave the lower panel; re-OCR must drop the
+## title tokens while keeping the lower-panel ones.
 mask_cfg = os.path.join(work, "mask.json")
 with open(mask_cfg, "w", encoding="ascii") as handle:
-    handle.write('{"kicksecure-masked": [[0, 0, 40, 30]]}')
+    handle.write('{"kicksecure-masked": [[0, 0, 1280, 120]]}')
 run_generator(mask_plane, mask_site, mask_config=mask_cfg)
 mask_out = os.path.join(mask_site, "automated-test-results")
-masked_page = read(os.path.join(mask_out, "kicksecure-masked-18-2-3-5-1", "index.html"))
+masked_dir = os.path.join(mask_out, "kicksecure-masked-18-2-3-5-1")
+masked_page = read(os.path.join(masked_dir, "index.html"))
 orphan_page = read(os.path.join(mask_out, "kicksecure-orphan-18-2-3-5-1", "index.html"))
 check("masked lane still renders its screenshot", "<img" in masked_page)
-check("masked lane publishes NO OCR link", ">OCR text<" not in masked_page)
-check("masked lane OCR secret not in the page", "MASKEDOCRSECRET" not in masked_page)
-check("masked lane OCR secret not copied into the page dir",
-      not any("ocr.txt" in n for n in os.listdir(os.path.join(mask_out, "kicksecure-masked-18-2-3-5-1"))))
+## The run-time (UNmasked) sidecar text is NEVER published verbatim on a masked lane -- regardless
+## of tesseract: with tesseract the re-OCR replaces it; without, it fails closed to no sidecar.
+published_ocr = [n for n in os.listdir(masked_dir) if n.endswith(".ocr.txt")]
+masked_ocr_text = read(os.path.join(masked_dir, published_ocr[0])) if published_ocr else ""
+check("masked lane never publishes the run-time unmasked OCR text",
+      "MASKEDOCRSECRET" not in masked_ocr_text and "MASKEDOCRSECRET" not in masked_page)
 check("orphan OCR is NOT rendered as a card (secret absent)", "ORPHANOCRSECRET" not in orphan_page)
-
-import shutil  # noqa: E402
+## Tesseract-dependent e2e: when it is present (sandbox), the masked top band's text is dropped
+## while the lower panel's text survives. On a host without tesseract the re-OCR fails closed (no
+## sidecar), already covered above; the deterministic unit test covers the redaction rule either way.
+if shutil.which("tesseract") and os.path.isfile(baseline):
+    from dm_test_results import ocr as _ocr  # noqa: E402
+    _full_words = _ocr.tesseract_words(baseline)
+    _full_text = " ".join(w[4] for w in _full_words)
+    _expected = _gen._redact_ocr_text(_full_words, [[0, 0, 1280, 120]])
+    check("masked lane publishes a (redacted) OCR link", ">OCR text<" in masked_page)
+    ## The generator re-OCRs the identical image with the identical tesseract, so its published
+    ## sidecar must EQUAL the redaction function applied to the real OCR for that mask rect.
+    check("masked OCR == per-rect redaction of the real OCR", masked_ocr_text == _expected)
+    ## The top band carried text, so redaction must have DROPPED tokens (shorter) yet kept some.
+    check("masking actually dropped tokens but kept the rest",
+          0 < len(_expected) < len(_full_text))
+else:
+    print("ok: masked-lane redaction e2e deferred to the sandbox (no tesseract here); "
+          "unit test covers the rule")
 
 shutil.rmtree(work, ignore_errors=True)
 
