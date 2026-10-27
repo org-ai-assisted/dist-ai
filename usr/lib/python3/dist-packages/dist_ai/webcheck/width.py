@@ -43,6 +43,10 @@ from dist_ai.webcheck.mobile import (
 # stable above this; 1440 is a representative desktop.
 DESKTOP_WIDTH = 1440
 VIEWPORT_HEIGHT = 1000
+# A local-mount `load` is normally fast, but under sandbox contention it can brush the
+# Playwright default (30s) and flake a page as a false nav timeout; 60s absorbs that
+# without masking a genuine hang (mirrors the mobile lane).
+NAV_TIMEOUT_MS = 60000
 
 # An offender's content extent covers less than this fraction of its wrap.
 MIN_UTIL = 0.80
@@ -192,7 +196,8 @@ def main():
                     page = browser.new_page(
                         viewport={'width': DESKTOP_WIDTH, 'height': VIEWPORT_HEIGHT})
                     try:
-                        resp = page.goto('http://127.0.0.1:%d%s' % (port, url))
+                        resp = page.goto('http://127.0.0.1:%d%s' % (port, url),
+                                         timeout=NAV_TIMEOUT_MS)
                         if resp is not None and resp.status >= 400:
                             failures += 1
                             sys.stderr.write('FAIL %s: served %d (not a real page)\n'

@@ -45,6 +45,10 @@ from dist_ai.webcheck.mobile import (
 # rows may re-flow to a column). The bug reproduced at both.
 FOOTER_WIDTHS = (1440, 390)
 VIEWPORT_HEIGHT = 1000
+# A local-mount `load` is normally fast, but under sandbox contention it can brush the
+# Playwright default (30s) and flake a page as a false nav timeout; 60s absorbs that
+# without masking a genuine hang (mirrors the mobile lane).
+NAV_TIMEOUT_MS = 60000
 
 # Max px a row's content-box inset may deviate from the footer's median inset.
 # The real defect is ~20px; 2px absorbs sub-pixel layout rounding.
@@ -174,7 +178,8 @@ def main():
                         page = browser.new_page(
                             viewport={'width': width, 'height': VIEWPORT_HEIGHT})
                         try:
-                            resp = page.goto('http://127.0.0.1:%d%s' % (port, url))
+                            resp = page.goto('http://127.0.0.1:%d%s' % (port, url),
+                                             timeout=NAV_TIMEOUT_MS)
                             if resp is not None and resp.status >= 400:
                                 failures += 1
                                 sys.stderr.write('FAIL %s: served %d (not a real page)\n'

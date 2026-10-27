@@ -130,6 +130,11 @@ def run():
     main_body = inspect.getsource(cf.main)
     check('predicate wired into main', 'misaligned_rows(' in main_body)
     check('measurement evaluated in main', '_MEASURE_JS' in main_body)
+    # Flake guard: the page nav must bound its timeout. The Playwright 30s default
+    # flaked as a false nav timeout under sandbox contention; canary fails if it is
+    # dropped back to the bare default.
+    check('page nav bounds its timeout (not the bare 30s default)',
+          'timeout=NAV_TIMEOUT_MS' in main_body)
 
     passed = sum(1 for _n, ok, _d in results if ok)
     failed = len(results) - passed
