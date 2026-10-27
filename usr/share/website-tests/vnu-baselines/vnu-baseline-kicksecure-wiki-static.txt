@@ -1,0 +1,11 @@
+# vnu (W3C Nu) accepted-conformance-error baseline for kicksecure-wiki-static. Fields: <path> <message>
+# The gate FAILS only on a NEW error (one not listed here). A listed error is
+# pre-existing conformance debt we tolerate; a listed one that no longer fires is
+# reported as resolved, not required. Re-seed (overwrites) with:
+#   webcheck-vnu-sandbox --write-baseline <site-root>
+wiki/Dev/mediawiki.html Element "div" not allowed as child of element "span" in this context. (Suppressing further errors from this subtree.)
+wiki/Dev/mediawiki.html Element "h3" not allowed as child of element "span" in this context. (Suppressing further errors from this subtree.)
+wiki/Dev/mediawiki.html Self-closing syntax ("/>") used on a non-void HTML element. Ignoring the slash and treating as a start tag.
+wiki/Dev/mediawiki.html Stray end tag "a".
+wiki/Dev/mediawiki.html Stray end tag "div".
+wiki/Dev/mediawiki.html Stray end tag "h2".
