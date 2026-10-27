@@ -121,7 +121,7 @@ cpus=""
 if [[ "${modify_line}" =~ --cpus\ ([0-9]+) ]]; then
    cpus="${BASH_REMATCH[1]}"
 fi
-expected_plain="modifyvm testvm --memory 4096 --cpus ${cpus} --graphicscontroller vmsvga --vram 128 --mouse usbtablet --usb-ohci on --nic1 nat"
+expected_plain="modifyvm testvm --memory 4096 --cpus ${cpus} --graphicscontroller vmsvga --vram 128 --mouse usbtablet --usb-ohci on --nic1 nat --audio-driver none"
 got=0; [ -n "${cpus}" ] && [ "${modify_line}" = "${expected_plain}" ] || got=1
 check "build_vm modifyvm argv is byte-unchanged without --coreboot-rom (additive)" "${got}"
 got=0; [ -z "${cb_uart_sock}" ] || got=1

@@ -620,8 +620,13 @@ RCXML
    [ -n "${sock}" ] || die "${FAIL_RC}" "story GUI: labwc did not create a wayland socket"
    export WAYLAND_DISPLAY="${sock##*/}"
    wlr-randr --output HEADLESS-1 --custom-mode 1920x1080 >/dev/null 2>&1 || true
-   ## suppress VBox hint popups (e.g. "auto capture keyboard") so they are not in the frame; save
-   ## the global value first and restore it in gui_compositor_stop.
+   ## Suppress the VBox GUI popups that would otherwise appear MODAL over the VM window and be
+   ## grim-grabbed instead of the guest: the hint reminders AND the suppressible runtime warnings
+   ## (showRuntimeError.warning.*, e.g. HostAudioNotResponding). This list MUST stay identical to
+   ## vbox-host-shot's (both grab the same GUI surfaces); a drift there is exactly what let the
+   ## HostAudioNotResponding "non-fatal problem" dialog ride into firmware-logo. Kept in sync by
+   ## suppress_messages_match_test.sh. Save the global value first and restore it in
+   ## gui_compositor_stop.
    local cur
    cur="$("${VBOXMANAGE}" getextradata global GUI/SuppressMessages 2>/dev/null || true)"
    case "${cur}" in
@@ -635,7 +640,7 @@ RCXML
          ;;
    esac
    "${VBOXMANAGE}" setextradata global GUI/SuppressMessages \
-      "remindAboutAutoCapture,remindAboutMouseIntegration,remindAboutInputCapture,confirmInputCapture,remindAboutGoingFullscreen,remindAboutGoingSeamless,remindAboutPausedVMInput,remindAboutInaccessibleMedia,remindAboutGuestAdditionsAreNotActive" \
+      "remindAboutAutoCapture,remindAboutMouseIntegration,remindAboutInputCapture,confirmInputCapture,remindAboutGoingFullscreen,confirmGoingFullscreen,remindAboutGoingSeamless,remindAboutPausedVMInput,remindAboutInaccessibleMedia,remindAboutGuestAdditionsAreNotActive,showRuntimeError.warning.HostAudioNotResponding" \
       >/dev/null 2>&1 || true
 }
 
@@ -1674,7 +1679,7 @@ build_vm() {
    ## coreboot swaps the graphics recipe for the proven-working board the UefiPayload needs
    ## (vboxvga, piix3/HPET/IOAPIC, the 36-bit-phys cpuid leaf) and wires COM1 to a host server
    ## socket the drain reads. WITHOUT --coreboot-rom the argv is byte-unchanged (additive only):
-   ## the --memory/--cpus head and the --mouse/--usb/--nic tail are shared by both paths.
+   ## the --memory/--cpus head and the --mouse/--usb/--nic/--audio tail are shared by both paths.
    local -a modify_args=( --memory 4096 --cpus "${vcpus}" )
    if [ -n "${coreboot_rom}" ]; then
       cb_uart_sock="${HOME}/${me}-cb-uart.sock"
@@ -1685,7 +1690,11 @@ build_vm() {
    else
       modify_args+=( --graphicscontroller vmsvga --vram 128 )
    fi
-   modify_args+=( --mouse usbtablet --usb-ohci on --nic1 nat )
+   ## --audio-driver none: a screenshot test needs no sound, and on the headless host the default
+   ## audio backend does not respond -> VBox raises the "non-fatal problem" (HostAudioNotResponding)
+   ## runtime warning as a MODAL that covers the VM window, so grim grabs the popup instead of the
+   ## guest for every window-mode milestone. No audio device -> no such warning (VBox 7.x syntax).
+   modify_args+=( --mouse usbtablet --usb-ohci on --nic1 nat --audio-driver none )
    "${VBOXMANAGE}" modifyvm "${vm}" "${modify_args[@]}" >/dev/null
    apply_firmware
    "${VBOXMANAGE}" createmedium disk --filename "${disk}" --size 25600 \

@@ -296,9 +296,12 @@ cmd_vm_window() {
    maximize_window="yes"
    start_compositor
 
-   ## Suppress VirtualBox's passive hint popups so they are not in the frame (e.g. the "auto
-   ## capture keyboard" notification). SuppressMessages is a global comma list of GUI hint IDs; save
-   ## the current value first so cleanup restores it (we mutate a persistent global setting).
+   ## Suppress the VBox GUI popups that would otherwise appear in the frame (passive hints like the
+   ## "auto capture keyboard" notification AND suppressible runtime warnings like
+   ## showRuntimeError.warning.HostAudioNotResponding). SuppressMessages is a global comma list of
+   ## GUI message IDs; save the current value first so cleanup restores it (we mutate a persistent
+   ## global setting). This list MUST stay identical to dm-calamares-install's story-capture list
+   ## (same GUI surfaces grabbed); kept in sync by suppress_messages_match_test.sh.
    local cur
    cur="$("${VBOXMANAGE}" getextradata global GUI/SuppressMessages 2>/dev/null || true)"
    case "${cur}" in
