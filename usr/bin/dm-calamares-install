@@ -498,6 +498,10 @@ story_snap_nonblank() {
    local timeout="${3:-${DM_CALAMARES_NONBLANK_TIMEOUT:-45}}"
    local cadence="${4:-2}"
    local check="${5:-uniform}"
+   ## Non-empty $6: on timeout, DISCARD the degenerate leftover. Opt-in -- a milestone whose
+   ## presence is later REQUIRED (vt-graphical-restored -> require_vt_captures) must NOT discard,
+   ## or a slow render turns into a "capture missing" die instead of publishing what rendered.
+   local discard_on_timeout="${6:-}"
    [ -n "${shot_dir}" ] || return 0
    local dest="${shot_dir}/${nn}-${name}.png" start="${SECONDS}"
    ## rich polls with image-blank-check's DEFAULT (near-blank) mode; uniform with --uniform-only;
@@ -518,12 +522,14 @@ story_snap_nonblank() {
          return 0
       fi
       if [ "$(( SECONDS - start ))" -ge "${timeout}" ]; then
-         ## Timed out without a non-blank frame: DISCARD the degenerate leftover (frame + gate
-         ## sibling) so the lenient (--uniform-only) successful-run cleanup cannot publish a blank
-         ## milestone as real evidence (e.g. a missed firmware splash -> NO firmware-logo frame,
-         ## which is honest). The caller's `|| true` still sees the non-zero return; the universal
-         ## floor still owns the run verdict.
-         safe-rm --force -- "${dest}" "${dest%/*}/${gate_subdir}/${dest##*/}" 2>/dev/null || true
+         ## Timed out without a non-blank frame. When the caller opted in ($6), DISCARD the
+         ## degenerate leftover (frame + gate sibling) so the lenient (--uniform-only) successful-run
+         ## cleanup cannot publish a blank milestone as real evidence (e.g. a missed firmware splash
+         ## -> NO firmware-logo frame, which is honest). The caller's `|| true` still sees the
+         ## non-zero return; the universal floor still owns the run verdict.
+         if [ -n "${discard_on_timeout}" ]; then
+            safe-rm --force -- "${dest}" "${dest%/*}/${gate_subdir}/${dest##*/}" 2>/dev/null || true
+         fi
          return 1
       fi
       sleep "${cadence}"
@@ -1800,7 +1806,7 @@ main() {
    ## POLL fast over the first few seconds and keep the frame that actually rendered. On a genuine
    ## miss story_snap_nonblank DISCARDS the black leftover (no misleading firmware-logo published);
    ## `|| true`: the universal floor owns the verdict (and keeps errexit off the timeout path).
-   story_snap_nonblank 11 firmware-logo 6 0.4 content || true
+   story_snap_nonblank 11 firmware-logo 6 0.4 content discard || true
    ## No "live-kernel-boot" capture: Kicksecure boots SILENTLY (security-misc; no plymouth, no
    ## console), so the whole window between the GRUB menu and the painted desktop is black BY
    ## DESIGN -- there is no non-black kernel-boot frame to publish. The boot is evidenced by the
