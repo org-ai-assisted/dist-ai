@@ -84,6 +84,67 @@ void verify_check_screen_touch(void)
     (void)check_screen_touch(a, b);
 }
 
+/* abs_coord_to_screen_local_coord: for an in-envelope screen and query point the
+ * conversion is UB-free, and a valid result is the point relative to the
+ * screen's origin and inside the screen. One symbolic screen suffices for the
+ * per-screen arithmetic; the scan loop is covered by --unwind >= MAX_SCREEN_COUNT. */
+void verify_abs_coord_to_screen_local_coord(void)
+{
+    struct output_geometry g;
+    int32_t x, y;
+    struct screen_local_coord sl;
+    ssize_t i;
+    __CPROVER_assume(g.x >= 0 && g.x < COORD_MAX && g.y >= 0 && g.y < COORD_MAX);
+    __CPROVER_assume(g.width >= 0 && g.width < COORD_MAX);
+    __CPROVER_assume(g.height >= 0 && g.height < COORD_MAX);
+    __CPROVER_assume(x >= 0 && x < COORD_MAX && y >= 0 && y < COORD_MAX);
+    for (i = 0; i < MAX_SCREEN_COUNT; i++) {
+        state.output_geometries[i] = NULL;
+    }
+    state.output_geometries[0] = &g;
+    sl = abs_coord_to_screen_local_coord(x, y);
+    if (sl.valid) {
+        __CPROVER_assert(sl.output_idx == 0, "valid hit is the only screen");
+        __CPROVER_assert(sl.x >= 0 && sl.x < g.width, "local x inside screen");
+        __CPROVER_assert(sl.y >= 0 && sl.y < g.height, "local y inside screen");
+    }
+    for (i = 0; i < MAX_SCREEN_COUNT; i++) {
+        state.output_geometries[i] = NULL;
+    }
+}
+
+/* screen_local_coord_to_abs_coord: UB-free, and a valid result is the screen
+ * origin plus the local offset (the inverse of the above). */
+void verify_screen_local_coord_to_abs_coord(void)
+{
+    struct output_geometry g;
+    int32_t x, y, idx;
+    struct coord c;
+    ssize_t i;
+    __CPROVER_assume(g.x >= 0 && g.x < COORD_MAX && g.y >= 0 && g.y < COORD_MAX);
+    __CPROVER_assume(g.width >= 0 && g.width < COORD_MAX);
+    __CPROVER_assume(g.height >= 0 && g.height < COORD_MAX);
+    __CPROVER_assume(x >= 0 && x < COORD_MAX && y >= 0 && y < COORD_MAX);
+    __CPROVER_assume(idx >= 0 && idx < MAX_SCREEN_COUNT);
+    for (i = 0; i < MAX_SCREEN_COUNT; i++) {
+        state.output_geometries[i] = NULL;
+    }
+    state.output_geometries[idx] = &g;
+    c = screen_local_coord_to_abs_coord(x, y, idx);
+    if (c.x >= 0) {
+        __CPROVER_assert(c.x == g.x + x, "abs x = origin + local x");
+        __CPROVER_assert(c.y == g.y + y, "abs y = origin + local y");
+    }
+    for (i = 0; i < MAX_SCREEN_COUNT; i++) {
+        state.output_geometries[i] = NULL;
+    }
+}
+
+/* recalc_global_space is NOT CBMC-proven: its O(n^2) screen-connectivity scan
+ * over symbolic geometry is intractable (does not converge at --unwind 129).
+ * It is covered by the kloak_harness.c unit tests (touching, gapped, offset)
+ * and its per-pair component check_screen_touch is proven above. */
+
 /* random_between: the anti-fingerprinting delay bound. For a valid interval the
  * result is ALWAYS within [lower, upper] -- the property that keeps kloak's
  * randomised release delay inside its configured max. The rejection loop is

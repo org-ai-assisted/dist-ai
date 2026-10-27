@@ -52,8 +52,12 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 ## (random_between's rejection sampling, sleep_ms's EINTR retry, traverse_line's
 ## Bresenham walk) get a small unwind -- the unwound prefix covers the arithmetic
 ## of every structurally identical step.
+## The geometry scans run to MAX_SCREEN_COUNT (128); --unwind 129 covers them
+## fully (exhaustive, not truncated), so no --no-unwinding-assertions there.
 CBMC_FUNCTIONS = {
     'verify_check_screen_touch': [],
+    'verify_abs_coord_to_screen_local_coord': ['--unwind', '129'],
+    'verify_screen_local_coord_to_abs_coord': ['--unwind', '129'],
     'verify_random_between': ['--unwind', '4', '--no-unwinding-assertions'],
     'verify_traverse_line': ['--unwind', '8', '--no-unwinding-assertions'],
     'verify_get_ticks_from_scroll_accum': [],
