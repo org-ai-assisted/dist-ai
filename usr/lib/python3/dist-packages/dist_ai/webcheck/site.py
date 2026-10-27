@@ -2186,15 +2186,29 @@ def render_sitemap(root, host):
     return '\n'.join(lines) + '\n'
 
 
-def render_robots(host):
+def _site_no_index(root):
+    """True if the site is a no-index (interim/preview) build: its homepage
+    carries a robots noindex meta. The generator stamps that exact meta on every
+    page of a no-index build; the homepage is representative."""
+    try:
+        with open(os.path.join(root, 'index.html'),
+                  encoding='utf-8', errors='replace') as handle:
+            return 'name="robots" content="noindex"' in handle.read()
+    except OSError:
+        return False
+
+
+def render_robots(host, no_index=False):
     """The canonical robots.txt text for a site (trailing newline included).
-    Always allows crawling and advertises the sitemap. A site kept out of search
-    does so per-page via a noindex meta -- which a crawler must be ALLOWED to
-    fetch to honor -- never via a robots Disallow, so robots never Disallows."""
-    return ('User-agent: *\n'
-            'Allow: /\n'
-            '\n'
-            'Sitemap: https://%s/sitemap.xml\n' % host)
+    Always allows crawling HTML (a crawler must fetch a page to honor its
+    per-page noindex meta) and advertises the sitemap. A no-index build ALSO
+    Disallows PDFs: a PDF carries no noindex meta and GitHub Pages serves no
+    X-Robots-Tag, so blocking the crawl is the only Pages-compatible way to keep
+    it out of indexes (users still download it -- robots binds crawlers only)."""
+    lines = ['User-agent: *', 'Allow: /']
+    if no_index:
+        lines.append('Disallow: /*.pdf$')
+    return '\n'.join(lines) + '\n\nSitemap: https://%s/sitemap.xml\n' % host
 
 
 def _png_size(path):
@@ -2235,8 +2249,9 @@ def check_seo(root):
         problems.append('index.html has no <link rel="canonical">; SEO '
                         'generation needs it to derive the host')
         return problems
+    no_index = _site_no_index(root)
     for name, want in (('sitemap.xml', render_sitemap(root, host)),
-                       ('robots.txt', render_robots(host))):
+                       ('robots.txt', render_robots(host, no_index))):
         try:
             with open(os.path.join(root, name), encoding='utf-8') as handle:
                 have = handle.read()

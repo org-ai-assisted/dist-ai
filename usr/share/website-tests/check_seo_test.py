@@ -270,12 +270,22 @@ def run():
         with open(os.path.join(root, 'sitemap.xml'), 'w', encoding='utf-8') as h:
             h.write(cs.render_sitemap(root, host))
         with open(os.path.join(root, 'robots.txt'), 'w', encoding='utf-8') as h:
-            h.write(cs.render_robots(host))
-        check('a no-index site is clean (Allow robots, pages still listed)',
+            h.write(cs.render_robots(host, no_index=True))
+        check('a no-index site is clean (Allow robots + PDF Disallow, pages listed)',
               cs.check_seo(root) == [], repr(cs.check_seo(root)))
         check('the no-index site sitemap lists its noindex pages',
               cs.render_sitemap(root, host).count('<loc>') == 2,
               repr(cs.render_sitemap(root, host)))
+        check('no-index robots Disallows PDFs (no meta/X-Robots-Tag possible)',
+              'Disallow: /*.pdf$' in cs.render_robots(host, no_index=True),
+              repr(cs.render_robots(host, no_index=True)))
+        # A no-index site whose robots LACKS the PDF Disallow is flagged stale:
+        # check_seo detects no-index from the homepage meta and expects it.
+        with open(os.path.join(root, 'robots.txt'), 'w', encoding='utf-8') as h:
+            h.write(cs.render_robots(host))               # missing PDF Disallow
+        check('a no-index site without the PDF Disallow is flagged stale',
+              any('robots.txt' in p for p in cs.check_seo(root)),
+              repr(cs.check_seo(root)))
 
     # the gate must be wired into main() -- read the real function source wherever
     # it lives (the core module), not a fixed file path, so the CLI-shim split does
