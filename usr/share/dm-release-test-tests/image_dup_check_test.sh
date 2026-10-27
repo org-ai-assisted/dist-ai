@@ -80,6 +80,13 @@ mkdir -- "${workdir}/sizes"
 "${magick_bin}" -size 40x40 xc:'#777777' "${workdir}/sizes/s_small.png"
 "${magick_bin}" -size 80x80 xc:'#777777' "${workdir}/sizes/s_big.png"
 
+## Two frames with identical RGB but DIFFERENT alpha must NOT collide: the hash is over RGBA, so
+## a transparency-only difference keeps them distinct. An RGB-only hash would false-dup them and
+## the lane gate could fail a good run (regression for the alpha fix).
+mkdir -- "${workdir}/alpha"
+"${magick_bin}" -size 50x50 xc:'#334455' "${workdir}/alpha/opaque.png"
+"${magick_bin}" -size 50x50 xc:'#334455' -alpha set -channel A -evaluate set 50% +channel "${workdir}/alpha/half.png"
+
 pass=0
 fail=0
 expect_rc() {
@@ -101,6 +108,7 @@ expect_rc "a 2-frame duplicate cluster is flagged"           1 "${workdir}/dups"
 expect_rc "all-distinct frames are NOT flagged"              0 "${workdir}/distinct"
 expect_rc "PNG == lossless WEBP of same pixels is a dup"     1 "${workdir}/fmt"
 expect_rc "same content, different SIZE is NOT a dup"        0 "${workdir}/sizes"
+expect_rc "same RGB, different ALPHA is NOT a dup"           0 "${workdir}/alpha"
 ## A single file cannot form a cluster.
 expect_rc "a single frame is NOT flagged"                    0 "${workdir}/dups/03-c.png"
 

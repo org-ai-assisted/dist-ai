@@ -51,14 +51,15 @@ def is_allowed(base, allow):
 
 
 def content_hash(path):
-    """Deterministic sha256 of the decoded RGB pixels: identical iff two frames are
-    pixel-for-pixel equal, robust to container/metadata differences (a PNG and a
-    lossless WEBP of the same frame hash equal). The size is bound into the digest,
-    so two differently-sized frames can never collide even if one pixel stream is a
-    shifted view of the other."""
+    """Deterministic sha256 of the decoded RGBA pixels: identical iff two frames are
+    pixel-for-pixel equal INCLUDING alpha, so two frames differing only in transparency are
+    NOT collapsed (an RGB-only hash would, and the dup gate could then fail a good run on
+    distinct frames). Robust to container/metadata differences (a PNG and a lossless WEBP of
+    the same frame hash equal). The size is bound into the digest, so two differently-sized
+    frames can never collide even if one pixel stream is a shifted view of the other."""
     with Image.open(path) as image:
-        rgb = image.convert("RGB")
+        rgba = image.convert("RGBA")
         digest = hashlib.sha256()
-        digest.update(("%dx%d\n" % rgb.size).encode())
-        digest.update(rgb.tobytes())
+        digest.update(("%dx%d\n" % rgba.size).encode())
+        digest.update(rgba.tobytes())
     return digest.hexdigest()

@@ -313,14 +313,29 @@ on_exit() {
    ## this. Runs over the FINAL published set (after the transient drops + gate-sibling cleanup
    ## above), so dropped / gate frames never count.
    if [ "${rc}" -eq 0 ] && [ -n "${shot_dir}" ]; then
-      local dup_out=''
-      if ! dup_out="$("${IMAGE_DUP_CHECK:-image-dup-check}" --min-cluster 3 -- "${shot_dir}" 2>&1)"; then
-         printf '%s\n' \
-            "${me}: ERROR: stuck/duplicate capture -- a frame repeats across 3+ milestones:" \
-            "${dup_out}" >&2
-         die_reason="duplicate milestone screenshots (stuck capture)"
-         rc=1
-      fi
+      local dup_out='' dup_rc=0
+      dup_out="$("${IMAGE_DUP_CHECK:-image-dup-check}" --min-cluster 3 -- "${shot_dir}" 2>&1)" || dup_rc=$?
+      case "${dup_rc}" in
+         0)
+            : ## no stuck/duplicate capture
+            ;;
+         1)
+            printf '%s\n' \
+               "${me}: ERROR: stuck/duplicate capture -- a frame repeats across 3+ milestones:" \
+               "${dup_out}" >&2
+            die_reason="duplicate milestone screenshots (stuck capture)"
+            rc=1
+            ;;
+         *)
+            ## image-dup-check could not read/scan a frame (unreadable/usage): still a bad
+            ## capture -> fail the run, but do NOT mislabel it as a duplicate cluster.
+            printf '%s\n' \
+               "${me}: ERROR: image-dup-check could not read a milestone screenshot:" \
+               "${dup_out}" >&2
+            die_reason="unreadable milestone screenshot (dup-check)"
+            rc=1
+            ;;
+      esac
    fi
    ## Content gate (graduated policy -- see usr/share/dm-calamares-install-golden/README.md). On an
    ## otherwise-passing run, assert each milestone whose stage has an APPROVED golden
