@@ -1412,6 +1412,37 @@ def run():
         check('a noindex content page outside the results plane stays listed',
               any(u.endswith('example.github.io/paper/') for u in urls), repr(urls))
 
+    # check_page_metadata (previews perfect-SEO bar): a complete page passes; a
+    # page missing any required tag (here the manifest link) is flagged.
+    with tempfile.TemporaryDirectory() as root:
+        full_head = (
+            '<link rel="canonical" href="https://e/">'
+            '<meta name="description" content="d">'
+            '<meta property="og:title" content="t">'
+            '<meta property="og:type" content="website">'
+            '<meta property="og:url" content="u">'
+            '<meta property="og:image" content="i">'
+            '<meta property="og:locale" content="en_US">'
+            '<meta name="twitter:card" content="summary_large_image">'
+            '<meta name="twitter:image" content="i">'
+            '<script type="application/ld+json">{}</script>'
+            '<link rel="icon" href="f.svg">'
+            '<link rel="apple-touch-icon" href="f.png">'
+            '<link rel="mask-icon" href="f.svg">'
+            '<meta name="theme-color" content="#fff">'
+            '<link rel="manifest" href="m.webmanifest">')
+        tmpl = '<!doctype html><html><head>%s</head><body>x</body></html>'
+        _write(root, 'index.html', tmpl % full_head)
+        fails = []
+        check_site.check_page_metadata(root, fails)
+        check('a complete previews page passes page-metadata', fails == [], repr(fails))
+        _write(root, 'index.html', tmpl % full_head.replace(
+            '<link rel="manifest" href="m.webmanifest">', ''))
+        fails2 = []
+        check_site.check_page_metadata(root, fails2)
+        check('a previews page missing the manifest link is flagged',
+              any('PWA manifest' in f for f in fails2), repr(fails2))
+
     # applicability guard: the FAMILY-policy checker must SKIP a MediaWiki/wiki site (the
     # kicksecure/whonix stage sites), not emit a wall of false family-rule failures on it.
     # Positive wiki detection: a BROKEN family site (lost its footer) is NOT a wiki, so it

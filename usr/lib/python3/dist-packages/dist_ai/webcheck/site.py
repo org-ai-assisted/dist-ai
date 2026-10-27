@@ -858,6 +858,47 @@ def check_previews_csp(root, failures):
             failures.append("%s: previews CSP missing require-trusted-types-for 'script'" % rel)
 
 
+# Required head metadata for a previews-policy page (the "perfect SEO" bar:
+# exhaustive SEO + social card + JSON-LD + full icon set + PWA manifest). Each is
+# a substring the generator emits in the head. Enforced ONLY for the previews
+# policy -- the family sites are a separate site group not yet rolled onto the
+# JSON-LD/manifest bar, the approved per-site-group opt-out.
+_PREVIEWS_REQUIRED_META = (
+    ('<link rel="canonical"', 'canonical link'),
+    ('name="description"', 'meta description'),
+    ('property="og:title"', 'og:title'),
+    ('property="og:type"', 'og:type'),
+    ('property="og:url"', 'og:url'),
+    ('property="og:image"', 'og:image'),
+    ('property="og:locale"', 'og:locale'),
+    ('name="twitter:card"', 'twitter:card'),
+    ('name="twitter:image"', 'twitter:image'),
+    ('application/ld+json', 'JSON-LD block'),
+    ('rel="icon"', 'favicon link'),
+    ('rel="apple-touch-icon"', 'apple-touch-icon'),
+    ('rel="mask-icon"', 'mask-icon'),
+    ('name="theme-color"', 'theme-color meta'),
+    ('rel="manifest"', 'PWA manifest link'),
+)
+
+
+def check_page_metadata(root, failures):
+    """Every previews-policy page must carry the full SEO + social + JSON-LD +
+    icon + PWA head set. Locks in the perfect-SEO bar so a regression (a new page
+    type missing OG, JSON-LD, the manifest link, ...) fails the suite. The
+    ephemeral results plane is exempt (it is not a navigable content page)."""
+    for page in html_files(root):
+        rel = os.path.relpath(page, root).replace(os.sep, '/')
+        if rel == RESULTS_SUBDIR or rel.startswith(RESULTS_SUBDIR + '/'):
+            continue
+        with open(page, encoding='utf-8', errors='replace') as handle:
+            head = handle.read()
+        for needle, label in _PREVIEWS_REQUIRED_META:
+            if needle not in head:
+                failures.append('%s: missing %s (previews perfect-SEO bar)'
+                                % (rel, label))
+
+
 # A <script> runs its body only when it is a classic or module script (empty
 # type, a JavaScript MIME type, or "module"); any other type (application/ld+json,
 # text/template, ...) is an inert data block the browser never executes.
@@ -2410,6 +2451,7 @@ def main():
         if policy == 'previews':
             check_footer_nav(root, failures)
             check_previews_csp(root, failures)
+            check_page_metadata(root, failures)
         check_banner(root, failures)
         check_csp(root, failures)
         check_no_inline_script(root, failures)
@@ -2441,7 +2483,7 @@ def main():
                              'nav + '
                              'toc-complete + '
                              'heading-breaks + duplicate-ids + contrast + undefined-classes + '
-                             'seo clean\n' % name)
+                             'seo + page-metadata clean\n' % name)
     sys.stdout.write('website-tests: %d failure(s)\n' % total)
     return 1 if total else 0
 
