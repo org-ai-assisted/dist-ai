@@ -1,0 +1,5 @@
+# axe-core accepted-violation baseline for _site. Fields: <path> <rule-id> <target>
+# The gate FAILS only on a NEW violation (one not listed here). A listed violation is
+# pre-existing accessibility debt we tolerate; a listed one that no longer fires is
+# reported as resolved, not required. Re-seed (overwrites) with:
+#   webcheck-axe-sandbox --write-baseline <site-root>

@@ -1,0 +1,7 @@
+# Lighthouse regression baseline for _site. Fields: <path> <form-factor> <perf> <a11y> <bp>
+# The gate FAILS when a fresh score drops below baseline minus the per-category
+# tolerance (LH_TOL_PERF/A11Y/BP). Seeded as the MIN over several live runs so normal
+# run-to-run variation stays above the floor. A re-seed is MERGED into this file.
+#   webcheck-lighthouse-sandbox --write-baseline <site-root>
+/ desktop 100 100 96
+/ mobile 100 100 96
