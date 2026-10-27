@@ -176,6 +176,16 @@ def run():
     # the load timeout with JS off.
     check('no-JS goto waits domcontentloaded',
           "wait_until='domcontentloaded'" in main_body)
+    # Flake fix: domcontentloaded fires before external CSS applies, so a fixed sleep
+    # raced CSS application under host load and false-flagged "no-JS overflow" on random
+    # pages (an unstyled layout is wider). The no-JS lane must poll link.sheet until the
+    # stylesheet APPLIES before measuring overflow. Canary: fails on the pre-fix code,
+    # which had only a fixed wait_for_timeout here.
+    check('no-JS lane waits for stylesheets to apply before measuring overflow',
+          '_STYLESHEETS_READY_JS' in main_body and 'CSS_APPLY_POLLS' in main_body)
+    check('stylesheets-ready probe keys on link.sheet (the CSS-applied signal)',
+          'l.sheet' in getattr(cm, '_STYLESHEETS_READY_JS', '')
+          and 'stylesheet' in getattr(cm, '_STYLESHEETS_READY_JS', ''))
     # Silent-skip regression (0 pages + a launch failure): the failure return must
     # come BEFORE the checked==0 _skip, so a recorded failure surfaces as exit 1.
     check('failure return precedes the no-pages skip',

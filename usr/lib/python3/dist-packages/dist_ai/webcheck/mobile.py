@@ -61,6 +61,12 @@ from typing import Any, NoReturn
 # can brush the Playwright default (30s) and flake. 60s absorbs that without
 # masking a genuine hang.
 NAV_TIMEOUT_MS = 60000
+# No-JS overflow lane: poll until linked stylesheets have APPLIED (link.sheet set)
+# before measuring scrollWidth. domcontentloaded fires before external CSS applies, so
+# an unstyled (hence wider) layout would false-flag overflow under host load. Bounded by
+# CSS_APPLY_POLLS * CSS_APPLY_POLL_MS; the page is measured anyway if it never settles.
+CSS_APPLY_POLLS = 100
+CSS_APPLY_POLL_MS = 50
 VIEWPORT = 390                       # primary phone width (used in messages/checks)
 # Body must never scroll sideways from a narrow phone up to a small tablet.
 OVERFLOW_WIDTHS = (320, 390, 768)
@@ -400,6 +406,16 @@ _NOJS_JS = r"""
 }
 """
 
+# True once every linked stylesheet has loaded + parsed -- link.sheet is null until
+# then, so this is the exact CSS-APPLIED signal. Polled on the no-JS page before
+# measuring overflow; unlike the `load` event it never waits on images (which can
+# exceed the nav timeout on a JS-off gallery).
+_STYLESHEETS_READY_JS = """
+Array.from(document.querySelectorAll('link[rel~="stylesheet"]')).every(function (l) {
+  return !!l.sheet;
+})
+"""
+
 # Anchor-under-sticky-header occlusion: with a sticky/fixed top header, navigating
 # to an in-page #anchor can land the target UNDER the header unless scroll-margin /
 # scroll-padding push it clear. Rather than STATICALLY model fragment-scroll
@@ -721,7 +737,17 @@ def main():
                                 # overflow is already covered by the JS-on lane.
                                 resp = npage.goto(base, wait_until='domcontentloaded', timeout=NAV_TIMEOUT_MS)
                                 if resp is None or resp.status < 400:
-                                    npage.wait_for_timeout(200)
+                                    # Measure overflow against the APPLIED stylesheet, not the
+                                    # transient unstyled (wider) layout: a fixed sleep races CSS
+                                    # application under host load and false-flagged "no-JS
+                                    # overflow". Poll link.sheet from Python -- evaluate and
+                                    # wait_for_timeout both work with page JS disabled, whereas an
+                                    # in-page raf/timer poll may not fire.
+                                    for _ in range(CSS_APPLY_POLLS):
+                                        if npage.evaluate(_STYLESHEETS_READY_JS):
+                                            break
+                                        npage.wait_for_timeout(CSS_APPLY_POLL_MS)
+                                    npage.wait_for_timeout(150)
                                     nj = npage.evaluate(_NOJS_JS, VIEWPORT)
                                     if not nj['h1']:
                                         failures += 1
