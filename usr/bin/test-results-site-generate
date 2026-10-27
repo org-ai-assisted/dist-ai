@@ -522,6 +522,7 @@ def _attach_redacted_ocr(run_dir, page_dir, sid, shot_rel_path, rects):
             try:
                 os.unlink(tmp_png)
             except OSError:
+                ## best-effort cleanup: the temp PNG is already gone or unremovable -- nothing to recover.
                 pass
     redacted = _redact_ocr_text(words, rects)
     out_name = _flatten(sid) + OCR_SUFFIX
