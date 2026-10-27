@@ -105,14 +105,20 @@ def _rel_path(url: str, root: str) -> str:
     return rel
 
 
-def classify(messages, root: str) -> Tuple[Set[Key], int, List[str]]:
+def classify(messages, root: str,
+             ignore: Optional[Set[str]] = None) -> Tuple[Set[Key], int, List[str]]:
     """Split vnu's messages into (error keys, info/advisory count, problems). Pure: the
     message -> key mapping is unit-tested without running vnu.
 
     - type=="error"              -> one (path, normalized-message) key (GATED).
     - type=="info"               -> advisory (counted, never gated), like html-tidy warnings.
     - type=="non-document-error" -> a PROBLEM (vnu could not check the document) the caller fails
-      on -- an unauditable page is never a silent clean."""
+      on -- an unauditable page is never a silent clean.
+
+    `ignore` is a set of built-tree-relative paths EXCLUDED entirely: a listed page contributes
+    neither keys nor problems -- for a DELIBERATELY unmaintained page whose conformance we do not
+    hold (so its churn never gates and its errors never enter the baseline)."""
+    ignore = ignore or set()
     keys: Set[Key] = set()
     info = 0
     problems: List[str] = []
@@ -120,6 +126,8 @@ def classify(messages, root: str) -> Tuple[Set[Key], int, List[str]]:
         mtype = str(msg.get('type', ''))
         if mtype == 'error':
             path = _rel_path(str(msg.get('url', '')), root)
+            if path in ignore:
+                continue
             # Deliberate: a (path, message) SET collapses repeated occurrences of the same error
             # on one page, so a NEW instance of an already-baselined message on that page does not
             # fail. Line numbers churn the baseline on any edit above them, so they are not in the
@@ -131,6 +139,8 @@ def classify(messages, root: str) -> Tuple[Set[Key], int, List[str]]:
             info += 1
         elif mtype == 'non-document-error':
             path = _rel_path(str(msg.get('url', '')), root)
+            if path in ignore:
+                continue
             problems.append('%s: %s' % (path, normalize_message(msg.get('message', ''))))
     return keys, info, problems
 
@@ -204,7 +214,8 @@ def resolve_vnu() -> Optional[List[str]]:
     return None
 
 
-def run_vnu(vnu_cmd: List[str], root: str) -> Tuple[Set[Key], int, List[str]]:
+def run_vnu(vnu_cmd: List[str], root: str,
+            ignore: Optional[Set[str]] = None) -> Tuple[Set[Key], int, List[str]]:
     """Run vnu over the built tree and return (error_keys, info_count, problems). vnu writes its
     JSON report to STDERR and (with --exit-zero-always) exits 0, so the JSON -- not the exit code
     -- drives the verdict; a NON-zero exit is a real env fault (java/jar broken) and propagates.
@@ -223,12 +234,37 @@ def run_vnu(vnu_cmd: List[str], root: str) -> Tuple[Set[Key], int, List[str]]:
     # The vnu JSON contract makes `messages` mandatory, so its absence is a hard fault.
     if not isinstance(report, dict) or not isinstance(report.get('messages'), list):
         raise RuntimeError('vnu produced no messages array (empty or incomplete JSON report)')
-    return classify(report['messages'], root)
+    return classify(report['messages'], root, ignore)
 
 
 def _baseline_path(baseline_dir: Path, root: str) -> Path:
     """Per-site baseline file, keyed by the checkout's basename."""
     return baseline_dir / ('vnu-baseline-%s.txt' % os.path.basename(os.path.normpath(root)))
+
+
+def _ignore_path(baseline_dir: Path, root: str) -> Path:
+    """Per-site ignore list (pages excluded from the gate), keyed like the baseline."""
+    return baseline_dir / ('vnu-ignore-%s.txt' % os.path.basename(os.path.normpath(root)))
+
+
+def parse_ignore(text: str) -> Set[str]:
+    """Load a per-site ignore list: one built-tree-relative path per line (blank / '#' skipped).
+    A listed page is EXCLUDED from the gate entirely (neither checked nor baselined) -- for a
+    DELIBERATELY unmaintained page whose conformance we do not hold. Distinct from the baseline,
+    which ACCEPTS specific errors on a page that IS still checked."""
+    out: Set[str] = set()
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith('#'):
+            continue
+        out.add(line)
+    return out
+
+
+def _load_ignore(baseline_dir: str, root: str) -> Set[str]:
+    """The ignore set for a root, or empty if no ignore file is committed."""
+    ipath = _ignore_path(Path(baseline_dir), root)
+    return parse_ignore(ipath.read_text(encoding='utf-8')) if ipath.is_file() else set()
 
 
 def check_roots(roots: List[str], baseline_dir: str) -> int:
@@ -251,7 +287,7 @@ def check_roots(roots: List[str], baseline_dir: str) -> int:
     overall = 0
     for root in roots:
         site = os.path.basename(os.path.normpath(root))
-        fresh, info, problems = run_vnu(vnu_cmd, root)
+        fresh, info, problems = run_vnu(vnu_cmd, root, _load_ignore(baseline_dir, root))
         bpath = _baseline_path(Path(baseline_dir), root)
         present = bpath.is_file()
         baseline = parse_baseline(bpath.read_text(encoding='utf-8')) if present else set()
@@ -292,7 +328,7 @@ def write_roots(roots: List[str], baseline_dir: str) -> int:
 
     for root in roots:
         site = os.path.basename(os.path.normpath(root))
-        fresh, _info, problems = run_vnu(vnu_cmd, root)
+        fresh, _info, problems = run_vnu(vnu_cmd, root, _load_ignore(baseline_dir, root))
         if problems:
             print('vnu: refusing to seed %s -- %d page(s) unauditable: %s'
                   % (site, len(problems), '; '.join(_safe_terminal(p) for p in problems)),

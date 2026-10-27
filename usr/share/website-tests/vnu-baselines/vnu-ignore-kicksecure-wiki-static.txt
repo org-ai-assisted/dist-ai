@@ -1,0 +1,6 @@
+# vnu ignore-list: pages EXCLUDED from the conformance gate entirely (not checked, not baselined).
+# For DELIBERATELY unmaintained pages whose conformance we do not hold -- their churn never gates
+# and their errors never enter the baseline. One built-tree-relative path per line.
+# Decision: operator + memory wiki-dev-website-outdated-vnu-ignore (outdated Dev meta-pages).
+wiki/Dev/website.html
+wiki/Dev/mediawiki.html

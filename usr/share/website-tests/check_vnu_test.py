@@ -92,6 +92,30 @@ def run() -> int:
     ck(vn.classify(again, "/r")[0] == keys, "classify key ignores line number")
     ck(vn.classify([], "/r") == (set(), 0, []), "classify empty -> clean")
 
+    # ignore: a listed built-tree path is EXCLUDED entirely -- its errors yield no key and its
+    # non-document-errors yield no problem, while a non-ignored page is unaffected (deliberately
+    # unmaintained pages, e.g. the outdated Dev meta-pages).
+    mixed = [
+        {"type": "error", "url": "file:/r/wiki/Dev/mediawiki.html",
+         "message": 'Stray end tag "a".'},
+        {"type": "non-document-error", "url": "file:/r/wiki/Dev/mediawiki.html",
+         "message": "Cannot read file."},
+        {"type": "error", "url": "file:/r/wiki/Keep.html", "message": 'Stray end tag "a".'},
+    ]
+    k_ig, _i, p_ig = vn.classify(mixed, "/r", ignore={"wiki/Dev/mediawiki.html"})
+    ck(k_ig == {("wiki/Keep.html", 'Stray end tag "a".')},
+       "classify ignore drops the ignored page's error key, keeps others: %s" % k_ig)
+    ck(p_ig == [], "classify ignore drops the ignored page's problem: %s" % p_ig)
+    # CANARY: without the ignore the same page IS checked (error key + problem present), so the
+    # filter is load-bearing, not vacuous.
+    k_no, _i2, p_no = vn.classify(mixed, "/r")
+    ck(("wiki/Dev/mediawiki.html", 'Stray end tag "a".') in k_no and len(p_no) == 1,
+       "canary: without ignore the page is checked (error key + problem present)")
+
+    # parse_ignore: one path per line, blank/# skipped.
+    ig = vn.parse_ignore("# hdr\n\nwiki/Dev/website.html\nwiki/Dev/mediawiki.html\n")
+    ck(ig == {"wiki/Dev/website.html", "wiki/Dev/mediawiki.html"}, "parse_ignore: %s" % ig)
+
     # parse_baseline: skip blank/# lines; split path off, message is the remainder (may contain
     # spaces); a line with no message is a hard error (never silently 'no accepted violations').
     parsed = vn.parse_baseline('# c\n\nwiki/x.html Element "p" not allowed here\n')
