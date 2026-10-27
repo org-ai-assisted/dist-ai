@@ -1,0 +1,83 @@
+#!/usr/bin/python3 -Bsu
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Shell-invocation guard.
+"exec" "bash" "-c" "printf '%s\n' '$0: ERROR: Do not execute this script with bash!' >&2; exit 1"
+
+"""Write a deterministic OCR text sidecar next to each screenshot.
+
+Publishing the recognized text beside a shot (a) lets a human or AI SEE what a frame actually
+shows without opening the image, (b) is the material a per-stage expected-text golden is
+approved FROM (then enforced by image-text-assert), and (c) makes a wrong frame greppable in
+the results plane. The sidecar is <image><suffix> (default <image>.ocr.txt) and is deterministic
+for a given image + tesseract version + psm.
+
+Usage:
+  image-ocr-sidecar [--suffix .ocr.txt] [--psm N] PATH...
+
+PATH is a PNG/WEBP file or a directory (scanned for *.png/*.webp, non-recursive). BEST-EFFORT:
+a sidecar is an AID, not a gate (the content gate is image-text-assert), so an OCR failure on one
+frame writes no sidecar for it and is reported, but does not by itself fail a run.
+
+Exit: 0 every readable image got a sidecar; 1 usage; 2 NO image could be processed at all."""
+
+import argparse
+import os
+import subprocess
+import sys
+
+_LIB = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
+    "lib", "python3", "dist-packages")
+if os.path.isdir(_LIB) and _LIB not in sys.path:
+    sys.path.insert(0, _LIB)
+
+from dm_test_results.image_gate import iter_images  # noqa: E402
+from dm_test_results.ocr import ocr_text  # noqa: E402
+
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser(prog="image-ocr-sidecar", add_help=True)
+    parser.add_argument("--suffix", default=".ocr.txt",
+                        help="sidecar suffix appended to the image path (default .ocr.txt)")
+    parser.add_argument("--psm", type=int, default=6,
+                        help="tesseract page-segmentation mode (default 6: uniform text block)")
+    parser.add_argument("paths", nargs="+")
+    return parser.parse_args(argv[1:])
+
+
+def main(argv):
+    args = parse_args(argv)
+    total = 0
+    wrote = 0
+    failed = 0
+    for path in iter_images(args.paths):
+        total += 1
+        try:
+            text = ocr_text(path, psm=args.psm)
+        except (subprocess.CalledProcessError, FileNotFoundError, OSError) as exc:
+            sys.stderr.write("image-ocr-sidecar: OCR failed for %s -- %s\n" % (path, exc))
+            failed += 1
+            continue
+        sidecar = path + args.suffix
+        try:
+            with open(sidecar, "w", encoding="utf-8") as handle:
+                handle.write(text)
+        except OSError as exc:
+            sys.stderr.write("image-ocr-sidecar: cannot write %s -- %s\n" % (sidecar, exc))
+            failed += 1
+            continue
+        wrote += 1
+    sys.stdout.write("image-ocr-sidecar: %d image(s), %d sidecar(s) written, %d failed\n"
+                     % (total, wrote, failed))
+    if total > 0 and wrote == 0:
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

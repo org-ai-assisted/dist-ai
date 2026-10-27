@@ -1,0 +1,113 @@
+#!/usr/bin/python3 -Bsu
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Shell-invocation guard.
+"exec" "bash" "-c" "printf '%s\n' '$0: ERROR: Do not execute this script with bash!' >&2; exit 1"
+
+"""Assert a screenshot's OCR text contains the EXPECTED tokens for its milestone.
+
+The run verdict is rc-only and screenshots are unvalidated artifacts, so a non-blank but WRONG
+frame (a VirtualBox warning dialog where a Calamares welcome screen is expected) rides a green
+run. This gate reads the frame's text with tesseract and FAILS when an expected token is absent,
+so a wrong-content milestone fails the run instead of publishing a mislabeled screenshot -- the
+content half of the screenshot-validity gates (blank-check + dup-check being the structural half).
+
+Matching is EXPECTED-TOKENS-PRESENT, not exact text: each token must appear (case-insensitive,
+whitespace-normalized) in the OCR text. OCR output is deterministic for a given image + tesseract
+version + psm but carries glyph noise and is version-tied, so token presence -- not an exact
+transcript -- is what stays stable across OCR/UI drift while still catching a wrong frame (its
+expected words are absent). The expected tokens are the APPROVED golden for the stage: a stage
+with no expected tokens is UNVALIDATED, never asserted-pass (the caller owns that distinction).
+
+Usage:
+  image-text-assert --expect TOKEN [--expect TOKEN]... [--spec FILE] [--psm N] IMAGE
+
+--expect TOKEN  a phrase that MUST appear (repeatable).
+--spec FILE     read expected tokens from FILE, one per line; blank lines and '#' comments are
+                ignored -- a per-stage golden kept in the repo.
+At least one non-empty expected token is REQUIRED: an empty expectation asserts nothing, so it
+is a usage error (fail-closed), never a silent pass.
+
+Exit: 0 every expected token present; 1 at least one absent; 2 usage / config error (bad args,
+or a spec that is unreadable or asserts nothing -- a broken golden); 3 OCR read error (a
+tesseract / image failure, transient)."""
+
+import argparse
+import os
+import subprocess
+import sys
+
+_LIB = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
+    "lib", "python3", "dist-packages")
+if os.path.isdir(_LIB) and _LIB not in sys.path:
+    sys.path.insert(0, _LIB)
+
+from dm_test_results.ocr import missing_tokens, normalize, ocr_text  # noqa: E402
+
+
+def read_spec(path):
+    """Expected tokens from a spec file: one per line, '#' comments and blank lines dropped."""
+    tokens = []
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            line = line.split("#", 1)[0].strip()
+            if line:
+                tokens.append(line)
+    return tokens
+
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser(prog="image-text-assert", add_help=True)
+    parser.add_argument("--expect", action="append", default=[],
+                        help="a phrase that must appear in the OCR text (repeatable)")
+    parser.add_argument("--spec",
+                        help="file of expected tokens, one per line ('#' comments ok)")
+    parser.add_argument("--psm", type=int, default=6,
+                        help="tesseract page-segmentation mode (default 6: uniform text block)")
+    parser.add_argument("image")
+    return parser.parse_args(argv[1:])
+
+
+def main(argv):
+    args = parse_args(argv)
+    expected = list(args.expect)
+    if args.spec:
+        try:
+            expected.extend(read_spec(args.spec))
+        except OSError as exc:
+            sys.stderr.write("image-text-assert: cannot read spec %s -- %s\n" % (args.spec, exc))
+            return 2
+    ## Fail closed: an empty expectation (no tokens, or only empty/whitespace ones) would
+    ## assert nothing and pass every frame.
+    if not any(normalize(tok) for tok in expected):
+        sys.stderr.write("image-text-assert: no non-empty expected token -- refusing to assert nothing\n")
+        return 2
+
+    try:
+        text = ocr_text(args.image, psm=args.psm)
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError) as exc:
+        ## An OCR read failure is NOT a pass -- fail honestly so a broken frame/tool is seen. It is
+        ## exit 3 (distinct from a config error) so a caller can treat a transient tesseract/image
+        ## failure as non-fatal while a broken golden (exit 2) still fails loud.
+        sys.stderr.write("image-text-assert: OCR failed for %s -- %s\n" % (args.image, exc))
+        return 3
+
+    missing = missing_tokens(text, expected)
+    if missing:
+        sys.stderr.write("image-text-assert: %s MISSING expected token(s): %s\n"
+                         % (args.image, "; ".join(missing)))
+        excerpt = " ".join(normalize(text).split()[:40])
+        sys.stderr.write("image-text-assert: OCR saw: %s\n" % (excerpt or "(no text)"))
+        return 1
+    sys.stdout.write("image-text-assert: %s OK (all %d expected token(s) present)\n"
+                     % (args.image, len([t for t in expected if normalize(t)])))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

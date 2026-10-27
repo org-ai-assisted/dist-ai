@@ -1,0 +1,100 @@
+#!/usr/bin/python3 -Bsu
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Shell-invocation guard.
+"exec" "bash" "-c" "printf '%s\n' '$0: ERROR: Do not execute this script with bash!' >&2; exit 1"
+
+"""Flag DUPLICATE screenshots within one test run: two or more milestone frames that
+are pixel-for-pixel identical.
+
+A broken/stale capture (a modal host dialog sitting over the guest, a frontend that
+never repainted, a frame grabbed before the guest advanced) yields the SAME frame under
+many stage names. Each such frame is non-blank, so image-blank-check passes it, yet the
+run "looks" fully captured. The run verdict is rc-only, so it publishes green with N
+copies of one frame under N different milestone names. This gate makes that FAIL instead:
+same content under distinct milestones is almost always a capture bug, so a human/AI
+investigates rather than trusting the duplicates.
+
+Usage:
+  image-dup-check [--allow NAME]... [--min-cluster N] PATH...
+
+PATH is a PNG/WEBP file or a directory (scanned for *.png/*.webp, non-recursive). Frames
+are compared by their decoded-RGB content hash (a PNG and a lossless WEBP of the same
+frame are equal; a different size never collides). --allow excludes a shot whose name
+equals NAME or whose stem ends with '-'+NAME (a dash-delimited suffix token, not a raw
+substring -- '' / '.' / '-' exempt NOTHING, fail-closed); use it ONLY for a frame that
+may LEGITIMATELY repeat an unchanging view (an idle terminal, a static VirtualBox-host
+panel), and say why. An allowed frame never participates in a cluster. --min-cluster
+sets how many identical frames constitute a failure (default 2: any duplicate).
+
+Exit: 0 no un-allowed duplicate cluster; 1 at least one; 2 usage/read error."""
+
+import argparse
+import os
+import sys
+
+_LIB = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
+    "lib", "python3", "dist-packages")
+if os.path.isdir(_LIB) and _LIB not in sys.path:
+    sys.path.insert(0, _LIB)
+
+from dm_test_results.image_gate import content_hash, is_allowed, iter_images  # noqa: E402
+
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser(prog="image-dup-check", add_help=True)
+    parser.add_argument("--allow", action="append", default=[],
+                        help="exclude a shot whose name equals this, or whose stem ends "
+                             "with '-'+this (a dash-delimited suffix token), from the "
+                             "duplicate comparison; an empty value never matches")
+    parser.add_argument("--min-cluster", type=int, default=2,
+                        help="how many identical frames constitute a duplicate cluster "
+                             "(default 2: any duplicate fails)")
+    parser.add_argument("paths", nargs="+")
+    return parser.parse_args(argv[1:])
+
+
+def main(argv):
+    args = parse_args(argv)
+    if args.min_cluster < 2:
+        sys.stderr.write("image-dup-check: --min-cluster must be >= 2\n")
+        return 2
+
+    ## hash -> list of basenames sharing it (allowed frames are excluded entirely, so
+    ## an allow-listed frame can never create or join a cluster).
+    clusters = {}
+    checked = 0
+    for path in iter_images(args.paths):
+        base = os.path.basename(path)
+        if is_allowed(base, args.allow):
+            continue
+        try:
+            digest = content_hash(path)
+        except (OSError, ValueError) as exc:
+            ## An unreadable/corrupt frame is itself a bad capture -> fail loud.
+            sys.stderr.write("image-dup-check: unreadable %s -- %s\n" % (path, exc))
+            return 2
+        checked += 1
+        clusters.setdefault(digest, []).append(base)
+
+    dup_clusters = sorted(
+        (names for names in clusters.values() if len(names) >= args.min_cluster),
+        key=len, reverse=True)
+    dup_frames = sum(len(names) for names in dup_clusters)
+    for names in dup_clusters:
+        sys.stderr.write(
+            "image-dup-check: DUPLICATE (%d identical frames): %s\n"
+            % (len(names), ", ".join(sorted(names))))
+    sys.stdout.write(
+        "image-dup-check: %d checked, %d duplicate cluster(s), %d duplicate frame(s)\n"
+        % (checked, len(dup_clusters), dup_frames))
+    return 1 if dup_clusters else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

@@ -80,7 +80,13 @@ fi
 
 ## --- stage the webcheck core, the baselines, and each site root, then run confined --------
 
-staging="$(mktemp --directory)"
+## Host staging holds a full COPY of every site tree before the sandbox sync; the wiki
+## trees are ~2GB combined and overflow the small /tmp tmpfs (libpam-tmpdir points TMPDIR
+## there, ~800MB). Stage on ample persistent disk under $HOME -- an ENOSPC mid-rsync reads
+## as a lane failure, never a conformance result. Override WEBCHECK_VNU_TMP for another disk.
+: "${WEBCHECK_VNU_TMP:=${XDG_CACHE_HOME:-${HOME}/.cache}/webcheck-vnu-sandbox-tmp}"
+mkdir --parents -- "${WEBCHECK_VNU_TMP}"
+staging="$(mktemp --directory -- "${WEBCHECK_VNU_TMP}/webcheck-vnu-sandbox.XXXXXX")"
 synced=0
 cleanup(){
    # shellcheck disable=SC2317  # invoked indirectly via the EXIT trap

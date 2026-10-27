@@ -33,6 +33,14 @@ import sys
 
 from PIL import Image
 
+_LIB = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
+    "lib", "python3", "dist-packages")
+if os.path.isdir(_LIB) and _LIB not in sys.path:
+    sys.path.insert(0, _LIB)
+
+from dm_test_results.image_gate import is_allowed, iter_images  # noqa: E402
+
 
 def classify(path, max_colors, near, frac, uniform_only=False):
     """Return a short reason string if PATH is degenerate, else None.
@@ -80,39 +88,6 @@ def classify(path, max_colors, near, frac, uniform_only=False):
         return ("near-blank %s (%.2f%% one colour, %d distinct)"
                 % (shade, dom_frac * 100.0, len(colors)))
     return None
-
-
-IMAGE_EXTS = (".png", ".webp")
-
-
-def iter_images(paths):
-    for p in paths:
-        if os.path.isdir(p):
-            for name in sorted(os.listdir(p)):
-                if name.lower().endswith(IMAGE_EXTS):
-                    yield os.path.join(p, name)
-        else:
-            ## An explicitly named file is checked whatever its extension.
-            yield p
-
-
-def is_allowed(base, allow):
-    """Whether basename BASE is exempted by a --allow value.
-
-    Match the frame NAME as a whole or a dash-delimited suffix token of the stem
-    (e.g. --allow firmware-logo matches '43-installed-firmware-logo.png'), never a
-    raw substring: a bare substring is fail-OPEN -- '' or '.' is a substring of every
-    basename, so it would silently exempt EVERY frame and pass a run that checked
-    nothing. A token with no alphanumeric character (so '', '.', '-') is not a real
-    frame name and matches NOTHING -- otherwise '.' would still match a stem ending
-    in '-.' (e.g. 'shot-..png'). Fail-closed."""
-    stem = os.path.splitext(base)[0]
-    for name in allow:
-        if not any(c.isalnum() for c in name):
-            continue
-        if stem == name or stem.endswith("-" + name):
-            return True
-    return False
 
 
 def parse_args(argv):
