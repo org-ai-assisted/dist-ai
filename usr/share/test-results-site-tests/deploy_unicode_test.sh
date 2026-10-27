@@ -5,23 +5,28 @@
 
 ## AI-Assisted
 
-## Guards test-results-deploy's results-tree commit against the ASCII-only commit gate.
+## Guards test-results-deploy's results-tree commit against the ASCII-only commit gates.
 ## The published site carries OCR sidecars (.ocr.txt), generated DATA that legitimately
 ## reproduces on-screen non-ASCII (registered sign, copyright sign, typographic quotes read
-## off the installer UI). The commit must therefore carry ALLOW_UNICODE_COMMIT=1, or the gate
-## blocks it and NO run with an OCR sidecar can ever publish -- the exact wedge seen live.
+## off the installer UI). The global pre-commit has TWO content gates that reject non-ASCII:
+## the unicode gate (ALLOW_UNICODE_COMMIT=1) AND dist-ai-style R-001 (ALLOW_STYLE_COMMIT=1).
+## The commit must carry BOTH, or one of the gates blocks it and NO run with an OCR sidecar can
+## publish -- the exact wedge seen live (unicode-only cleared the first gate, R-001 blocked next).
 ##
 ## Drives the REAL driver + commit path (no copy). The generator is stubbed to emit one unicode
 ## OCR sidecar (its own job is tested elsewhere); sandbox/site-deploy/github-api are stubbed so
 ## the pull/publish/confirm steps are hermetic (no root, no network). core.hooksPath points at a
-## pre-commit that models the gate's OBSERVABLE override contract -- a staged tree with non-ASCII
-## is BLOCKED unless ALLOW_UNICODE_COMMIT=1. The real gate (unicode-show based) lives in
-## private-ai-config/claude/git-hooks/pre-commit and is tested there (git-hooks-unicode-test.sh);
-## this models only the one property the driver must satisfy, so there is no detector to drift.
+## pre-commit that models the two gates' OBSERVABLE override contract -- a staged tree with
+## non-ASCII is BLOCKED unless BOTH overrides are set. Hermetic on purpose: the real gates
+## (unicode-show + dist-ai-style based, with a fail-closed PII gate needing private-keys) live in
+## private-ai-config/claude/git-hooks/pre-commit and are tested there (git-hooks-unicode-test.sh);
+## coupling this unit test to all of them would make it env-dependent. Modeling BOTH non-ASCII
+## gates pins exactly the property the driver must satisfy (so there is no detector to drift).
 ##
-## CANARY: a direct unicode commit WITHOUT the override is asserted to be blocked (non-vacuous --
-## else the main assertion would pass even on the pre-fix driver), and the pre-fix driver, lacking
-## ALLOW_UNICODE_COMMIT=1, dies at "commit failed" so HEAD never leaves the init commit.
+## CANARY: (1) a direct unicode commit with NEITHER override is blocked (non-vacuous), and
+## (2) a unicode commit with ONLY ALLOW_UNICODE_COMMIT=1 -- the pre-fix driver's exact behavior --
+## is STILL blocked (pins the regression: the style gate must also be cleared). The pre-fix driver
+## thus dies at "commit failed" so HEAD never leaves the init commit.
 ##
 ## SAFETY: the only non-ASCII payload is U+00AE REGISTERED SIGN, emitted at runtime via an
 ## ANSI-C \x escape (never a literal in this file, which is itself ASCII-gated). No secret/PII.
@@ -66,8 +71,10 @@ trap cleanup EXIT
 ## U+00AE REGISTERED SIGN -- the on-screen character the live OCR sidecar carried.
 reg=$'\xc2\xae'
 
-## Modeled ASCII-only commit gate: block a staged tree carrying non-ASCII unless the override
-## is set. Models only the observable override contract, not unicode-show's full detector.
+## Modeled ASCII-only commit gates: the real pre-commit has TWO content gates that reject
+## non-ASCII (the unicode gate AND dist-ai-style R-001), so a staged tree carrying non-ASCII is
+## blocked unless BOTH overrides are set. Models the observable override contract of both gates,
+## not their full detectors.
 hooks_dir="${work}/hooks"
 mkdir --parents -- "${hooks_dir}"
 cat > "${hooks_dir}/pre-commit" <<'HOOK'
@@ -75,16 +82,16 @@ cat > "${hooks_dir}/pre-commit" <<'HOOK'
 set -o errexit
 set -o nounset
 set -o pipefail
-if [ "${ALLOW_UNICODE_COMMIT:-}" = '1' ]; then
-   exit 0
-fi
 staged="$(git diff --cached --no-color)"
 hits="$(printf '%s' "${staged}" | LC_ALL=C grep -caP '[\x80-\xff]' || true)"
-if [ "${hits}" != '0' ]; then
-   printf '%s\n' 'pre-commit BLOCKED: non-ASCII in staged content. Remove, or ALLOW_UNICODE_COMMIT=1' >&2
-   exit 1
+if [ "${hits}" = '0' ]; then
+   exit 0
 fi
-exit 0
+if [ "${ALLOW_UNICODE_COMMIT:-}" = '1' ] && [ "${ALLOW_STYLE_COMMIT:-}" = '1' ]; then
+   exit 0
+fi
+printf '%s\n' 'pre-commit BLOCKED: non-ASCII in staged content needs ALLOW_UNICODE_COMMIT=1 AND ALLOW_STYLE_COMMIT=1' >&2
+exit 1
 HOOK
 chmod +x -- "${hooks_dir}/pre-commit"
 
@@ -110,10 +117,27 @@ git -C "${pages}" commit --quiet -m 'canary' >/dev/null 2>&1 || canary_rc=$?
 git -C "${pages}" reset --quiet -- automated-test-results/canary.txt >/dev/null 2>&1 || true
 safe-rm --force -- "${pages}/automated-test-results/canary.txt"
 if [ "${canary_rc}" -ne 0 ]; then
-   printf '%s\n' "PASS: modeled ASCII gate blocks a unicode commit without the override (non-vacuous)"
+   printf '%s\n' "PASS: modeled ASCII gates block a unicode commit with NO override (non-vacuous)"
    pass=$((pass + 1))
 else
    printf '%s\n' "FAIL: modeled gate did NOT block unicode -> the main assertion would be vacuous" >&2
+   fail=$((fail + 1))
+fi
+
+## REGRESSION pin: the pre-fix driver set ONLY ALLOW_UNICODE_COMMIT=1 -- which clears the unicode
+## gate but NOT the dist-ai-style R-001 gate. Assert that combination is STILL blocked, so the
+## main test cannot pass unless the driver also sets ALLOW_STYLE_COMMIT=1.
+printf '%s\n' "x ${reg} y" > "${pages}/automated-test-results/canary.txt"
+git -C "${pages}" add -- automated-test-results/canary.txt
+uni_only_rc=0
+ALLOW_UNICODE_COMMIT=1 git -C "${pages}" commit --quiet -m 'canary-uni-only' >/dev/null 2>&1 || uni_only_rc=$?
+git -C "${pages}" reset --quiet -- automated-test-results/canary.txt >/dev/null 2>&1 || true
+safe-rm --force -- "${pages}/automated-test-results/canary.txt"
+if [ "${uni_only_rc}" -ne 0 ]; then
+   printf '%s\n' "PASS: unicode-only override is STILL blocked (pins the style-gate regression)"
+   pass=$((pass + 1))
+else
+   printf '%s\n' "FAIL: unicode-only override committed -> would not catch the style-gate regression" >&2
    fail=$((fail + 1))
 fi
 
