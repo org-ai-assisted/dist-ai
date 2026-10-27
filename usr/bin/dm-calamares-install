@@ -302,6 +302,10 @@ on_exit() {
    if [ -n "${shot_dir}" ]; then
       safe-rm --recursive --force -- "${shot_dir}/${gate_subdir}" 2>/dev/null || true
    fi
+   ## Remember rc before the screenshot-validity gates (below): they can flip rc to 1 on an
+   ## otherwise-passing run, AFTER the failure-evidence block above fired on the ORIGINAL rc, so a
+   ## gate-induced failure's reason must be appended to --check-log afterwards (done below).
+   local rc_before_gates="${rc}"
    ## FAIL a passing run whose capture STUCK: a frame repeated across 3+ milestones is a broken
    ## capture (a modal host dialog over the guest, a frontend that never repainted, a grab taken
    ## before the guest advanced). Each such frame is non-blank, so the blank sweep above keeps it,
@@ -385,6 +389,15 @@ on_exit() {
          die_reason="content-golden mismatch on ${content_mismatch} milestone shot(s)"
          rc=1
       fi
+   fi
+   ## A gate (dup/content) that flipped rc on an otherwise-passing run runs AFTER the failure-evidence
+   ## block, so the passing --check-log roster does not name it: append the reason so the results page
+   ## shows the real cause instead of a green-looking roster. (The fuller on_exit reorder -- so a gate
+   ## failure also keeps the VM via --keep-failed + writes a failure card -- is DECLINED: it reorders
+   ## delicate, reviewer-validated failure handling for a screenshot-validity failure whose evidence is
+   ## the published shots + this reason, not a success-state VM. CodeRabbit PR #761.)
+   if [ "${rc}" -ne "${rc_before_gates}" ] && [ -n "${check_log}" ]; then
+      printf '%s\n' "${me} FAILED (rc=${rc}): ${die_reason}" >> "${check_log}" 2>/dev/null || true
    fi
    ## tear down the persistent GUI compositor last -- every capture_frame above needs labwc + the
    ## VirtualBoxVM window alive to grim-grab; restores global GUI/SuppressMessages, reaps pids/dirs.
