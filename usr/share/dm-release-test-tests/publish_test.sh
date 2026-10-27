@@ -303,6 +303,8 @@ printf '%s\n' "recognized welcome text" > "${vstory}/01-welcome.png.ocr.txt"
 printf '%s\n' "PARTITIONS" > "${vstory}/02-partitions.png"
 printf '%s\n' "not-a-real-token" > "${vstory}/02-partitions.png.status"   ## bogus -> unvalidated
 printf '%s\n' "SUMMARY" > "${vstory}/03-summary.png"
+printf '%s\n' "KEYBOARD" > "${vstory}/04-keyboard.png"
+printf '%s\n' "vali dated" > "${vstory}/04-keyboard.png.status"   ## internal space -> NOT 'validated'
 status_sentinel='STATUS-SYMLINK-SENTINEL-DO-NOT-LEAK'
 printf '%s\n' "${status_sentinel}" > "${work}/status-target.txt"
 ln --symbolic -- "${work}/status-target.txt" "${vstory}/03-summary.png.status"   ## symlink -> skipped
@@ -315,6 +317,10 @@ v_out="$(image_test_results_publish "${results_root}" "${owner}" \
 v_json="${v_out}/result.json"
 check "per-shot status: welcome validated recorded" "$(grep --quiet '"validation": "validated"' -- "${v_json}" && printf '%s' true || printf '%s' false)"
 check "per-shot status: bogus token collapses to unvalidated" "$(grep --quiet '"validation": "unvalidated"' -- "${v_json}" && printf '%s' true || printf '%s' false)"
+## #7 canary: a malformed "vali dated" status must NOT be whitespace-collapsed into "validated".
+## Only the welcome shot is genuinely validated, so exactly ONE validated token may appear.
+check "per-shot status: internal-whitespace token not fabricated into validated" \
+   "$([ "$(grep --count '"validation": "validated"' -- "${v_json}")" -eq 1 ] && printf '%s' true || printf '%s' false)"
 check "per-shot status: symlinked .status not leaked" "$(grep --quiet --recursive --fixed-strings -- "${status_sentinel}" "${v_out}" 2>/dev/null && printf '%s' false || printf '%s' true)"
 check "ocr sidecar: text/plain attachment recorded" "$(grep --quiet '"path": "calamares-install-01-welcome.png.ocr.txt"' -- "${v_json}" && printf '%s' true || printf '%s' false)"
 check "ocr sidecar: copied into the run dir" "$([ -f "${v_out}/calamares-install-01-welcome.png.ocr.txt" ] && printf '%s' true || printf '%s' false)"

@@ -293,7 +293,9 @@ def build_plane(root):
     write_png(os.path.join(v_dir, "03-badframe.png"), (90, 20, 20))
     with open(os.path.join(v_dir, "01-welcome.png.ocr.txt"), "w", encoding="utf-8") as handle:
         handle.write("OCRNEEDLE recognized welcome text")
-    with open(os.path.join(v_dir, "10-vm-defined.card.txt"), "w", encoding="utf-8") as handle:
+    ## Card at NN=00 so it must render BEFORE the NN>=01 screenshots -- proving shots and cards
+    ## interleave by capture order, not grouped (images-then-cards would wrongly float it to the end).
+    with open(os.path.join(v_dir, "00-vm-defined.card.txt"), "w", encoding="utf-8") as handle:
         handle.write("CARDNEEDLE [state card -- not a screenshot] VM defined (pre-boot)")
     v_atts = [
         model.make_attachment("welcome", "image/png", "01-welcome.png",
@@ -303,7 +305,7 @@ def build_plane(root):
                               validation=model.VALIDATION_UNVALIDATED),
         model.make_attachment("badframe", "image/png", "03-badframe.png",
                               validation=model.VALIDATION_MISMATCH),
-        model.make_attachment("vm-defined", "text/plain", "10-vm-defined.card.txt"),
+        model.make_attachment("vm-defined", "text/plain", "00-vm-defined.card.txt"),
     ]
     v_step = model.make_step(name="calamares-install", status=model.step_status_from_rc(0),
                              exit_code=0, attachments=v_atts)
@@ -594,6 +596,10 @@ check("state card labelled by its milestone name", "<strong>vm-defined</strong>"
 check("state card produced NO webp (text, not an image)",
       not any("vm-defined" in n and n.endswith(".webp")
               for n in os.listdir(v_dir_out)))
+## Interleave canary: the NN=00 vm-defined card renders BEFORE the NN=01 welcome shot (shots and
+## cards ordered by capture NN, not grouped images-then-cards).
+check("card at NN=00 renders before the NN=01 welcome shot",
+      "CARDNEEDLE" in v_page and v_page.index("CARDNEEDLE") < v_page.index("<strong>welcome</strong>"))
 
 ## F: an escaping attachment path is rejected -> NO-DATA, and nothing is read or
 ## copied from the escaping target (no webp written for that run).

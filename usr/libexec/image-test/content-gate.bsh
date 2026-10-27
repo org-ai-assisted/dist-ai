@@ -59,8 +59,11 @@ content_gate_assert_shot() {
 
 ## content_gate_run <golden_dir> <shot_dir>
 ## Assert + stamp a .status sidecar for every ${shot_dir}/*.png, write the .ocr.txt sidecars, print
-## a one-line tally, and RETURN the content-mismatch count (0 = clean). Best-effort on the OCR
-## sidecars (an AID, not a gate); the content MISMATCH is the only thing that flips the run rc.
+## a one-line tally to STDERR, and ECHO the content-mismatch count (0 = clean) on STDOUT -- the
+## caller reads it with a command substitution. The count goes via stdout, NOT the exit status: a
+## `return N` wraps to an 8-bit code (256 mismatches -> exit 0 -> a FALSE PASS), so it is unsafe as
+## a counter. Returns 0. Best-effort on the OCR sidecars (an AID, not a gate); the content MISMATCH
+## count is the only thing that flips the run rc.
 content_gate_run() {
    local golden_dir="$1" shot_dir="$2"
    local shot stage golden token mismatch=0 unvalidated=0 validated=0 ocr_error=0
@@ -88,5 +91,6 @@ content_gate_run() {
    "${IMAGE_OCR_SIDECAR:-image-ocr-sidecar}" -- "${shot_dir}" >/dev/null 2>&1 || true
    printf '%s\n' \
       "content-gate: ${validated} validated, ${unvalidated} unvalidated, ${mismatch} mismatch, ${ocr_error} ocr-error" >&2
-   return "${mismatch}"
+   printf '%s\n' "${mismatch}"
+   return 0
 }

@@ -26,6 +26,7 @@ ocr.missing_tokens (the token matcher). Pure text, no tesseract -- the fixture i
 Exit: 0 all pass, 1 any fail.
 """
 
+import importlib.machinery
 import importlib.util
 import os
 import sys
@@ -48,11 +49,11 @@ def _load_image_text_assert():
         "/usr/bin/image-text-assert",
     ):
         if cand and os.path.isfile(cand):
-            spec = importlib.util.spec_from_loader("image_text_assert",
-                                                   importlib.machinery.SourceFileLoader(
-                                                       "image_text_assert", cand))
+            loader = importlib.machinery.SourceFileLoader("image_text_assert", cand)
+            spec = importlib.util.spec_from_loader("image_text_assert", loader)
+            assert spec is not None
             mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
+            loader.exec_module(mod)
             return mod
     raise SystemExit("FATAL: image-text-assert not found")
 
@@ -72,7 +73,7 @@ def _golden_dir():
 def _load_fixture(path):
     stages = {}
     cur = None
-    buf = []
+    buf: list[str] = []
     for line in open(path, encoding="ascii"):
         if line.startswith("@@@STAGE:"):
             if cur is not None:

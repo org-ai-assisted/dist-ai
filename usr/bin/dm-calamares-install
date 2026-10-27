@@ -350,10 +350,13 @@ on_exit() {
    ## DISPLAY/publish half is one sourceable call so this block stays easy to reorder (task #61).
    ## Structural gates (blank, dup above) are separate + always on.
    if [ "${rc}" -eq 0 ] && [ -n "${shot_dir}" ]; then
-      local content_mismatch=0
-      content_gate_run "${CALAMARES_GOLDEN_DIR:-/usr/share/dm-calamares-install-golden}" "${shot_dir}" \
-         || content_mismatch=$?
-      if [ "${content_mismatch}" -gt 0 ]; then
+      local content_mismatch
+      ## content_gate_run echoes the mismatch count on stdout (a count via exit status would wrap
+      ## at 256); the sidecar writes + tally happen in the command-substitution subshell (file
+      ## writes persist). A non-numeric result (should not happen) is treated as no mismatch.
+      content_mismatch="$(content_gate_run \
+         "${CALAMARES_GOLDEN_DIR:-/usr/share/dm-calamares-install-golden}" "${shot_dir}")"
+      if [[ "${content_mismatch}" =~ ^[0-9]+$ ]] && [ "${content_mismatch}" -gt 0 ]; then
          die_reason="content-golden mismatch on ${content_mismatch} milestone shot(s)"
          rc=1
       fi

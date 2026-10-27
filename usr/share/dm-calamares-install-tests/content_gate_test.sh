@@ -96,8 +96,9 @@ done
 ## A non-png sibling (a card or a status file) must be IGNORED by the gate loop (globs *.png only).
 printf '%s\n' 'card text' > "${shot_dir}/15-vm-defined.card.txt"
 
-mismatch=0
-content_gate_run "${golden_dir}" "${shot_dir}" || mismatch=$?
+## content_gate_run echoes the mismatch count on stdout (a count via exit status would wrap at
+## 256 -> a false pass); capture it.
+mismatch="$(content_gate_run "${golden_dir}" "${shot_dir}")"
 
 ## Per-shot .status token for each graduated branch.
 check "validated shot -> status validated" "$(cat -- "${shot_dir}/10-good.png.status")" 'validated'
@@ -117,6 +118,19 @@ check "OCR sidecar written for a shot" \
 ## The card .txt must get NO .status (the gate globs *.png only -- a card is never a shot).
 check "card .card.txt gets no .status" \
    "$([ -e "${shot_dir}/15-vm-defined.card.txt.status" ] && printf '%s' bad || printf '%s' no)" 'no'
+
+## Canary for the 8-bit exit-status wrap: 300 mismatching shots must report 300, not 300&255=44
+## or (at 256) a false 0. The count is echoed on stdout precisely so it cannot wrap.
+wrap_dir="${work}/wrapshots"
+mkdir --parents -- "${wrap_dir}"
+printf '%s\n' 'token' > "${golden_dir}/bad.tokens"
+i=100
+while [ "${i}" -lt 400 ]; do
+   printf '%s' 'PNG' > "${wrap_dir}/${i}-bad.png"
+   i=$((i + 1))
+done
+wrap_mismatch="$(content_gate_run "${golden_dir}" "${wrap_dir}")"
+check "300 mismatches report 300 (no 8-bit wrap)" "${wrap_mismatch}" '300'
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 [ "${fail}" -eq 0 ] || { printf '%s\n' "FAILED" >&2; exit 1; }

@@ -235,12 +235,15 @@ image_test_results_publish() {
          ## (validated/mismatch/unvalidated/ocr-error). Read + validate it to a trusted enum token
          ## HERE (never forward raw bytes); forward parallel to the shot ("" = no sidecar -> the
          ## generator reads an absent value as unvalidated, fail-closed). Only a regular, non-symlink
-         ## sidecar is read (skip a planted FIFO/symlink), bounded to 64 bytes.
+         ## sidecar is read; the read is `timeout`-bounded so a swapped-in FIFO cannot hang the root
+         ## publisher, and NOT whitespace-collapsed -- `tr -d` would turn a malformed "vali dated"
+         ## into a valid "validated" (a false green), so a token with ANY internal whitespace fails
+         ## the enum check and falls closed to unvalidated. $() already strips the trailing newline.
          shot_status_tok=""
          shot_status_file="${shot_f}.status"
          if [ -f "${shot_status_file}" ] && [ ! -L "${shot_status_file}" ]; then
             shot_status_tok="$(image_test_validation_token \
-               "$(head --bytes 64 -- "${shot_status_file}" 2>/dev/null | tr --delete '[:space:]')")"
+               "$(timeout --kill-after=5 5 head --bytes 64 -- "${shot_status_file}" 2>/dev/null)")"
          fi
          ## Per-shot OCR sidecar (<shot>.ocr.txt): forwarded by PATH ("" = none); the emitter opens
          ## it no-follow and copies it, so a symlinked sidecar is refused there -- never read here.

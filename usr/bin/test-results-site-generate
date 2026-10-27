@@ -323,6 +323,12 @@ def process_run(run_dir, result, run_id, out_root, mask_config, now_unix, stale_
 
     shots = []
     cards = []
+    ## OCR sidecars publish the RECOGNIZED TEXT of a frame, which a pixel privacy mask cannot blank
+    ## (the mask hides image regions; the text is not spatial). So when a lane has CONFIGURED privacy
+    ## rects -- i.e. the operator is masking something sensitive, not just the default clock corner --
+    ## do NOT publish its OCR sidecars, or the masked content would leak as plain text. Default
+    ## clock-only masking (no lane entry) is not sensitive, so OCR still publishes there.
+    ocr_publishable = not mask_config.get(lane)
     for step in result["steps"]:
         image_atts = [
             a for a in step["attachments"]
@@ -342,14 +348,16 @@ def process_run(run_dir, result, run_id, out_root, mask_config, now_unix, stale_
             path = str(attachment.get("path", ""))
             paired = step_shots.get(path[:-len(OCR_SUFFIX)]) if path.endswith(OCR_SUFFIX) else None
             if paired is not None:
-                ocr_name = _attach_ocr(run_dir, page_dir, paired["sid"], path)
-                if ocr_name:
-                    paired["ocr"] = ocr_name
+                if ocr_publishable:
+                    ocr_name = _attach_ocr(run_dir, page_dir, paired["sid"], path)
+                    if ocr_name:
+                        paired["ocr"] = ocr_name
             else:
                 text = _read_text_asset(run_dir, path)
                 if text is not None:
                     cards.append(
-                        {"step": step["name"], "name": attachment.get("name") or "", "text": text})
+                        {"step": step["name"], "name": attachment.get("name") or "", "text": text,
+                         "order": _milestone_order(step["name"], path)})
 
     status, age = site.run_cell_status(result, now_unix, stale_seconds)
     return RunView(run_id, run_dir, result, status, age, shots, cards)
@@ -361,6 +369,22 @@ def _screenshot_id(lane, step_name, attachment_name, shot_count):
     if shot_count > 1:
         base = "%s/%s" % (base, attachment_name)
     return base
+
+
+def _milestone_order(step_name, path):
+    """Capture-sequence key from a stored attachment path's NN- prefix: the publisher names shots
+    '<step>-NN-name.png' and cards 'NN-name.card.txt', so shots and cards must render INTERLEAVED in
+    capture order, not grouped (all images then all cards would drop a pre-boot card below the whole
+    screenshot run). Strip an optional '<step>-' prefix, then read the leading digits; no NN -> 0 (a
+    lone/unprefixed shot keeps a stable position). Ordered by NN -- NOT by milestone name, which is
+    alphabetical and NOT capture order."""
+    import re
+    base = path
+    prefix = step_name + "-"
+    if base.startswith(prefix):
+        base = base[len(prefix):]
+    match = re.match(r"(\d+)", base)
+    return int(match.group(1)) if match else 0
 
 
 def _process_shot(run_dir, page_dir, lane, step, attachment, mask_config, shot_count):
@@ -375,7 +399,8 @@ def _process_shot(run_dir, page_dir, lane, step, attachment, mask_config, shot_c
     ## the step's functional pass/fail; `ocr` is the served OCR-sidecar filename (set later when a
     ## matching text attachment is paired in). Both default fail-closed / absent.
     base = {"sid": sid, "step": step_name, "name": attachment["name"], "webp": None,
-            "validation": _validation_of(attachment), "ocr": None}
+            "validation": _validation_of(attachment), "ocr": None,
+            "order": _milestone_order(step_name, attachment["path"])}
     if os.path.islink(current_path):
         return base
 
@@ -394,10 +419,15 @@ def _process_shot(run_dir, page_dir, lane, step, attachment, mask_config, shot_c
 
 
 def _read_text_asset(run_dir, path):
-    """Read an account-owned text asset (a state-card body) from the plane for INLINE embedding.
-    Refuse a symlink (never follow one into a root-only file, same discipline as a shot) and bound
-    the read, so a runaway/oversized source cannot bloat the page. Returns the text, or None (a
-    missing/symlinked/unreadable asset simply renders no panel -- never aborts the run/site)."""
+    """Read a text asset (a state-card body) from the plane for INLINE embedding. Refuse a symlink
+    (never follow one into a root-only file, same discipline as a shot read) and bound the read, so
+    a runaway/oversized source cannot bloat the page. Returns the text, or None (a
+    missing/symlinked/unreadable asset simply renders no panel -- never aborts the run/site).
+
+    Scope: the generator reads the plane AFTER the emitter ingested it (root copies each account
+    source no-follow, then chowns the run dir), so at generate time these files are root/owner-owned,
+    NOT adversary-writable -- the islink guard matches the existing shot read and no O_NOFOLLOW/
+    openat-chain is owed here (that defense lives in the emitter, where the source IS account-owned)."""
     src = os.path.join(run_dir, path)
     if os.path.islink(src):
         return None
@@ -489,10 +519,15 @@ def run_source_fingerprint(run_dir, result, shared_fp):
     digest.update(json.dumps(result, ensure_ascii=True, sort_keys=True,
                              separators=(",", ":")).encode("ascii"))
     digest.update(b"\0")
-    ## Hash EVERY attachment's source bytes -- image shots AND text assets (OCR sidecars, state
-    ## cards) -- so an edited sidecar or card body invalidates the cache, not just a changed image.
+    ## Hash the source bytes of every attachment that AFFECTS a page asset -- image shots AND text
+    ## assets (OCR sidecars, state cards) -- so an edited sidecar or card body invalidates the
+    ## cache, not just a changed image. Skip any other mediaType: it is never rendered, so hashing
+    ## it would only let an untrusted plane stall the generate by referencing a huge unrelated file.
     for step in result["steps"]:
         for attachment in step["attachments"]:
+            media = str(attachment.get("mediaType", ""))
+            if not (media.startswith(IMAGE_MEDIA_PREFIX) or media == TEXT_MEDIA):
+                continue
             token = str(attachment.get("path", ""))
             path = os.path.join(run_dir, token)
             if os.path.isfile(path) and not os.path.islink(path):
@@ -903,16 +938,18 @@ def render_step(view, step):
         ## Text-only step: NO image slot, never a broken-image blank.
         return '<div class="issue">%s</div>' % caption
 
-    ## Render the milestone sequence in CAPTURE order. view.shots / view.cards preserve the
-    ## result.json attachments[] order, which results-publish emits NN-sorted (the install "full
-    ## story" welcome -> partitions -> ... -> first-boot); the milestone NAME is NOT sortable
-    ## (alphabetical != capture order), so do NOT re-sort here. Shots then cards (cards are the
-    ## pre-boot / powered-off evidence frames; shots are the live GUI sequence).
+    ## Render the milestone sequence in CAPTURE order. Shots and cards INTERLEAVE (a card like
+    ## vm-defined at NN=10 precedes screenshots, while vm-stopped-iso-detached at NN=41 sits mid-run),
+    ## so order the combined set by the NN capture key -- NOT by milestone name (alphabetical !=
+    ## capture order). A stable sort keeps same-NN ties in attachments[] order.
+    items = [("shot", s) for s in shots] + [("card", c) for c in cards]
+    items.sort(key=lambda it: it[1].get("order", 0))
     body = []
-    for shot in shots:
-        body.append(_shot_html(view, shot, status_cls))
-    for card in cards:
-        body.append(_card_html(card))
+    for kind, item in items:
+        if kind == "shot":
+            body.append(_shot_html(view, item, status_cls))
+        else:
+            body.append(_card_html(item))
     return '<div class="issue">%s%s</div>' % (caption, "".join(body))
 
 
