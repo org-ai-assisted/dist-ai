@@ -419,6 +419,41 @@ static void unit_cross_overlap_and_offset_global_space(void)
     CHECK(local.pointer_space_x == 100);
 }
 
+/* recalc_global_space must REJECT (return false) a layout with a gap between
+ * screens -- production turns that into the "gaps are present" fatal. Two
+ * screens separated by a void do not connect. */
+static void unit_recalc_global_space_gap(void)
+{
+    struct output_geometry g0 = geom(0, 0, 1920, 1080);
+    struct output_geometry gapped = geom(3000, 0, 1920, 1080);
+    struct disp_state local = { 0 };
+
+    local.output_geometries[0] = &g0;
+    local.output_geometries[1] = &gapped;
+    CHECK(!recalc_global_space(&local));
+}
+
+/* A point covered by no screen (a void in global space) maps to an invalid
+ * screen-local coordinate. */
+static void unit_abs_coord_invalid(void)
+{
+    struct output_geometry g0 = geom(0, 0, 1920, 1080);
+    struct screen_local_coord sl;
+    ssize_t i;
+
+    for (i = 0; i < MAX_SCREEN_COUNT; ++i) {
+        state.output_geometries[i] = NULL;
+    }
+    state.output_geometries[0] = &g0;
+
+    sl = abs_coord_to_screen_local_coord(5000, 5000);
+    CHECK(!sl.valid);
+
+    for (i = 0; i < MAX_SCREEN_COUNT; ++i) {
+        state.output_geometries[i] = NULL;
+    }
+}
+
 int main(void)
 {
     unit_lookup_keycode();
@@ -436,6 +471,8 @@ int main(void)
     unit_kb_handle_keymap();
     unit_esc_key_release_clamp();
     unit_cross_overlap_and_offset_global_space();
+    unit_recalc_global_space_gap();
+    unit_abs_coord_invalid();
     printf("kloak harness: all assertions passed (%d checks)\n", checks);
     return 0;
 }
