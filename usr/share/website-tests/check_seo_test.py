@@ -254,8 +254,10 @@ def run():
         check('a directory with no index.html is not a site root',
               cs.check_seo(root) == [], repr(cs.check_seo(root)))
 
-    # check_seo: a no-index site (every page noindex) has a Disallow robots and
-    # an empty sitemap. The old always-Allow render_robots mis-flagged such a site.
+    # check_seo: a temporarily-no-index site (every page carries a noindex meta,
+    # an interim host) still advertises its real pages -- robots Allows crawling
+    # and the sitemap LISTS the pages; the per-page noindex meta, not robots,
+    # keeps them out of indexes. So the sitemap is populated, not empty.
     with tempfile.TemporaryDirectory() as root:
         noindex = ('<!doctype html>\n<html lang="en">\n'
                    '<meta name="robots" content="noindex">\n'
@@ -266,16 +268,14 @@ def run():
                '<meta name="robots" content="noindex">'
                '<header class="nav"></header>')
         with open(os.path.join(root, 'sitemap.xml'), 'w', encoding='utf-8') as h:
-            h.write(cs.render_sitemap(root, host))        # empty: all noindex
+            h.write(cs.render_sitemap(root, host))
         with open(os.path.join(root, 'robots.txt'), 'w', encoding='utf-8') as h:
-            h.write(cs.render_robots(host, no_index=True))
-        check('a no-index site is clean (Disallow robots, empty sitemap)',
+            h.write(cs.render_robots(host))
+        check('a no-index site is clean (Allow robots, pages still listed)',
               cs.check_seo(root) == [], repr(cs.check_seo(root)))
-        with open(os.path.join(root, 'robots.txt'), 'w', encoding='utf-8') as h:
-            h.write(cs.render_robots(host))               # Allow -- wrong here
-        check('an Allow robots on a no-index site is flagged stale',
-              any('robots.txt stale' in p for p in cs.check_seo(root)),
-              repr(cs.check_seo(root)))
+        check('the no-index site sitemap lists its noindex pages',
+              cs.render_sitemap(root, host).count('<loc>') == 2,
+              repr(cs.render_sitemap(root, host)))
 
     # the gate must be wired into main() -- read the real function source wherever
     # it lives (the core module), not a fixed file path, so the CLI-shim split does

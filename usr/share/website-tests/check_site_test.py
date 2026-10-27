@@ -1394,17 +1394,23 @@ def run():
               any('stray.webp' in f for f in _assets_failures(check_site, root)),
               repr(_assets_failures(check_site, root)))
 
-    # A noindex page is excluded from the SEO page set + sitemap, so an ephemeral
-    # per-run results detail page does not churn sitemap.xml; indexable pages stay.
+    # The ephemeral per-run results plane (automated-test-results/) is excluded
+    # from the sitemap page set so it does not churn sitemap.xml. Exclusion is
+    # PATH-based (the results plane), NOT noindex-based: a noindex page OUTSIDE
+    # that plane (a temporarily-no-index content page) must stay in the set.
     with tempfile.TemporaryDirectory() as root:
         _write(root, 'index.html', '<p>home</p>')
         _write(root, 'automated-test-results/r1/index.html',
                '<meta name="robots" content="noindex"><p>run</p>')
+        _write(root, 'paper/index.html',
+               '<meta name="robots" content="noindex"><p>content</p>')
         urls = check_site.seo_page_urls(root, 'example.github.io')
-        check('noindex run page excluded from the sitemap page set',
+        check('results-plane run page excluded from the sitemap page set',
               not any('/automated-test-results/r1/' in u for u in urls), repr(urls))
-        check('indexable home page still in the sitemap page set',
+        check('home page still in the sitemap page set',
               any(u.endswith('example.github.io/') for u in urls), repr(urls))
+        check('a noindex content page outside the results plane stays listed',
+              any(u.endswith('example.github.io/paper/') for u in urls), repr(urls))
 
     # applicability guard: the FAMILY-policy checker must SKIP a MediaWiki/wiki site (the
     # kicksecure/whonix stage sites), not emit a wall of false family-rule failures on it.

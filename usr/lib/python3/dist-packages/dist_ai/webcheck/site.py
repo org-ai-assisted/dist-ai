@@ -2149,43 +2149,21 @@ def _quote_path(rel):
     return '/'.join(urllib.parse.quote(seg, safe='') for seg in rel.split('/'))
 
 
-class _RobotsMeta(html.parser.HTMLParser):
-    """Detect <meta name="robots" content="...noindex...">."""
-
-    def __init__(self):
-        super().__init__(convert_charrefs=True)
-        self.noindex = False
-
-    def handle_starttag(self, tag, attrs):
-        if tag != 'meta':
-            return
-        amap = {k.lower(): (v or '') for k, v in attrs}
-        if amap.get('name', '').lower() == 'robots' \
-                and 'noindex' in amap.get('content', '').lower():
-            self.noindex = True
-
-
-def _is_noindex(path):
-    """True if a page opts out of indexing via a robots noindex meta. Such a page
-    (an ephemeral per-run results detail page) is kept OUT of the sitemap and the
-    SEO page set -- the web-standard way to exclude a churny page from search and
-    the sitemap, so the sitemap stays stable across runs."""
-    audit = _RobotsMeta()
-    with open(path, encoding='utf-8', errors='replace') as handle:
-        audit.feed(handle.read())
-    return audit.noindex
-
-
 def seo_page_urls(root, host):
-    """Sorted absolute URLs for every navigable, INDEXABLE content page under root.
-    A directory index maps to its directory URL ('/', '/sub/'); any other page
-    keeps its .html name. A noindex page is excluded. Assumes the site is served at
+    """Sorted absolute URLs for every navigable content page under root. A
+    directory index maps to its directory URL ('/', '/sub/'); any other page
+    keeps its .html name. The ephemeral test-results plane (RESULTS_SUBDIR) is
+    excluded -- its per-run pages churn, so listing them would destabilize the
+    sitemap. A page is NOT excluded merely for carrying a noindex meta: a
+    temporarily-no-index site (every page noindex on an interim host) still
+    advertises its real, stable pages, and keeps them out of indexes per-page via
+    the meta, not by dropping them from the sitemap. Assumes the site is served at
     the domain root (true for every <owner>.github.io Pages site here)."""
     urls = set()
     for page in html_files(root):
-        if _is_noindex(page):
-            continue
         rel = os.path.relpath(page, root).replace(os.sep, '/')
+        if rel == RESULTS_SUBDIR or rel.startswith(RESULTS_SUBDIR + '/'):
+            continue
         if rel == 'index.html':
             path = '/'
         elif rel.endswith('/index.html'):
@@ -2208,12 +2186,11 @@ def render_sitemap(root, host):
     return '\n'.join(lines) + '\n'
 
 
-def render_robots(host, no_index=False):
-    """The canonical robots.txt text for a site (trailing newline included). A
-    no-index site (every page carries a noindex meta) blocks all crawling and
-    advertises no sitemap, so a bare Disallow is its canonical robots."""
-    if no_index:
-        return 'User-agent: *\nDisallow: /\n'
+def render_robots(host):
+    """The canonical robots.txt text for a site (trailing newline included).
+    Always allows crawling and advertises the sitemap. A site kept out of search
+    does so per-page via a noindex meta -- which a crawler must be ALLOWED to
+    fetch to honor -- never via a robots Disallow, so robots never Disallows."""
     return ('User-agent: *\n'
             'Allow: /\n'
             '\n'
@@ -2258,11 +2235,8 @@ def check_seo(root):
         problems.append('index.html has no <link rel="canonical">; SEO '
                         'generation needs it to derive the host')
         return problems
-    # A site with no indexable pages (every page noindex) is a no-index site:
-    # its canonical sitemap is empty and its robots blocks all crawling.
-    no_index = not seo_page_urls(root, host)
     for name, want in (('sitemap.xml', render_sitemap(root, host)),
-                       ('robots.txt', render_robots(host, no_index))):
+                       ('robots.txt', render_robots(host))):
         try:
             with open(os.path.join(root, name), encoding='utf-8') as handle:
                 have = handle.read()
