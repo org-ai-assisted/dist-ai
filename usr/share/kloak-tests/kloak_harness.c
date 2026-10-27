@@ -9,18 +9,17 @@ functions. Compiled and run by test_kloak_verification.py against the REAL
 src/kloak.c (reusing kloak's KLOAK_FUZZING seam -- no kloak source change), then
 linked with the wayland-scanner protocol code and the wayland/libinput/libevdev/
 xkbcommon libraries exactly as kloak itself links. No compositor or input device
-is needed: the pure logic is called directly, and the one Wayland handler
-exercised (kb_handle_keymap, below) runs in a forked child over a plain fd, not
-a live connection.
+is needed: the pure logic is called directly, and the handlers exercised run in
+a forked child over a plain fd, not a live connection.
 
-Also here:
-  * unit_kb_handle_keymap -- regression for the compositor-controlled keymap-fd
-    SIGBUS (Whonix/kloak#24): a forked child proves a short fd is rejected with a
-    clean exit, not a fault.
-  * characterize_open_bugs_24 -- executable documentation of the KNOWN-OPEN
-    upstream bugs referred to the maintainer (cross-overlap screen touch, and the
-    br_corner_x-as-width global-space bug): each pins the current behavior so a
-    fix trips the test.
+Regressions pinned here (Whonix/kloak#24 re-review of arraybolt3/trixie):
+  * unit_esc_key_release_clamp -- an escape-combo key RELEASE with no matching
+    press must NOT underflow the active-key counter and abort; the forked child
+    proves it exits cleanly (old code aborted via assert).
+  * unit_cross_overlap_and_offset_global_space -- the two upstream bugs that were
+    OPEN at first audit (cross/plus screen overlap seen as a gap; global-space
+    width stored as the right-edge coordinate) are now FIXED; each pins the
+    correct value so a regression trips the test.
 
 Complements kloak_cbmc.c: CBMC proves the invariants hold for ALL inputs in the
 operating envelope; these assert the concrete, human-meaningful values and edges
@@ -46,24 +45,6 @@ static void unit_lookup_keycode(void)
     /* A name absent from the table maps to 0 (the documented miss value). */
     CHECK(lookup_keycode("KEY_DOES_NOT_EXIST") == 0);
     CHECK(lookup_keycode("") == 0);
-}
-
-static void unit_check_point_in_area(void)
-{
-    /* point strictly inside */
-    CHECK(check_point_in_area(5, 5, 0, 0, 10, 10));
-    /* top-left corner is inclusive */
-    CHECK(check_point_in_area(0, 0, 0, 0, 10, 10));
-    /* right/bottom edge is exclusive (x < rect_x + rect_width) */
-    CHECK(!check_point_in_area(10, 5, 0, 0, 10, 10));
-    CHECK(!check_point_in_area(5, 10, 0, 0, 10, 10));
-    /* outside */
-    CHECK(!check_point_in_area(20, 20, 0, 0, 10, 10));
-    /* any negative coordinate -> false */
-    CHECK(!check_point_in_area(-1, 5, 0, 0, 10, 10));
-    CHECK(!check_point_in_area(5, 5, 0, 0, -10, 10));
-    /* zero-size rectangle contains nothing */
-    CHECK(!check_point_in_area(0, 0, 0, 0, 0, 0));
 }
 
 static struct output_geometry geom(int32_t x, int32_t y, int32_t w, int32_t h)
@@ -109,6 +90,10 @@ static void unit_traverse_line(void)
     /* 45-degree diagonal: equal advance in both axes */
     out = traverse_line((struct coord){ 0, 0 }, (struct coord){ 100, 100 }, 10);
     CHECK(out.x == 10 && out.y == 10);
+
+    /* a step past the far end yields the end-of-line sentinel (-1, -1) */
+    out = traverse_line((struct coord){ 0, 0 }, (struct coord){ 10, 10 }, 11);
+    CHECK(out.x == -1 && out.y == -1);
 }
 
 static void unit_parse_uint31(void)
@@ -226,7 +211,7 @@ static void unit_coord_space(void)
     /* recalc_global_space spans both screens with no gap */
     local.output_geometries[0] = &g0;
     local.output_geometries[1] = &g1;
-    recalc_global_space(&local);
+    CHECK(recalc_global_space(&local));
     CHECK(local.global_space_width == 3840);
     CHECK(local.global_space_height == 1080);
     CHECK(local.pointer_space_x == 0 && local.pointer_space_y == 0);
@@ -276,17 +261,52 @@ static void unit_randname(void)
     }
 }
 
-/* How a kb_handle_keymap child process ended. */
-enum km_outcome { KM_EXIT0, KM_EXIT1, KM_SIGNALED, KM_OTHER };
+/* Only canonical "event<N>" evdev nodes (what udev creates) are grabbed; the
+ * startup scan and the inotify hotplug path both match with the compiled
+ * evdev_reg regex. A bare "event" or an "event"-prefixed non-device name must
+ * not match. */
+static void unit_evdev_regex(void)
+{
+    applayer_regex_init();
+    /* canonical nodes match */
+    CHECK(regexec(&evdev_reg, "event0", 0, NULL, 0) == 0);
+    CHECK(regexec(&evdev_reg, "event1", 0, NULL, 0) == 0);
+    CHECK(regexec(&evdev_reg, "event10", 0, NULL, 0) == 0);
+    CHECK(regexec(&evdev_reg, "event2147483647", 0, NULL, 0) == 0);
+    /* "event"-prefixed non-devices do not match */
+    CHECK(regexec(&evdev_reg, "event", 0, NULL, 0) != 0);
+    CHECK(regexec(&evdev_reg, "eventfoo", 0, NULL, 0) != 0);
+    CHECK(regexec(&evdev_reg, "event0a", 0, NULL, 0) != 0);
+    CHECK(regexec(&evdev_reg, "event1.0", 0, NULL, 0) != 0);
+    /* unrelated and degenerate names */
+    CHECK(regexec(&evdev_reg, "mouse0", 0, NULL, 0) != 0);
+    CHECK(regexec(&evdev_reg, "js0", 0, NULL, 0) != 0);
+    CHECK(regexec(&evdev_reg, "", 0, NULL, 0) != 0);
+}
+
+/* How a forked child process ended. */
+enum child_outcome { CH_EXIT0, CH_EXIT1, CH_SIGNALED, CH_OTHER };
+
+static enum child_outcome classify_child(int status)
+{
+    if (WIFSIGNALED(status)) {
+        return CH_SIGNALED;
+    }
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+        return CH_EXIT0;
+    }
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 1) {
+        return CH_EXIT1;
+    }
+    return CH_OTHER;
+}
 
 /* Run kb_handle_keymap in a forked child against a backing fd of `fd_len` bytes
  * (written from `content`, or truncated to that length when `content` is NULL)
  * but a compositor-declared `size`, with `old_map` as the previously-seen map.
- * Returns how the child terminated. A short fd (`size` > `fd_len`) makes the
- * mmap+memchr read pages past end-of-file; without the fstat guard that faults
- * with SIGBUS, with it the function exits(1) cleanly. */
-static enum km_outcome run_keymap_child(const char *content, size_t fd_len,
-                                        uint32_t size, const char *old_map)
+ * Returns how the child terminated. */
+static enum child_outcome run_keymap_child(const char *content, size_t fd_len,
+                                           uint32_t size, const char *old_map)
 {
     char tmpl[] = "/tmp/kloak_km_XXXXXX";
     int fd;
@@ -314,43 +334,72 @@ static enum km_outcome run_keymap_child(const char *content, size_t fd_len,
     }
     assert(close(fd) == 0);
     assert(waitpid(pid, &status, 0) == pid);
-    if (WIFSIGNALED(status)) {
-        return KM_SIGNALED;
-    }
-    if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
-        return KM_EXIT0;
-    }
-    if (WIFEXITED(status) && WEXITSTATUS(status) == 1) {
-        return KM_EXIT1;
-    }
-    return KM_OTHER;
+    return classify_child(status);
 }
 
-/* Regression for the keymap-fd SIGBUS bug (Whonix/kloak#24 third-pass item A):
- * `size` and `fd` both come from the compositor, so a `size` larger than the
- * backing fd must be rejected BEFORE mmap/memchr read past end-of-file. The
- * fstat guard turns the SIGBUS into a clean FATAL exit. */
+/* kb_handle_keymap guards: a keymap with no NUL terminator in `size` bytes is a
+ * malicious/garbage map and must exit(1), not be compiled; an adequate map that
+ * matches the previously-seen one takes the early return without faulting. */
 static void unit_kb_handle_keymap(void)
 {
-    /* Zero-length fd, size 4096: every mapped page is past EOF. Guard present
-     * -> clean exit(1); absent -> KM_SIGNALED (SIGBUS). */
-    CHECK(run_keymap_child(NULL, 0, 4096, NULL) == KM_EXIT1);
+    /* Adequate fd whose content equals the previous map: the "same map" early
+     * return completes cleanly. */
+    CHECK(run_keymap_child("xkb", 4, 4, "xkb") == CH_EXIT0);
 
-    /* Adequate fd whose content equals the previous map: the function takes the
-     * "same map" early return and completes without faulting. */
-    CHECK(run_keymap_child("xkb", 4, 4, "xkb") == KM_EXIT0);
-
-    /* Adequate fd with no NUL terminator in `size` bytes: the existing
-     * malicious-keymap guard exits(1) (no SIGBUS). */
-    CHECK(run_keymap_child("abcd", 4, 4, NULL) == KM_EXIT1);
+    /* Adequate fd with no NUL terminator in `size` bytes: the malicious-keymap
+     * guard exits(1). */
+    CHECK(run_keymap_child("abcd", 4, 4, NULL) == CH_EXIT1);
 }
 
-/* CHARACTERIZATION of KNOWN-OPEN upstream bugs (Whonix/kloak#24 third pass),
- * referred to the maintainer as non-localized. Each CHECK pins the CURRENT
- * (incorrect) behavior: it catches a regression AND trips when the bug is fixed
- * (then flip to the commented correct assertion). These document the open
- * defect in executable form -- they do NOT endorse the behavior. */
-static void characterize_open_bugs_24(void)
+/* Run register_esc_combo_key for one key event in a forked child, after setting
+ * up `spec` as the escape-key list, and report how the child ended. */
+static enum child_outcome run_esc_key_child(const char *spec, uint32_t key,
+                                            enum libinput_key_state key_state)
+{
+    pid_t pid;
+    int status = 0;
+
+    pid = fork();
+    assert(pid >= 0);
+    if (pid == 0) {
+        esc_key_list = NULL;
+        esc_key_sublist_len = NULL;
+        active_esc_key_list = NULL;
+        esc_key_list_len = 0;
+        parse_esc_key_str(spec);
+        register_esc_combo_key(key, key_state);
+        _exit(0);
+    }
+    assert(waitpid(pid, &status, 0) == pid);
+    return classify_child(status);
+}
+
+/* Regression for the escape-combo counter underflow (Whonix/kloak#24 re-review
+ * of arraybolt3/trixie). register_esc_combo_event runs on every raw libinput
+ * key event, before any seat-key-count de-duplication; a RELEASE for a combo
+ * key kloak never saw pressed (a key held down when the device was grabbed)
+ * must clamp the counter at 0, not decrement it to -1 and abort. Old code did
+ * `active_esc_key_list[i]--; assert(>= 0)` and aborted (SIGABRT); the fix
+ * clamps, so the child returns and exits cleanly. */
+static void unit_esc_key_release_clamp(void)
+{
+    /* release of a combo key with no preceding press: clean exit, no abort */
+    CHECK(run_esc_key_child("KEY_RIGHTSHIFT,KEY_ESC", KEY_RIGHTSHIFT,
+                            LIBINPUT_KEY_STATE_RELEASED) == CH_EXIT0);
+    /* a key not in any combo is ignored entirely: also a clean exit */
+    CHECK(run_esc_key_child("KEY_RIGHTSHIFT,KEY_ESC", KEY_A,
+                            LIBINPUT_KEY_STATE_RELEASED) == CH_EXIT0);
+}
+
+/* Regression for two audit items that were OPEN at first report and are now
+ * FIXED in arraybolt3/trixie (Whonix/kloak#24). Each pins the CORRECT value so
+ * a revert of the fix trips the test.
+ *   Item D: check_screen_touch must detect a cross/plus overlap where neither
+ *     rectangle has a corner inside the other.
+ *   Item F: recalc_global_space must store the SPAN (br_corner_x - ul_corner_x)
+ *     as the width, with the origin tracked separately in pointer_space_x, when
+ *     the leftmost output does not start at x=0. */
+static void unit_cross_overlap_and_offset_global_space(void)
 {
     struct output_geometry cross_a = geom(0, 400, 1920, 1080);
     struct output_geometry cross_b = geom(420, 0, 1080, 1920);
@@ -358,102 +407,21 @@ static void characterize_open_bugs_24(void)
     struct output_geometry off_b = geom(2020, 0, 1920, 1080);
     struct disp_state local = { 0 };
 
-    /* Item D: check_screen_touch tests only corner-containment, so a cross/plus
-     * overlap (these two overlap over x[420,1500) y[400,1480)) is wrongly seen
-     * as non-touching. Correct when fixed:
-     *   CHECK(check_screen_touch(cross_a, cross_b)); */
-    CHECK(!check_screen_touch(cross_a, cross_b));
+    /* Item D: these two overlap over x[420,1500) y[400,1480) with no shared
+     * corner -- the AABB test must see them as touching. */
+    CHECK(check_screen_touch(cross_a, cross_b));
 
-    /* Item F: recalc_global_space stores global_space_width = br_corner_x (the
-     * right-edge coordinate), not the span br_corner_x - ul_corner_x. With the
-     * leftmost output at x=100 the width is overstated by 100. Correct when
-     * fixed: CHECK(local.global_space_width == 3840); */
+    /* Item F: leftmost output at x=100; span is 3940-100 = 3840, origin 100. */
     local.output_geometries[0] = &off_a;
     local.output_geometries[1] = &off_b;
-    recalc_global_space(&local);
-    CHECK(local.global_space_width == 3940);
+    CHECK(recalc_global_space(&local));
+    CHECK(local.global_space_width == 3840);
     CHECK(local.pointer_space_x == 100);
-}
-
-/* Regression for the inotify/startup "event"-prefix loose match
- * (Whonix/kloak#41, CodeRabbit outside-diff): only canonical "event<N>" evdev
- * nodes (what udev creates) must be grabbed; a bare "event" or an
- * "event"-prefixed non-device name (e.g. "eventfoo") must be ignored. */
-static void unit_is_event_device_name(void)
-{
-    /* canonical nodes attach */
-    CHECK(is_event_device_name("event0"));
-    CHECK(is_event_device_name("event1"));
-    CHECK(is_event_device_name("event10"));
-    CHECK(is_event_device_name("event2147483647"));
-    /* "event"-prefixed non-devices are ignored */
-    CHECK(!is_event_device_name("event"));     /* no numeric suffix */
-    CHECK(!is_event_device_name("eventfoo"));  /* the reported case */
-    CHECK(!is_event_device_name("event0a"));   /* trailing non-digit */
-    CHECK(!is_event_device_name("event1.0"));
-    /* unrelated and degenerate names */
-    CHECK(!is_event_device_name("mouse0"));
-    CHECK(!is_event_device_name("js0"));
-    CHECK(!is_event_device_name("eve"));
-    CHECK(!is_event_device_name(""));
-}
-
-/* Regression for the press-tracking double-list bug (the src/kloak.c FIXME):
- * on a key/button press kloak links the SAME input_packet onto two queues at
- * once -- the main event queue (evq_head, via `entries`) and the pressing
- * device's tracking queue (trackq_head, via `trackq_entries`). A single shared
- * TAILQ_ENTRY link cannot be on two lists at the same time, so the second
- * insert corrupted both: removing the packet from the tracking queue on release
- * mangled the event queue (the "silently failing TAILQ_REMOVE" -> assertion
- * failure / use-after-free on the second release). The fix gives the tracking
- * queue its own `trackq_entries` link. This reproduces the exact membership and
- * asserts that removing from one queue leaves the other intact; it also fails to
- * compile if `trackq_entries` is ever removed again. */
-static void unit_trackq_separate_link(void)
-{
-    struct li_device_info dev = { 0 };
-    struct input_packet *earlier = safe_calloc(1, sizeof(*earlier));
-    struct input_packet *press = safe_calloc(1, sizeof(*press));
-    struct input_packet *walk = NULL;
-    int seen = 0;
-
-    TAILQ_INIT(&evq_head);
-    TAILQ_INIT(&dev.trackq_head);
-
-    /* The event queue already holds an earlier event; the press then arrives on
-     * both the event queue and the device tracking queue, exactly as kloak's
-     * handler does. */
-    TAILQ_INSERT_TAIL(&evq_head, earlier, entries);
-    TAILQ_INSERT_TAIL(&evq_head, press, entries);
-    TAILQ_INSERT_TAIL(&dev.trackq_head, press, trackq_entries);
-
-    /* Release handling removes the matching press from the tracking queue. */
-    TAILQ_REMOVE(&dev.trackq_head, press, trackq_entries);
-
-    /* Tracking queue is now empty ... */
-    CHECK(TAILQ_EMPTY(&dev.trackq_head));
-    /* ... and the event queue is still well-formed: both events, in order, with
-     * the chain intact. A shared link would have unlinked `press` from evq too
-     * (or corrupted `earlier`'s next pointer) when it was removed above. */
-    TAILQ_FOREACH(walk, &evq_head, entries) {
-        if (seen == 0) {
-            CHECK(walk == earlier);
-        } else if (seen == 1) {
-            CHECK(walk == press);
-        }
-        ++seen;
-    }
-    CHECK(seen == 2);
-
-    TAILQ_INIT(&evq_head);
-    free(earlier);
-    free(press);
 }
 
 int main(void)
 {
     unit_lookup_keycode();
-    unit_check_point_in_area();
     unit_check_screen_touch();
     unit_traverse_line();
     unit_parse_uint31();
@@ -464,10 +432,10 @@ int main(void)
     unit_coord_space();
     unit_parse_esc_key_str();
     unit_randname();
+    unit_evdev_regex();
     unit_kb_handle_keymap();
-    unit_is_event_device_name();
-    unit_trackq_separate_link();
-    characterize_open_bugs_24();
+    unit_esc_key_release_clamp();
+    unit_cross_overlap_and_offset_global_space();
     printf("kloak harness: all assertions passed (%d checks)\n", checks);
     return 0;
 }

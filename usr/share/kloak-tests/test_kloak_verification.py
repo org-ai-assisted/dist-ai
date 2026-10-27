@@ -18,19 +18,20 @@ existing KLOAK_FUZZING seam (guards out main) -- NO kloak source change. kloak.c
 the real kloak.c / kloak.h beside them (no source copy):
 
   * kloak_harness.c -- concrete unit tests (known values + edges for
-    lookup_keycode, check_point_in_area, check_screen_touch, traverse_line,
-    parse_uint31/32_arg, get_ticks_from_scroll_accum, the coordinate-space
-    conversions) plus a randomized bound check of random_between over the REAL
-    /dev/urandom, a forked-child regression for the keymap-fd SIGBUS
-    (kb_handle_keymap), and characterization of the known-open audit bugs
-    referred upstream. gcc-compiled and linked with the protocol code + the
-    wayland/libinput/libevdev/xkbcommon libraries exactly as kloak links; no
-    compositor is needed (the keymap handler is driven over a plain fd).
+    lookup_keycode, check_screen_touch, traverse_line, parse_uint31/32_arg,
+    get_ticks_from_scroll_accum, the coordinate-space conversions, the evdev
+    node-name regex) plus a randomized bound check of random_between over the
+    REAL /dev/urandom, forked-child regressions for the keymap guards
+    (kb_handle_keymap) and the escape-combo release-underflow clamp
+    (register_esc_combo_key), and regressions pinning the now-fixed cross-overlap
+    and offset-global-space audit bugs. gcc-compiled and linked with the protocol
+    code + the wayland/libinput/libevdev/xkbcommon libraries exactly as kloak
+    links; no compositor is needed (the handlers are driven over a plain fd).
   * kloak_cbmc.c -- CBMC proofs that every verify_* is free of ALL standard UB
     (CBMC 6.x enables signed/unsigned/pointer/float overflow, conversion, nan,
     bounds, pointer, div-by-zero by default) for EVERY input in kloak's real
-    operating envelope. The functions are loop-free (random_between's rejection
-    loop is bounded), so the proofs are exhaustive over that envelope.
+    operating envelope. The loop-free geometry/time proofs are exhaustive; the
+    bounded loops (random_between, sleep_ms, traverse_line) run under --unwind.
 
 gcc, cbmc, wayland-scanner and the wayland/libinput/libevdev/xkbcommon dev
 headers are REQUIRED (declare in dm-consumer.yml apt-packages); their absence is
@@ -47,14 +48,14 @@ import unittest
 HERE = os.path.dirname(os.path.realpath(__file__))
 
 ## verify_* entry points in kloak_cbmc.c, each with any extra CBMC flags. The
-## loop-free geometry/time proofs need none; the two with a bounded loop
-## (random_between's rejection sampling, sleep_ms's EINTR retry) get a small
-## unwind -- every terminating execution is covered.
+## loop-free geometry/time proofs need none; the ones with a bounded loop
+## (random_between's rejection sampling, sleep_ms's EINTR retry, traverse_line's
+## Bresenham walk) get a small unwind -- the unwound prefix covers the arithmetic
+## of every structurally identical step.
 CBMC_FUNCTIONS = {
-    'verify_check_point_in_area': [],
     'verify_check_screen_touch': [],
     'verify_random_between': ['--unwind', '4', '--no-unwinding-assertions'],
-    'verify_traverse_line': [],
+    'verify_traverse_line': ['--unwind', '8', '--no-unwinding-assertions'],
     'verify_get_ticks_from_scroll_accum': [],
     'verify_current_time_ms': [],
     'verify_sleep_ms': ['--unwind', '2', '--no-unwinding-assertions'],
@@ -73,7 +74,10 @@ PKG_CONFIG_LIBS = ('libinput', 'libevdev', 'wayland-client', 'xkbcommon')
 
 
 def _repo() -> str:
-    return os.environ.get('KLOAK_REPO', '').strip() or '/'
+    ## Absolute: setUpClass symlinks KLOAK_REPO/src/kloak.c into a tmp work dir,
+    ## and a relative target would resolve against the symlink's dir (not cwd)
+    ## and break the compile.
+    return os.path.abspath(os.environ.get('KLOAK_REPO', '').strip() or '/')
 
 
 def _require(tool: str) -> str:

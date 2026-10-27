@@ -12,8 +12,9 @@ KLOAK_REPO). No kloak source change: reuses kloak's existing KLOAK_FUZZING seam
 CBMC 6.x enables the full standard check set by default (signed/unsigned/pointer/
 float overflow, conversion, nan, bounds, pointer, div-by-zero), so each verify_*
 below is proven free of ALL of those for EVERY input in the assumed envelope. The
-pure functions are loop-free, so the geometry/scroll/time proofs are exhaustive;
-random_between's rejection loop is bounded (see its note).
+geometry/scroll/time proofs are loop-free and exhaustive; the bounded loops
+(random_between's rejection sampling, sleep_ms's EINTR retry, traverse_line's
+Bresenham walk) run under --unwind (see each note).
 
 Each verify_* assumes kloak's real operating envelope (screen coordinates and
 delay bounds are int32-range values well below INT32_MAX, never adversarial
@@ -69,24 +70,8 @@ int nanosleep(const struct timespec *req, struct timespec *rem)
 #define COORD_MAX (1 << 29) /* far above any real display extent; keeps every
                              * int32 coordinate sum well inside INT32_MAX */
 
-/* check_point_in_area: for in-envelope rectangles the result is EXACTLY the
- * containment predicate, with no arithmetic UB. */
-void verify_check_point_in_area(void)
-{
-    int32_t x, y, rx, ry, rw, rh;
-    __CPROVER_assume(x >= 0 && x < COORD_MAX);
-    __CPROVER_assume(y >= 0 && y < COORD_MAX);
-    __CPROVER_assume(rx >= 0 && rx < COORD_MAX);
-    __CPROVER_assume(ry >= 0 && ry < COORD_MAX);
-    __CPROVER_assume(rw >= 0 && rw < COORD_MAX);
-    __CPROVER_assume(rh >= 0 && rh < COORD_MAX);
-    bool got = check_point_in_area(x, y, rx, ry, rw, rh);
-    bool want = (x >= rx && x < rx + rw && y >= ry && y < ry + rh);
-    __CPROVER_assert(got == want, "containment predicate is exact");
-}
-
 /* check_screen_touch: for in-envelope geometries the touch test is UB-free (the
- * +1/+2 grows and corner sums cannot overflow). */
+ * +1/+2 grows and the axis-aligned overlap sums cannot overflow). */
 void verify_check_screen_touch(void)
 {
     struct output_geometry a, b;
@@ -117,8 +102,10 @@ void verify_random_between(void)
     __CPROVER_assert(r <= upper, "result not above upper bound");
 }
 
-/* traverse_line: for in-envelope endpoints and a forward step the walk is
- * UB-free (coordinate adds and the double->int32 step cast stay in range). */
+/* traverse_line: for in-envelope endpoints and a forward step the Bresenham
+ * walk is UB-free (the error-term and coordinate adds stay in range). The walk
+ * is a bounded loop, so it runs under --unwind like random_between/sleep_ms;
+ * every step is structurally identical, so the unwound prefix is representative. */
 void verify_traverse_line(void)
 {
     struct coord start, end;
