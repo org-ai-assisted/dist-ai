@@ -390,11 +390,15 @@ def _milestone_order(step_name, path):
     prefix = step_name + "-"
     if base.startswith(prefix):
         base = base[len(prefix):]
-    ## Cap the digit run: an NN is a handful of digits, and int() of a >4300-digit string raises
-    ## ValueError (CPython int-str limit), which an untrusted result.json could use to crash the
-    ## whole generate. 9 digits is far more than any real NN and can never overflow.
-    match = re.match(r"(\d{1,9})", base)
-    return int(match.group(1)) if match else 0
+    ## An NN is a handful of digits. Match the FULL leading digit run, but treat an absurdly long
+    ## one (a crafted/garbage path) as UNORDERABLE -> 0, rather than (a) int()-ing it, which raises
+    ## ValueError past CPython's 4300-digit limit and would crash the whole generate, or (b) a
+    ## fixed-width cap, which would TRUNCATE a long NN and silently misorder it. 9 digits
+    ## (<= 999,999,999) is far beyond any real milestone and cannot overflow.
+    match = re.match(r"(\d+)", base)
+    if match is None or len(match.group(1)) > 9:
+        return 0
+    return int(match.group(1))
 
 
 def _process_shot(run_dir, page_dir, lane, step, attachment, mask_config, shot_count):
