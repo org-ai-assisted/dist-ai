@@ -136,8 +136,10 @@ def run():
                "    return 'example.github.io'\n"
                'def render_sitemap(root, host):\n'
                "    return 'COLOCATED-SITEMAP\\n'\n"
-               'def render_robots(host):\n'
-               "    return 'COLOCATED-ROBOTS\\n'\n")
+               'def render_robots(host, no_index=False):\n'
+               "    return 'COLOCATED-ROBOTS\\n'\n"
+               'def _site_no_index(root):\n'
+               '    return False\n')
         linkdir = os.path.join(base, 'linkdir')
         os.makedirs(linkdir)
         link = os.path.join(linkdir, 'site-generate')

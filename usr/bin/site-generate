@@ -177,7 +177,8 @@ def _generate(root, force, check_site):
                          check_site.render_sitemap(root, host)):
         changed.append('sitemap.xml')
     if _write_if_changed(os.path.join(root, 'robots.txt'),
-                         check_site.render_robots(host)):
+                         check_site.render_robots(
+                             host, check_site._site_no_index(root))):
         changed.append('robots.txt')
     if _render_favicon(root, check_site):
         changed.append('favicon.png')
