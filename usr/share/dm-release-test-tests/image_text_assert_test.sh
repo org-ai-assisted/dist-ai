@@ -88,8 +88,8 @@ expect_rc "case-insensitive match -> pass"           0 "${assert_bin}" --expect 
 ## FAIL-CLOSED: no expectation, or an only-empty expectation, asserts nothing -> usage error.
 expect_rc "no --expect is a usage error"             2 "${assert_bin}" -- "${img}"
 expect_rc "empty --expect asserts nothing (usage)"   2 "${assert_bin}" --expect '' -- "${img}"
-## OCR read failure (missing image) -> exit 2, never a pass.
-expect_rc "missing image -> OCR-read error (not pass)" 2 "${assert_bin}" --expect ALPHA -- "${work}/nope.png"
+## OCR read failure (missing image) -> exit 3 (transient, distinct from a config error), never a pass.
+expect_rc "missing image -> OCR-read error (not pass)" 3 "${assert_bin}" --expect ALPHA -- "${work}/nope.png"
 
 ## --spec FILE: expected tokens from a repo golden ('#' comments + blank lines ignored).
 printf '%s\n' '# stage golden' 'ALPHA' '' 'CHARLIE' > "${work}/spec_ok.txt"
@@ -110,8 +110,27 @@ else
    fail=$((fail + 1))
 fi
 
-## CANARY: a tool that always passed would fail every '1'/'2' case above; one that always failed
-## would fail every '0' case. Both directions are asserted, so the suite is non-vacuous.
+## Every SHIPPED golden must assert SOMETHING: an empty/all-comment golden exits 2 (config) on
+## any image and would, in the lane, silently disable that stage's validation. A well-formed
+## golden returns 0/1/3 on the fixture (present/absent/ocr), never 2.
+golden_dir="${test_dir}/../dm-calamares-install-golden"
+if [ -d "${golden_dir}" ]; then
+   for golden in "${golden_dir}"/*.tokens; do
+      [ -f "${golden}" ] || continue
+      got=0
+      "${assert_bin}" --spec "${golden}" -- "${img}" >/dev/null 2>&1 || got=$?
+      if [ "${got}" -ne 2 ]; then
+         printf '%s\n' "PASS: shipped golden ${golden##*/} asserts something (rc=${got})"
+         pass=$((pass + 1))
+      else
+         printf '%s\n' "FAIL: shipped golden ${golden##*/} asserts NOTHING (rc=2)" >&2
+         fail=$((fail + 1))
+      fi
+   done
+fi
+
+## CANARY: a tool that always passed would fail every '1'/'2'/'3' case above; one that always
+## failed would fail every '0' case. Both directions are asserted, so the suite is non-vacuous.
 
 printf '%s\n' "===== image_text_assert_test: ${pass} pass, ${fail} fail ====="
 [ "${fail}" -eq 0 ]

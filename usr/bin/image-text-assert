@@ -32,7 +32,9 @@ Usage:
 At least one non-empty expected token is REQUIRED: an empty expectation asserts nothing, so it
 is a usage error (fail-closed), never a silent pass.
 
-Exit: 0 every expected token present; 1 at least one absent; 2 usage / OCR-read error."""
+Exit: 0 every expected token present; 1 at least one absent; 2 usage / config error (bad args,
+or a spec that is unreadable or asserts nothing -- a broken golden); 3 OCR read error (a
+tesseract / image failure, transient)."""
 
 import argparse
 import os
@@ -89,9 +91,11 @@ def main(argv):
     try:
         text = ocr_text(args.image, psm=args.psm)
     except (subprocess.CalledProcessError, FileNotFoundError, OSError) as exc:
-        ## An OCR read failure is NOT a pass -- fail honestly so a broken frame/tool is seen.
+        ## An OCR read failure is NOT a pass -- fail honestly so a broken frame/tool is seen. It is
+        ## exit 3 (distinct from a config error) so a caller can treat a transient tesseract/image
+        ## failure as non-fatal while a broken golden (exit 2) still fails loud.
         sys.stderr.write("image-text-assert: OCR failed for %s -- %s\n" % (args.image, exc))
-        return 2
+        return 3
 
     missing = missing_tokens(text, expected)
     if missing:

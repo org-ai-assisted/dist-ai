@@ -322,6 +322,55 @@ on_exit() {
          rc=1
       fi
    fi
+   ## Content gate (graduated policy -- see usr/share/dm-calamares-install-golden/README.md). On an
+   ## otherwise-passing run, assert each milestone whose stage has an APPROVED golden
+   ## (<golden-dir>/<stage>.tokens): a content MISMATCH (expected OCR tokens absent -- e.g. a VBox
+   ## host dialog where the Calamares welcome is due) FAILS the run. A stage with NO golden is
+   ## UNVALIDATED -- reported, never a validated pass, but does NOT fail the run, so golden coverage
+   ## grows without breaking every run. Structural gates (blank, dup above) are separate + always on.
+   ## An OCR read error (tesseract hiccup) is a non-fatal NOTICE, not a content failure.
+   if [ "${rc}" -eq 0 ] && [ -n "${shot_dir}" ]; then
+      local golden_dir content_shot content_stage content_golden content_rc
+      local content_mismatch=0 content_unvalidated=0
+      golden_dir="${CALAMARES_GOLDEN_DIR:-/usr/share/dm-calamares-install-golden}"
+      for content_shot in "${shot_dir}"/*.png; do
+         [ -f "${content_shot}" ] || continue
+         content_stage="${content_shot##*/}"
+         content_stage="${content_stage%.png}"
+         content_stage="${content_stage#*-}"
+         content_golden="${golden_dir}/${content_stage}.tokens"
+         if [ -f "${content_golden}" ]; then
+            content_rc=0
+            "${IMAGE_TEXT_ASSERT:-image-text-assert}" --spec "${content_golden}" -- "${content_shot}" >/dev/null \
+               || content_rc=$?
+            case "${content_rc}" in
+               0)
+                  : ## validated: the stage's expected tokens are present
+                  ;;
+               1)
+                  content_mismatch=$(( content_mismatch + 1 )) ## wrong content -> fail the run
+                  ;;
+               2)
+                  ## A shipped golden that asserts nothing is a BUG -> fail loud, never silently skip.
+                  printf '%s\n' "${me}: ERROR: broken content golden ${content_stage}.tokens (asserts nothing) -- fix it" >&2
+                  content_mismatch=$(( content_mismatch + 1 ))
+                  ;;
+               *)
+                  ## Transient OCR read error (tesseract/image hiccup) -> non-fatal NOTICE.
+                  printf '%s\n' "${me}: NOTICE: content-check OCR error on ${content_shot##*/} (not failing the run)" >&2
+                  ;;
+            esac
+         else
+            printf '%s\n' "${me}: NOTICE: UNVALIDATED milestone (no golden ${content_stage}.tokens): ${content_shot##*/}" >&2
+            content_unvalidated=$(( content_unvalidated + 1 ))
+         fi
+      done
+      printf '%s\n' "${me}: content gate: ${content_mismatch} mismatch, ${content_unvalidated} unvalidated" >&2
+      if [ "${content_mismatch}" -gt 0 ]; then
+         die_reason="content-golden mismatch on ${content_mismatch} milestone shot(s)"
+         rc=1
+      fi
+   fi
    ## tear down the persistent GUI compositor last -- every capture_frame above needs labwc + the
    ## VirtualBoxVM window alive to grim-grab; restores global GUI/SuppressMessages, reaps pids/dirs.
    gui_compositor_stop
