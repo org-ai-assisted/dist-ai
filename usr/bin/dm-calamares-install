@@ -500,9 +500,12 @@ story_snap_nonblank() {
    local check="${5:-uniform}"
    [ -n "${shot_dir}" ] || return 0
    local dest="${shot_dir}/${nn}-${name}.png" start="${SECONDS}"
-   ## rich polls with image-blank-check's DEFAULT (near-blank) mode; uniform with --uniform-only.
+   ## rich polls with image-blank-check's DEFAULT (near-blank) mode; uniform with --uniform-only;
+   ## content with --min-content-frac (a mostly-black frame fails even with an AA cursor -- for a
+   ## firmware/boot logo that must actually render, not a black screen).
    local -a ibc_args=( --uniform-only )
    [ "${check}" = 'rich' ] && ibc_args=()
+   [ "${check}" = 'content' ] && ibc_args=( --min-content-frac "${DM_CALAMARES_MIN_CONTENT_FRAC:-0.01}" )
    while : ; do
       if [ "${check}" = 'rich' ]; then
          "${GUESTCTL}" "${vm}" key 2a aa >/dev/null 2>&1 || true
@@ -1788,7 +1791,7 @@ main() {
    ## GRUB mode switch. A blind single shot races that short window and usually grabs black, so
    ## POLL fast over the first few seconds and keep the frame that actually rendered. `|| true`:
    ## the universal floor owns the verdict (and keeps errexit off the timeout path).
-   story_snap_nonblank 11 firmware-logo 6 0.4 || true
+   story_snap_nonblank 11 firmware-logo 6 0.4 content || true
    ## No "live-kernel-boot" capture: Kicksecure boots SILENTLY (security-misc; no plymouth, no
    ## console), so the whole window between the GRUB menu and the painted desktop is black BY
    ## DESIGN -- there is no non-black kernel-boot frame to publish. The boot is evidenced by the

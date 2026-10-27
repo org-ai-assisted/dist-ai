@@ -31,7 +31,7 @@ import argparse
 import os
 import sys
 
-from PIL import Image
+from PIL import Image, ImageChops
 
 _LIB = os.path.join(
     os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
@@ -42,14 +42,21 @@ if os.path.isdir(_LIB) and _LIB not in sys.path:
 from dm_test_results.image_gate import is_allowed, iter_images  # noqa: E402
 
 
-def classify(path, max_colors, near, frac, uniform_only=False):
+def classify(path, max_colors, near, frac, uniform_only=False, min_content_frac=0.0):
     """Return a short reason string if PATH is degenerate, else None.
 
     uniform_only: flag ONLY a truly-uniform (single near-black/white colour) frame --
     for gating a real framebuffer grab (a tty/console, a boot screen) where a frame
     that is mostly black but carries sparse real content (a login prompt, a cursor,
     a few log lines: 2+ colours) is LEGITIMATE and must not be a false positive. The
-    near-blank frac heuristic is skipped in this mode."""
+    near-blank frac heuristic is skipped in this mode.
+
+    min_content_frac (>0): also flag a frame whose non-near-black pixel fraction is
+    below this floor -- a black/empty capture (a missed firmware splash, a black
+    failure frame) that an anti-aliased cursor pushes past --max-colors (many colours,
+    ~0% lit area), which the colour-count heuristics miss. The uniform check still
+    runs (catches all-white), then content-fraction decides."""
+    content_frac = None
     with Image.open(path) as im:
         im = im.convert("RGB")
         total = im.width * im.height
@@ -62,6 +69,13 @@ def classify(path, max_colors, near, frac, uniform_only=False):
         ## bounding time + memory on large frames. We only care whether the frame is
         ## near a SINGLE colour (<= max_colors distinct).
         colors = im.getcolors(maxcolors=max_colors)
+        if min_content_frac > 0.0 and not uniform:
+            ## per-pixel MAX channel; a pixel is "content" (lit) when any channel > near,
+            ## i.e. not near-black. Robust to an AA cursor (many colours, tiny lit area).
+            r, g, b = im.split()
+            mx = ImageChops.lighter(ImageChops.lighter(r, g), b)
+            hist = mx.histogram()
+            content_frac = sum(hist[near + 1:]) / total
 
     def near_bw(rgb):
         return all(c <= near for c in rgb), all(c >= 255 - near for c in rgb)
@@ -72,6 +86,15 @@ def classify(path, max_colors, near, frac, uniform_only=False):
             return "uniform black"
         if is_white:
             return "uniform white"
+        return None
+    ## min-content-frac: a non-uniform but mostly-black frame (missed firmware splash, black
+    ## failure frame with only a cursor) is degenerate even when its colour count is high. This
+    ## is the sole additional criterion in this mode -- it replaces the colour-count heuristics,
+    ## which both false-negative (AA cursor) and false-positive (<=N dark colours) here.
+    if min_content_frac > 0.0:
+        if content_frac < min_content_frac:
+            return ("mostly black (%.3f%% lit < %.3f%% floor)"
+                    % (content_frac * 100.0, min_content_frac * 100.0))
         return None
     ## uniform-only: a non-uniform frame has >=2 colours -> some content rendered -> not
     ## degenerate here (a sparse tty login is not a false-positive all-black).
@@ -110,6 +133,11 @@ def parse_args(argv):
                         help="flag ONLY a truly-uniform (single near-black/white colour) "
                              "frame; for gating a framebuffer grab (tty/console, boot "
                              "screen) where sparse real content is legitimate")
+    parser.add_argument("--min-content-frac", type=float, default=0.0,
+                        help="also flag a frame whose non-near-black (lit) pixel fraction "
+                             "is below this (0 disables): catches a black/empty capture "
+                             "even with an anti-aliased cursor; for firmware/boot-logo and "
+                             "failure frames (e.g. 0.01)")
     parser.add_argument("paths", nargs="+")
     return parser.parse_args(argv[1:])
 
@@ -125,7 +153,7 @@ def main(argv):
         checked += 1
         try:
             reason = classify(path, args.max_colors, args.near, args.frac,
-                               args.uniform_only)
+                               args.uniform_only, args.min_content_frac)
         except (OSError, ValueError) as exc:
             ## An unreadable/corrupt frame is itself a bad capture -> flag it.
             flagged.append((path, "unreadable: %s" % exc))

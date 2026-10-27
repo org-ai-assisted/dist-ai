@@ -68,6 +68,10 @@ mkdir -- "${workdir}/extra"
 ## top ~8%, black below. Written as WEBP to also exercise webp decoding on a NOT-flagged frame.
 "${magick_bin}" -size 300x24 plasma: "${workdir}/extra/_strip.png"
 "${magick_bin}" "${workdir}/extra/_strip.png" -background black -gravity north -extent 300x300 "${workdir}/extra/term_dark.webp"
+## A black frame with only an ANTI-ALIASED cursor: ~0% lit area but hundreds of colours (the AA
+## gradient), so the --max-colors heuristic MISSES it. This is the "black screen except the mouse
+## pointer" failure frame / a missed firmware splash that --min-content-frac must catch.
+"${magick_bin}" -size 200x200 xc:black -fill white -draw 'circle 100,100 100,97' -blur 0x1.5 "${workdir}/extra/black_aa_cursor.png"
 ## A uniform-black WEBP in its own dir: proves a webp is decoded AND a webp is picked up by a
 ## directory scan (iter_images scans *.png and *.webp).
 mkdir -- "${workdir}/wdir"
@@ -113,6 +117,13 @@ expect_rc "uniform-only: uniform white is flagged"       1 --uniform-only "${wor
 ## This same sparse frame IS flagged in default mode ("near-blank (99% black) is flagged"
 ## above); --uniform-only is exactly what keeps a real tty login from false-positiving.
 expect_rc "uniform-only: sparse tty-like frame NOT flagged" 0 --uniform-only "${workdir}/near_blank.png"
+## --min-content-frac: a mostly-black frame (missed firmware splash, black failure frame) is
+## degenerate even with an AA cursor. The colour-count default MISSES the AA-cursor frame -> this
+## is the gap --min-content-frac closes; content-rich frames and the uniform check are unaffected.
+expect_rc "min-content-frac: black + AA cursor is flagged"       1 --min-content-frac 0.01 "${workdir}/extra/black_aa_cursor.png"
+expect_rc "default colour-count MISSES the AA-cursor black frame" 0 "${workdir}/extra/black_aa_cursor.png"
+expect_rc "min-content-frac: content-rich dark frame NOT flagged" 0 --min-content-frac 0.01 "${workdir}/extra/term_dark.webp"
+expect_rc "min-content-frac: uniform black still flagged"         1 --min-content-frac 0.01 "${workdir}/black.png"
 ## Directory scan: a dir containing any degenerate frame fails.
 expect_rc "a dir with a blank frame fails"      1 "${workdir}"
 ## --allow excludes a by-design-blank frame by exact name.
