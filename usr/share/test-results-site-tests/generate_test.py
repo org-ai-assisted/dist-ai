@@ -309,7 +309,10 @@ def build_plane(root):
     write_png(os.path.join(v_dir, "02-keyboard.png"), (60, 60, 60))
     write_png(os.path.join(v_dir, "03-badframe.png"), (90, 20, 20))
     with open(os.path.join(v_dir, "01-welcome.png.ocr.txt"), "w", encoding="utf-8") as handle:
-        handle.write("OCRNEEDLE recognized welcome text")
+        ## Seed a BiDi override (U+202E) + zero-width space (U+200B): tesseract can emit BiDi
+        ## controls for RTL scripts, so the published sidecar must strip them (strip_invisible)
+        ## while keeping the benign text -- else a served .ocr.txt could reorder a rendered verdict.
+        handle.write("OCRNEEDLE recognized " + chr(0x202E) + "welcome" + chr(0x200B) + " text")
     ## Card at NN=00 so it must render BEFORE the NN>=01 screenshots -- proving shots and cards
     ## interleave by capture order, not grouped (images-then-cards would wrongly float it to the end).
     with open(os.path.join(v_dir, "00-vm-defined.card.txt"), "w", encoding="utf-8") as handle:
@@ -645,6 +648,14 @@ v_ocr = "kicksecure-vshow__calamares-install__welcome.ocr.txt"
 check("OCR sidecar link emitted", ('href="%s"' % v_ocr) in v_page and ">OCR text<" in v_page)
 check("OCR sidecar file copied into the page dir",
       os.path.isfile(os.path.join(v_dir_out, v_ocr)))
+## BiDi/invisible controls in the run-time OCR are STRIPPED from the published sidecar (a served
+## .ocr.txt must not carry an invisible RLO that could reorder a rendered verdict); benign text
+## survives. Canary: the pre-fix byte-copy published the RLO/ZWSP verbatim.
+v_ocr_text = read(os.path.join(v_dir_out, v_ocr))
+check("published OCR sidecar strips BiDi/invisible controls",
+      chr(0x202E) not in v_ocr_text and chr(0x200B) not in v_ocr_text)
+check("published OCR sidecar keeps the benign OCR text",
+      "OCRNEEDLE" in v_ocr_text and "welcome" in v_ocr_text)
 ## State card: rendered as a TEXT panel (the card text embedded, labelled), NOT an image.
 check("state card text rendered on the page", "CARDNEEDLE" in v_page)
 check("state card labelled by its milestone name", "<strong>vm-defined</strong>" in v_page)

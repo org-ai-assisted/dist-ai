@@ -200,6 +200,28 @@ check "story_snap_nonblank default mode checks uniform-only" "${got}"
 got=0; ! grep --quiet --extended-regexp 'key 2a aa' "${guestctl_log}" || got=1
 check "story_snap_nonblank default mode does NOT tap Shift" "${got}"
 
+## --- story_snap_nonblank TIMEOUT discards the degenerate leftover ----------------------------
+## A frame that never passes the check (ibc always degenerate) times out; the leftover frame + its
+## gate sibling must be REMOVED so a lenient successful-run cleanup cannot publish a missed
+## firmware splash as evidence. The passing case above (frame KEPT) makes this non-vacuous.
+fail_ibc="${work}/ibc-fail"
+cat > "${fail_ibc}" <<'STUB'
+#!/bin/bash
+exit 1
+STUB
+chmod +x -- "${fail_ibc}"
+true > "${grim_log}"; true > "${guestctl_log}"
+rc=0
+IMAGE_BLANK_CHECK="${fail_ibc}" story_snap_nonblank 11 firmware-logo 1 1 content || rc=$?
+got=0; [ "${rc}" -ne 0 ] || got=1
+check "story_snap_nonblank content timeout returns non-zero" "${got}"
+got=0; [ -e "${shot_dir}/11-firmware-logo.png" ] && got=1
+check "story_snap_nonblank timeout DISCARDS the degenerate frame" "${got}"
+# shellcheck disable=SC2154  ## gate_subdir is set by the sourced subject (dm-calamares-install)
+gate_sibling="${shot_dir}/${gate_subdir}/11-firmware-logo.png"
+got=0; [ -e "${gate_sibling}" ] && got=1
+check "story_snap_nonblank timeout DISCARDS the gate sibling too" "${got}"
+
 ## --- start_vm_frontend dispatch -------------------------------------------------------------
 story_capture="window"
 true > "${frontend_log}"; true > "${vbox_log}"; gui_vm_pid=""

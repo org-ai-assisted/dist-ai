@@ -517,7 +517,15 @@ story_snap_nonblank() {
          && "${IMAGE_BLANK_CHECK:-image-blank-check}" "${ibc_args[@]}" "$(gate_check_path "${dest}")" >/dev/null 2>&1; then
          return 0
       fi
-      [ "$(( SECONDS - start ))" -lt "${timeout}" ] || return 1
+      if [ "$(( SECONDS - start ))" -ge "${timeout}" ]; then
+         ## Timed out without a non-blank frame: DISCARD the degenerate leftover (frame + gate
+         ## sibling) so the lenient (--uniform-only) successful-run cleanup cannot publish a blank
+         ## milestone as real evidence (e.g. a missed firmware splash -> NO firmware-logo frame,
+         ## which is honest). The caller's `|| true` still sees the non-zero return; the universal
+         ## floor still owns the run verdict.
+         safe-rm --force -- "${dest}" "${dest%/*}/${gate_subdir}/${dest##*/}" 2>/dev/null || true
+         return 1
+      fi
       sleep "${cadence}"
    done
 }
@@ -1789,8 +1797,9 @@ main() {
    ## Firmware logo: the VBox EFI firmware DOES draw a splash (a ~1024x768 VirtualBox logo) about
    ## a second after power-on in both efi and efi-secureboot, then blacks out ~1s later for the
    ## GRUB mode switch. A blind single shot races that short window and usually grabs black, so
-   ## POLL fast over the first few seconds and keep the frame that actually rendered. `|| true`:
-   ## the universal floor owns the verdict (and keeps errexit off the timeout path).
+   ## POLL fast over the first few seconds and keep the frame that actually rendered. On a genuine
+   ## miss story_snap_nonblank DISCARDS the black leftover (no misleading firmware-logo published);
+   ## `|| true`: the universal floor owns the verdict (and keeps errexit off the timeout path).
    story_snap_nonblank 11 firmware-logo 6 0.4 content || true
    ## No "live-kernel-boot" capture: Kicksecure boots SILENTLY (security-misc; no plymouth, no
    ## console), so the whole window between the GRUB menu and the painted desktop is black BY

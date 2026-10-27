@@ -39,6 +39,12 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
+## Clear any inherited commit-gate overrides: the canaries must see the gate BLOCK (an ambient
+## ALLOW_*_COMMIT=1 would let them commit and spuriously fail the suite), and the main run must
+## test the driver SETTING the overrides, not inheriting them. The driver still sets them itself
+## via a per-command prefix in its own subprocess, unaffected by this unset.
+unset ALLOW_UNICODE_COMMIT ALLOW_STYLE_COMMIT
+
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 ## <root>/usr/share/test-results-site-tests -> <root> is three levels up.
 repo_root="$(cd -- "${script_dir}/../../.." && pwd)"
