@@ -105,12 +105,16 @@ exit 0
 STUB
 chmod +x -- "${bin}/site-deploy"
 
-## github-api stub: confirm-published polls pages/builds/latest. Report status=built at the
-## repo's CURRENT HEAD (the stub runs in the driver's cwd = the pages repo) so confirm passes
+## github-api stub: confirm-published polls the github-pages DEPLOYMENT for the pushed sha (newest
+## id, then its latest status). Report one deployment whose status is success so confirm passes
 ## fast -- this test is about the PUBLISH/recovery path, not the live Pages build.
 cat > "${bin}/github-api" <<'STUB'
 #!/bin/bash
-printf '{"status":"built","commit":"%s"}\n' "$(git rev-parse HEAD 2>/dev/null)"
+case "$2" in
+   *'/deployments?'*) printf '%s\n' '[{"id":1}]' ;;
+   *'/deployments/'*'/statuses'*) printf '%s\n' '[{"state":"success"}]' ;;
+   *) printf '%s\n' '[]' ;;
+esac
 exit 0
 STUB
 chmod +x -- "${bin}/github-api"

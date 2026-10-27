@@ -192,6 +192,9 @@ cd -- "${pages_repo}"
 ## add the generated site into an isolated index, then commit only that -- a sibling's
 ## concurrent staging is never swept. (The whole-index commit of the PRIVATE index is the
 ## intended full regenerate; GIT_INDEX_COMMIT_GUARD_ALLOW=1 satisfies the shared-index gate.)
+## ALLOW_UNICODE_COMMIT=1: the commit stages ONLY automated-test-results/, generated results
+## DATA whose OCR sidecars carry on-screen unicode (R, C, typographic quotes verbatim from the
+## installer UI). That is not source code/docs; the ASCII-only gate must not block publishing it.
 idx="$(mktemp)"
 GIT_INDEX_FILE="${idx}" git read-tree HEAD
 GIT_INDEX_FILE="${idx}" git add -A -- automated-test-results
@@ -200,7 +203,8 @@ if GIT_INDEX_FILE="${idx}" git diff --cached --quiet HEAD -- automated-test-resu
 else
    msg_file="$(mktemp)"
    printf '%s\n' "Deploy image-test results" > "${msg_file}"
-   GIT_INDEX_FILE="${idx}" GIT_INDEX_COMMIT_GUARD_ALLOW=1 git commit --quiet -F "${msg_file}" \
+   GIT_INDEX_FILE="${idx}" GIT_INDEX_COMMIT_GUARD_ALLOW=1 ALLOW_UNICODE_COMMIT=1 \
+      git commit --quiet -F "${msg_file}" \
       || die "commit failed"
 fi
 
