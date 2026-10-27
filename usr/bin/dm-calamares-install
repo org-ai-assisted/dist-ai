@@ -302,6 +302,26 @@ on_exit() {
    if [ -n "${shot_dir}" ]; then
       safe-rm --recursive --force -- "${shot_dir}/${gate_subdir}" 2>/dev/null || true
    fi
+   ## FAIL a passing run whose capture STUCK: a frame repeated across 3+ milestones is a broken
+   ## capture (a modal host dialog over the guest, a frontend that never repainted, a grab taken
+   ## before the guest advanced). Each such frame is non-blank, so the blank sweep above keeps it,
+   ## yet many milestones would publish the SAME frame under different names and the rc-only verdict
+   ## would go green (the real break published 29 identical frames). Healthy runs legitimately snap
+   ## an UNCHANGED view at two consecutive milestones (e.g. install-host-launched /
+   ## live-guestcontrol-ready), so a cluster of 2 is tolerated; 3+ identical is the stuck-capture
+   ## signature. A wrong-but-distinct frame, or a wrong PAIR, is the OCR content gate's job, not
+   ## this. Runs over the FINAL published set (after the transient drops + gate-sibling cleanup
+   ## above), so dropped / gate frames never count.
+   if [ "${rc}" -eq 0 ] && [ -n "${shot_dir}" ]; then
+      local dup_out=''
+      if ! dup_out="$("${IMAGE_DUP_CHECK:-image-dup-check}" --min-cluster 3 -- "${shot_dir}" 2>&1)"; then
+         printf '%s\n' \
+            "${me}: ERROR: stuck/duplicate capture -- a frame repeats across 3+ milestones:" \
+            "${dup_out}" >&2
+         die_reason="duplicate milestone screenshots (stuck capture)"
+         rc=1
+      fi
+   fi
    ## tear down the persistent GUI compositor last -- every capture_frame above needs labwc + the
    ## VirtualBoxVM window alive to grim-grab; restores global GUI/SuppressMessages, reaps pids/dirs.
    gui_compositor_stop
