@@ -807,6 +807,25 @@ check("per-rect redaction keeps an out-of-rect token", "PUBLICTOKEN" in _redacte
 check("per-rect redaction drops an edge-overlapping token (fail-closed)", "EDGETOKEN" not in _redacted)
 check("per-rect redaction keeps tokens that only TOUCH an edge",
       "TOUCHTOKEN" in _gen._redact_ocr_text([(50, 0, 10, 10, "TOUCHTOKEN")], [[0, 0, 50, 20]]))
+## A DEGENERATE rect (zero/negative w or h) masks no pixels, so it must redact nothing -- else a
+## [100,0,0,150] rect would drop a token spanning x=100 that it does not visually cover.
+check("per-rect redaction ignores a zero-width rect (masks no pixels)",
+      "KEEPZERO" in _gen._redact_ocr_text([(40, 50, 140, 26, "KEEPZERO")], [[100, 0, 0, 150]]))
+check("per-rect redaction ignores a negative-height rect",
+      "KEEPNEG" in _gen._redact_ocr_text([(40, 50, 140, 26, "KEEPNEG")], [[0, 0, 500, -5]]))
+
+## The cache fingerprint folds the OCR-engine id, so a masked-lane OCR sidecar is NOT reused across
+## a tesseract appear/disappear or version bump (a cached fail-closed no-sidecar must not persist
+## once tesseract returns). Stub the engine id and assert the shared fingerprint changes.
+_orig_tess_fp = _gen._tesseract_fingerprint
+try:
+    _gen._tesseract_fingerprint = lambda: "tesseract-5.5.0"
+    _fp_a = _gen.shared_input_fingerprint(None)
+    _gen._tesseract_fingerprint = lambda: "absent"
+    _fp_b = _gen.shared_input_fingerprint(None)
+finally:
+    _gen._tesseract_fingerprint = _orig_tess_fp
+check("cache fingerprint folds the tesseract engine id (invalidates on change)", _fp_a != _fp_b)
 
 ## Orphan-OCR + masked-lane e2e: a dedicated generate with a mask config.
 mask_plane = os.path.join(work, "maskplane")
@@ -867,14 +886,20 @@ check("orphan OCR is NOT rendered as a card (secret absent)", "ORPHANOCRSECRET" 
 ## while the lower panel's text survives. On a host without tesseract the re-OCR fails closed (no
 ## sidecar), already covered above; the deterministic unit test covers the redaction rule either way.
 if shutil.which("tesseract") and os.path.isfile(baseline):
+    from dm_test_results import imaging as _imaging  # noqa: E402
     from dm_test_results import ocr as _ocr  # noqa: E402
-    _full_words = _ocr.tesseract_words(baseline)
+    ## Mirror the generator EXACTLY: it OCRs the re-encoded frame-1 (via normalize_image), not the
+    ## raw container, so a multi-page file cannot leak unrendered pages. Compute the expected
+    ## redaction over the SAME re-encoded frame.
+    _etmp = os.path.join(work, "expected-frame.png")
+    _imaging.normalize_image(baseline, None).save(_etmp, format="PNG")
+    _full_words = _ocr.tesseract_words(_etmp)
     _full_text = " ".join(w[4] for w in _full_words)
     _expected = _gen._redact_ocr_text(_full_words, [[0, 0, 1280, 120]])
     check("masked lane publishes a (redacted) OCR link", ">OCR text<" in masked_page)
-    ## The generator re-OCRs the identical image with the identical tesseract, so its published
-    ## sidecar must EQUAL the redaction function applied to the real OCR for that mask rect.
-    check("masked OCR == per-rect redaction of the real OCR", masked_ocr_text == _expected)
+    ## The generator OCRs the identical re-encoded frame with the identical tesseract, so its
+    ## published sidecar must EQUAL the redaction function applied to that frame's OCR.
+    check("masked OCR == per-rect redaction of the published frame's OCR", masked_ocr_text == _expected)
     ## The top band carried text, so redaction must have DROPPED tokens (shorter) yet kept some.
     check("masking actually dropped tokens but kept the rest",
           0 < len(_expected) < len(_full_text))

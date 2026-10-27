@@ -41,6 +41,7 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 
 _LIB = os.path.join(
     os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
@@ -467,8 +468,12 @@ def _read_text_asset(run_dir, path):
 def _tokens_overlap_rect(left, top, width, height, rect):
     """True if a tesseract word box (left, top, width, height) overlaps a privacy mask rect
     (x, y, w, h). Half-open intervals: touching edges do NOT overlap. Both are in native image
-    pixel space (normalize_image does not resize), so the comparison is direct."""
+    pixel space (normalize_image does not resize), so the comparison is direct. A DEGENERATE rect
+    (zero/negative w or h) masks NO pixels in normalize_image, so it must redact nothing -- else a
+    [x,0,0,h] rect would drop a token it does not visually cover."""
     x, y, rect_w, rect_h = rect[0], rect[1], rect[2], rect[3]
+    if rect_w <= 0 or rect_h <= 0:
+        return False
     return left < x + rect_w and left + width > x and top < y + rect_h and top + height > y
 
 
@@ -494,11 +499,30 @@ def _attach_redacted_ocr(run_dir, page_dir, sid, shot_rel_path, rects):
     src = os.path.join(run_dir, shot_rel_path)
     if os.path.islink(src) or not os.path.isfile(src):
         return None
+    ## OCR the PUBLISHED frame, not the raw file: a multi-page container (a TIFF named .png) would
+    ## otherwise have tesseract read every page while Pillow publishes only frame 1, leaking text
+    ## from an unrendered/unmasked page (and letting an attacker make tesseract grind many pages).
+    ## Re-encode frame 1 (unmasked) to a temp PNG and OCR THAT, so the OCR matches what is shown and
+    ## the word boxes are the FULL token extents (needed for the fail-closed bbox-overlap drop).
     try:
-        words = ocr.tesseract_words(src)
-    except Exception:  # noqa: BLE001 -- fail-closed: ANY OCR error (no tesseract, CalledProcessError,
-        ## bad image) publishes NO sidecar, never the unmasked run-time text.
+        frame = imaging.normalize_image(src, None)
+    except Exception:  # noqa: BLE001 -- unreadable image: fail-closed, no sidecar.
         return None
+    tmp_png = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as handle:
+            tmp_png = handle.name
+        frame.save(tmp_png, format="PNG")
+        words = ocr.tesseract_words(tmp_png)
+    except Exception:  # noqa: BLE001 -- fail-closed: ANY OCR/encode error (no tesseract,
+        ## CalledProcessError, bad image) publishes NO sidecar, never the unmasked run-time text.
+        return None
+    finally:
+        if tmp_png is not None:
+            try:
+                os.unlink(tmp_png)
+            except OSError:
+                pass
     redacted = _redact_ocr_text(words, rects)
     out_name = _flatten(sid) + OCR_SUFFIX
     try:
@@ -568,13 +592,31 @@ def _path_sha256_or_empty(path):
     return ""
 
 
+def _tesseract_fingerprint():
+    """A stable id for the OCR engine: its reported version, or 'absent' when tesseract is not on
+    PATH. Folded into the cache so a masked-lane OCR sidecar is NOT reused across a tesseract
+    appear/disappear or a version bump -- else a run generated while tesseract was absent would keep
+    its fail-closed (no-sidecar) result after tesseract returns, and a version change would serve
+    stale redacted text. (A non-masked lane does not OCR, but keying globally is simplest and only
+    forces a cheap re-encode on the rare tesseract change.)"""
+    try:
+        import subprocess
+        out = subprocess.run(["tesseract", "--version"], capture_output=True, text=True,
+                             check=True)  # nosec B603/B607 -- fixed argv, no shell, trusted tool
+        return out.stdout.splitlines()[0].strip() if out.stdout else "present"
+    except Exception:  # noqa: BLE001 -- absent/unrunnable tesseract is a distinct fingerprint
+        return "absent"
+
+
 def shared_input_fingerprint(mask_config_path):
     """Digest of every GENERATE-WIDE input that affects a run's page assets: the cache format
-    version and the mask config. Folded into every run's fingerprint, so a mask change
-    invalidates the whole cache. Hashes files by raw bytes (no parse-shape assumptions)."""
+    version, the mask config, and the OCR engine id. Folded into every run's fingerprint, so a mask
+    change OR a tesseract appear/version-change invalidates the whole cache. Hashes files by raw
+    bytes (no parse-shape assumptions)."""
     digest = hashlib.sha256()
     digest.update(("cachefmt=%d\0" % CACHE_FORMAT_VERSION).encode("ascii"))
     digest.update(("mask=%s\0" % _path_sha256_or_empty(mask_config_path)).encode("ascii"))
+    digest.update(("tesseract=%s\0" % _tesseract_fingerprint()).encode("ascii", "replace"))
     return digest.hexdigest()
 
 
