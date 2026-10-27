@@ -12,7 +12,7 @@
 ##   start_vm_frontend    -- window mode: a maximized VirtualBoxVM --startvm GUI window; framebuffer
 ##                           mode: the legacy `VBoxManage startvm --type headless`.
 ##   story_snap NN name   -- a capture_frame into ${shot_dir}/NN-name.png, NO quiesce.
-##   story_card NN name T -- a rendered state card (showvminfo -> dm-text-to-png), no framebuffer.
+##   story_card NN name T -- a state card emitted as TEXT (showvminfo -> NN-name.card.txt), no image.
 ##   cb_gui_ns_reexec     -- coreboot+window only: re-exec into a mount namespace (no-op otherwise).
 ##   gui_compositor_stop  -- restore the global GUI/SuppressMessages the GUI capture overrode.
 ## Capture/card are best-effort: no ${shot_dir} -> no-op; a failure never fails the run.
@@ -281,15 +281,23 @@ wait "${kill_pid}" 2>/dev/null || true
 got=0; kill -0 "${kill_pid}" 2>/dev/null && got=1
 check "gui_compositor_stop KILLS the frontend when vm_kept is unset" "${got}"
 
-## --- story_card: renders a state card from showvminfo via dm-text-to-png ---------------------
+## --- story_card: emits a state card as TEXT (showvminfo -> NN-name.card.txt), NO image --------
+## The synthetic cards publish their text directly: no PNG, no dm-text-to-png round-trip (the page
+## renders a text panel). Canary: the pre-refinement card wrote a dm-text-to-png PNG.
 true > "${vbox_log}"; true > "${text_log}"
 story_card 10 vm-defined "VM defined (pre-boot)"
-got=0; [ -s "${shot_dir}/10-vm-defined.png" ] || got=1
-check "story_card writes shot_dir/NN-name.png" "${got}"
+got=0; [ -s "${shot_dir}/10-vm-defined.card.txt" ] || got=1
+check "story_card writes shot_dir/NN-name.card.txt (text, not an image)" "${got}"
+got=0; [ ! -e "${shot_dir}/10-vm-defined.png" ] || got=1
+check "story_card writes NO PNG" "${got}"
 got=0; has 'showvminfo' "$(cat -- "${vbox_log}")" && has 'machinereadable' "$(cat -- "${vbox_log}")" || got=1
 check "story_card reads VBoxManage showvminfo --machinereadable" "${got}"
-got=0; has "${shot_dir}/10-vm-defined.png" "$(cat -- "${text_log}")" || got=1
-check "story_card renders the card via dm-text-to-png" "${got}"
+got=0; [ ! -s "${text_log}" ] || got=1
+check "story_card does NOT call dm-text-to-png" "${got}"
+got=0; has 'VM defined (pre-boot)' "$(cat -- "${shot_dir}/10-vm-defined.card.txt")" || got=1
+check "story_card card text carries the title" "${got}"
+got=0; has 'not a screenshot' "$(cat -- "${shot_dir}/10-vm-defined.card.txt")" || got=1
+check "story_card card text is labelled 'not a screenshot'" "${got}"
 
 ## --- best-effort: no shot_dir -> capture/card are silent no-ops ------------------------------
 shot_dir=""

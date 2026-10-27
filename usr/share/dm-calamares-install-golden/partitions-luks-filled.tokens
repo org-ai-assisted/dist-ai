@@ -1,0 +1,3 @@
+# partitions-luks-filled milestone -- expected OCR tokens (seeded from a healthy run; see README)
+# The encrypt-system checkbox is unique to the LUKS-filled partition panel.
+Encrypt system

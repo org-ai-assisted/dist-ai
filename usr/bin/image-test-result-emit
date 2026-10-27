@@ -60,6 +60,11 @@ _MEDIA_BY_EXT = {
 ## Overridable for tests (trust the env; a bad value fails loud).
 MAX_SHOT_BYTES = int(os.environ.get("IMAGE_TEST_MAX_SHOT_BYTES") or 25 * 1024 * 1024)
 
+## A per-shot OCR sidecar / state-card text file is a few KB of recognized text; cap the
+## root-side copy far tighter than a screenshot so a planted large text file cannot bloat
+## the plane (it is served + embedded). Overridable for tests.
+MAX_TEXT_BYTES = int(os.environ.get("IMAGE_TEST_MAX_TEXT_BYTES") or 256 * 1024)
+
 
 class _RefusedInput(Exception):
     """An account-owned input that root must not read as given (a symlink, or a
@@ -186,30 +191,31 @@ def read_tail(path):
     return text
 
 
-def copy_shot(src, dst):
-    """Copy an account-owned screenshot to the root-owned result dir using the same
-    no-follow open as read_tail. A missing or refused (symlinked / non-regular)
-    source -> skip, return False (normal 'no shot this run'). The copy is streamed
-    and bounded to MAX_SHOT_BYTES; an oversized source is dropped (no partial file,
-    no attachment). Returns True only when a complete file was copied."""
-    fd = _open_account_input(src, "screenshot")
+def copy_bounded(src, dst, max_bytes=MAX_SHOT_BYTES, kind="screenshot"):
+    """Copy an account-owned file (a screenshot, an OCR sidecar, a state-card text) to the
+    root-owned result dir using the same no-follow open as read_tail -- the ONLY root reopen
+    of an account path, so a symlinked/non-regular source is refused atomically, never followed.
+    A missing or refused source -> skip, return False (normal 'no artifact this run'). The copy
+    is streamed and bounded to max_bytes; an oversized source is dropped (no partial file, no
+    attachment). Returns True only when a complete file was copied."""
+    fd = _open_account_input(src, kind)
     if fd is None:
         return False
     copied = 0
     with os.fdopen(fd, "rb") as handle, open(dst, "wb") as out:
-        while copied <= MAX_SHOT_BYTES:
+        while copied <= max_bytes:
             chunk = handle.read(65536)
             if not chunk:
                 return True
             copied += len(chunk)
-            if copied > MAX_SHOT_BYTES:
+            if copied > max_bytes:
                 break
             out.write(chunk)
     ## Oversized: drop the partial copy and record no attachment.
     os.unlink(dst)
     sys.stderr.write(
-        "image-test-result-emit: screenshot '%s' exceeds %d bytes; omitted\n"
-        % (src, MAX_SHOT_BYTES))
+        "image-test-result-emit: %s '%s' exceeds %d bytes; omitted\n"
+        % (kind, src, max_bytes))
     return False
 
 
@@ -257,6 +263,22 @@ def parse_args(argv):
     parser.add_argument("--step-shot-src", action="append", default=None)
     parser.add_argument("--step-shot-name", action="append", default=None)
     parser.add_argument("--step-shot-mediatype", action="append", default=None)
+    ## Per-shot CONTENT validation, parallel to --step-shot (1:1, "" placeholder when none): the
+    ## lane's content gate decided whether the shot showed the RIGHT thing for its stage. Carried
+    ## onto the attachment as `validation` (model coerces an unknown/empty value to 'unvalidated',
+    ## fail-closed -- an unrecorded shot is never shown green).
+    parser.add_argument("--step-shot-ocr", action="append", default=None)
+    ## Per-shot OCR sidecar SOURCE, parallel to --step-shot (1:1, "" placeholder when none). When
+    ## present AND the shot was emitted, the text is copied no-follow into the run dir and recorded
+    ## as a second text/plain attachment at <stored-shot-basename>.ocr.txt, which the site links
+    ## under the image as evidence of what the frame actually showed.
+    parser.add_argument("--step-shot-status", action="append", default=None)
+    ## State-card TEXT (the synthetic "screenshots generated out of text" -- vm-defined, vbox-host,
+    ## firmware-state, ...). NOT an image: the text is authoritative, so the lane emits it directly
+    ## and the site renders a text panel, no PNG/OCR/golden round-trip. --step-card-name labels it;
+    ## --step-card-text-file is its account-owned source, copied no-follow like a shot.
+    parser.add_argument("--step-card-name", action="append", default=None)
+    parser.add_argument("--step-card-text-file", action="append", default=None)
     ## provenance (origin is above; these detail it)
     parser.add_argument("--provenance-source-uri", default=None)
     parser.add_argument("--provenance-source-commit", default=None)
@@ -273,7 +295,7 @@ def parse_args(argv):
 def main(argv):
     ## The result dir + its screenshots are served by nginx and pulled for the static-site
     ## regenerate, so they must be world-readable. This runs as root under the eph account's
-    ## (possibly restrictive) umask; force 022 so copy_shot + result.json land 0644, not 0600.
+    ## (possibly restrictive) umask; force 022 so copy_bounded + result.json land 0644, not 0600.
     os.umask(0o022)
     args = parse_args(argv)
     now = int(time.time())
@@ -286,8 +308,10 @@ def main(argv):
     srcs = args.step_shot_src or []
     names = args.step_shot_name or []
     mtypes = args.step_shot_mediatype or []
+    statuses = args.step_shot_status or []
+    ocrs = args.step_shot_ocr or []
     ## --step-shot-src must be 1:1 with --step-shot (each shot is copied from its own
-    ## account source); name/mediatype may be shorter and default per shot.
+    ## account source); name/mediatype/status/ocr may be shorter and default per shot.
     if srcs and len(srcs) != len(shots):
         sys.stderr.write(
             "image-test-result-emit: --step-shot-src count (%d) != --step-shot count (%d)\n"
@@ -306,6 +330,10 @@ def main(argv):
         shot = os.path.basename(step_shot)
         name = names[i] if i < len(names) and names[i] else "screenshot"
         mtype = mtypes[i] if i < len(mtypes) else None
+        ## Empty/absent status -> None, which make_attachment leaves ABSENT (the generator then
+        ## reads it as 'unvalidated' -- fail-closed). A real token is coerced to the enum there.
+        status = statuses[i] if i < len(statuses) and statuses[i] else None
+        ocr_src = ocrs[i] if i < len(ocrs) and ocrs[i] else None
         ## Distinct attachment names so the site can disambiguate + label each milestone;
         ## distinct stored basenames so a second shot never truncates a prior one.
         if name in seen_names:
@@ -319,16 +347,17 @@ def main(argv):
         ## Build the attachment FIRST (validates name/mediaType/path); an invalid one
         ## (non-ASCII, control char, '.'/'..', empty) is skipped, never fatal.
         try:
-            attachment = model.make_attachment(name, media_type_for(shot, mtype), shot)
+            attachment = model.make_attachment(
+                name, media_type_for(shot, mtype), shot, validation=status)
         except model.ModelError as exc:
             sys.stderr.write("image-test-result-emit: skipping shot '%s': %s\n" % (shot, exc))
             continue
         shot_present = True
         if srcs:
-            ## copy_shot is best-effort; an OSError (e.g. a >255-byte stored basename)
+            ## copy_bounded is best-effort; an OSError (e.g. a >255-byte stored basename)
             ## skips this shot rather than aborting the whole result.
             try:
-                shot_present = copy_shot(srcs[i], os.path.join(dest_dir, shot))
+                shot_present = copy_bounded(srcs[i], os.path.join(dest_dir, shot))
             except OSError as exc:
                 sys.stderr.write("image-test-result-emit: skipping shot '%s': %s\n" % (shot, exc))
                 continue
@@ -339,11 +368,74 @@ def main(argv):
         ## same-stem retake (02-welcome after an oversized 00-welcome, both -> 'welcome'
         ## once results-publish strips the NN- prefix) would be skipped as a dup and the
         ## milestone lost. Reserving dest only on emit still blocks a later same-basename
-        ## shot from truncating this one (the seen_dests gate runs before copy_shot).
+        ## shot from truncating this one (the seen_dests gate runs before copy_bounded).
         if shot_present:
             seen_names.add(name)
             seen_dests.add(shot)
             attachments.append(attachment)
+            ## OCR sidecar: pair it to THIS emitted shot (path = <stored-shot>.ocr.txt). Only once
+            ## the shot itself was emitted, so a dropped shot never leaves a dangling sidecar the
+            ## site would misread as a standalone card. Best-effort + no-follow + text-bounded:
+            ## a missing/symlinked/oversized sidecar records no text attachment, never aborts.
+            if ocr_src:
+                ocr_stored = shot + ".ocr.txt"
+                try:
+                    ocr_present = copy_bounded(
+                        ocr_src, os.path.join(dest_dir, ocr_stored),
+                        max_bytes=MAX_TEXT_BYTES, kind="OCR text")
+                except OSError as exc:
+                    sys.stderr.write(
+                        "image-test-result-emit: skipping OCR sidecar for '%s': %s\n" % (shot, exc))
+                    ocr_present = False
+                if ocr_present:
+                    try:
+                        attachments.append(model.make_attachment(
+                            name, "text/plain", ocr_stored))
+                    except model.ModelError as exc:
+                        sys.stderr.write(
+                            "image-test-result-emit: skipping OCR sidecar for '%s': %s\n"
+                            % (shot, exc))
+                        os.unlink(os.path.join(dest_dir, ocr_stored))
+
+    ## State-card TEXT attachments (vm-defined, vbox-host, firmware-state, ...): the synthetic
+    ## "screenshots painted from our own text" publish their text directly -- no PNG, no OCR, no
+    ## golden. Each is copied no-follow (text-bounded) into the run dir as <card>.card.txt and
+    ## recorded as a text/plain attachment the site renders as a panel. A card path never collides
+    ## with an <image>.ocr.txt, so the site tells a standalone card from a shot's OCR sidecar by
+    ## whether the text attachment pairs an image attachment's path.
+    card_names = args.step_card_name or []
+    card_files = args.step_card_text_file or []
+    if card_files and len(card_files) != len(card_names):
+        sys.stderr.write(
+            "image-test-result-emit: --step-card-text-file count (%d) != --step-card-name count (%d)\n"
+            % (len(card_files), len(card_names)))
+        return 2
+    for i, card_name in enumerate(card_names):
+        card_src = card_files[i] if i < len(card_files) else None
+        if not card_src:
+            continue
+        card = os.path.basename(card_src)
+        if not card.endswith(".card.txt"):
+            card = card + ".card.txt"
+        if card in seen_dests:
+            sys.stderr.write(
+                "image-test-result-emit: skipping duplicate stored card '%s'\n" % card)
+            continue
+        try:
+            card_att = model.make_attachment(card_name, "text/plain", card)
+        except model.ModelError as exc:
+            sys.stderr.write("image-test-result-emit: skipping card '%s': %s\n" % (card_name, exc))
+            continue
+        try:
+            card_present = copy_bounded(
+                card_src, os.path.join(dest_dir, card),
+                max_bytes=MAX_TEXT_BYTES, kind="state card")
+        except OSError as exc:
+            sys.stderr.write("image-test-result-emit: skipping card '%s': %s\n" % (card_name, exc))
+            continue
+        if card_present:
+            seen_dests.add(card)
+            attachments.append(card_att)
 
     step = model.make_step(
         name=args.step_name,

@@ -281,6 +281,40 @@ def build_plane(root):
     with open(os.path.join(r_dir, "result.json"), "w", encoding="ascii") as handle:
         handle.write(model.dumps(r_result))
 
+    ## V: a PASS run carrying per-shot CONTENT validation + an OCR sidecar + a state-card TEXT panel
+    ## (the DISPLAY/publish half). On a PASSING run: a 'validated' shot shows a green content chip; an
+    ## 'unvalidated' shot (no golden) shows an INCONCLUSIVE content chip -- NOT green (the keystone:
+    ## "every screenshot read green" is what this closes); a 'mismatch' shot shows a FAIL content
+    ## chip. The welcome shot has a published OCR sidecar (linked). The vm-defined CARD is TEXT (a
+    ## panel, never an <img>). Content validation is ORTHOGONAL to the step's functional status.
+    v_dir = os.path.join(root, "kicksecure-vshow-18-2-3-5", "20261006T000000Z")
+    write_png(os.path.join(v_dir, "01-welcome.png"), (20, 120, 20))
+    write_png(os.path.join(v_dir, "02-keyboard.png"), (60, 60, 60))
+    write_png(os.path.join(v_dir, "03-badframe.png"), (90, 20, 20))
+    with open(os.path.join(v_dir, "01-welcome.png.ocr.txt"), "w", encoding="utf-8") as handle:
+        handle.write("OCRNEEDLE recognized welcome text")
+    with open(os.path.join(v_dir, "10-vm-defined.card.txt"), "w", encoding="utf-8") as handle:
+        handle.write("CARDNEEDLE [state card -- not a screenshot] VM defined (pre-boot)")
+    v_atts = [
+        model.make_attachment("welcome", "image/png", "01-welcome.png",
+                              validation=model.VALIDATION_VALIDATED),
+        model.make_attachment("welcome", "text/plain", "01-welcome.png.ocr.txt"),
+        model.make_attachment("keyboard", "image/png", "02-keyboard.png",
+                              validation=model.VALIDATION_UNVALIDATED),
+        model.make_attachment("badframe", "image/png", "03-badframe.png",
+                              validation=model.VALIDATION_MISMATCH),
+        model.make_attachment("vm-defined", "text/plain", "10-vm-defined.card.txt"),
+    ]
+    v_step = model.make_step(name="calamares-install", status=model.step_status_from_rc(0),
+                             exit_code=0, attachments=v_atts)
+    v_result = model.build_result(
+        run_id="kicksecure-vshow-18-2-3-5-1", lane="kicksecure-vshow", version="18.2.3.5",
+        builder="dm-release-test", mode="calamares-install", origin=model.ORIGIN_DOWNLOADED,
+        rc=0, generated_unix=now, stop_unix=now, steps=[v_step])
+    os.makedirs(v_dir, exist_ok=True)
+    with open(os.path.join(v_dir, "result.json"), "w", encoding="ascii") as handle:
+        handle.write(model.dumps(v_result))
+
 
 def _rewrite(path, old, new):
     with open(path, "r", encoding="ascii") as handle:
@@ -530,6 +564,36 @@ check("PASS+firmware-mismatch overview cell is non-green",
 ## every other run still generated.
 r_page = read(os.path.join(out1, "kicksecure-fwbad2-18-2-3-5__20261006T000000Z", "index.html"))
 check("malformed-firmware run is NO-DATA", "st-nodata" in r_page)
+
+## V: per-shot CONTENT validation chips + OCR link + state-card TEXT panel (the DISPLAY/publish
+## half). Each shot carries a SECOND chip (the content verdict) beside the functional one, coloured
+## via the reused st-* classes; a state card renders as a text panel, never an <img>.
+v_dir_out = os.path.join(out1, "kicksecure-vshow-18-2-3-5-1")
+v_page = read(os.path.join(v_dir_out, "index.html"))
+check("validated shot shows a green content chip", 'st-pass">content: validated' in v_page)
+check("mismatch shot shows a FAIL content chip", 'st-fail">content: MISMATCH' in v_page)
+check("unvalidated shot shows an INCONCLUSIVE content chip",
+      'st-inconclusive">content: UNVALIDATED (no golden)' in v_page)
+## KEYSTONE CANARY: an UNVALIDATED shot on a PASSING run is NOT green at the content level -- its
+## content chip is never st-pass. This is the exact "every screenshot read green" false-green #60
+## closes; a regression that mapped unvalidated -> green would trip here.
+check("unvalidated shot is NEVER green (no st-pass content chip)",
+      'st-pass">content: UNVALIDATED' not in v_page
+      and 'st-pass">content: unvalidated' not in v_page)
+## Per-run validation tally (over SHOTS only; the card is authoritative text, not a validated shot).
+check("per-run validation tally line rendered",
+      "screenshots: 1 validated, 1 unvalidated, 1 mismatch, 0 OCR error" in v_page)
+## OCR sidecar: linked under the welcome image + the text file copied into the page dir.
+v_ocr = "kicksecure-vshow__calamares-install__welcome.ocr.txt"
+check("OCR sidecar link emitted", ('href="%s"' % v_ocr) in v_page and ">OCR text<" in v_page)
+check("OCR sidecar file copied into the page dir",
+      os.path.isfile(os.path.join(v_dir_out, v_ocr)))
+## State card: rendered as a TEXT panel (the card text embedded, labelled), NOT an image.
+check("state card text rendered on the page", "CARDNEEDLE" in v_page)
+check("state card labelled by its milestone name", "<strong>vm-defined</strong>" in v_page)
+check("state card produced NO webp (text, not an image)",
+      not any("vm-defined" in n and n.endswith(".webp")
+              for n in os.listdir(v_dir_out)))
 
 ## F: an escaping attachment path is rejected -> NO-DATA, and nothing is read or
 ## copied from the escaping target (no webp written for that run).

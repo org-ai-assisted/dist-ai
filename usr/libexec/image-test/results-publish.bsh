@@ -55,6 +55,22 @@ image_test_result_emit_bin() {
    fi
 }
 
+## Mirror of dm_test_results.model.VALID_VALIDATION. A per-shot content-validation token read from
+## a <shot>.status sidecar is forwarded ONLY when it is one of these; anything else (empty,
+## unknown, or raw bytes from a planted/symlinked sidecar) collapses to 'unvalidated' -- so a bogus
+## sidecar can never paint a shot green, and no raw bytes ever reach the record. The lane's content
+## gate (content-gate.bsh) is the single writer of these sidecars.
+image_test_validation_token() {
+   case "$1" in
+      validated | mismatch | unvalidated | ocr-error)
+         printf '%s\n' "$1"
+         ;;
+      *)
+         printf '%s\n' "unvalidated"
+         ;;
+   esac
+}
+
 ## Publish one run's artifacts. Positionals (stable core):
 ##   results_root owner name test_user mode rc shot_src
 ## then named options: --lane L --version V --builder B --origin downloaded|built
@@ -194,7 +210,8 @@ image_test_results_publish() {
    ## published as a named attachment, ordered by filename, so the site renders the
    ## whole sequence. Stored step-named so shots never collide.
    if [ -n "${shot_src}" ] && [ -d "${shot_src}" ] && [ ! -L "${shot_src}" ]; then
-      local shot_f shot_base shot_milestone
+      local shot_f shot_base shot_milestone shot_status_file shot_status_tok shot_ocr_file
+      local card_f card_base card_milestone
       ## The shot dir is written by the UNPRIVILEGED test account, so a filename here is
       ## account-controlled. Accept only a NON-EMPTY regular *.png whose derived milestone
       ## is a safe label (no leading '-' that argparse would eat, no unsafe char, not
@@ -214,9 +231,43 @@ image_test_results_publish() {
                continue
                ;;
          esac
+         ## Per-shot CONTENT verdict: the content gate wrote a one-token <shot>.status sidecar
+         ## (validated/mismatch/unvalidated/ocr-error). Read + validate it to a trusted enum token
+         ## HERE (never forward raw bytes); forward parallel to the shot ("" = no sidecar -> the
+         ## generator reads an absent value as unvalidated, fail-closed). Only a regular, non-symlink
+         ## sidecar is read (skip a planted FIFO/symlink), bounded to 64 bytes.
+         shot_status_tok=""
+         shot_status_file="${shot_f}.status"
+         if [ -f "${shot_status_file}" ] && [ ! -L "${shot_status_file}" ]; then
+            shot_status_tok="$(image_test_validation_token \
+               "$(head --bytes 64 -- "${shot_status_file}" 2>/dev/null | tr --delete '[:space:]')")"
+         fi
+         ## Per-shot OCR sidecar (<shot>.ocr.txt): forwarded by PATH ("" = none); the emitter opens
+         ## it no-follow and copies it, so a symlinked sidecar is refused there -- never read here.
+         shot_ocr_file=""
+         [ -f "${shot_f}.ocr.txt" ] && shot_ocr_file="${shot_f}.ocr.txt"
          shot_emit+=( --step-shot "${step_name}-${shot_base}" \
-            --step-shot-src "${shot_f}" --step-shot-name "${shot_milestone}" )
+            --step-shot-src "${shot_f}" --step-shot-name "${shot_milestone}" \
+            --step-shot-status "${shot_status_tok}" --step-shot-ocr "${shot_ocr_file}" )
       done < <(find "${shot_src}" -maxdepth 1 -type f -name '*.png' -print0 | sort --zero-terminated)
+      ## State-card TEXT files (NN-<name>.card.txt): the synthetic cards publish their text, not an
+      ## image. Forward each as a card (name = milestone, NN- stripped); the emitter copies the text
+      ## no-follow into the run dir. Same safe-label filter as shots; *.card.txt never matches the
+      ## *.png shot glob above, so a card is never mistaken for a screenshot.
+      while IFS= read -r -d '' card_f; do
+         [ -s "${card_f}" ] || continue
+         card_base="${card_f##*/}"
+         card_milestone="${card_base%.card.txt}"
+         card_milestone="${card_milestone#*-}"
+         case "${card_milestone}" in
+            '' | '.' | '..' | -* | *[!A-Za-z0-9._-]*)
+               printf '%s\n' \
+                  "image_test_results_publish: skipping card with unusable name: ${card_base}" >&2
+               continue
+               ;;
+         esac
+         shot_emit+=( --step-card-name "${card_milestone}" --step-card-text-file "${card_f}" )
+      done < <(find "${shot_src}" -maxdepth 1 -type f -name '*.card.txt' -print0 | sort --zero-terminated)
    elif [ -n "${shot_src}" ] && [ -f "${shot_src}" ]; then
       shot_emit+=( --step-shot "${step_name}.png" --step-shot-src "${shot_src}" )
    fi

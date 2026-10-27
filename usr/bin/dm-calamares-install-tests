@@ -40,11 +40,17 @@ failures=0
 skips=0
 env_unmet=0
 ran=0
-for test_script in "${tests_dir}"/*_test.sh; do
+## Discover BOTH *_test.sh and *_test.py and dispatch by extension, so a python unit (e.g. the
+## golden-token regression) in this dir is never silently skipped -- the safe default is "run every
+## test here", not "only shell". A -Bsu python test writes no .pyc into the checkout.
+for test_script in "${tests_dir}"/*_test.sh "${tests_dir}"/*_test.py; do
    ran=$((ran + 1))
    printf '%s\n' "" "########## $(basename -- "${test_script}") ##########"
    rc=0
-   bash -- "${test_script}" "$@" || rc=$?
+   case "${test_script}" in
+      *.py) python3 -Bsu -- "${test_script}" "$@" || rc=$? ;;
+      *) bash -- "${test_script}" "$@" || rc=$? ;;
+   esac
    if [ "${rc}" -eq 77 ]; then
       printf '%s\n' "########## SKIPPED: $(basename -- "${test_script}") ##########"
       skips=$((skips + 1))
@@ -57,7 +63,7 @@ for test_script in "${tests_dir}"/*_test.sh; do
 done
 
 if [ "${ran}" -eq 0 ]; then
-   printf '%s\n' "ERROR: no *_test.sh found in ${tests_dir}" >&2
+   printf '%s\n' "ERROR: no *_test.sh or *_test.py found in ${tests_dir}" >&2
    exit 1
 fi
 printf '%s\n' '' "${ran} dm-calamares-install case(s): ${failures} failed, ${skips} skipped, ${env_unmet} env-unmet"

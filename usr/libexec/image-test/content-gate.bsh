@@ -1,0 +1,92 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Screenshot CONTENT gate for the install "full story" -- the DISPLAY/publish half of the
+## screenshot-validity work. One sourceable place that, over a milestone shot_dir:
+##   (a) asserts each shot's OCR text against its stage's APPROVED golden (image-text-assert),
+##       with the graduated policy (golden present + tokens found = validated; present + absent =
+##       MISMATCH -> fails the run; no golden = UNVALIDATED -> reported, never a validated pass,
+##       does not fail);
+##   (b) writes a one-token sidecar <shot>.status (validated/mismatch/unvalidated/ocr-error) next
+##       to each shot, so the per-shot verdict reaches result.json + the served page (today the
+##       verdict died on the lane's stderr -- every shot read green);
+##   (c) writes the OCR text sidecar <shot>.ocr.txt (image-ocr-sidecar) as published evidence.
+## content_gate_run RETURNS the content-MISMATCH count (0 = clean) so the caller flips the run rc
+## in ONE line -- keeping the lane's on_exit easy to reorder (task #61).
+##
+## A pure library: defines functions only, no top-level strict-mode block (which would leak into
+## the sourcing script -- the lane, or the unit test). Siblings are overridable via env for tests.
+##
+## style-ok: no-strict -- sourced-only fragment; a top-level 'set -o errexit'/'nounset'/'pipefail'
+## would leak into (and could kill) the sourcing shell.
+
+## The one writer of <shot>.status. Mirrors dm_test_results.model.VALID_VALIDATION; the publisher
+## (results-publish.bsh image_test_validation_token) re-validates the token before forwarding, so a
+## corrupt sidecar still collapses to a non-green verdict.
+
+## Assert one shot against its stage golden and echo the per-shot status token. Maps the
+## image-text-assert exit code: 0 validated; 1 content MISMATCH; 2 broken golden (asserts nothing
+## -- a shipped-config BUG, treated as a failing content check, loud on stderr); 3 (or other) OCR
+## read error (transient, NOT a content failure). No golden for the stage -> 'unvalidated'.
+content_gate_assert_shot() {
+   local golden="$1" shot="$2" rc=0
+   if [ ! -f "${golden}" ]; then
+      printf '%s\n' "unvalidated"
+      return 0
+   fi
+   "${IMAGE_TEXT_ASSERT:-image-text-assert}" --spec "${golden}" -- "${shot}" >/dev/null || rc=$?
+   case "${rc}" in
+      0)
+         printf '%s\n' "validated"
+         ;;
+      1)
+         printf '%s\n' "mismatch"
+         ;;
+      2)
+         printf '%s\n' \
+            "content-gate: ERROR: broken content golden ${golden##*/} (asserts nothing) -- fix it" >&2
+         printf '%s\n' "mismatch"
+         ;;
+      *)
+         printf '%s\n' "ocr-error"
+         ;;
+   esac
+}
+
+## content_gate_run <golden_dir> <shot_dir>
+## Assert + stamp a .status sidecar for every ${shot_dir}/*.png, write the .ocr.txt sidecars, print
+## a one-line tally, and RETURN the content-mismatch count (0 = clean). Best-effort on the OCR
+## sidecars (an AID, not a gate); the content MISMATCH is the only thing that flips the run rc.
+content_gate_run() {
+   local golden_dir="$1" shot_dir="$2"
+   local shot stage golden token mismatch=0 unvalidated=0 validated=0 ocr_error=0
+   for shot in "${shot_dir}"/*.png; do
+      [ -f "${shot}" ] || continue
+      stage="${shot##*/}"
+      stage="${stage%.png}"
+      stage="${stage#*-}"   ## drop the NN- ordering prefix
+      golden="${golden_dir}/${stage}.tokens"
+      token="$(content_gate_assert_shot "${golden}" "${shot}")"
+      case "${token}" in
+         validated) validated=$(( validated + 1 )) ;;
+         mismatch) mismatch=$(( mismatch + 1 )) ;;
+         ocr-error) ocr_error=$(( ocr_error + 1 )) ;;
+         *)
+            token="unvalidated"
+            unvalidated=$(( unvalidated + 1 ))
+            ;;
+      esac
+      ## Stamp the sidecar the publisher reads. A write failure must not abort the gate.
+      printf '%s\n' "${token}" > "${shot}.status" 2>/dev/null || true
+   done
+   ## Publish the OCR text beside each shot (evidence; the material a golden is approved FROM).
+   ## Best-effort: an OCR hiccup writes no sidecar for that frame but never fails the run.
+   "${IMAGE_OCR_SIDECAR:-image-ocr-sidecar}" -- "${shot_dir}" >/dev/null 2>&1 || true
+   printf '%s\n' \
+      "content-gate: ${validated} validated, ${unvalidated} unvalidated, ${mismatch} mismatch, ${ocr_error} ocr-error" >&2
+   return "${mismatch}"
+}

@@ -1,2 +1,4 @@
 # location milestone -- expected OCR tokens (seeded from a healthy run; see README)
-The system language will be set to American English
+# Region:/Zone: selector is the location panel's own text (absent from the summary frame,
+# which only restates "will be set to American English").
+Region:

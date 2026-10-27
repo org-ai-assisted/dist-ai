@@ -266,6 +266,79 @@ check "dotdot path does not abort the publish" \
 check "dotdot path REJECTED -- tail NOT recorded" \
    "$(grep --quiet --fixed-strings -- 'genuine stderr tail' "${out14}" && printf '%s' "yes" || printf '%s' "no")" 'no'
 
+## ---------------------------------------------------------------------------
+## Per-shot CONTENT validation + OCR sidecar + state-card text (the DISPLAY/publish half).
+## ---------------------------------------------------------------------------
+printf '%s' 'OCRTEXT-WELCOME' > "${workdir}/shot.ocr.txt"
+printf '%s' 'CARDTEXT-VM-DEFINED' > "${workdir}/10-vm-defined.card.txt"
+ln --symbolic -- "${workdir}/target.txt" "${workdir}/ocr.symlink"
+ln --symbolic -- "${workdir}/target.txt" "${workdir}/card.symlink"
+
+has_json() { grep --quiet --fixed-strings -- "$2" "$1" && printf '%s' "yes" || printf '%s' "no"; }
+
+## 15. --step-shot-status lands as the attachment's `validation` field.
+out15="${workdir}/d15/r15.json"; mkdir --parents -- "${workdir}/d15"
+check "status shot publishes" \
+   "$(emit_rc "${out15}" --step-shot cli.png --step-shot-src "${workdir}/shot.png" \
+      --step-shot-name welcome --step-shot-status validated)" '0'
+check "shot validation recorded on the attachment" "$(has_json "${out15}" '"validation": "validated"')" 'yes'
+
+## 16. --step-shot-ocr is copied no-follow into the run dir as <shot>.ocr.txt and recorded as a
+##     second text/plain attachment (paired to the shot by that path suffix).
+out16="${workdir}/d16/r16.json"; mkdir --parents -- "${workdir}/d16"
+check "ocr shot publishes" \
+   "$(emit_rc "${out16}" --step-shot cli.png --step-shot-src "${workdir}/shot.png" \
+      --step-shot-name welcome --step-shot-ocr "${workdir}/shot.ocr.txt")" '0'
+check "ocr sidecar copied into the run dir" \
+   "$([ -f "${workdir}/d16/cli.png.ocr.txt" ] && printf '%s' yes || printf '%s' no)" 'yes'
+check "ocr sidecar recorded as text/plain attachment" "$(has_json "${out16}" '"path": "cli.png.ocr.txt"')" 'yes'
+check "ocr sidecar mediaType text/plain" "$(has_json "${out16}" '"mediaType": "text/plain"')" 'yes'
+
+## 17. A SYMLINKED --step-shot-ocr source is refused (no leak), the shot is still emitted, and NO
+##     text attachment is recorded. (Canary: a followed symlink would copy the sentinel.)
+out17="${workdir}/d17/r17.json"; mkdir --parents -- "${workdir}/d17"
+check "symlinked ocr source does not abort the publish" \
+   "$(emit_rc "${out17}" --step-shot cli.png --step-shot-src "${workdir}/shot.png" \
+      --step-shot-name welcome --step-shot-ocr "${workdir}/ocr.symlink")" '0'
+check "symlinked ocr -- sentinel NOT leaked into the plane" \
+   "$(grep --quiet --recursive --fixed-strings -- "${sentinel}" "${workdir}/d17" 2>/dev/null && printf '%s' LEAKED || printf '%s' no)" 'no'
+check "symlinked ocr -- shot still recorded, no text attachment" \
+   "$(grep --count --fixed-strings -- '"mediaType":' "${out17}")" '1'
+
+## 18. A state card publishes its TEXT: --step-card-text-file is copied no-follow as a text/plain
+##     attachment NAMED by --step-card-name (the synthetic cards leave the image path entirely).
+out18="${workdir}/d18/r18.json"; mkdir --parents -- "${workdir}/d18"
+check "card publishes" \
+   "$(emit_rc "${out18}" --step-card-name vm-defined \
+      --step-card-text-file "${workdir}/10-vm-defined.card.txt")" '0'
+check "card text copied into the run dir" \
+   "$([ -f "${workdir}/d18/10-vm-defined.card.txt" ] && printf '%s' yes || printf '%s' no)" 'yes'
+check "card recorded as a named text/plain attachment" "$(has_json "${out18}" '"name": "vm-defined"')" 'yes'
+check "card attachment path is the card file" "$(has_json "${out18}" '"path": "10-vm-defined.card.txt"')" 'yes'
+
+## 19. A SYMLINKED card source is refused (no leak), the publish still succeeds, no card attachment.
+out19="${workdir}/d19/r19.json"; mkdir --parents -- "${workdir}/d19"
+check "symlinked card source does not abort the publish" \
+   "$(emit_rc "${out19}" --step-card-name vm-defined --step-card-text-file "${workdir}/card.symlink")" '0'
+check "symlinked card -- sentinel NOT leaked into the plane" \
+   "$(grep --quiet --recursive --fixed-strings -- "${sentinel}" "${workdir}/d19" 2>/dev/null && printf '%s' LEAKED || printf '%s' no)" 'no'
+check "symlinked card -- no attachment recorded" "$(has_json "${out19}" '"attachments": []')" 'yes'
+
+## 20. A DROPPED shot (oversized) must NOT emit a dangling OCR sidecar -- the sidecar is paired to
+##     the shot, so no shot means no sidecar (else the generator would misread it as a card).
+out20="${workdir}/d20/r20.json"; mkdir --parents -- "${workdir}/d20"
+printf '%s' 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' > "${workdir}/oversize20.png"
+rc20=0
+IMAGE_TEST_MAX_SHOT_BYTES=8 "${emit}" \
+   --run-id r-1 --lane testlane --builder builder --mode cli \
+   --origin built --rc 0 --step-name cli --dest "${out20}" \
+   --step-shot cli.png --step-shot-src "${workdir}/oversize20.png" --step-shot-name welcome \
+   --step-shot-ocr "${workdir}/shot.ocr.txt" >/dev/null 2>&1 || rc20=$?
+check "dropped shot does not abort the publish" "${rc20}" '0'
+check "dropped shot emits NO dangling ocr sidecar (attachments empty)" "$(has_json "${out20}" '"attachments": []')" 'yes'
+check "dropped shot leaves no ocr file in the run dir" \
+   "$([ -e "${workdir}/d20/cli.png.ocr.txt" ] && printf '%s' exists || printf '%s' absent)" 'absent'
+
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
    printf '%s\n' "FAILED"

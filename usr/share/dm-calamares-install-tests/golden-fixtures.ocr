@@ -1,0 +1,413 @@
+@@@STAGE:check-6-gui-rendered
+BI QkKicksecure Setup Wizard | ll user@localhost:~ [pts/0] | ill user@localhost:~ [pts/1]
+P- | user@localhost:~ [pts/1]
+File Actions Edit View Help
+user@localhost:~ [pts/1]
+DMCHKPASSMARK 5
+fuser ~]%
+5
+@@@STAGE:checks-complete
+Volume: 40%
+sysmaint@localhost:~ [pts/0]
+File Actions Edit View Help
+sysmaint@localhost:~ [pts/0]
+DMCHKPASSMARK g
+isysmaint ~)% |
+it~!
+@@@STAGE:final-last-frame
+Volume: 40%
+sysmaint@localhost:~ [pts/0]
+File Actions Edit View Help
+sysmaint@localhost:~ [pts/0]
+DMCHKPASSMARK g
+Senne
+5
+@@@STAGE:firmware-logo
+V8 VirtualBox
+@@@STAGE:first-boot
+@ Bi Wkicksecure Setup Wizard
+ VBoxClient: the VirtualBox
+Computer kernel service is not running.
+Exiting.
+oi
+Trash
+(Empty)
+user
+Ca Kicksecure Setup Wizard -ox
+The setup-wizard-dist has been successfully completed.
+Please note the following default credentials:
+* Default username: user
+* Default password: No password required. (Passwordless login.)
++ Autologin: Enabled by default for account user
+No browser is installed by default. You may install one of several popular,
+open-source browsers by booting into "PERSISTENT Mode | SYSMAINT
+Session" and clicking Install a Browser
+You can set a password and disable autologin by booting into "PERSISTENT
+Mode | SYSMAINT Session". See https://www.kicksecure.com/wiki/Sysmaint
+for more information.
+Click the "OK" button to run systemcheck.
+@@@STAGE:install-done
+Val
+WN
+
+Welcome
+
+Location
+Keyboard
+Partitions
+Summary
+
+Install
+
+Finish All done.
+
+Kicksecure 18 has been installed on your computer.
+You may now restart into your new system, or continue using the Kicksecure Live environment.
+| Restart now
+@@@STAGE:install-host-launched
+@ B B Bixat-pane!
+Computer
+CK
+Install to
+Hard Drive
+tt}
+Trash
+(Empty),
+Ixq..-
+ Okicksecure |
+@@@STAGE:install-started
+@ B s.Kicksecure installer Po
+Ch
+
+Welcome
+Location
+Keyboard
+Partitions
+Summary
+Install
+Finish
+la h
+CW,4 Kicksecure
+Welcome!
+The rest of the installation is automated and should complete in a few minutes.
+7 5% Toggle log
+Creating new rootfs partition on /dev/sda...
+@@@STAGE:installed-grub-menu
+Choose boot mode
+system will start in 2 seconds
+@ PERSISTENT Mode | USER Session | daily activities
+PERSISTENT Mode | SYSMAINT Session | system maintenance tasks
+LIVE Mode | USER Session | disposable use
+LIVE Mode | SYSMAINT Session | maintenance testing
+REMOVE user-sysmaint-split | enable unrestricted admin mode
+Use up and down keys ta select a boot made and then press ENTER. To edit commands before booting
+press 'e'. To access a command line, press 'c'. To leave a submenu, press Esc
+@@@STAGE:keyboard
+ Pe
+
+ietlsemnt2 Poe tet eb fe fe fe fe fe fh fe]
+
+se Pte fs fa fe fo de fs fe fi} P|
+
+al | fe fe fe fe fn fn fd
+
+5 /
+
+Partitions
+
+Summary Keyboard model: | Generic 105-key PC +
+Arabic (Iraq) =| [Cherokee
+
+Install Arabic (Morocco)
+5 Arabic (Syria) English (Colemak)
+Finish Armenian English (Colemak-DH ISO)
+Azerbaijani English (Colemak-DH Ortholinear)
+Bambara English (Colemak-DH Wide ISO)
+Bangla English (Colemak-DH Wide)
+Belarusian English (Colemak-DH)
+Belgian English (Dvorak)
+Berber (Algeria, Latin) English (Dvorak, Macintosh)
+Bosnian English (Dvorak, alt. intl.)
+Braille English (Dvorak, inti., with dead keys)
+Bulgarian English (Dvorak, left-handed)
+Burmese English (Dvorak, right-handed)
+Chinese English (Macintosh)
+Croatian English (Norman)
+Czech English (US, Symbolic)
+Danish English (US, alt. intl.)
+Dari English (US, euro on 5)
+Dhivehi English (US, intl., with dead keys)
+Dutch English (Workman)
+Dzongkha English (Workman, intl., with dead keys)
+English (Australia) English (classic Dvorak)
+English (Cameroon) English (intl., with AltGr dead keys)
+English (Ghana) English (programmer Dvorak)
+English (New Zealand) English (the divide/multiply toggle the layout)
+English (Nigeria) Hawaiian
+English (South Africa) Russian (US, phonetic)
+English (UK) Serbo-Croatian (US)
+Esperanto ~
+[Type here to test your keyboard Switch Keyboard: x
+Back Next Cancel
+@@@STAGE:live-grub-entry-selected
+CK Kicksecure Live ISO adrelanos_f65a6f9f.
+LIVE Mode | USER Session | disposable use
+LIVE Mode | SYSMAINT Session | system maintenance, install
+LIVE Mode | UNRESTRICTED Session | system recovery, install
+Persistent (Advanced Users Only)..
+Utilities...
+Keyboard layout options
+@@@STAGE:live-grub-menu
+CK Kicksecure Live ISO adrelanos_f65a6f9f
+LIVE Mode | USER Session | disposable use
+LIVE Mode | SYSMAINT Session | system maintenance, install
+LIVE Mode | UNRESTRICTED Session | system recovery, install
+Persistent (Advanced Users Only)..
+Utilities...
+Keyboard layout options
+Booting the highlighted entry automatically in 29 s
+@@@STAGE:live-guestcontrol-ready
+@ B B Bixat-pane!
+Computer
+CK
+Install to
+Hard Drive
+tt}
+Trash
+(Empty),
+Ixq..-
+ Okicksecure |
+@@@STAGE:location
+ a
+Welcome = ~ rs > as 2 in
+Location ~s BY New York a, 4 yi iF
+Keyboard ' > | we me ="
+Partitions SA UA eS
+Summary m |  -
+Install ; f |
+Finish f > T
+Region: | America ~) Zone: | New York =
+The system language will be set to American English (United States) Change
+The numbers and dates locale will be set to American English (United States). Change
+Back Next Cancel
+@@@STAGE:luks-passphrase-typed
+c systemd[1]: Failed to start systemd-modules-load.service  Load Kernel Modules.
+[FAILED] Failed to start systend-modules-load.service - Load Kernel Modules.
+Please enter passphrase for disk rootfs PPPeSeSEeSSPESESSTeereerrirrrerae
+@@@STAGE:luks-prompt
+c systemd[1]: Failed to start systemd-modules-load.service  Load Kernel Modules.
+[FAILED] Failed to start systend-modules-load.service - Load Kernel Modules.
+Please enter passphrase for disk rootfs (press TAB for no echo)
+@@@STAGE:luks-unlocked
+c systemd[1]: Failed to start systemd-modules-load.service  Load Kernel Modules.
+[FAILED] Failed to start systend-modules-load.service - Load Kernel Modules.
+Please enter passphrase for disk rootfs PPPS SeSEeSEeSTeereSrrereeeriryy
+@@@STAGE:mok-reboot-desktop
+BB &Kicksecure Setup Wizard | [ill user@localhost:~ [pts/0]
+P- | user@localhost:~ [pts/0]
+File Actions Edit View Help
+user@localhost:~ [pts/0]
+it~!
+@@@STAGE:partitions-luks-filled
+ a
+lap  EFI Select storage device: |  VBOX HARDDISK - 25.00 GiB (/dev/sda) -| @ 7
+=  Erase disk
+This will delete all data currently present on the selected storage device.
+Welcome
+ext ~
+Location
+Manual partitioning
+Keyboard You can create or resize partitions yourself.
+Partitions
+Summary
+Install
+Finish
+Vi Encrypt system @eeeeeceeccoccoccooccoccocccs (/)
+@ Unpartitioned space or unknown partition table
+After: Ze ]
+@ EFI system @ boot D rootfs
+Back Next Cancel
+@@@STAGE:partitions
+ a
+lap  EFI Select storage device: | | VBOX HARDDISK - 25.00 GiB (/dev/sda) ~| @ 7
+= Erase disk
+This will delete all data currently present on the selected storage device.
+Welcome Manual partitioning
+You can create or resize partitions yourself.
+Location
+Keyboard
+Partitions
+Summary
+Install
+Finish
+@ Unpartitioned space or unknown partition table
+Back Cancel
+@@@STAGE:summary
+r This is an overview of what will happen once you start the install procedure.
+WN Location
+
+Set timezone to America/New York.
+
+Welcome The system language will be set to American English (United States).
+The numbers and dates locale will be set to American English (United States).
+
+Location
+
+Keyboard
+Keyboard Keyboard model has been set to Generic 105-key PC.
+Keyboard layout has been set to English (US)/Default.
+
+Partitions
+
+Summary Partitions
+Erase disk /dev/sda (VBOX HARDDISK) and install Kicksecure 18
+
+Instal oe es
+Finish @ Unpartitioned space or unknown partition table
+@ EFI system @ boot GB rootfs
+Creating new GPT partition table on /dev/sda (VBOX HARDDISK).
+Create new 550MiB partition on /dev/sda (VBOX HARDDISK) with entries EFI
+Set flags on 550MiB fat32 partition to boot
+Create new 4096MiB partition on /dev/sda (VBOX HARDDISK) with entries boot
+Create new 20951MiB partition on /dev/sda (VBOX HARDDISK) with entries rootfs
+Set up new fat32 partition with mount point /boot/efi
+Set up new ext4 partition with mount point /boot
+install Kicksecure on new ext4 system partition
+Back Anstall Cancel
+@@@STAGE:sysmaint-luks-prompt
+Please enter passphrase for disk rootfs (press TAB for no echo)
+@@@STAGE:sysmaint-terminal
+Volume: 40%
+sysmaint@localhost:~ [pts/0]
+File Actions Edit View Help
+sysmaint@localhost:~ [pts/0]
+|
+@@@STAGE:terminal-open
+BB &kKicksecure Setup Wizard | [ill user@localhost:~ [pts/0} |i user@localhost:~ [pts/1]
+P- | user@localhost:~ [pts/1]
+File Actions Edit View Help
+user@localhost:~ [pts/1]
+a
+@@@STAGE:vt-graphical-restored
+BB &Kicksecure Setup Wizard | [ill user@localhost:~ [pts/0]
+P- | user@localhost:~ [pts/0]
+File Actions Edit View Help
+user@localhost:~ [pts/0]
+it~!
+@@@STAGE:vt-logged-in
+Welcome to Kicksecure (TM)
+
+https: //wuw.kicksecure.com
+
+Default username: user
+
+Default password: No password required. (Passwordless login.
+
+Notes:
+
+- The default root account is locked (or should be locked). This is a security feature
+For more information, visit: https://ww.kicksecure.com/wiki/roo
+
+- If this is a virtual machine, ignore any host login:" prompt below
+Do not enter your host computer username or password
+
+Login Instructions:
+
+1) Type the username (default is "user" without quotes) and press <Enter>
+
+2) If a password has been set, type it and press <Enter>
+
+Note: Hhen entering the password, no password feedback (no asterisk ('%") symbol) will be shown
+
+For further information, visit: https: //wuw.kicksecure.com/wiki/login
+
+By continuing, you acknowledge and give consent that the ouner of this system has a right to keen a log of all activity
+
+unauthorized access is strictly prohibited and may result in legal action. Da not proceed
+
+localhost login: user
+
+Linux localhost 6.12.113+deb13-amd4 #1 SMP PREEMPT_DVNANIC Debian 6.12. 119-1 (2026-10-15) x86_64
+
+Welcome to Kicksecure (TM)
+
+https: //wuw.kicksecure..com
+
+Kicksecure Copyright (C) 2012 - 2025 ENCRYPTED SUPPORT LLC
+
+Kicksecure is Freedom Software, and you are welcome to redistribute it under
+
+certain conditions; type "kicksecure-license" <enter> for details
+
+Kicksecure is a compilation of software packages, each under its oun copyright and
+
+license. The exact license terms for each program are described in the
+
+individual files in /usr/share/doc/*/copyr ight
+
+Kicksecure GNU/Linux comes with ABSOLUTELY NO HARRANTY, to the extent
+
+permitted by applicable law; for details type "kicksecure-disclaimer" <enter>
+
+Kicksecure is a derivative of Debian GNU/Linux
+
+Kicksecure is a research project
+
+default user account: user
+
+default password: No password required. (Passwordless login.
+
+Type: "kicksecure" <enter> for help
+
+luser 1% _
+@@@STAGE:vt-logged-out
+Welcome to Kicksecure (TM)!
+https: //wuw.kicksecure.com
+Default username: user
+Default password: No password required. (Passwordless login.)
+Notes:
+- The default root account is locked (or should be locked). This is a security feature.
+For more information, visit: https://uw.kicksecure.com/wiki/root
+- If this is a virtual machine, ignore any host login:" prompt below.
+Do not enter your host computer username or password.
+Login Instructions:
+1) Type the username (default is "user" without quotes) and press <Enter>.
+2) If a password has been set, type it and press <Enter>.
+Note: Hhen entering the password, no password feedback (no asterisk (''") symbol) will be shown.
+For further information, visit: https: //wuw.kicksecure.com/wiki/login
+By continuing, you acknowledge and give consent that the ouner of this system has a right to keep a log of all activity.
+Unauthorized access is strictly prohibited and may result in legal action. Da not proceed!
+localhost login: _
+@@@STAGE:vt-switched
+Welcome to Kicksecure (TM)!
+https: //wuw.kicksecure.com
+Default username: user
+Default password: No password required. (Passwordless login.)
+Notes:
+- The default root account is locked (or should be locked). This is a security feature.
+For more information, visit: https://uw.kicksecure.com/wiki/root
+- If this is a virtual machine, ignore any host login:" prompt below.
+Do not enter your host computer username or password.
+Login Instructions:
+1) Type the username (default is "user" without quotes) and press <Enter>.
+2) If a password has been set, type it and press <Enter>.
+Note: Hhen entering the password, no password feedback (no asterisk (''") symbol) will be shown.
+For further information, visit: https: //wuw.kicksecure.com/wiki/login
+By continuing, you acknowledge and give consent that the ouner of this system has a right to keep a log of all activity.
+Unauthorized access is strictly prohibited and may result in legal action. Da not proceed!
+localhost login:
+@@@STAGE:welcome
+@ B s.Kicksecure installer Po
+Ch
+= : .
+Welcome to the Calamares installer for Kicksecure 18
+Welcome This program will ask you some questions and set up Kicksecure on your computer.
+Location
+Keyboard
+Partitions
+Summary
+Install
+Finish
+K i k
+Bal American English ~
+Next Cancel

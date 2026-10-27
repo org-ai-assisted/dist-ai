@@ -52,13 +52,47 @@ from dm_test_results import imaging, model, site  # noqa: E402
 
 RESULTS_SUBDIR = "automated-test-results"
 IMAGE_MEDIA_PREFIX = "image/"
+TEXT_MEDIA = "text/plain"
+## An OCR sidecar text attachment's path is its shot's stored path + this suffix, so the
+## generator pairs it to the shot (a link under the image). Any OTHER text attachment is a
+## standalone state-card text panel.
+OCR_SUFFIX = ".ocr.txt"
+## Bound the per-shot OCR sidecar / state-card text the generator reads from the (account-owned)
+## plane -- a runaway text file must never bloat the page. Matches the emitter's text cap.
+MAX_TEXT_ASSET_BYTES = 256 * 1024
+
+## Per-shot CONTENT-validation presentation. Orthogonal to the step's functional status: it says
+## whether the shot showed the RIGHT thing for its stage. Only 'validated' is green; 'unvalidated'
+## (incl. an ABSENT field -- an old result.json or a stage with no golden) and 'ocr-error' are
+## inconclusive (never green); a 'mismatch' is a hard fail. Mapped to the frozen st-* classes --
+## NO new CSS class (style.css lives in a separate repo gated by the undefined-classes check).
+_VALIDATION_CLASS = {
+    model.VALIDATION_VALIDATED: site.STATUS_PASS,
+    model.VALIDATION_MISMATCH: site.STATUS_FAIL,
+    model.VALIDATION_UNVALIDATED: site.STATUS_INCONCLUSIVE,
+    model.VALIDATION_OCR_ERROR: site.STATUS_INCONCLUSIVE,
+}
+_VALIDATION_LABEL = {
+    model.VALIDATION_VALIDATED: "content: validated",
+    model.VALIDATION_MISMATCH: "content: MISMATCH",
+    model.VALIDATION_UNVALIDATED: "content: UNVALIDATED (no golden)",
+    model.VALIDATION_OCR_ERROR: "content: OCR error",
+}
+
+
+def _validation_of(attachment):
+    """The attachment's content-validation token, fail-closed: an absent or out-of-enum value
+    reads as 'unvalidated' (never shown green), matching the model's absent-key contract."""
+    v = attachment.get("validation")
+    return v if v in model.VALID_VALIDATION else model.VALIDATION_UNVALIDATED
 
 ## Incremental-regenerate cache format version. The lossless method=6 webp re-encode dominates
 ## the generate cost, and a deploy re-runs it for every run on every invocation even when nothing
 ## changed. The cache lets an unchanged run reuse its already-encoded webps + cached status
 ## instead of re-encoding. BUMP this on ANY change to how a run's page assets are produced,
 ## so a generator change invalidates every cache entry (no stale output served).
-CACHE_FORMAT_VERSION = 2
+## v3: shots carry validation + a copied OCR sidecar, and runs carry state-card text panels.
+CACHE_FORMAT_VERSION = 3
 
 ## Legend: status -> human label. Order is display order on the page.
 STATUS_LABEL = [
@@ -233,13 +267,16 @@ def rects_for(lane, image_size, mask_config):
 class RunView:
     """Everything the templates need about one run, computed once."""
 
-    def __init__(self, run_id, run_dir, result, status, age, shots):
+    def __init__(self, run_id, run_dir, result, status, age, shots, cards=None):
         self.run_id = run_id
         self.run_dir = run_dir
         self.result = result
         self.status = status
         self.age = age
-        self.shots = shots  # list of dicts: sid, step, name, webp
+        self.shots = shots  # list of dicts: sid, step, name, webp, validation, ocr
+        ## State-card TEXT panels (synthetic cards published as text, not an image): list of
+        ## dicts {step, name, text}. Separate from shots so the image harvest never grows one.
+        self.cards = cards if cards is not None else []
 
     @property
     def is_green(self):
@@ -285,14 +322,37 @@ def process_run(run_dir, result, run_id, out_root, mask_config, now_unix, stale_
         shutil.rmtree(page_dir)
 
     shots = []
+    cards = []
     for step in result["steps"]:
-        for attachment in step["attachments"]:
-            if not str(attachment.get("mediaType", "")).startswith(IMAGE_MEDIA_PREFIX):
-                continue
-            shots.append(_process_shot(run_dir, page_dir, lane, step, attachment, mask_config))
+        image_atts = [
+            a for a in step["attachments"]
+            if str(a.get("mediaType", "")).startswith(IMAGE_MEDIA_PREFIX)
+        ]
+        text_atts = [a for a in step["attachments"] if str(a.get("mediaType", "")) == TEXT_MEDIA]
+        step_shots = {}  # stored attachment path -> its shot dict, for OCR pairing
+        for attachment in image_atts:
+            shot = _process_shot(
+                run_dir, page_dir, lane, step, attachment, mask_config, len(image_atts))
+            shots.append(shot)
+            step_shots[attachment["path"]] = shot
+        ## A text/plain attachment is EITHER a shot's OCR sidecar (its path is the shot's stored
+        ## path + .ocr.txt -> link it under the image) OR a standalone state-card text (-> a text
+        ## panel). Pairing is by PATH, so a card never has to be flagged as such.
+        for attachment in text_atts:
+            path = str(attachment.get("path", ""))
+            paired = step_shots.get(path[:-len(OCR_SUFFIX)]) if path.endswith(OCR_SUFFIX) else None
+            if paired is not None:
+                ocr_name = _attach_ocr(run_dir, page_dir, paired["sid"], path)
+                if ocr_name:
+                    paired["ocr"] = ocr_name
+            else:
+                text = _read_text_asset(run_dir, path)
+                if text is not None:
+                    cards.append(
+                        {"step": step["name"], "name": attachment.get("name") or "", "text": text})
 
     status, age = site.run_cell_status(result, now_unix, stale_seconds)
-    return RunView(run_id, run_dir, result, status, age, shots)
+    return RunView(run_id, run_dir, result, status, age, shots, cards)
 
 
 def _screenshot_id(lane, step_name, attachment_name, shot_count):
@@ -303,19 +363,19 @@ def _screenshot_id(lane, step_name, attachment_name, shot_count):
     return base
 
 
-def _process_shot(run_dir, page_dir, lane, step, attachment, mask_config):
+def _process_shot(run_dir, page_dir, lane, step, attachment, mask_config, shot_count):
     step_name = step["name"]
-    shot_count = sum(
-        1 for att in step["attachments"]
-        if str(att.get("mediaType", "")).startswith(IMAGE_MEDIA_PREFIX)
-    )
     sid = _screenshot_id(lane, step_name, attachment["name"], shot_count)
     ## attachment["path"] was validated as a safe basename by model.validate, so it
     ## cannot escape run_dir. Still refuse a SYMLINK: its versioned name is safe but
     ## its target could be any file root could read -- never follow it.
     current_path = os.path.join(run_dir, attachment["path"])
 
-    base = {"sid": sid, "step": step_name, "name": attachment["name"], "webp": None}
+    ## `validation` is the per-shot CONTENT verdict (did it show the right thing), SEPARATE from
+    ## the step's functional pass/fail; `ocr` is the served OCR-sidecar filename (set later when a
+    ## matching text attachment is paired in). Both default fail-closed / absent.
+    base = {"sid": sid, "step": step_name, "name": attachment["name"], "webp": None,
+            "validation": _validation_of(attachment), "ocr": None}
     if os.path.islink(current_path):
         return base
 
@@ -331,6 +391,48 @@ def _process_shot(run_dir, page_dir, lane, step, attachment, mask_config):
     except Exception:  # noqa: BLE001 -- any shot error is per-shot, never aborts the run/site
         base["webp"] = None
     return base
+
+
+def _read_text_asset(run_dir, path):
+    """Read an account-owned text asset (a state-card body) from the plane for INLINE embedding.
+    Refuse a symlink (never follow one into a root-only file, same discipline as a shot) and bound
+    the read, so a runaway/oversized source cannot bloat the page. Returns the text, or None (a
+    missing/symlinked/unreadable asset simply renders no panel -- never aborts the run/site)."""
+    src = os.path.join(run_dir, path)
+    if os.path.islink(src):
+        return None
+    try:
+        with open(src, "rb") as handle:
+            data = handle.read(MAX_TEXT_ASSET_BYTES + 1)
+    except OSError:
+        return None
+    if len(data) > MAX_TEXT_ASSET_BYTES:
+        data = data[:MAX_TEXT_ASSET_BYTES]
+    return data.decode("utf-8", errors="replace")
+
+
+def _attach_ocr(run_dir, page_dir, sid, path):
+    """Copy a shot's OCR sidecar from the plane into the page dir so it can be LINKED under the
+    image as evidence. Refuse a symlink + bound the copy (as the shot read does). Returns the
+    served basename, or None (a missing/symlinked/unreadable sidecar just drops the link)."""
+    src = os.path.join(run_dir, path)
+    if os.path.islink(src):
+        return None
+    try:
+        with open(src, "rb") as handle:
+            data = handle.read(MAX_TEXT_ASSET_BYTES + 1)
+    except OSError:
+        return None
+    if len(data) > MAX_TEXT_ASSET_BYTES:
+        data = data[:MAX_TEXT_ASSET_BYTES]
+    out_name = _flatten(sid) + OCR_SUFFIX
+    try:
+        os.makedirs(page_dir, exist_ok=True)
+        with open(os.path.join(page_dir, out_name), "wb") as out:
+            out.write(data)
+    except OSError:
+        return None
+    return out_name
 
 
 def _flatten(sid):
@@ -387,10 +489,10 @@ def run_source_fingerprint(run_dir, result, shared_fp):
     digest.update(json.dumps(result, ensure_ascii=True, sort_keys=True,
                              separators=(",", ":")).encode("ascii"))
     digest.update(b"\0")
+    ## Hash EVERY attachment's source bytes -- image shots AND text assets (OCR sidecars, state
+    ## cards) -- so an edited sidecar or card body invalidates the cache, not just a changed image.
     for step in result["steps"]:
         for attachment in step["attachments"]:
-            if not str(attachment.get("mediaType", "")).startswith(IMAGE_MEDIA_PREFIX):
-                continue
             token = str(attachment.get("path", ""))
             path = os.path.join(run_dir, token)
             if os.path.isfile(path) and not os.path.islink(path):
@@ -428,24 +530,26 @@ def load_cached_view(cache_dir, run_id, fingerprint, out_root, run_dir, result,
     shots = cached.get("shots")
     if not isinstance(shots, list):
         return None
+    cards = cached.get("cards")
+    if not isinstance(cards, list):
+        return None
     webp_sha = cached.get("webp_sha")
     if not isinstance(webp_sha, dict):
         return None
     page_dir = os.path.join(out_root, run_id)
     ## The reuse is valid only if the page dir holds EXACTLY the generator-owned files this run
-    ## produces, with the SAME BYTES: every cached webp present and matching its recorded sha, and
-    ## NO extra file. A stray file (an artifact a prior generate no longer emits, a planted
-    ## file) or a changed/corrupt webp means the full build is still owed -- fall back
-    ## so process_run's rmtree + re-encode run. (In normal operation the inputs that would change
-    ## an asset also change the fingerprint; this guards against on-disk drift of the output.)
+    ## produces, with the SAME BYTES: every cached asset (webp shot + copied OCR sidecar) present
+    ## and matching its recorded sha, and NO extra file. A stray file (an artifact a prior generate
+    ## no longer emits, a planted file) or a changed/corrupt asset means the full build is still
+    ## owed -- fall back so process_run's rmtree + re-encode run. (Cards embed inline, no file.)
     expected = {"index.html"}
     for shot in shots:
-        name = shot.get("webp")
-        if name:
-            expected.add(name)
-            full = os.path.join(page_dir, name)
-            if not os.path.isfile(full) or _file_sha256(full) != webp_sha.get(name):
-                return None
+        for name in (shot.get("webp"), shot.get("ocr")):
+            if name:
+                expected.add(name)
+                full = os.path.join(page_dir, name)
+                if not os.path.isfile(full) or _file_sha256(full) != webp_sha.get(name):
+                    return None
     try:
         present = set(os.listdir(page_dir))
     except OSError:
@@ -453,7 +557,7 @@ def load_cached_view(cache_dir, run_id, fingerprint, out_root, run_dir, result,
     if present - expected:
         return None
     status, age = site.run_cell_status(result, now_unix, stale_seconds)
-    return RunView(run_id, run_dir, result, status, age, shots)
+    return RunView(run_id, run_dir, result, status, age, shots, cards)
 
 
 def store_cached_view(cache_dir, run_id, fingerprint, view, out_root):
@@ -465,13 +569,13 @@ def store_cached_view(cache_dir, run_id, fingerprint, view, out_root):
     page_dir = os.path.join(out_root, run_id)
     webp_sha = {}
     for shot in view.shots:
-        name = shot.get("webp")
-        if name:
-            webp_sha[name] = _file_sha256(os.path.join(page_dir, name))
+        for name in (shot.get("webp"), shot.get("ocr")):
+            if name:
+                webp_sha[name] = _file_sha256(os.path.join(page_dir, name))
     try:
         os.makedirs(cache_dir, exist_ok=True)
         payload = json.dumps({"fingerprint": fingerprint, "shots": view.shots,
-                              "webp_sha": webp_sha},
+                              "cards": view.cards, "webp_sha": webp_sha},
                              ensure_ascii=True, sort_keys=True, indent=2) + "\n"
         tmp = os.path.join(cache_dir, run_id + ".json.tmp")
         with open(tmp, "w", encoding="utf-8") as handle:
@@ -696,6 +800,25 @@ def _firmware_block(f):
     ) % (chip, esc(f["fw_declared"] or "?"), esc(f["fw_detected"] or "?"), esc(note), pre)
 
 
+def _validation_tally_line(view):
+    ## Per-run content-validation tally over the published SHOTS (cards are authoritative text, not
+    ## validated): "screenshots: X validated, Y unvalidated, Z mismatch, W OCR error". So the
+    ## operator sees at a glance how much of the story is actually content-checked vs just green.
+    ## "" when the run has no shots (e.g. a packet lane).
+    if not view.shots:
+        return ""
+    counts = {key: 0 for key in model.VALID_VALIDATION}
+    for shot in view.shots:
+        v = shot.get("validation")
+        counts[v if v in counts else model.VALIDATION_UNVALIDATED] += 1
+    return (
+        '<p class="line">screenshots: %d validated, %d unvalidated, %d mismatch, %d OCR error</p>'
+    ) % (
+        counts[model.VALIDATION_VALIDATED], counts[model.VALIDATION_UNVALIDATED],
+        counts[model.VALIDATION_MISMATCH], counts[model.VALIDATION_OCR_ERROR],
+    )
+
+
 def render_run(view, header, footer, generated_utc):
     f = run_fields(view)
     ## Firmware-lane evidence is a one-line attestation, NOT a peer of the test steps --
@@ -718,6 +841,7 @@ def render_run(view, header, footer, generated_utc):
     sha_line = (
         '<p class="line">sha256 <code class="runid">%s</code></p>' % esc(f["sha256"])
     ) if f["sha256"] else ""
+    tally_line = _validation_tally_line(view)
     body = (
         '<section class="hero"><div class="wrap">'
         # .runid: a machine run-id is a long unbreakable token; the default hero h1
@@ -725,7 +849,7 @@ def render_run(view, header, footer, generated_utc):
         '<p class="kicker">%s</p><h1 class="runid">%s</h1>'
         '<p class="line">%s %s &middot; builder %s &middot; provenance %s &middot; '
         "%s &middot; %s</p>"
-        "%s"
+        "%s%s"
         '<p class="sub"><a href="../">back to all results</a></p>'
         "</div></section>"
         '<section class="cat"><div class="wrap"><h2 class="catname">Run detail</h2>'
@@ -733,7 +857,7 @@ def render_run(view, header, footer, generated_utc):
     ) % (
         esc(f["lane"]), esc(view.run_id), esc(f["lane"]), esc(f["version"]),
         esc(f["builder"]), esc(f["origin"]), status_chip(view.status),
-        esc(age_text(view.age)), sha_line, fw_block, "".join(step_blocks),
+        esc(age_text(view.age)), sha_line, tally_line, fw_block, "".join(step_blocks),
     )
     return page(
         "Run %s" % view.run_id, "Test run %s" % view.run_id, header, footer, body,
@@ -741,8 +865,26 @@ def render_run(view, header, footer, generated_utc):
     )
 
 
+def _card_html(card):
+    ## A synthetic state card published as TEXT (vm-defined, vbox-host, ...): rendered as a text
+    ## panel, never an <img>. The text is authoritative (no OCR round-trip, no golden), so there
+    ## is NO content-validation chip here -- only shots get one. Reuses the frozen steplog/stage
+    ## classes; no new CSS class.
+    parts = ["<p>"]
+    name = card.get("name") or ""
+    if name:
+        parts.append("<strong>%s</strong>" % esc(name))
+        stage = _milestone_stage(name)
+        if stage:
+            parts.append(' <span class="stage">(%s)</span>' % esc(stage))
+    parts.append("</p>")
+    parts.append('<pre class="steplog" tabindex="0">%s</pre>' % esc_log(card.get("text", "")))
+    return "".join(parts)
+
+
 def render_step(view, step):
     shots = [s for s in view.shots if s["step"] == step["name"]]
+    cards = [c for c in view.cards if c["step"] == step["name"]]
     status_cls = _step_status_class(step.get("status"))
     ## Render the FULL stored step tails -- no second truncation here. The emitter already
     ## bounds them (TAIL_BYTES) and prepends an honest marker when it clipped a larger log, so
@@ -757,18 +899,21 @@ def render_step(view, step):
         esc(step["name"]), status_chip(status_cls), esc(step.get("exit")),
         esc_log(step.get("stdout_tail", "") or ""), esc_log(step.get("stderr_tail", "") or ""),
     )
-    if not shots:
+    if not shots and not cards:
         ## Text-only step: NO image slot, never a broken-image blank.
         return '<div class="issue">%s</div>' % caption
 
-    ## Render the milestone sequence in CAPTURE order. view.shots preserves the
-    ## result.json attachments[] order, which results-publish emits NN-sorted (the
-    ## install "full story" welcome -> partitions -> ... -> first-boot); the milestone
-    ## NAME is NOT sortable (alphabetical != capture order), so do NOT re-sort here.
-    imgs = []
+    ## Render the milestone sequence in CAPTURE order. view.shots / view.cards preserve the
+    ## result.json attachments[] order, which results-publish emits NN-sorted (the install "full
+    ## story" welcome -> partitions -> ... -> first-boot); the milestone NAME is NOT sortable
+    ## (alphabetical != capture order), so do NOT re-sort here. Shots then cards (cards are the
+    ## pre-boot / powered-off evidence frames; shots are the live GUI sequence).
+    body = []
     for shot in shots:
-        imgs.append(_shot_html(view, shot, status_cls))
-    return '<div class="issue">%s%s</div>' % (caption, "".join(imgs))
+        body.append(_shot_html(view, shot, status_cls))
+    for card in cards:
+        body.append(_card_html(card))
+    return '<div class="issue">%s%s</div>' % (caption, "".join(body))
 
 
 def _milestone_stage(name):
@@ -798,12 +943,23 @@ def _milestone_stage(name):
     return ""
 
 
+def _validation_chip(validation):
+    ## The per-shot CONTENT verdict as a SECOND chip (explicit text), beside the functional one.
+    ## "unvalidated != pass": it is coloured via the mapped st-* class (validated->pass,
+    ## mismatch->fail, unvalidated/ocr-error->inconclusive), reusing the frozen class contract --
+    ## NO new CSS class. A shot with no recorded validation reads UNVALIDATED here, never green.
+    cls = _VALIDATION_CLASS.get(validation, site.STATUS_INCONCLUSIVE)
+    label = _VALIDATION_LABEL.get(validation, _VALIDATION_LABEL[model.VALIDATION_UNVALIDATED])
+    return '<span class="chip %s">%s</span>' % (site.css_class(cls), esc(label))
+
+
 def _shot_html(view, shot, step_status_cls=None):
-    ## A published shot carries the STEP's functional status chip -- there is no separate
-    ## visual bucket. A blank must-render frame already failed the run at capture time, so a
-    ## shot shown here under a PASS step is a real, non-blank render.
+    ## A published shot carries the STEP's functional status chip PLUS a second CONTENT-validation
+    ## chip. The functional chip says the step passed; the content chip says whether THIS frame
+    ## showed the right thing for its stage -- so an unvalidated shot on a passing run is visibly
+    ## NOT green (inconclusive), closing the "every screenshot reads green" false-green.
     shot_cls = step_status_cls if step_status_cls is not None else site.STATUS_PASS
-    parts = ["<p>%s" % status_chip(shot_cls)]
+    parts = ["<p>%s %s" % (status_chip(shot_cls), _validation_chip(shot.get("validation")))]
     ## Label the milestone (welcome, partitions, first-boot, ...) so a multi-shot "full
     ## story" is readable. A lone unnamed shot carries the placeholder name "screenshot"
     ## (one-shot runs) -- omit the redundant caption there.
@@ -824,6 +980,9 @@ def _shot_html(view, shot, step_status_cls=None):
         )
     else:
         parts.append("<p>screenshot missing or unreadable</p>")
+    ## Link the OCR sidecar (the recognized text of the frame) as evidence, when published.
+    if shot.get("ocr"):
+        parts.append('<p><a href="%s">OCR text</a></p>' % esc(shot["ocr"]))
     return "".join(parts)
 
 

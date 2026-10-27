@@ -1,0 +1,3 @@
+# installed-grub-menu milestone -- expected OCR tokens (seeded from a healthy run; see README)
+# "Choose boot mode" is the installed GRUB header (vs the live ISO's "LIVE Mode" entries).
+Choose boot mode

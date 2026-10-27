@@ -288,6 +288,40 @@ check "firmware evidence: detected recorded" "$(grep --quiet '"detected": "UEFI+
 check "firmware evidence: probe command+output recorded" "$(grep --quiet 'FWPROBE' -- "${fw_json}" && printf '%s' "true" || printf '%s' "false")"
 check "firmware evidence: match true recorded" "$(grep --quiet '"match": true' -- "${fw_json}" && printf '%s' "true" || printf '%s' "false")"
 
+## Per-shot CONTENT verdict + OCR sidecar + state-card TEXT: the publisher reads the account-owned
+## sibling <shot>.status / <shot>.ocr.txt / NN-<name>.card.txt files in a shot_dir and threads them
+## to the emitter. A valid .status token lands as the attachment's `validation`; a BOGUS one
+## collapses to 'unvalidated' (fail-closed -- junk can never paint a shot green); a SYMLINKED
+## .status is not read at all (and never leaked); the .ocr.txt is published as a text/plain
+## attachment; a .card.txt publishes as a named text panel. Canary: the pre-#60 publisher forwarded
+## none of these, so every shot read green with no content check.
+vstory="${work}/vstory"
+mkdir --parents -- "${vstory}"
+printf '%s\n' "WELCOME" > "${vstory}/01-welcome.png"
+printf '%s\n' "validated" > "${vstory}/01-welcome.png.status"
+printf '%s\n' "recognized welcome text" > "${vstory}/01-welcome.png.ocr.txt"
+printf '%s\n' "PARTITIONS" > "${vstory}/02-partitions.png"
+printf '%s\n' "not-a-real-token" > "${vstory}/02-partitions.png.status"   ## bogus -> unvalidated
+printf '%s\n' "SUMMARY" > "${vstory}/03-summary.png"
+status_sentinel='STATUS-SYMLINK-SENTINEL-DO-NOT-LEAK'
+printf '%s\n' "${status_sentinel}" > "${work}/status-target.txt"
+ln --symbolic -- "${work}/status-target.txt" "${vstory}/03-summary.png.status"   ## symlink -> skipped
+printf '%s\n' "[state card] VM defined (pre-boot)" > "${vstory}/10-vm-defined.card.txt"
+v_out="$(image_test_results_publish "${results_root}" "${owner}" \
+   "kicksecure-vstory-18-2-3-5" "eph-inst-vstory" "calamares-install" \
+   0 "${vstory}" \
+   --lane kicksecure-lxqt --version 18.2.3.5 --builder dm-release-test \
+   --origin built --expect Kicksecure)"
+v_json="${v_out}/result.json"
+check "per-shot status: welcome validated recorded" "$(grep --quiet '"validation": "validated"' -- "${v_json}" && printf '%s' true || printf '%s' false)"
+check "per-shot status: bogus token collapses to unvalidated" "$(grep --quiet '"validation": "unvalidated"' -- "${v_json}" && printf '%s' true || printf '%s' false)"
+check "per-shot status: symlinked .status not leaked" "$(grep --quiet --recursive --fixed-strings -- "${status_sentinel}" "${v_out}" 2>/dev/null && printf '%s' false || printf '%s' true)"
+check "ocr sidecar: text/plain attachment recorded" "$(grep --quiet '"path": "calamares-install-01-welcome.png.ocr.txt"' -- "${v_json}" && printf '%s' true || printf '%s' false)"
+check "ocr sidecar: copied into the run dir" "$([ -f "${v_out}/calamares-install-01-welcome.png.ocr.txt" ] && printf '%s' true || printf '%s' false)"
+check "state card: named text attachment recorded" "$(grep --quiet '"name": "vm-defined"' -- "${v_json}" && printf '%s' true || printf '%s' false)"
+check "state card: text copied into the run dir" "$([ -f "${v_out}/10-vm-defined.card.txt" ] && printf '%s' true || printf '%s' false)"
+check "state card: NOT stored as a png shot" "$([ ! -f "${v_out}/calamares-install-10-vm-defined.png" ] && printf '%s' true || printf '%s' false)"
+
 if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "" "${failures} publish assertion(s) failed" >&2
    exit 1
