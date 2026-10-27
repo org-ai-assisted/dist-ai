@@ -54,6 +54,21 @@ VERDICT_PASS = "PASS"
 VERDICT_FAIL = "FAIL"
 VERDICT_INCONCLUSIVE = "INCONCLUSIVE"
 
+## Per-screenshot CONTENT validation, orthogonal to the step's functional status: did the shot
+## show the RIGHT thing (its stage's expected text)? 'unvalidated' is the fail-closed default --
+## a shot with no recorded validation (an old result.json, or a stage with no golden) is NEVER
+## shown green. 'ocr-error' is a transient OCR read failure (also not green).
+VALIDATION_VALIDATED = "validated"
+VALIDATION_MISMATCH = "mismatch"
+VALIDATION_UNVALIDATED = "unvalidated"
+VALIDATION_OCR_ERROR = "ocr-error"
+VALID_VALIDATION = (
+    VALIDATION_VALIDATED,
+    VALIDATION_MISMATCH,
+    VALIDATION_UNVALIDATED,
+    VALIDATION_OCR_ERROR,
+)
+
 ## Run lifecycle stage, orthogonal to the pass/fail outcome.
 STAGE_SCHEDULED = "scheduled"
 STAGE_RUNNING = "running"
@@ -136,15 +151,22 @@ def time_pair(unix):
     return {"utc": utc, "unix": unix}
 
 
-def make_attachment(name, media_type, path):
-    """One artifact reference: {name, mediaType, path}. path is relative to the run
-    dir. A screenshot is just an attachment with an image/* mediaType -- there is no
-    separate screenshot field, so text-only and screenshot steps share one shape."""
-    return {
+def make_attachment(name, media_type, path, validation=None):
+    """One artifact reference: {name, mediaType, path} plus an optional per-shot content
+    'validation' (one of VALID_VALIDATION). path is relative to the run dir. A screenshot is
+    just an attachment with an image/* mediaType -- there is no separate screenshot field, so
+    text-only and screenshot steps share one shape. A validation outside the enum is coerced to
+    'unvalidated' (fail-closed); None leaves the key absent, which the generator also reads as
+    unvalidated (so an old result.json stays honest)."""
+    attachment = {
         "name": _require_token("attachment name", name),
         "mediaType": _require_token("attachment mediaType", media_type),
         "path": _require_safe_component("attachment path", path),
     }
+    if validation is not None:
+        attachment["validation"] = (
+            validation if validation in VALID_VALIDATION else VALIDATION_UNVALIDATED)
+    return attachment
 
 
 def make_step(
@@ -357,6 +379,10 @@ def validate(result):
             ## id -> golden path when a step has >1 shot), so both must be safe.
             _require_safe_component("attachment name", att.get("name"))
             _require_safe_component("attachment path", att.get("path"))
+            validation = att.get("validation")
+            if validation is not None and validation not in VALID_VALIDATION:
+                raise ModelError(
+                    "attachment validation must be one of %r: %r" % (VALID_VALIDATION, validation))
     expected = summarize(steps)
     if result.get("summary") != expected:
         raise ModelError(

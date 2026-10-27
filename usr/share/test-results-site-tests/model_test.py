@@ -262,6 +262,29 @@ check(
     == "r4-first-boot.png",
 )
 
+## Per-shot content validation (new field): each enum value is kept; an unknown value coerces to
+## 'unvalidated' (fail-closed, never shown green); omitting it leaves the key absent (an old
+## result.json then reads as unvalidated in the generator); validate refuses an out-of-enum value.
+for _v in model.VALID_VALIDATION:
+    check(
+        "make_attachment keeps validation=%s" % _v,
+        model.make_attachment("screenshot", "image/png", "v.png", validation=_v).get("validation")
+        == _v,
+    )
+check(
+    "make_attachment coerces an unknown validation to unvalidated",
+    model.make_attachment("screenshot", "image/png", "v.png", validation="bogus").get("validation")
+    == model.VALIDATION_UNVALIDATED,
+)
+check(
+    "make_attachment leaves validation absent when not given",
+    "validation" not in model.make_attachment("screenshot", "image/png", "v.png"),
+)
+check_raises(
+    "validate refuses an out-of-enum attachment validation",
+    lambda: _tamper(lambda r: r["steps"][0]["attachments"][0].__setitem__("validation", "bogus")),
+)
+
 ## Deterministic + ASCII serialization.
 a = model.dumps(built)
 b = model.dumps(built)
