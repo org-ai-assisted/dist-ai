@@ -113,6 +113,12 @@ def run() -> int:
         empty.write_text("# only a comment\n\n", encoding="utf-8")
         ck(ax.main(["--baseline-dir", _td2, "--paths-file", str(empty), _td2]) == 2,
            "main rejects an empty --paths-file (rc=2, no full-tree fallback)")
+        # The callable entry points also reject an empty restriction (vacuous-audit guard),
+        # before any chromium launch.
+        ck(ax.check_roots([_td2], _td2, restrict=[]) == 2,
+           "check_roots rejects an empty restriction (rc=2)")
+        ck(ax.write_roots([_td2], _td2, restrict=[]) == 2,
+           "write_roots rejects an empty restriction (rc=2)")
     for bad in ("justpath",):
         try:
             ax.parse_baseline(bad)

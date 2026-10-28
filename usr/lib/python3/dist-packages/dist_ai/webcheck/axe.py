@@ -359,6 +359,9 @@ def check_roots(roots: List[str], baseline_dir: str, settle_ms: int = 1000,
     """FAMILY/stage entry (run in the sandbox): audit each root vs its committed accepted-violation
     baseline. SKIPs(77) when Playwright/chromium/axe-core is absent. A missing baseline for a root
     fails CLOSED (seed it first)."""
+    if restrict is not None and not restrict:
+        sys.stderr.write("axe: empty restriction (no paths) -- refusing a vacuous audit\n")
+        return 2
     axe_source = resolve_axe_source()
     if axe_source is None:
         _skip('axe-core not found (set AXE_SOURCE or `npm install -g axe-core`)')
@@ -414,6 +417,9 @@ def write_roots(roots: List[str], baseline_dir: str, settle_ms: int = 1000,
     """Seed (overwrite) a per-site baseline from the CURRENT violation set. Refuses to seed a site
     whose pages could not all be audited (a problem) -- a baseline seeded from a half-audited site
     would silently accept nothing for the pages that failed."""
+    if restrict is not None and not restrict:
+        sys.stderr.write("axe: empty restriction (no paths) -- refusing a vacuous audit\n")
+        return 2
     axe_source = resolve_axe_source()
     if axe_source is None:
         _skip('axe-core not found (set AXE_SOURCE or `npm install -g axe-core`)')
@@ -444,7 +450,12 @@ def write_roots(roots: List[str], baseline_dir: str, settle_ms: int = 1000,
             return 2
         bpath = _baseline_path(Path(baseline_dir), docroot)
         Path(baseline_dir).mkdir(parents=True, exist_ok=True)
-        existing = parse_baseline(bpath.read_text(encoding="utf-8")) if bpath.is_file() else set()
+        # Only a RESTRICTED seed needs the old entries (to keep unvisited pages). An unrestricted
+        # seed overwrites wholesale, so do not parse the old baseline -- a malformed existing file
+        # must not block replacing it.
+        existing: Set[Key] = set()
+        if restrict is not None and bpath.is_file():
+            existing = parse_baseline(bpath.read_text(encoding="utf-8"))
         seeded = _merge_seed(existing, fresh, restrict)
         bpath.write_text(format_baseline(seeded, site=site), encoding="utf-8")
         print("wrote %d accepted violation(s) -> %s" % (len(seeded), bpath), file=sys.stderr)
