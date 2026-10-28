@@ -119,6 +119,28 @@ def run() -> int:
            "check_roots rejects an empty restriction (rc=2)")
         ck(ax.write_roots([_td2], _td2, restrict=[]) == 2,
            "write_roots rejects an empty restriction (rc=2)")
+
+    # Canonical page identity: curated (extensionless), full (.html from _page_urls), and committed
+    # .html baselines collapse to ONE key form, so a full-seeded baseline checked curated reports
+    # no false NEW (CodeRabbit #766 Major).
+    ck(ax._canon_path("/wiki/ISO.html") == "/wiki/ISO", "canon strips a trailing .html")
+    ck(ax._canon_path("/wiki/ISO") == "/wiki/ISO", "canon leaves an extensionless path")
+    ck(ax._canon_path("/wiki/ISO") == ax._canon_path("/wiki/ISO.html"),
+       "canon collapses the two spellings of one page")
+    ck(ax._canon_path("/index.html") == "/", "canon root index.html -> / (leading slash kept)")
+    ck(ax._canon_path("/wiki/Dev/index.html") == "/wiki/Dev/", "canon subdir index -> /dir/")
+    ck(ax._canon_path("/") == "/", "canon / stays /")
+    ck(ax._canon_path(ax._canon_path("/wiki/ISO.html")) == ax._canon_path("/wiki/ISO.html"),
+       "canon is idempotent")
+    # A baseline seeded FULL (.html key) checked CURATED (extensionless) reports 0 new: both
+    # parse_baseline and result_keys canonicalize, and the restrict filter canonicalizes too.
+    base_full = ax.parse_baseline("/wiki/ISO.html color-contrast h1\n")
+    fresh_curated = set(ax.result_keys(
+        "/wiki/ISO", [{"id": "color-contrast", "nodes": [{"target": ["h1"]}]}]))
+    rc_m, new_m, _res = ax.evaluate(
+        True, ax._restrict_baseline(base_full, ["/wiki/ISO"]), fresh_curated)
+    ck(rc_m == 0 and new_m == [],
+       "full-seeded .html baseline checked curated extensionless -> 0 new (%s)" % (new_m,))
     for bad in ("justpath",):
         try:
             ax.parse_baseline(bad)

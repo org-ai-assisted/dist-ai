@@ -96,6 +96,22 @@ def normalize_target(target) -> str:
     return str(target)
 
 
+def _canon_path(path: str) -> str:
+    """Canonical page identity for a Key, so the two URL spellings of one page collapse to ONE
+    form: a curated audit requests /wiki/ISO, a full audit keys /wiki/ISO.html (from _page_urls),
+    and committed .html baselines all compare. INDEX-FIRST (mirrors _page_urls' index.html ->
+    '/dir/' strip) so a root index.html lands on '/', keeping the leading slash; then the non-index
+    .html spelling collapses to extensionless. Idempotent: the output never ends '.html' or
+    '/index.html', so re-applying is a no-op."""
+    if path.endswith('/index.html'):
+        return path[:-len('index.html')]
+    if path == 'index.html':
+        return '/'
+    if path.endswith('.html'):
+        return path[:-len('.html')]
+    return path
+
+
 def result_keys(path: str, violations) -> List[Key]:
     """Every (path, rule-id, target) key a page's axe violations produce -- one per node. Pure
     (no browser), so the violation -> key mapping is unit-tested directly. A clean page (no
@@ -107,7 +123,7 @@ def result_keys(path: str, violations) -> List[Key]:
         rule = str(violation.get("id", "?"))
         for node in violation.get("nodes", []):
             target = normalize_target(node.get("target", []))
-            keys.append((path, rule, target))
+            keys.append((_canon_path(path), rule, target))
     return keys
 
 
@@ -126,7 +142,7 @@ def parse_baseline(text: str) -> Set[Key]:
             raise ValueError("expected '<path> <rule-id> <target>', got: %r" % line)
         path, rule = parts[0], parts[1]
         target = parts[2] if len(parts) == 3 else ""
-        out.add((path, rule, target))
+        out.add((_canon_path(path), rule, target))
     return out
 
 
@@ -322,7 +338,7 @@ def _restrict_baseline(baseline: Set[Key], restrict: Optional[List[str]]) -> Set
     unvisited page's accepted violation is not misreported 'resolved' (its page was never run)."""
     if restrict is None:
         return baseline
-    paths = set(restrict)
+    paths = {_canon_path(p) for p in restrict}
     return {k for k in baseline if k[0] in paths}
 
 
@@ -332,7 +348,7 @@ def _merge_seed(existing: Set[Key], fresh: Set[Key], restrict: Optional[List[str
     A full (unrestricted) seed replaces the whole set."""
     if restrict is None:
         return fresh
-    paths = set(restrict)
+    paths = {_canon_path(p) for p in restrict}
     return {k for k in existing if k[0] not in paths} | fresh
 
 
