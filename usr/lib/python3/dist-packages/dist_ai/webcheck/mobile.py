@@ -534,6 +534,15 @@ class _MountHandler(http.server.SimpleHTTPRequestHandler):
             return os.path.join(self.directory, '__forbidden__')
         if os.path.isdir(real):
             return os.path.join(real, 'index.html')
+        # Extensionless -> .html, matching the production nginx `try_files $uri $uri.html`: a
+        # request for a flat clean URL (/wiki/ISO -- no slash, no extension) serves wiki/ISO.html.
+        # Only when the bare path is not itself a file, and the .html candidate stays within an
+        # allowed root (same realpath containment as above -- no symlink escape via the fallback).
+        if not os.path.exists(real):
+            cand = os.path.realpath(real + '.html')
+            if os.path.isfile(cand) and any(cand == a or cand.startswith(a + os.sep)
+                                            for a in allowed):
+                return cand
         return real
 
 

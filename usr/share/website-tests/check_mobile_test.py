@@ -250,6 +250,29 @@ def run():
         check('_MountHandler REFUSES an out-of-root symlink (no exfil to the browser)',
               '__forbidden__' in leaked and 'secret' not in os.path.basename(leaked), repr(leaked))
 
+    # Extensionless -> .html fallback (production nginx `try_files $uri $uri.html`): a flat clean
+    # URL /wiki/ISO serves wiki/ISO.html, so the curated wiki axe sample (extensionless paths)
+    # resolves locally instead of 404ing. Maps ONLY to an existing .html; a missing page stays 404.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'wiki/ISO.html', '<h1>iso</h1>')
+
+        class _Srv2:
+            mounts: dict = {}
+        h = object.__new__(cm._MountHandler)
+        h.directory = root
+        h.server = _Srv2()
+        iso = h.translate_path('/wiki/ISO')
+        check('_MountHandler extensionless /wiki/ISO -> wiki/ISO.html',
+              os.path.realpath(iso) == os.path.realpath(os.path.join(root, 'wiki/ISO.html')),
+              repr(iso))
+        direct = h.translate_path('/wiki/ISO.html')
+        check('_MountHandler still serves a direct .html request',
+              os.path.realpath(direct) == os.path.realpath(os.path.join(root, 'wiki/ISO.html')),
+              repr(direct))
+        missing = h.translate_path('/wiki/Nope')
+        check('_MountHandler extensionless miss stays a 404 (no .html for a missing page)',
+              not os.path.exists(missing), repr(missing))
+
     passed = sum(1 for _n, ok, _d in results if ok)
     failed = len(results) - passed
     for name, ok, detail in results:
