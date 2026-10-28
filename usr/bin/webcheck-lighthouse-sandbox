@@ -69,7 +69,11 @@ export QUBE_CTL_TARGET
 ## Stage the webcheck core (importable), the committed baselines, and each site root into
 ## one tree, preserving the usr/lib/python3/dist-packages layout so `-m dist_ai.webcheck...`
 ## resolves, then sync it in and run the module there UNCONFINED.
-staging="$(mktemp --directory)"
+## Stage on ample persistent disk, not the small /tmp tmpfs -- a large tree overflows it mid-rsync
+## (ENOSPC reads as a lane failure). Mirrors webcheck-vnu-sandbox. Override WEBCHECK_LIGHTHOUSE_TMP.
+: "${WEBCHECK_LIGHTHOUSE_TMP:=${XDG_CACHE_HOME:-${HOME}/.cache}/webcheck-lighthouse-sandbox-tmp}"
+mkdir --parents -- "${WEBCHECK_LIGHTHOUSE_TMP}"
+staging="$(mktemp --directory -- "${WEBCHECK_LIGHTHOUSE_TMP}/webcheck-lighthouse-sandbox.XXXXXX")"
 synced=0
 cleanup(){
    # shellcheck disable=SC2317  # invoked indirectly via the EXIT trap

@@ -81,7 +81,11 @@ sandbox exec --pid-scope private -- type sandbox-confine >/dev/null 2>&1 \
 
 ## Stage the confined helper + the stylelint config + each site root (no .git) into one
 ## tree, sync it in, run the lane per root confined. Basenames must be unique across roots.
-staging="$(mktemp --directory)"
+## Stage on ample persistent disk, not the small /tmp tmpfs -- a large tree overflows it mid-rsync
+## (ENOSPC reads as a lane failure). Mirrors webcheck-vnu-sandbox. Override WEBCHECK_LINT_TMP.
+: "${WEBCHECK_LINT_TMP:=${XDG_CACHE_HOME:-${HOME}/.cache}/webcheck-lint-sandbox-tmp}"
+mkdir --parents -- "${WEBCHECK_LINT_TMP}"
+staging="$(mktemp --directory -- "${WEBCHECK_LINT_TMP}/webcheck-lint-sandbox.XXXXXX")"
 synced=0
 cleanup(){
    # shellcheck disable=SC2317  # invoked indirectly via the EXIT trap

@@ -1,0 +1,12 @@
+# Curated axe-core accessibility sample for the Kicksecure/Whonix wikis: representative
+# complex/shared pages (mirrors the wiki browser-gates' curated set). Root-relative FLAT
+# extensionless URLs (the site serves wiki/ISO.html at /wiki/ISO -- a trailing slash 404s).
+# The ALWAYS gate audits these; the whole ~9000-page tree is an occasional OVH-only manual audit.
+/
+/wiki/ISO
+/wiki/System_Requirements
+/wiki/Contribute
+/wiki/Warning
+/wiki/Donors
+/wiki/Documentation
+/wiki/Download

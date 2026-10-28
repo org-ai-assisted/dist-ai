@@ -55,11 +55,25 @@ die(){
 }
 
 write_baseline=0
-if [ "${1:-}" = '--write-baseline' ]; then
-   write_baseline=1
-   shift
-fi
-[ "$#" -gt 0 ] || die 'usage: webcheck-axe-sandbox [--write-baseline] <site-root> [...]'
+paths_file=''
+while [ "$#" -gt 0 ]; do
+   case "$1" in
+      '--write-baseline')
+         write_baseline=1
+         shift
+         ;;
+      '--paths-file')
+         [ "$#" -ge 2 ] || die '--paths-file requires a FILE value'
+         paths_file="$2"
+         shift 2
+         ;;
+      *)
+         break
+         ;;
+   esac
+done
+[ "$#" -gt 0 ] || die 'usage: webcheck-axe-sandbox [--write-baseline] [--paths-file FILE] <site-root> [...]'
+[ -z "${paths_file}" ] || [ -f "${paths_file}" ] || die "paths-file not found: ${paths_file}"
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 if [ -d "${script_dir}/../share/website-tests" ]; then
@@ -89,6 +103,7 @@ if [ "${WEBCHECK_NO_LOCAL:-}" != '1' ] && [ -x "${SANDBOX_VENV_PY}" ]; then
       if [ "${write_baseline}" = '1' ]; then
          local_args+=( --write-baseline )
       fi
+      [ -z "${paths_file}" ] || local_args+=( --paths-file "${paths_file}" )
       # Capture stderr; replay only if the lane RAN (rc != 77), so a 77
       # fall-through does not print a misleading "axe absent / SKIP" line.
       local_err="$(mktemp)"
@@ -168,7 +183,13 @@ done
 
 ## --- stage the webcheck core, the baselines, and each site root, then run in the sandbox ------
 
-staging="$(mktemp --directory)"
+## Host staging holds a full COPY of every site tree before the sandbox sync; the wiki trees are
+## ~2GB combined and overflow the small /tmp tmpfs (libpam-tmpdir points TMPDIR there, ~800MB).
+## Stage on ample persistent disk under $HOME -- an ENOSPC mid-rsync reads as a lane failure, not
+## an a11y result. Mirrors webcheck-vnu-sandbox. Override WEBCHECK_AXE_TMP for another disk.
+: "${WEBCHECK_AXE_TMP:=${XDG_CACHE_HOME:-${HOME}/.cache}/webcheck-axe-sandbox-tmp}"
+mkdir --parents -- "${WEBCHECK_AXE_TMP}"
+staging="$(mktemp --directory -- "${WEBCHECK_AXE_TMP}/webcheck-axe-sandbox.XXXXXX")"
 synced=0
 cleanup(){
    # shellcheck disable=SC2317  # invoked indirectly via the EXIT trap
@@ -188,6 +209,7 @@ cp --archive -- "${core_src}" "${staged_pylib}/dist_ai"
 if [ -d "${baselines_src}" ]; then
    cp --archive -- "${baselines_src}/." "${staging}/baselines/"
 fi
+[ -z "${paths_file}" ] || cp -- "${paths_file}" "${staging}/paths-file.txt"
 
 declare -a remote_roots=()
 declare -A seen_base=()
@@ -208,6 +230,7 @@ synced=1
 ## Absolute paths throughout, so no `cd` (hence no inline `bash -c`) is needed in the sandbox.
 declare -a mod_args=( --baseline-dir "${SANDBOX_WORKDIR}/baselines" )
 [ "${write_baseline}" = '1' ] && mod_args+=( --write-baseline )
+[ -z "${paths_file}" ] || mod_args+=( --paths-file "${SANDBOX_WORKDIR}/paths-file.txt" )
 
 rc=0
 sandbox exec --pid-scope private -- env \

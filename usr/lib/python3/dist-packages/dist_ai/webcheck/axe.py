@@ -306,9 +306,21 @@ def _docroots(roots: List[str]) -> Dict[str, dict]:
     return docroots
 
 
+def _load_paths_file(path: str) -> List[str]:
+    """Root-relative audit paths (one per line, blank / '#' skipped) for a CURATED sample -- so a
+    huge tree (the ~9000-page wikis) is gated on a representative subset instead of every page."""
+    out: List[str] = []
+    for raw in Path(path).read_text(encoding='utf-8').splitlines():
+        line = raw.strip()
+        if line and not line.startswith('#'):
+            out.append(line)
+    return out
+
+
 def _serve_and_audit(docroot: str, entry: dict, axe_source: str, settle_ms: int,
-                     hard_timeout: int) -> Tuple[Set[Key], List[str]]:
-    """Serve one docroot on a localhost mount (reusing mobile.py's harness) and audit its pages."""
+                     hard_timeout: int, restrict: Optional[List[str]] = None) -> Tuple[Set[Key], List[str]]:
+    """Serve one docroot on a localhost mount (reusing mobile.py's harness) and audit its pages.
+    `restrict` (a curated path list) overrides the enumerated tree -- audit only those paths."""
     handler = functools.partial(_MountHandler, directory=docroot)
     httpd = _MountingTCPServer(('127.0.0.1', 0), handler)
     httpd.mounts = entry['mounts']
@@ -317,14 +329,14 @@ def _serve_and_audit(docroot: str, entry: dict, axe_source: str, settle_ms: int,
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     try:
         base = 'http://127.0.0.1:%d' % port
-        paths = sorted(set(entry['urls']))
+        paths = list(restrict) if restrict else sorted(set(entry['urls']))
         return asyncio.run(check(base, paths, axe_source, settle_ms, hard_timeout))
     finally:
         httpd.shutdown()
 
 
 def check_roots(roots: List[str], baseline_dir: str, settle_ms: int = 1000,
-                hard_timeout: int = 55) -> int:
+                hard_timeout: int = 55, restrict: Optional[List[str]] = None) -> int:
     """FAMILY/stage entry (run in the sandbox): audit each root vs its committed accepted-violation
     baseline. SKIPs(77) when Playwright/chromium/axe-core is absent. A missing baseline for a root
     fails CLOSED (seed it first)."""
@@ -344,7 +356,8 @@ def check_roots(roots: List[str], baseline_dir: str, settle_ms: int = 1000,
     for docroot, entry in _docroots(roots).items():
         site = os.path.basename(os.path.normpath(docroot))
         try:
-            fresh, problems = _serve_and_audit(docroot, entry, axe_source, settle_ms, hard_timeout)
+            fresh, problems = _serve_and_audit(docroot, entry, axe_source, settle_ms,
+                                               hard_timeout, restrict)
         except _EngineUnavailable as exc:
             if audited == 0:
                 _skip('chromium engine unavailable: %s' % exc)  # nothing ran -> env-unmet SKIP(77)
@@ -378,7 +391,7 @@ def check_roots(roots: List[str], baseline_dir: str, settle_ms: int = 1000,
 
 
 def write_roots(roots: List[str], baseline_dir: str, settle_ms: int = 1000,
-                hard_timeout: int = 55) -> int:
+                hard_timeout: int = 55, restrict: Optional[List[str]] = None) -> int:
     """Seed (overwrite) a per-site baseline from the CURRENT violation set. Refuses to seed a site
     whose pages could not all be audited (a problem) -- a baseline seeded from a half-audited site
     would silently accept nothing for the pages that failed."""
@@ -397,7 +410,8 @@ def write_roots(roots: List[str], baseline_dir: str, settle_ms: int = 1000,
     for docroot, entry in _docroots(roots).items():
         site = os.path.basename(os.path.normpath(docroot))
         try:
-            fresh, problems = _serve_and_audit(docroot, entry, axe_source, settle_ms, hard_timeout)
+            fresh, problems = _serve_and_audit(docroot, entry, axe_source, settle_ms,
+                                               hard_timeout, restrict)
         except _EngineUnavailable as exc:
             if audited == 0:
                 _skip('chromium engine unavailable: %s' % exc)  # nothing seeded -> env-unmet SKIP(77)
@@ -426,13 +440,17 @@ def main(argv: List[str]) -> int:
                     help="path to axe.min.js (else AXE_SOURCE env, else the npm global roots)")
     ap.add_argument("--settle", type=int, default=1000,
                     help="post-load settle time in ms before injecting axe (default 1000)")
+    ap.add_argument("--paths-file", default=None,
+                    help="restrict the audit to the root-relative paths in this file (one per "
+                         "line, blank/# skipped) -- a curated sample instead of the whole tree")
     ap.add_argument("roots", nargs="+", help="site checkout root(s) with index.html")
     args = ap.parse_args(argv)
     if args.axe_source:
         os.environ["AXE_SOURCE"] = args.axe_source
+    restrict = _load_paths_file(args.paths_file) if args.paths_file else None
     if args.write_baseline:
-        return write_roots(args.roots, args.baseline_dir, args.settle)
-    return check_roots(args.roots, args.baseline_dir, args.settle)
+        return write_roots(args.roots, args.baseline_dir, args.settle, restrict=restrict)
+    return check_roots(args.roots, args.baseline_dir, args.settle, restrict=restrict)
 
 
 if __name__ == "__main__":

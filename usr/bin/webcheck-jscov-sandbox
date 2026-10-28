@@ -56,7 +56,11 @@ sandbox exec --pid-scope private -- type sandbox-confine >/dev/null 2>&1 \
 ## Stage the jscov harness + each site root (no .git) into one tree, sync it in, run the gate
 ## confined. Site-root basenames must be unique (they become roots/<base>). The tests reference
 ## roots/<base>/<rel>.js via harness.sitePath(); covered.txt pins exactly which files are gated.
-staging="$(mktemp --directory)"
+## Stage on ample persistent disk, not the small /tmp tmpfs -- a large tree overflows it mid-rsync
+## (ENOSPC reads as a lane failure). Mirrors webcheck-vnu-sandbox. Override WEBCHECK_JSCOV_TMP.
+: "${WEBCHECK_JSCOV_TMP:=${XDG_CACHE_HOME:-${HOME}/.cache}/webcheck-jscov-sandbox-tmp}"
+mkdir --parents -- "${WEBCHECK_JSCOV_TMP}"
+staging="$(mktemp --directory -- "${WEBCHECK_JSCOV_TMP}/webcheck-jscov-sandbox.XXXXXX")"
 synced=0
 cleanup(){
    # shellcheck disable=SC2317

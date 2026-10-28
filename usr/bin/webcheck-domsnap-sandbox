@@ -80,7 +80,11 @@ if ! sandbox exec --pid-scope private -- "${SANDBOX_VENV_PY}" -c 'import imageha
 fi
 
 ## --- stage the core, the diff engine, the page lists, and each site root ----------------------
-staging="$(mktemp --directory)"
+## Stage on ample persistent disk, not the small /tmp tmpfs -- a large tree overflows it mid-rsync
+## (ENOSPC reads as a lane failure). Mirrors webcheck-vnu-sandbox. Override WEBCHECK_DOMSNAP_TMP.
+: "${WEBCHECK_DOMSNAP_TMP:=${XDG_CACHE_HOME:-${HOME}/.cache}/webcheck-domsnap-sandbox-tmp}"
+mkdir --parents -- "${WEBCHECK_DOMSNAP_TMP}"
+staging="$(mktemp --directory -- "${WEBCHECK_DOMSNAP_TMP}/webcheck-domsnap-sandbox.XXXXXX")"
 synced=0
 cleanup(){
    # shellcheck disable=SC2317  # invoked indirectly via the EXIT trap

@@ -83,6 +83,14 @@ def run() -> int:
            "format/parse baseline roundtrip (spaced + empty target)")
     ck(ax.parse_baseline("# header\n\n/ image-alt img\n") == {("/", "image-alt", "img")},
        "parse_baseline skips blank/comment lines")
+
+    # _load_paths_file: the curated-sample path list (one root-relative path per line, blank/#
+    # skipped) that restricts a huge tree (the ~9000-page wikis) to a representative subset.
+    with tempfile.TemporaryDirectory() as _td:
+        pf = Path(_td) / "paths.txt"
+        pf.write_text("# curated\n\n/\n/wiki/ISO\n  /wiki/Donors  \n", encoding="utf-8")
+        ck(ax._load_paths_file(str(pf)) == ["/", "/wiki/ISO", "/wiki/Donors"],
+           "_load_paths_file strips blank/# + whitespace, preserves order")
     for bad in ("justpath",):
         try:
             ax.parse_baseline(bad)
