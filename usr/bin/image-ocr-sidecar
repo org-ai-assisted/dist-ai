@@ -37,15 +37,17 @@ if os.path.isdir(_LIB) and _LIB not in sys.path:
     sys.path.insert(0, _LIB)
 
 from dm_test_results.image_gate import iter_images  # noqa: E402
-from dm_test_results.ocr import ocr_text  # noqa: E402
+from dm_test_results.ocr import ocr_text, ocr_text_union  # noqa: E402
 
 
 def parse_args(argv):
     parser = argparse.ArgumentParser(prog="image-ocr-sidecar", add_help=True)
     parser.add_argument("--suffix", default=".ocr.txt",
                         help="sidecar suffix appended to the image path (default .ocr.txt)")
-    parser.add_argument("--psm", type=int, default=6,
-                        help="tesseract page-segmentation mode (default 6: uniform text block)")
+    parser.add_argument("--psm", type=int, default=None,
+                        help="OCR with this single tesseract page-segmentation mode; default: the "
+                             "robust UNION of psm 3 + psm 6 (matches image-text-assert, so the "
+                             "published evidence contains every token the gate matched)")
     parser.add_argument("paths", nargs="+")
     return parser.parse_args(argv[1:])
 
@@ -58,7 +60,7 @@ def main(argv):
     for path in iter_images(args.paths):
         total += 1
         try:
-            text = ocr_text(path, psm=args.psm)
+            text = ocr_text_union(path) if args.psm is None else ocr_text(path, psm=args.psm)
         except (subprocess.CalledProcessError, FileNotFoundError, OSError) as exc:
             sys.stderr.write("image-ocr-sidecar: OCR failed for %s -- %s\n" % (path, exc))
             failed += 1

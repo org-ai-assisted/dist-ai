@@ -61,6 +61,21 @@ def ocr_text(path, psm=6):
     return proc.stdout
 
 
+## The content gate OCRs varied layouts: a multi-region GUI installer page (a full-width row
+## separated by whitespace, e.g. the "Encrypt system" checkbox) AND a simple centered menu (the
+## GRUB "Choose boot mode" screen). NO single page-segmentation mode reads both -- psm 6 (uniform
+## block) drops the separated GUI row, while psm 3 (auto layout) mis-segments the centered menu and
+## drops its text. The UNION of the two reads every token either reads, with no per-frame tuning.
+ROBUST_PSMS = (3, 6)
+
+
+def ocr_text_union(path, psms=ROBUST_PSMS):
+    """OCR text concatenated across several page-segmentation modes, so a token read under ANY
+    mode is present for matching. Deterministic (fixed psms, fixed order). Raises on a tesseract/OS
+    failure like ocr_text. See ROBUST_PSMS for why the union is needed."""
+    return "\n".join(ocr_text(path, psm=p) for p in psms)
+
+
 def normalize(text):
     """Lowercase and collapse every whitespace run to a single space, for token matching
     that tolerates OCR spacing and case noise."""

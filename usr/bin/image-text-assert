@@ -47,7 +47,7 @@ _LIB = os.path.join(
 if os.path.isdir(_LIB) and _LIB not in sys.path:
     sys.path.insert(0, _LIB)
 
-from dm_test_results.ocr import missing_tokens, normalize, ocr_text  # noqa: E402
+from dm_test_results.ocr import missing_tokens, normalize, ocr_text, ocr_text_union  # noqa: E402
 
 
 def read_spec(path):
@@ -67,8 +67,10 @@ def parse_args(argv):
                         help="a phrase that must appear in the OCR text (repeatable)")
     parser.add_argument("--spec",
                         help="file of expected tokens, one per line ('#' comments ok)")
-    parser.add_argument("--psm", type=int, default=6,
-                        help="tesseract page-segmentation mode (default 6: uniform text block)")
+    parser.add_argument("--psm", type=int, default=None,
+                        help="OCR with this single tesseract page-segmentation mode; default: a "
+                             "robust UNION of psm 3 (auto layout) + psm 6 (uniform block), which "
+                             "together read multi-region GUI pages AND simple centered menus")
     parser.add_argument("image")
     return parser.parse_args(argv[1:])
 
@@ -91,7 +93,11 @@ def main(argv):
         return 2
 
     try:
-        text = ocr_text(args.image, psm=args.psm)
+        ## Default: the robust psm union (no per-frame tuning); an explicit --psm forces one mode.
+        if args.psm is None:
+            text = ocr_text_union(args.image)
+        else:
+            text = ocr_text(args.image, psm=args.psm)
     except (subprocess.CalledProcessError, FileNotFoundError, OSError) as exc:
         ## An OCR read failure is NOT a pass -- fail honestly so a broken frame/tool is seen. It is
         ## exit 3 (distinct from a config error) so a caller can treat a transient tesseract/image
