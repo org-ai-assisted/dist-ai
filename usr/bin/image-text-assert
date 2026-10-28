@@ -47,7 +47,7 @@ _LIB = os.path.join(
 if os.path.isdir(_LIB) and _LIB not in sys.path:
     sys.path.insert(0, _LIB)
 
-from dm_test_results.ocr import missing_tokens, normalize, ocr_text, ocr_text_union  # noqa: E402
+from dm_test_results.ocr import missing_tokens_multi, normalize, ocr_text, ocr_texts  # noqa: E402
 
 
 def read_spec(path):
@@ -93,11 +93,15 @@ def main(argv):
         return 2
 
     try:
-        ## Default: the robust psm union (no per-frame tuning); an explicit --psm forces one mode.
+        ## Default: OCR under the robust psm set (no per-frame tuning); an explicit --psm forces one
+        ## mode. A LIST of transcripts, matched INDEPENDENTLY below -- never a single joined blob,
+        ## which would let a multi-word token match across the seam between two transcripts. ocr_texts
+        ## also tolerates one mode failing (it raises only if ALL fail), so a per-mode read error
+        ## cannot hide a real mismatch the other mode would catch.
         if args.psm is None:
-            text = ocr_text_union(args.image)
+            texts = ocr_texts(args.image)
         else:
-            text = ocr_text(args.image, psm=args.psm)
+            texts = [ocr_text(args.image, psm=args.psm)]
     except (subprocess.CalledProcessError, FileNotFoundError, OSError) as exc:
         ## An OCR read failure is NOT a pass -- fail honestly so a broken frame/tool is seen. It is
         ## exit 3 (distinct from a config error) so a caller can treat a transient tesseract/image
@@ -105,7 +109,7 @@ def main(argv):
         sys.stderr.write("image-text-assert: OCR failed for %s -- %s\n" % (args.image, exc))
         return 3
 
-    missing = missing_tokens(text, expected)
+    missing = missing_tokens_multi(texts, expected)
     if missing:
         sys.stderr.write("image-text-assert: %s MISSING expected token(s): %s\n"
                          % (args.image, "; ".join(missing)))

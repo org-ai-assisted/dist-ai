@@ -9,15 +9,23 @@
 ## separated by whitespace -- the "Encrypt system" checkbox) AND a simple centered menu (GRUB
 ## "Choose boot mode"). NO single tesseract page-segmentation mode reads both: psm 6 (uniform
 ## block) drops the separated GUI row; psm 3 (auto layout) mis-segments the centered menu. So
-## image-text-assert / image-ocr-sidecar default to the UNION of psm 3 + psm 6. This guards that
-## union: a token present under ONLY one mode is still matched, while either mode ALONE misses the
-## other's token (the real wedge -- partitions-luks-filled failed because psm 6 dropped "Encrypt
-## system" though it was on screen).
+## image-text-assert / image-ocr-sidecar OCR under BOTH psm 3 and psm 6 by default and a token is
+## present if it appears in EITHER transcript.
 ##
-## Deterministic + version-independent: tesseract is STUBBED to return a different token per --psm
-## (mirroring the real per-mode difference), so this runs in unit CI without real tesseract and
-## cannot flake on a tesseract version that segments differently. The REAL per-frame behavior is
-## verified on the e2e lane (image_text_assert_test.sh drives real tesseract on a rendered frame).
+## This guards three properties the design must hold:
+##   (1) a token present under ONLY one mode is still matched (the fix: partitions-luks-filled
+##       failed because psm 6 dropped "Encrypt system" though it was on screen);
+##   (2) NO SEAM: the transcripts are matched INDEPENDENTLY, never concatenated, so a multi-word
+##       golden cannot be matched across the boundary between two transcripts (end of one + start
+##       of the other). Every shipped golden is a multi-word phrase, so this is reachable;
+##   (3) a per-mode OCR FAILURE does not hide a real mismatch: if one mode errors but the other
+##       reads, the read decides (mismatch stays a mismatch); only when ALL modes fail is it an
+##       ocr-error.
+##
+## Deterministic + version-independent: tesseract is STUBBED (output + exit per --psm, via env), so
+## this runs in unit CI without real tesseract and cannot flake on a tesseract version that
+## segments differently. The REAL per-frame behavior is on the e2e lane (image_text_assert_test.sh
+## drives real tesseract on a rendered frame).
 
 set -o errexit
 set -o nounset
@@ -51,9 +59,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-## Stub tesseract on PATH: GUIROW reads ONLY under psm 3 (auto layout), MENUTOKEN ONLY under psm 6
-## (uniform block). argv is `tesseract <img> stdout --psm N [tsv]`; emit plain text (no tsv path
-## exercised here). Mirrors the real split that no single mode reads both tokens.
+## Stub tesseract on PATH. Default: GUIROW reads ONLY under psm 3 (auto layout), MENUTOKEN ONLY
+## under psm 6 (uniform block) -- the real split that no single mode reads both. A case overrides
+## the per-psm output/exit via env (TESS_P3_OUT / TESS_P3_RC / TESS_P6_OUT / TESS_P6_RC) to drive
+## the seam and per-mode-failure paths. argv is `tesseract <img> stdout --psm N [tsv]`.
 stub="${work}/bin"
 mkdir --parents -- "${stub}"
 cat > "${stub}/tesseract" <<'STUB'
@@ -66,11 +75,12 @@ while [ "$#" -gt 0 ]; do
    esac
 done
 case "${psm}" in
-   3) printf '%s\n' "GUIROW read only by auto layout" ;;
-   6) printf '%s\n' "MENUTOKEN read only by uniform block" ;;
-   *) printf '%s\n' "fallback text" ;;
+   3) out="${TESS_P3_OUT-GUIROW read only by auto layout}"; rc="${TESS_P3_RC:-0}" ;;
+   6) out="${TESS_P6_OUT-MENUTOKEN read only by uniform block}"; rc="${TESS_P6_RC:-0}" ;;
+   *) out="fallback text"; rc=0 ;;
 esac
-exit 0
+printf '%s\n' "${out}"
+exit "${rc}"
 STUB
 chmod +x -- "${stub}/tesseract"
 export PATH="${stub}:${PATH}"
@@ -94,40 +104,61 @@ expect_rc() {
    fi
 }
 
-## DEFAULT (union 3+6) reads BOTH tokens -> pass. This is the fix.
-expect_rc "union (default) matches a token each single mode misses" \
+## (1) DEFAULT matches a token each single mode misses; each single mode ALONE misses the other's.
+expect_rc "default matches a token each single mode misses" \
    0 "${assert_bin}" --expect GUIROW --expect MENUTOKEN -- "${img}"
-## Each single mode ALONE misses the OTHER mode's token -> fail. Proves the union is doing the work
-## (non-vacuous: without the union, the default would behave like one of these).
 expect_rc "psm 6 alone MISSES the auto-layout token (the real bug)" \
    1 "${assert_bin}" --psm 6 --expect GUIROW -- "${img}"
 expect_rc "psm 3 alone MISSES the uniform-block token" \
    1 "${assert_bin}" --psm 3 --expect MENUTOKEN -- "${img}"
-## Control: each single mode DOES read its own token (the stub is not just failing everything).
-expect_rc "psm 6 alone reads its uniform-block token (control)" \
+expect_rc "psm 6 alone reads its own token (control)" \
    0 "${assert_bin}" --psm 6 --expect MENUTOKEN -- "${img}"
-expect_rc "psm 3 alone reads its auto-layout token (control)" \
+expect_rc "psm 3 alone reads its own token (control)" \
    0 "${assert_bin}" --psm 3 --expect GUIROW -- "${img}"
 
-## image-ocr-sidecar default (union) publishes text carrying BOTH tokens, so a golden is
-## approvable from the sidecar regardless of which mode read a given row.
+## (2) NO SEAM: psm3="alpha beta", psm6="gamma delta". The multi-word token "beta gamma" is in
+## NEITHER transcript -- it only forms at the join of the two. It must be reported MISSING (rc 1).
+## A joined-blob union would normalize "alpha beta\ngamma delta" to "alpha beta gamma delta" and
+## FALSELY match it (rc 0) -- the canary for the seam bug.
+expect_rc "a cross-transcript seam phrase is NOT matched (no false pass)" \
+   1 env TESS_P3_OUT='alpha beta' TESS_P6_OUT='gamma delta' "${assert_bin}" --expect 'beta gamma' -- "${img}"
+## Positive controls: each real per-transcript token IS matched.
+expect_rc "a token really in the psm3 transcript is matched" \
+   0 env TESS_P3_OUT='alpha beta' TESS_P6_OUT='gamma delta' "${assert_bin}" --expect 'alpha beta' -- "${img}"
+expect_rc "a token really in the psm6 transcript is matched" \
+   0 env TESS_P3_OUT='alpha beta' TESS_P6_OUT='gamma delta' "${assert_bin}" --expect 'gamma delta' -- "${img}"
+
+## (3) A per-mode OCR FAILURE must not hide a real mismatch. psm3 errors (rc 1), psm6 reads but
+## LACKS the expected token: the default must report MISMATCH (rc 1), NOT ocr-error (rc 3). A
+## join-generator that aborts on the first (psm3) failure would wrongly return ocr-error -> the
+## content gate ignores it -> false green. This is the canary for that.
+expect_rc "psm3 failure + psm6 mismatch -> MISMATCH, not ocr-error (no false green)" \
+   1 env TESS_P3_RC=1 TESS_P6_OUT='only the menu token' "${assert_bin}" --expect GUIROW -- "${img}"
+## psm3 fails but psm6 DOES read the token -> pass (the surviving mode decides).
+expect_rc "psm3 failure + psm6 reads the token -> pass" \
+   0 env TESS_P3_RC=1 TESS_P6_OUT='GUIROW is here' "${assert_bin}" --expect GUIROW -- "${img}"
+## ALL modes fail -> a genuine OCR read error (exit 3), never a pass.
+expect_rc "ALL modes fail -> OCR-read error (exit 3)" \
+   3 env TESS_P3_RC=1 TESS_P6_RC=1 "${assert_bin}" --expect GUIROW -- "${img}"
+
+## image-ocr-sidecar default publishes text carrying BOTH tokens (so a golden is approvable from
+## the sidecar regardless of which mode read a given row), and survives a per-mode failure.
 "${sidecar_bin}" -- "${img}" >/dev/null 2>&1
 if [ -f "${img}.ocr.txt" ] \
    && grep --quiet GUIROW "${img}.ocr.txt" && grep --quiet MENUTOKEN "${img}.ocr.txt"; then
-   printf '%s\n' "PASS: ocr-sidecar default (union) carries both single-mode tokens"
+   printf '%s\n' "PASS: ocr-sidecar default carries both single-mode tokens"
    pass=$((pass + 1))
 else
    printf '%s\n' "FAIL: ocr-sidecar default did not carry both tokens" >&2
    fail=$((fail + 1))
 fi
-## A single-mode sidecar carries only that mode's token (canary: the default above is the union).
-"${sidecar_bin}" --psm 6 --suffix .psm6.txt -- "${img}" >/dev/null 2>&1
-if [ -f "${img}.psm6.txt" ] \
-   && grep --quiet MENUTOKEN "${img}.psm6.txt" && ! grep --quiet GUIROW "${img}.psm6.txt"; then
-   printf '%s\n' "PASS: ocr-sidecar --psm 6 carries only the uniform-block token (non-vacuous)"
+safe-rm --force -- "${img}.ocr.txt"
+TESS_P3_RC=1 TESS_P6_OUT='surviving mode text' "${sidecar_bin}" -- "${img}" >/dev/null 2>&1
+if [ -f "${img}.ocr.txt" ] && grep --quiet 'surviving mode text' "${img}.ocr.txt"; then
+   printf '%s\n' "PASS: ocr-sidecar survives a per-mode failure (writes the surviving transcript)"
    pass=$((pass + 1))
 else
-   printf '%s\n' "FAIL: ocr-sidecar --psm 6 did not isolate the single-mode token" >&2
+   printf '%s\n' "FAIL: ocr-sidecar did not survive a per-mode failure" >&2
    fail=$((fail + 1))
 fi
 

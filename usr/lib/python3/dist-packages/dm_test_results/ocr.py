@@ -69,11 +69,29 @@ def ocr_text(path, psm=6):
 ROBUST_PSMS = (3, 6)
 
 
+def ocr_texts(path, psms=ROBUST_PSMS):
+    """OCR the frame under each page-segmentation mode; return the list of transcripts that
+    SUCCEEDED, in order. Raises (like ocr_text) ONLY if EVERY mode failed -- so one mode erroring
+    never hides another's successful read, which would otherwise turn a real content mismatch into
+    a silent 'ocr-error'. See ROBUST_PSMS for why multiple modes are needed."""
+    texts = []
+    last_exc = None
+    for psm in psms:
+        try:
+            texts.append(ocr_text(path, psm=psm))
+        except (subprocess.CalledProcessError, OSError) as exc:
+            last_exc = exc
+    if not texts:
+        raise last_exc
+    return texts
+
+
 def ocr_text_union(path, psms=ROBUST_PSMS):
-    """OCR text concatenated across several page-segmentation modes, so a token read under ANY
-    mode is present for matching. Deterministic (fixed psms, fixed order). Raises on a tesseract/OS
-    failure like ocr_text. See ROBUST_PSMS for why the union is needed."""
-    return "\n".join(ocr_text(path, psm=p) for p in psms)
+    """Concatenated OCR across modes for DISPLAY ONLY (the published sidecar) -- robust to a
+    per-mode failure (reuses ocr_texts). NOT for token matching: use ocr_texts +
+    missing_tokens_multi, whose independent per-transcript check avoids the cross-transcript seam
+    that substring-matching one joined blob would create."""
+    return "\n".join(ocr_texts(path, psms))
 
 
 def normalize(text):
@@ -97,5 +115,24 @@ def missing_tokens(text, expected):
             continue
         seen.add(norm)
         if norm not in hay:
+            missing.append(tok)
+    return missing
+
+
+def missing_tokens_multi(texts, expected):
+    """missing_tokens across SEVERAL transcripts (e.g. one per page-segmentation mode): a token is
+    present when it appears in ANY ONE transcript, and missing only when absent from them ALL. Each
+    transcript is normalized and matched INDEPENDENTLY -- never concatenated -- so a multi-word
+    token cannot be matched across the boundary between two transcripts (the false-match seam a
+    joined-text union would allow)."""
+    hays = [normalize(text) for text in texts]
+    missing = []
+    seen = set()
+    for tok in expected:
+        norm = normalize(tok)
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        if not any(norm in hay for hay in hays):
             missing.append(tok)
     return missing
