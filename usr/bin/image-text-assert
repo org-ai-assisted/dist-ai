@@ -102,7 +102,7 @@ def main(argv):
             texts = ocr_texts(args.image)
         else:
             texts = [ocr_text(args.image, psm=args.psm)]
-    except (subprocess.CalledProcessError, FileNotFoundError, OSError) as exc:
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError, UnicodeError) as exc:
         ## An OCR read failure is NOT a pass -- fail honestly so a broken frame/tool is seen. It is
         ## exit 3 (distinct from a config error) so a caller can treat a transient tesseract/image
         ## failure as non-fatal while a broken golden (exit 2) still fails loud.
@@ -113,7 +113,7 @@ def main(argv):
     if missing:
         sys.stderr.write("image-text-assert: %s MISSING expected token(s): %s\n"
                          % (args.image, "; ".join(missing)))
-        excerpt = " ".join(normalize(text).split()[:40])
+        excerpt = " ".join(normalize(" ".join(texts)).split()[:40])
         sys.stderr.write("image-text-assert: OCR saw: %s\n" % (excerpt or "(no text)"))
         return 1
     sys.stdout.write("image-text-assert: %s OK (all %d expected token(s) present)\n"

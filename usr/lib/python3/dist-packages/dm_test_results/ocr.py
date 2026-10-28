@@ -79,10 +79,13 @@ def ocr_texts(path, psms=ROBUST_PSMS):
     for psm in psms:
         try:
             texts.append(ocr_text(path, psm=psm))
-        except (subprocess.CalledProcessError, OSError) as exc:
+        except (subprocess.CalledProcessError, OSError, ValueError) as exc:
+            ## ValueError covers UnicodeDecodeError (tesseract emitting non-UTF-8 under one mode):
+            ## treat that mode as failed, not a crash, so another mode's successful read still counts.
             last_exc = exc
     if not texts:
-        raise last_exc
+        raise last_exc if last_exc is not None else RuntimeError(
+            "ocr_texts: no page-segmentation modes given")
     return texts
 
 

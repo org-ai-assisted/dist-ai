@@ -74,12 +74,18 @@ while [ "$#" -gt 0 ]; do
       *) shift ;;
    esac
 done
+bin=""
 case "${psm}" in
-   3) out="${TESS_P3_OUT-GUIROW read only by auto layout}"; rc="${TESS_P3_RC:-0}" ;;
-   6) out="${TESS_P6_OUT-MENUTOKEN read only by uniform block}"; rc="${TESS_P6_RC:-0}" ;;
+   3) out="${TESS_P3_OUT-GUIROW read only by auto layout}"; rc="${TESS_P3_RC:-0}"; bin="${TESS_P3_BIN:-}" ;;
+   6) out="${TESS_P6_OUT-MENUTOKEN read only by uniform block}"; rc="${TESS_P6_RC:-0}"; bin="${TESS_P6_BIN:-}" ;;
    *) out="fallback text"; rc=0 ;;
 esac
-printf '%s\n' "${out}"
+if [ -n "${bin}" ]; then
+   ## non-UTF-8 output for this mode (tesseract emitting invalid bytes) -- exercises the decode-error path.
+   printf 'ok \xff\xfe tail\n'
+else
+   printf '%s\n' "${out}"
+fi
 exit "${rc}"
 STUB
 chmod +x -- "${stub}/tesseract"
@@ -140,6 +146,37 @@ expect_rc "psm3 failure + psm6 reads the token -> pass" \
 ## ALL modes fail -> a genuine OCR read error (exit 3), never a pass.
 expect_rc "ALL modes fail -> OCR-read error (exit 3)" \
    3 env TESS_P3_RC=1 TESS_P6_RC=1 "${assert_bin}" --expect GUIROW -- "${img}"
+
+## (4) The MISMATCH DIAGNOSTIC path must not crash. On a real miss the tool prints the missing
+## token(s) AND an "OCR saw:" excerpt, then returns 1 -- an rc-only check cannot tell a clean
+## mismatch (exit 1) from a crash in the diagnostic (also exit 1), so assert the stderr content.
+err_file="${work}/mismatch.err"
+mm_rc=0
+"${assert_bin}" --expect ZZZDEFINITELYABSENT -- "${img}" >/dev/null 2>"${err_file}" || mm_rc=$?
+saw=0
+if grep --quiet 'OCR saw:' "${err_file}"; then saw=1; fi
+crash=0
+if grep --quiet --extended-regexp 'Traceback|NameError' "${err_file}"; then crash=1; fi
+if [ "${mm_rc}" -eq 1 ] && [ "${saw}" -eq 1 ] && [ "${crash}" -eq 0 ]; then
+   printf '%s\n' "PASS: mismatch prints the OCR-saw excerpt and does not crash the diagnostic"
+   pass=$((pass + 1))
+else
+   printf '%s\n' "FAIL: mismatch diagnostic broken (rc=${mm_rc}, saw=${saw}, crash=${crash})" >&2
+   printf '%s\n' "  stderr: $(cat -- "${err_file}")" >&2
+   fail=$((fail + 1))
+fi
+
+## (5) A non-UTF-8 read under ONE mode must not crash: the OTHER mode decides. psm 6 emits invalid
+## bytes, psm 3 reads the token -> pass (the decodable mode wins, the bad one is skipped).
+expect_rc "non-UTF-8 under psm6 + token in psm3 -> pass (bad mode skipped)" \
+   0 env TESS_P6_BIN=1 TESS_P3_OUT='Welcome to the Calamares installer' \
+      "${assert_bin}" --expect 'Welcome to the Calamares installer' -- "${img}"
+## psm 3 emits invalid bytes, psm 6 reads but LACKS the token -> clean MISMATCH (1), not a crash.
+expect_rc "non-UTF-8 under psm3 + psm6 mismatch -> MISMATCH, not crash" \
+   1 env TESS_P3_BIN=1 TESS_P6_OUT='only a menu' "${assert_bin}" --expect GUIROW -- "${img}"
+## BOTH modes emit invalid bytes -> a genuine OCR read error (exit 3), never a crash or a pass.
+expect_rc "non-UTF-8 under BOTH modes -> OCR-read error (exit 3)" \
+   3 env TESS_P3_BIN=1 TESS_P6_BIN=1 "${assert_bin}" --expect GUIROW -- "${img}"
 
 ## image-ocr-sidecar default publishes text carrying BOTH tokens (so a golden is approvable from
 ## the sidecar regardless of which mode read a given row), and survives a per-mode failure.
