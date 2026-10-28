@@ -75,14 +75,20 @@ while [ "$#" -gt 0 ]; do
    esac
 done
 bin=""
+err=""
 case "${psm}" in
-   3) out="${TESS_P3_OUT-GUIROW read only by auto layout}"; rc="${TESS_P3_RC:-0}"; bin="${TESS_P3_BIN:-}" ;;
-   6) out="${TESS_P6_OUT-MENUTOKEN read only by uniform block}"; rc="${TESS_P6_RC:-0}"; bin="${TESS_P6_BIN:-}" ;;
+   3) out="${TESS_P3_OUT-GUIROW read only by auto layout}"; rc="${TESS_P3_RC:-0}"; bin="${TESS_P3_BIN:-}"; err="${TESS_P3_ERR:-}" ;;
+   6) out="${TESS_P6_OUT-MENUTOKEN read only by uniform block}"; rc="${TESS_P6_RC:-0}"; bin="${TESS_P6_BIN:-}"; err="${TESS_P6_ERR:-}" ;;
    *) out="fallback text"; rc=0 ;;
 esac
+## non-UTF-8 bytes on STDERR (a real tesseract warning): the tools must IGNORE stderr, never
+## strict-decode it and crash.
+if [ -n "${err}" ]; then
+   printf 'tesseract warning \xff\xfe\n' >&2
+fi
 if [ -n "${bin}" ]; then
-   ## non-UTF-8 output for this mode (tesseract emitting invalid bytes) -- exercises the decode-error path.
-   printf 'ok \xff\xfe tail\n'
+   ## the configured stdout text PLUS a stray non-UTF-8 byte -- must decode (replace), not crash.
+   printf '%s \xff done\n' "${out}"
 else
    printf '%s\n' "${out}"
 fi
@@ -166,17 +172,29 @@ else
    fail=$((fail + 1))
 fi
 
-## (5) A non-UTF-8 read under ONE mode must not crash: the OTHER mode decides. psm 6 emits invalid
-## bytes, psm 3 reads the token -> pass (the decodable mode wins, the bad one is skipped).
-expect_rc "non-UTF-8 under psm6 + token in psm3 -> pass (bad mode skipped)" \
-   0 env TESS_P6_BIN=1 TESS_P3_OUT='Welcome to the Calamares installer' \
+## (5) Robust OCR decoding: tesseract's STDERR may carry non-UTF-8 warning bytes and its STDOUT a
+## stray bad byte. Neither may crash the read, discard the stdout transcript, or turn a real
+## content mismatch into an ignored ocr-error.
+## 5a: bad STDERR + stdout LACKS the token -> MISMATCH (exit 1), NOT ocr-error (exit 3). The wedge:
+## strict-decoding stderr crashed, and treating that as "mode failed" turned a real mismatch into
+## an ignored ocr-error -> the run stayed green on a wrong-screen frame. This is that canary.
+expect_rc "bad STDERR + token absent -> MISMATCH, not ocr-error (no false green)" \
+   1 env TESS_P3_ERR=1 TESS_P6_ERR=1 TESS_P3_OUT='only a menu' TESS_P6_OUT='only a menu' \
       "${assert_bin}" --expect 'Welcome to the Calamares installer' -- "${img}"
-## psm 3 emits invalid bytes, psm 6 reads but LACKS the token -> clean MISMATCH (1), not a crash.
-expect_rc "non-UTF-8 under psm3 + psm6 mismatch -> MISMATCH, not crash" \
-   1 env TESS_P3_BIN=1 TESS_P6_OUT='only a menu' "${assert_bin}" --expect GUIROW -- "${img}"
-## BOTH modes emit invalid bytes -> a genuine OCR read error (exit 3), never a crash or a pass.
-expect_rc "non-UTF-8 under BOTH modes -> OCR-read error (exit 3)" \
-   3 env TESS_P3_BIN=1 TESS_P6_BIN=1 "${assert_bin}" --expect GUIROW -- "${img}"
+## 5b: bad STDERR but the token IS in a mode's stdout -> pass (stderr is irrelevant to matching).
+expect_rc "bad STDERR + token present -> pass (stderr ignored)" \
+   0 env TESS_P3_ERR=1 TESS_P3_OUT='Welcome to the Calamares installer' TESS_P6_OUT='only a menu' \
+      "${assert_bin}" --expect 'Welcome to the Calamares installer' -- "${img}"
+## 5c: a stray bad byte in STDOUT degrades to U+FFFD (decode 'replace'); the readable token around
+## it still matches -- the transcript is not lost.
+expect_rc "bad byte in STDOUT + token readable -> matched (decode replace)" \
+   0 env TESS_P3_BIN=1 TESS_P3_OUT='Welcome to the Calamares installer' TESS_P6_OUT='only a menu' \
+      "${assert_bin}" --expect 'Welcome to the Calamares installer' -- "${img}"
+## 5d: bad bytes in STDOUT on BOTH modes + token absent -> MISMATCH (exit 1), NOT ocr-error: a bad
+## byte must not escalate a real mismatch into an ignored read error.
+expect_rc "bad STDOUT bytes both + token absent -> MISMATCH, not ocr-error" \
+   1 env TESS_P3_BIN=1 TESS_P6_BIN=1 TESS_P3_OUT='only a menu' TESS_P6_OUT='only a menu' \
+      "${assert_bin}" --expect 'Welcome to the Calamares installer' -- "${img}"
 
 ## image-ocr-sidecar default publishes text carrying BOTH tokens (so a golden is approvable from
 ## the sidecar regardless of which mode read a given row), and survives a per-mode failure.

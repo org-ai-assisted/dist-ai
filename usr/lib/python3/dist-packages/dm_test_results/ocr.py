@@ -20,11 +20,14 @@ def tesseract_words(path, psm=6):
 
     --psm 6 (assume a uniform block of text) suits a console/log/desktop frame. Raises on a
     tesseract/OS failure so a caller can treat the frame as best-effort-unchanged."""
+    ## Capture as BYTES (no text=True): tesseract's stderr can carry non-UTF-8 warning bytes, and
+    ## text=True would strict-decode stderr too and crash the read. Decode only stdout, with
+    ## 'replace' so a stray bad byte in the recognized text degrades to U+FFFD, never an exception.
     proc = subprocess.run(
         ["tesseract", path, "stdout", "--psm", str(psm), "tsv"],
-        capture_output=True, text=True, check=True,
+        capture_output=True, check=True,
     )
-    lines = proc.stdout.splitlines()
+    lines = proc.stdout.decode("utf-8", "replace").splitlines()
     if not lines:
         return []
     header = lines[0].split("\t")
@@ -53,12 +56,15 @@ def tesseract_words(path, psm=6):
 
 def ocr_text(path, psm=6):
     """Deterministic plain-text OCR (line structure preserved). Raises on a tesseract/OS
-    failure so the caller decides whether a read miss is fatal."""
+    failure so the caller decides whether a read miss is fatal. Captures as BYTES (no text=True):
+    tesseract's stderr can carry non-UTF-8 warning bytes, and text=True would strict-decode stderr
+    too and crash. Decode only stdout, with 'replace', so a stray bad byte degrades to U+FFFD and
+    the recognized text is never lost to an exception."""
     proc = subprocess.run(
         ["tesseract", path, "stdout", "--psm", str(psm)],
-        capture_output=True, text=True, check=True,
+        capture_output=True, check=True,
     )
-    return proc.stdout
+    return proc.stdout.decode("utf-8", "replace")
 
 
 ## The content gate OCRs varied layouts: a multi-region GUI installer page (a full-width row
@@ -79,9 +85,9 @@ def ocr_texts(path, psms=ROBUST_PSMS):
     for psm in psms:
         try:
             texts.append(ocr_text(path, psm=psm))
-        except (subprocess.CalledProcessError, OSError, ValueError) as exc:
-            ## ValueError covers UnicodeDecodeError (tesseract emitting non-UTF-8 under one mode):
-            ## treat that mode as failed, not a crash, so another mode's successful read still counts.
+        except (subprocess.CalledProcessError, OSError) as exc:
+            ## ocr_text decodes stdout with 'replace' and never strict-decodes stderr, so a bad byte
+            ## is no longer an exception -- only a real tesseract/OS failure reaches here.
             last_exc = exc
     if not texts:
         raise last_exc if last_exc is not None else RuntimeError(

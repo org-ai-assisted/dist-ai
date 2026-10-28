@@ -61,7 +61,7 @@ def main(argv):
         total += 1
         try:
             text = ocr_text_union(path) if args.psm is None else ocr_text(path, psm=args.psm)
-        except (subprocess.CalledProcessError, FileNotFoundError, OSError, UnicodeError) as exc:
+        except (subprocess.CalledProcessError, FileNotFoundError, OSError) as exc:
             sys.stderr.write("image-ocr-sidecar: OCR failed for %s -- %s\n" % (path, exc))
             failed += 1
             continue
