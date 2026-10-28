@@ -317,6 +317,25 @@ def _load_paths_file(path: str) -> List[str]:
     return out
 
 
+def _restrict_baseline(baseline: Set[Key], restrict: Optional[List[str]]) -> Set[Key]:
+    """For a curated (restricted) CHECK: compare only the AUDITED paths' baseline keys, so an
+    unvisited page's accepted violation is not misreported 'resolved' (its page was never run)."""
+    if restrict is None:
+        return baseline
+    paths = set(restrict)
+    return {k for k in baseline if k[0] in paths}
+
+
+def _merge_seed(existing: Set[Key], fresh: Set[Key], restrict: Optional[List[str]]) -> Set[Key]:
+    """For a curated (restricted) SEED: keep accepted entries on pages NOT audited and replace only
+    the audited paths' keys -- a restricted re-seed must never discard an unvisited page's baseline.
+    A full (unrestricted) seed replaces the whole set."""
+    if restrict is None:
+        return fresh
+    paths = set(restrict)
+    return {k for k in existing if k[0] not in paths} | fresh
+
+
 def _serve_and_audit(docroot: str, entry: dict, axe_source: str, settle_ms: int,
                      hard_timeout: int, restrict: Optional[List[str]] = None) -> Tuple[Set[Key], List[str]]:
     """Serve one docroot on a localhost mount (reusing mobile.py's harness) and audit its pages.
@@ -329,7 +348,7 @@ def _serve_and_audit(docroot: str, entry: dict, axe_source: str, settle_ms: int,
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     try:
         base = 'http://127.0.0.1:%d' % port
-        paths = list(restrict) if restrict else sorted(set(entry['urls']))
+        paths = sorted(set(entry['urls'])) if restrict is None else list(restrict)
         return asyncio.run(check(base, paths, axe_source, settle_ms, hard_timeout))
     finally:
         httpd.shutdown()
@@ -371,7 +390,7 @@ def check_roots(roots: List[str], baseline_dir: str, settle_ms: int = 1000,
         bpath = _baseline_path(Path(baseline_dir), docroot)
         present = bpath.is_file()
         baseline = parse_baseline(bpath.read_text(encoding="utf-8")) if present else set()
-        rc, new, resolved = evaluate(present, baseline, fresh)
+        rc, new, resolved = evaluate(present, _restrict_baseline(baseline, restrict), fresh)
         if not present:
             print("%s: MISSING no baseline %s -- seed with "
                   "'webcheck-axe-sandbox --write-baseline'" % (site, bpath), file=sys.stderr)
@@ -425,8 +444,10 @@ def write_roots(roots: List[str], baseline_dir: str, settle_ms: int = 1000,
             return 2
         bpath = _baseline_path(Path(baseline_dir), docroot)
         Path(baseline_dir).mkdir(parents=True, exist_ok=True)
-        bpath.write_text(format_baseline(fresh, site=site), encoding="utf-8")
-        print("wrote %d accepted violation(s) -> %s" % (len(fresh), bpath), file=sys.stderr)
+        existing = parse_baseline(bpath.read_text(encoding="utf-8")) if bpath.is_file() else set()
+        seeded = _merge_seed(existing, fresh, restrict)
+        bpath.write_text(format_baseline(seeded, site=site), encoding="utf-8")
+        print("wrote %d accepted violation(s) -> %s" % (len(seeded), bpath), file=sys.stderr)
     return 0
 
 
@@ -447,7 +468,13 @@ def main(argv: List[str]) -> int:
     args = ap.parse_args(argv)
     if args.axe_source:
         os.environ["AXE_SOURCE"] = args.axe_source
-    restrict = _load_paths_file(args.paths_file) if args.paths_file else None
+    restrict = None
+    if args.paths_file:
+        restrict = _load_paths_file(args.paths_file)
+        if not restrict:
+            sys.stderr.write("axe: --paths-file '%s' has no paths -- refusing to fall back to a "
+                             "full-tree audit (omit the flag for a full audit)\n" % args.paths_file)
+            return 2
     if args.write_baseline:
         return write_roots(args.roots, args.baseline_dir, args.settle, restrict=restrict)
     return check_roots(args.roots, args.baseline_dir, args.settle, restrict=restrict)

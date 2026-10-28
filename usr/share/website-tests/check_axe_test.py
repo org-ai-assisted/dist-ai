@@ -91,6 +91,28 @@ def run() -> int:
         pf.write_text("# curated\n\n/\n/wiki/ISO\n  /wiki/Donors  \n", encoding="utf-8")
         ck(ax._load_paths_file(str(pf)) == ["/", "/wiki/ISO", "/wiki/Donors"],
            "_load_paths_file strips blank/# + whitespace, preserves order")
+
+    # _restrict_baseline: a curated CHECK compares only the audited paths' keys (an unvisited
+    # baseline entry must NOT read as 'resolved').
+    bl = {("/", "image-alt", "img"), ("/wiki/ISO", "color-contrast", "a"), ("/wiki/Other", "x", "y")}
+    ck(ax._restrict_baseline(bl, None) == bl, "_restrict_baseline None -> whole baseline")
+    ck(ax._restrict_baseline(bl, ["/", "/wiki/ISO"])
+       == {("/", "image-alt", "img"), ("/wiki/ISO", "color-contrast", "a")},
+       "_restrict_baseline keeps only audited paths' keys")
+
+    # _merge_seed: a curated SEED keeps unvisited pages' accepted entries, replaces only audited.
+    existing = {("/", "old", "a"), ("/wiki/Other", "keep", "b")}
+    fresh = {("/", "new", "c")}
+    ck(ax._merge_seed(existing, fresh, None) == fresh, "_merge_seed None -> replace whole set")
+    ck(ax._merge_seed(existing, fresh, ["/"]) == {("/", "new", "c"), ("/wiki/Other", "keep", "b")},
+       "_merge_seed restricted keeps unvisited, replaces audited paths")
+
+    # An empty --paths-file is REJECTED (never silently falls back to a full-tree audit).
+    with tempfile.TemporaryDirectory() as _td2:
+        empty = Path(_td2) / "empty.txt"
+        empty.write_text("# only a comment\n\n", encoding="utf-8")
+        ck(ax.main(["--baseline-dir", _td2, "--paths-file", str(empty), _td2]) == 2,
+           "main rejects an empty --paths-file (rc=2, no full-tree fallback)")
     for bad in ("justpath",):
         try:
             ax.parse_baseline(bad)
