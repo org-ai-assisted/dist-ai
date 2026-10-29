@@ -205,10 +205,20 @@ check "story_snap_nonblank default mode does NOT tap Shift" "${got}"
 ## even though the run is in window mode -- the VBox EFI splash renders in the guest, which grim
 ## lags. Window mode (above, line "default mode") grim-grabs; the override flips it to GUESTCTL.
 story_capture="window"
+## Clear the stale 11-firmware-logo.png (+ gate sibling) from the window-mode "default mode" case
+## above (SAME NN+name) -- else the non-blank [ -s ] assertion could pass on that stale frame, not
+## this capture.
+# shellcheck disable=SC2154  ## gate_subdir is set by the sourced subject (dm-calamares-install)
+safe-rm --force -- "${shot_dir}/11-firmware-logo.png" "${shot_dir}/${gate_subdir}/11-firmware-logo.png" 2>/dev/null || true
 true > "${grim_log}"; true > "${guestctl_log}"
-story_snap_nonblank 11 firmware-logo 1 1 content '' framebuffer
-got=0; has 'testvm shot' "$(cat -- "${guestctl_log}")" || got=1
-check "story_snap_nonblank framebuffer override captures the GUEST (GUESTCTL shot)" "${got}"
+fb_rc=0
+story_snap_nonblank 11 firmware-logo 1 1 content '' framebuffer || fb_rc=$?
+## Assert ALL of: returned success, captured via GUESTCTL (not grim), AND wrote a non-blank frame.
+## Grepping the log alone could pass even if the capture then timed out / produced no frame.
+got=0
+if ! { [ "${fb_rc}" -eq 0 ] && has 'testvm shot' "$(cat -- "${guestctl_log}")" \
+      && [ -s "${shot_dir}/11-firmware-logo.png" ]; }; then got=1; fi
+check "story_snap_nonblank framebuffer override captures the GUEST (GUESTCTL shot, rc 0, non-blank)" "${got}"
 got=0; ! grep --quiet 'firmware-logo' "${grim_log}" || got=1
 check "story_snap_nonblank framebuffer override does NOT grim-grab the window" "${got}"
 
