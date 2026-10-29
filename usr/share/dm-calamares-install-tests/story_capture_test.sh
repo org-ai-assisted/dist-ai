@@ -232,10 +232,9 @@ story_snap_nonblank 11 firmware-logo 1 1 content '' framebuffer || true
 got=0; [ -e "${shot_dir}/${gate_subdir}/11-firmware-logo.png" ] && got=1
 check "story_snap_nonblank framebuffer override REMOVES a stale gate sibling" "${got}"
 
-## framebuffer mode on a FAILED guest shot (vbox-ctl-local returns nonzero and does NOT write the
-## frame, e.g. a 0x0 pre-framebuffer display): a STALE $1 (a prior run's frame left in a reused
-## --shot-dir) must be REMOVED so the content check cannot pass on it and publish a previous run's
-## frame as this milestone, and the call must NOT return success.
+## framebuffer mode clears a STALE $1 (a prior run's frame left in a reused --shot-dir) UP FRONT, so
+## a guest shot that never writes a frame (vbox-ctl-local fails on a 0x0 display) leaves NO frame --
+## the content check cannot pass on a previous run's leftover, and the call does NOT return success.
 fail_shot="${work}/guestctl-failshot"
 cat > "${fail_shot}" <<'STUB'
 #!/bin/bash
@@ -249,9 +248,27 @@ printf '%s\n' black > "${shot_dir}/${gate_subdir}/11-firmware-logo.png"
 fs_rc=0
 GUESTCTL="${fail_shot}" story_snap_nonblank 11 firmware-logo 1 1 content '' framebuffer || fs_rc=$?
 got=0; [ -e "${shot_dir}/11-firmware-logo.png" ] && got=1
-check "framebuffer shot-failure REMOVES the stale frame (no stale publish)" "${got}"
+check "framebuffer stale frame cleared + never-written shot leaves no frame (no stale publish)" "${got}"
 got=0; [ "${fs_rc}" -eq 0 ] && got=1
-check "framebuffer shot-failure does NOT return success" "${got}"
+check "framebuffer never-written shot does NOT return success" "${got}"
+
+## A guest shot that WRITES a content frame but exits NONZERO (a warning) must KEEP that frame -- the
+## capture is real. (The prior per-poll delete-on-nonzero wrongly dropped such a frame, losing a
+## splash that was actually captured.) Stub: write a content PNG to the shot path, then exit 3.
+write_fail_shot="${work}/guestctl-writefail"
+cat > "${write_fail_shot}" <<'STUB'
+#!/bin/bash
+path=""; for a in "$@"; do path="$a"; done   ## shot path is the last arg
+case "$*" in *" shot "*) printf 'PNGCONTENT\n' > "${path}"; exit 3 ;; esac
+exit 0
+STUB
+chmod +x -- "${write_fail_shot}"
+safe-rm --force -- "${shot_dir}/11-firmware-logo.png" "${shot_dir}/${gate_subdir}/11-firmware-logo.png" 2>/dev/null || true
+wf_rc=0
+GUESTCTL="${write_fail_shot}" story_snap_nonblank 11 firmware-logo 1 1 content '' framebuffer || wf_rc=$?
+got=0
+if ! { [ "${wf_rc}" -eq 0 ] && [ -s "${shot_dir}/11-firmware-logo.png" ]; }; then got=1; fi
+check "framebuffer shot that wrote-then-exited-nonzero KEEPS the captured frame" "${got}"
 
 ## --- story_snap_nonblank TIMEOUT discard is OPT-IN ($6) ---------------------------------------
 ## A frame that never passes the check (ibc always degenerate) times out. With the discard opt-in,
