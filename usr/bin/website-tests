@@ -101,6 +101,7 @@ run_required_unit_test check_console_test.py
 ## round-trip, the accept-baseline comparison incl. missing-baseline-fails-closed). vnu itself
 ## is sandbox/JRE-only and not invoked by the engine, so this runs everywhere.
 run_required_unit_test check_vnu_test.py
+run_required_unit_test check_axe_test.py
 
 ## Unit regression for the cspell spell-check lane's browser-free logic (issue-line parser,
 ## baseline round-trip, finding_key, scan_root new-vs-baseline, fail-loud error handling).
