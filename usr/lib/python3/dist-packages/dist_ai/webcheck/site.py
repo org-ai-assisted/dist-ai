@@ -268,15 +268,18 @@ def _ids_of(path):
     return _IDS_CACHE[key]
 
 
-def check_links(root, failures, mount=None, parent_roots=()):
-    # Preload ids per page for fragment checks.
-    pages = {}
-    for page in html_files(root):
+def check_links(root, failures, mount=None, parent_roots=(), pages=None):
+    # Audit the links OF `pages` (every page when None; a curated subset under the
+    # wiki policy), resolving each target against the WHOLE tree on disk -- so a
+    # restricted audit still validates links that point at un-audited pages.
+    # Preload ids per audited page for same-tree fragment checks.
+    loaded = {}
+    for page in (html_files(root) if pages is None else pages):
         ext = Extractor()
         with open(page, encoding='utf-8') as handle:
             ext.feed(handle.read())
-        pages[os.path.normpath(page)] = ext
-    for page, ext in pages.items():
+        loaded[os.path.normpath(page)] = ext
+    for page, ext in loaded.items():
         rel = os.path.relpath(page, root)
         for _tag, _attr, value in ext.links:
             resolved = resolve_internal(root, page, value, mount, parent_roots)
@@ -284,7 +287,11 @@ def check_links(root, failures, mount=None, parent_roots=()):
                 continue
             if resolved[0] == '#self':
                 frag = resolved[2]
-                if frag and frag not in ext.ids:
+                # 'top' (ASCII case-insensitive) and the empty fragment are HTML special
+                # fragments: with no matching id/name the indicated part is the top of the
+                # document, so they ALWAYS resolve and are never a broken anchor. (The empty
+                # fragment is already falsy below; 'top' is the one needing an explicit pass.)
+                if frag and frag.lower() != 'top' and frag not in ext.ids:
                     failures.append(
                         '%s: broken in-page anchor #%s' % (rel, frag))
                 continue
@@ -297,17 +304,17 @@ def check_links(root, failures, mount=None, parent_roots=()):
                 continue
             if frag:
                 # The target may live in a PARENT site (a subsite's cross-site
-                # link), which is not in this root's `pages`; load its ids on
-                # demand so a missing cross-site anchor is caught, not silently
-                # accepted.
-                target_ids = pages[hit].ids if hit in pages else _ids_of(hit)
+                # link) or an un-audited page, neither preloaded in `loaded`; load
+                # its ids on demand so a missing cross-site anchor is caught, not
+                # silently accepted.
+                target_ids = loaded[hit].ids if hit in loaded else _ids_of(hit)
                 if target_ids is not None and frag not in target_ids:
                     failures.append('%s: link %r targets missing #%s'
                                     % (rel, value, frag))
 
 
-def check_wording(root, failures):
-    for page in html_files(root):
+def check_wording(root, failures, pages=None):
+    for page in (html_files(root) if pages is None else pages):
         rel = os.path.relpath(page, root)
         ext = Extractor()
         with open(page, encoding='utf-8') as handle:
@@ -411,15 +418,15 @@ class _FooterAudit(html.parser.HTMLParser):
         return ' '.join(self._buf).lower()
 
 
-def check_footer(root, failures, require_family_links=True):
+def check_footer(root, failures, require_family_links=True, pages=None):
     # EVERY page must HAVE a footer (the top-level index at minimum), and -- under the
     # family policy -- every footer must carry all FAMILY links (the uniform chrome puts
-    # a footer on every page, INCLUDING generated subpages). The previews policy passes
-    # require_family_links=False: the previews site is deliberately vendor-neutral (NOT in
+    # a footer on every page, INCLUDING generated subpages). The csr policy passes
+    # require_family_links=False: the CSR site is deliberately vendor-neutral (NOT in
     # FAMILY), so injecting the project family links would undermine its independence;
     # its own footer nav is checked for presence + consistency by check_footer_nav
     # instead. The footer-EXISTS check and check_footer_structure apply to both.
-    for page in html_files(root):
+    for page in (html_files(root) if pages is None else pages):
         rel = os.path.relpath(page, root)
         with open(page, encoding='utf-8') as handle:
             markup = handle.read()
@@ -685,45 +692,83 @@ def _allowed_raster(url):
     return base in STATIC_IMAGE_ALLOWLIST
 
 
-def check_image_format(root, failures):
+def _is_wiki_namespace_page(url):
+    # A MediaWiki File:/Image: namespace link (<a href="./File:Etcher1.png">)
+    # resolves to an HTML description page (wiki/File:Etcher1.png.html), NOT a
+    # raster -- the trailing ".png" is part of the wiki page TITLE, not a file
+    # extension. Only the <a href> clause consults this; a real <img src="x.png">
+    # is still flagged. Family sites have no File:/Image: links, so this is a
+    # harmless no-op there.
+    seg = urllib.parse.unquote(url.split('#', 1)[0].split('?', 1)[0])
+    seg = seg.rsplit('/', 1)[-1]
+    return seg.startswith(('File:', 'Image:'))
+
+
+def _raster_target(ref_dir, value):
+    # Resolve a raster reference to the file it points at, so the SAME image reached
+    # from many pages (a footer logo) or named twice on one page collapses to one
+    # failure. ref_dir is the referencing file's directory; URL path semantics.
+    path = urllib.parse.unquote(value.split('#', 1)[0].split('?', 1)[0])
+    return posixpath.normpath(posixpath.join(ref_dir, path))
+
+
+def check_image_format(root, failures, pages=None):
     # Content raster references must be webp (except the static allowlist). Covers
     # <img>/<source> src, srcset candidates, <a href> to a raster, and CSS url()
     # in a .css file or an inline/embedded style.
-    def scan(ext, rel):
+    # Dedup by resolved target file: the same raster reached from every page (a
+    # footer logo) or named twice on one page is ONE failure, not N identical lines.
+    seen: set[str] = set()
+
+    def report(ref_dir, value, message):
+        target = _raster_target(ref_dir, value)
+        if target in seen:
+            return
+        seen.add(target)
+        failures.append(message)
+
+    def scan(ext, rel, ref_dir):
         for tag, attr, value in ext.links:
             # Only the site's OWN rasters can be converted; an external URL is a
             # supply-chain concern (gated there), not a must-be-webp target.
             if _is_external(value):
                 continue
-            content = (tag in ('img', 'source') and attr == 'src') or \
-                (tag == 'a' and attr == 'href' and _is_raster(value))
+            # An <a href> ending in .png/.jpg is a content raster EXCEPT a MediaWiki
+            # File:/Image: namespace link, which is a title that resolves to an HTML
+            # description page, not an image.
+            a_raster = (tag == 'a' and attr == 'href' and _is_raster(value)
+                        and not _is_wiki_namespace_page(value))
+            content = (tag in ('img', 'source') and attr == 'src') or a_raster
             if content and _is_raster(value) and not _allowed_raster(value):
-                failures.append('%s: content image %r must be webp (convert with '
-                                'site-image-optimize)' % (rel, value))
+                report(ref_dir, value,
+                       '%s: content image %r must be webp (convert with '
+                       'site-image-optimize)' % (rel, value))
         for srcset in ext.srcsets:
             for candidate in srcset.split(','):
                 token = candidate.strip().split()
                 if token and _is_raster(token[0]) and not _is_external(token[0]) \
                         and not _allowed_raster(token[0]):
-                    failures.append('%s: srcset image %r must be webp'
-                                    % (rel, token[0]))
+                    report(ref_dir, token[0],
+                           '%s: srcset image %r must be webp' % (rel, token[0]))
         for value in _css_external_refs('\n'.join(ext.styles)):
             if _is_raster(value) and not _allowed_raster(value):
-                failures.append('%s: CSS url() image %r must be webp'
-                                % (rel, value))
+                report(ref_dir, value,
+                       '%s: CSS url() image %r must be webp' % (rel, value))
         # A raster inside an <iframe srcdoc> is a content image too; recurse
         # (nested srcdoc included), consistent with supply-chain/inline-script.
         for srcdoc in ext.srcdocs:
             sub = Extractor()
             sub.feed(srcdoc)
-            scan(sub, rel)
+            scan(sub, rel, ref_dir)
 
-    for page in html_files(root):
+    for page in (html_files(root) if pages is None else pages):
         rel = os.path.relpath(page, root)
         ext = Extractor()
         with open(page, encoding='utf-8') as handle:
             ext.feed(handle.read())
-        scan(ext, rel)
+        scan(ext, rel, os.path.dirname(page))
+    # Standalone .css files are a site-wide (not per-page) resource: always scanned
+    # whole-tree, even for a restricted page audit -- there are only a handful.
     for base_dir, dirs, files in os.walk(root):
         if '.git' in dirs:
             dirs.remove('.git')
@@ -736,8 +781,8 @@ def check_image_format(root, failures):
                 css = handle.read()
             for value in _css_urls(css):
                 if _is_raster(value) and not _allowed_raster(value):
-                    failures.append('%s: CSS url() image %r must be webp'
-                                    % (rel, value))
+                    report(base_dir, value,
+                           '%s: CSS url() image %r must be webp' % (rel, value))
 
 
 # Host-free CSP scheme-sources: they name no external host, so they are allowed --
@@ -770,12 +815,12 @@ def _csp_directives(csp):
     return out
 
 
-def check_csp(root, failures):
+def check_csp(root, failures, pages=None):
     # Every page must carry a strict CSP: default-src 'none', no external host
     # allow-listed, and scripts confined to same-origin files -- script-src must
     # NOT permit 'unsafe-inline'. That is what lets every inline <script> move to
     # an external .js and keeps the policy nonce-free and hash-free.
-    for page in html_files(root):
+    for page in (html_files(root) if pages is None else pages):
         rel = os.path.relpath(page, root)
         ext = Extractor()
         with open(page, encoding='utf-8') as handle:
@@ -834,12 +879,12 @@ def check_csp(root, failures):
                             "script-src / script-src-elem / script-src-attr)" % rel)
 
 
-def check_previews_csp(root, failures):
-    # Previews-site-only, ON TOP of the generic check_csp. The site ships one self-hosted
+def check_csr_csp(root, failures):
+    # CSR-site-only, ON TOP of the generic check_csp. The site ships one self-hosted
     # Trusted-Types-safe bundle (assets/site.js), so its CSP relaxes script-src to 'self'
     # (NOT 'none') but stays hardened: no 'unsafe-inline'/'unsafe-eval' anywhere, and
     # Trusted Types ENFORCED (require-trusted-types-for 'script'). Assert that stronger shape
-    # so a later loosening fails here. (Final policy: journal-maker PR #9.)
+    # so a later loosening fails here.
     for page in html_files(root):
         rel = os.path.relpath(page, root)
         ext = Extractor()
@@ -849,21 +894,21 @@ def check_previews_csp(root, failures):
             continue              # a missing CSP meta is already a check_csp failure
         directives = _csp_directives(ext.csp.lower())
         if directives.get('script-src') != ["'self'"]:
-            failures.append("%s: previews CSP script-src must be 'self' (got %s)"
+            failures.append("%s: CSR CSP script-src must be 'self' (got %s)"
                             % (rel, directives.get('script-src')))
         for name, toks in directives.items():
             if "'unsafe-inline'" in toks or "'unsafe-eval'" in toks:
-                failures.append("%s: previews CSP %s permits unsafe-inline/unsafe-eval" % (rel, name))
+                failures.append("%s: CSR CSP %s permits unsafe-inline/unsafe-eval" % (rel, name))
         if "'script'" not in directives.get('require-trusted-types-for', []):
-            failures.append("%s: previews CSP missing require-trusted-types-for 'script'" % rel)
+            failures.append("%s: CSR CSP missing require-trusted-types-for 'script'" % rel)
 
 
-# Required head metadata for a previews-policy page (the "perfect SEO" bar:
+# Required head metadata for a CSR-policy page (the "perfect SEO" bar:
 # exhaustive SEO + social card + JSON-LD + full icon set + PWA manifest). Each is
-# a substring the generator emits in the head. Enforced ONLY for the previews
+# a substring the generator emits in the head. Enforced ONLY for the csr
 # policy -- the family sites are a separate site group not yet rolled onto the
 # JSON-LD/manifest bar, the approved per-site-group opt-out.
-_PREVIEWS_REQUIRED_META = (
+_CSR_REQUIRED_META = (
     ('<link rel="canonical"', 'canonical link'),
     ('name="description"', 'meta description'),
     ('property="og:title"', 'og:title'),
@@ -883,7 +928,7 @@ _PREVIEWS_REQUIRED_META = (
 
 
 def check_page_metadata(root, failures):
-    """Every previews-policy page must carry the full SEO + social + JSON-LD +
+    """Every CSR-policy page must carry the full SEO + social + JSON-LD +
     icon + PWA head set. Locks in the perfect-SEO bar so a regression (a new page
     type missing OG, JSON-LD, the manifest link, ...) fails the suite. The
     ephemeral results plane is exempt (it is not a navigable content page)."""
@@ -897,9 +942,9 @@ def check_page_metadata(root, failures):
         # code-sample text (e.g. a displayed `application/ld+json` snippet) must
         # not satisfy the check -- the tag has to be a real head element.
         head = text.split('</head>', 1)[0]
-        for needle, label in _PREVIEWS_REQUIRED_META:
+        for needle, label in _CSR_REQUIRED_META:
             if needle not in head:
-                failures.append('%s: missing %s (previews perfect-SEO bar)'
+                failures.append('%s: missing %s (CSR perfect-SEO bar)'
                                 % (rel, label))
 
 
@@ -976,10 +1021,10 @@ class _InlineJSAudit(html.parser.HTMLParser):
             self.inline_script = True
 
 
-def check_no_inline_script(root, failures):
+def check_no_inline_script(root, failures, pages=None):
     # Belt to check_csp's braces: even with the right CSP, a leftover inline
     # <script> / on*= / javascript: would just silently stop working. Flag it.
-    for page in html_files(root):
+    for page in (html_files(root) if pages is None else pages):
         rel = os.path.relpath(page, root)
         audit = _InlineJSAudit()
         with open(page, encoding='utf-8') as handle:
@@ -1055,12 +1100,12 @@ class _FoucAudit(html.parser.HTMLParser):
             self._template -= 1
 
 
-def check_fouc(root, failures):
+def check_fouc(root, failures, pages=None):
     # Flash-of-unstyled-content guard: every stylesheet must load render-blocking in
     # <head>. Deterministic + static -- no timing/throttle flake. (A throttled-load
     # frame check is vacuous here: these sites ship external CSS, so ANY async/late
     # delivery flashes; the delivery pattern is what to gate, and it is static.)
-    for page in html_files(root):
+    for page in (html_files(root) if pages is None else pages):
         rel = os.path.relpath(page, root)
         audit = _FoucAudit()
         with open(page, encoding='utf-8') as handle:
@@ -1079,7 +1124,7 @@ def check_fouc(root, failures):
                             % rel)
 
 
-def check_supply_chain(root, failures):
+def check_supply_chain(root, failures, pages=None):
     # Supply chain: no page may fetch a subresource (script, image, media, style)
     # from an external host or protocol-relative URL -- everything ships
     # self-hosted or inline (data:). External <a> navigation is fine; only loads
@@ -1121,13 +1166,14 @@ def check_supply_chain(root, failures):
             sub.feed(srcdoc)
             scan(sub, rel)
 
-    for page in html_files(root):
+    for page in (html_files(root) if pages is None else pages):
         rel = os.path.relpath(page, root)
         ext = Extractor()
         with open(page, encoding='utf-8') as handle:
             ext.feed(handle.read())
         scan(ext, rel)
-    # External url() in a standalone .css file is a load too.
+    # Standalone .css files are a site-wide resource (a handful of files): always
+    # scanned whole-tree, even for a restricted page audit.
     for base_dir, dirs, files in os.walk(root):
         _prune_git(dirs)
         for name in files:
@@ -1286,32 +1332,77 @@ def check_assets(root, failures):
 RASTER_DECODE_EXTS = frozenset({'.png', '.jpg', '.jpeg', '.gif', '.webp'})
 
 
-def check_asset_integrity(root, failures):
+def _page_raster_files(root, pages):
+    """The on-disk raster files (RASTER_DECODE_EXTS) that `pages` reference,
+    resolved against the full tree with resolve_internal -- the SAME resolver
+    check_links uses, so the two never drift. Scopes the raster-integrity decode to
+    a curated wiki audit's pages instead of the whole image tree (thousands of
+    images, irrelevant to the pages under audit)."""
+    found: set[str] = set()
+
+    def consider(page, value):
+        # resolve_internal returns None for an external / non-navigational ref, so an
+        # external image URL never reaches disk here; keep only resolved rasters.
+        resolved = resolve_internal(root, page, value)
+        if not resolved or resolved[0] != 'file':
+            return
+        hit = next((c for c in resolved[1] if os.path.isfile(c)), None)
+        if hit and os.path.splitext(hit)[1].lower() in RASTER_DECODE_EXTS:
+            found.add(os.path.normpath(hit))
+
+    for page in pages:
+        ext = Extractor()
+        with open(page, encoding='utf-8') as handle:
+            ext.feed(handle.read())
+        for _tag, _attr, value in ext.links:
+            consider(page, value)
+        for _tag, _attr, value in ext.loads:
+            consider(page, value)
+        for srcset in ext.srcsets:
+            for candidate in srcset.split(','):
+                token = candidate.strip().split()
+                if token:
+                    consider(page, token[0])
+        for value in _css_external_refs('\n'.join(ext.styles)):
+            consider(page, value)
+    return found
+
+
+def check_asset_integrity(root, failures, pages=None):
     # A referenced image can exist and serve HTTP 200 yet be TRUNCATED or corrupt (a
     # botched convert, a partial write, an unexpanded LFS pointer) -- the extension/ref
     # checks, and often a browser's console, do not flag it. Decode every raster's BYTES
     # and require nonzero dimensions, so a broken image cannot publish. PIL is imported
     # lazily: only the family static lane needs it, so mw-static (no PIL dep) can still
     # import the other checks from this module.
+    #   pages is None  -> every raster in the tree (family/csr: a small tree, and an
+    #                     unreferenced-but-corrupt image is still a publish defect).
+    #   pages a list   -> only the rasters THOSE pages reference (a curated wiki audit:
+    #                     the tree holds thousands of images, but only the audited
+    #                     pages' images are in scope).
     from PIL import Image
-    for base, dirs, files in os.walk(root):
-        _prune_git(dirs)
-        for name in sorted(files):
-            if os.path.splitext(name)[1].lower() not in RASTER_DECODE_EXTS:
-                continue
-            path = os.path.join(base, name)
-            rel = os.path.relpath(path, root)
-            try:
-                with Image.open(path) as img:
-                    img.load()            # force a full decode -> catches truncation
-                    width, height = img.size
-            except Exception as exc:       # noqa: BLE001 -- any decode failure is a reject
-                failures.append('%s: undecodable/corrupt image (%s: %s)'
-                                % (rel, type(exc).__name__, exc))
-                continue
-            if width <= 0 or height <= 0:
-                failures.append('%s: image has a zero dimension (%dx%d)'
-                                % (rel, width, height))
+    if pages is None:
+        paths = []
+        for base, dirs, files in os.walk(root):
+            _prune_git(dirs)
+            for name in sorted(files):
+                if os.path.splitext(name)[1].lower() in RASTER_DECODE_EXTS:
+                    paths.append(os.path.join(base, name))
+    else:
+        paths = sorted(_page_raster_files(root, pages))
+    for path in paths:
+        rel = os.path.relpath(path, root)
+        try:
+            with Image.open(path) as img:
+                img.load()                # force a full decode -> catches truncation
+                width, height = img.size
+        except Exception as exc:           # noqa: BLE001 -- any decode failure is a reject
+            failures.append('%s: undecodable/corrupt image (%s: %s)'
+                            % (rel, type(exc).__name__, exc))
+            continue
+        if width <= 0 or height <= 0:
+            failures.append('%s: image has a zero dimension (%dx%d)'
+                            % (rel, width, height))
 
 
 def check_card_layout(root, failures):
@@ -1495,7 +1586,7 @@ def check_nav(root, failures):
 
 class _FooterNavAudit(html.parser.HTMLParser):
     """The ordered (label, href) links of the FIRST <nav class="footer-nav"> that sits INSIDE a
-    <footer>. The previews site carries this nav on every page. Requiring it inside a <footer> means a
+    <footer>. The CSR site carries this nav on every page. Requiring it inside a <footer> means a
     nav moved OUT of the footer no longer satisfies the check (check_footer does not demand a
     footer on subpages, so a bare matching nav elsewhere would otherwise pass). Both the label
     sequence AND the per-link href (resolved against the page's location by check_footer_nav) are
@@ -1517,7 +1608,7 @@ class _FooterNavAudit(html.parser.HTMLParser):
         if tag == 'footer':
             self._footer += 1
             return
-        # Only a footer-nav INSIDE a <footer> counts (the previews site's footer chrome).
+        # Only a footer-nav INSIDE a <footer> counts (the CSR site's footer chrome).
         if tag == 'nav' and 'footer-nav' in classes and self._footer and not self._seen:
             self._seen = True
             self._nav = 1
@@ -1571,11 +1662,11 @@ def _footer_nav_resolved(links, rel):
 
 
 def check_footer_nav(root, failures):
-    # The previews site (vendor-neutral, not in FAMILY) carries its OWN consistent footer navigation,
+    # The CSR site (vendor-neutral, not in FAMILY) carries its OWN consistent footer navigation,
     # emitted from site.toml. Assert PRESENCE on every page (a <nav class="footer-nav"> inside
     # a <footer>) and cross-page CONSISTENCY of (label, RESOLVED-target) -- NOT a hardcoded item
     # set, so the footer_links stay site.toml-driven; a dropped / renamed / reordered item OR a
-    # retargeted link fails. Replaces the family-footer-links assertion for the previews policy.
+    # retargeted link fails. Replaces the family-footer-links assertion for the csr policy.
     navs = {}
     missing = []
     for page in html_files(root):
@@ -1635,7 +1726,7 @@ class _TocAudit(html.parser.HTMLParser):
             self._toc -= 1
 
 
-def check_toc_complete(root, failures):
+def check_toc_complete(root, failures, pages=None):
     # A page's "On this page" TOC (<nav class="toc">) must list EVERY top-level content
     # section (<section class="cat" id=...>), so a newly added section cannot silently
     # drift out of the page navigation. The zoom-verify screenshots section shipped with a
@@ -1643,7 +1734,7 @@ def check_toc_complete(root, failures):
     # site-wide header nav, and check_links only that a TOC anchor RESOLVES, never that a
     # section is REACHED. Directional: a TOC may also link non-section anchors (rows, sub-
     # headings); only a `.cat` section missing from the TOC is a failure.
-    for page in html_files(root):
+    for page in (html_files(root) if pages is None else pages):
         with open(page, encoding='utf-8') as handle:
             audit = _TocAudit()
             audit.feed(handle.read())
@@ -1686,8 +1777,8 @@ class _HeadingBreakAudit(html.parser.HTMLParser):
             self._depth -= 1
 
 
-def check_heading_breaks(root, failures):
-    for page in html_files(root):
+def check_heading_breaks(root, failures, pages=None):
+    for page in (html_files(root) if pages is None else pages):
         rel = os.path.relpath(page, root)
         audit = _HeadingBreakAudit()
         with open(page, encoding='utf-8') as handle:
@@ -1737,12 +1828,12 @@ class _IdAudit(html.parser.HTMLParser):
             self._template_depth -= 1
 
 
-def check_duplicate_ids(root, failures):
+def check_duplicate_ids(root, failures, pages=None):
     # An id must be unique per document: a duplicate makes `#fragment` targeting
     # ambiguous (the browser scrolls to the FIRST, every other reference silently
     # wrong) and is invalid HTML. A universally-quantified invariant over every page;
     # tidy only WARNs on it (advisory, non-gating), so decide it here.
-    for page in html_files(root):
+    for page in (html_files(root) if pages is None else pages):
         rel = os.path.relpath(page, root)
         audit = _IdAudit()
         with open(page, encoding='utf-8') as handle:
@@ -1904,12 +1995,14 @@ def _contrast(fg, bg):
 _ROOT_BLOCK = re.compile(r':root\s*\{([^}]*)\}')
 
 
-def _css_sources(root):
+def _css_sources(root, pages=None):
     """Each independent stylesheet scope of a site, as (label, css-text): every
-    .css file, plus each page's embedded <style>/style="" bundle. Scopes are kept
-    SEPARATE -- a subsite (git-diffs-lie/style.css) carries its own theme with its
-    own --bg and --accent, so merging it into the parent's CSS would conflate two
-    different color vocabularies (and pick the wrong --accent, last-wins)."""
+    .css file (always whole-tree -- a handful of site-wide sheets), plus the
+    embedded <style>/style="" bundle of each AUDITED page (every page when
+    `pages` is None; a curated subset otherwise). Scopes are kept SEPARATE -- a
+    subsite (git-diffs-lie/style.css) carries its own theme with its own --bg and
+    --accent, so merging it into the parent's CSS would conflate two different
+    color vocabularies (and pick the wrong --accent, last-wins)."""
     # Strip CSS comments at the source: a commented-out :root palette or a `.class`
     # rule left behind in a comment must not read as a live definition (a false
     # contrast pairing, or an undefined class masked as defined).
@@ -1924,7 +2017,7 @@ def _css_sources(root):
                     yield os.path.relpath(path, root), _strip_css_comments(handle.read())
             except OSError:
                 continue
-    for page in html_files(root):
+    for page in (html_files(root) if pages is None else pages):
         ext = Extractor()
         with open(page, encoding='utf-8') as handle:
             ext.feed(handle.read())
@@ -1974,11 +2067,11 @@ def _resolve_color(value, raw, _seen=None):
     return _parse_color(value)
 
 
-def check_contrast(root, failures):
+def check_contrast(root, failures, pages=None):
     # Per stylesheet scope: parse its :root token palette and, when it defines a
     # page background (--bg), check every paper-text token it both defines and
     # uses as text (color:var(--token)) clears WCAG AA for small text.
-    for label, css in _css_sources(root):
+    for label, css in _css_sources(root, pages):
         raw = {}
         for m in _ROOT_BLOCK.finditer(css):
             # Only the TOP-LEVEL :root palette (the default color scheme). A :root nested
@@ -2369,28 +2462,97 @@ def _looks_like_wiki(root):
 
 
 def _policy_for(root):
-    """The consistency-suite policy for `root`: 'family' | 'previews', or None to SKIP.
+    """The consistency-suite policy for `root`: 'family' | 'csr' | 'wiki', or None to SKIP.
 
     The declarative `.github/web-tests.yml` `policies:` is authoritative when present;
-    with no config, fall back to the markup heuristic (a wiki tree with no config is
-    still skipped, never mis-reported). Returns (policy_or_None, reason_when_skipped).
+    with no config, fall back to the markup heuristic (a MediaWiki tree runs the 'wiki'
+    battery). Returns (policy_or_None, reason_when_skipped).
 
-    'previews' is the vendor-neutral academic site (computer-security-research): the SAME
-    battery as 'family' MINUS the FAMILY-footer-links assertion (the previews site is not in
-    FAMILY), PLUS its own footer-nav-consistency + stricter-CSP assertions. Every general
-    check (links, wording, nav, CSP, a11y, SEO, ...) stays enabled for both policies."""
+    - 'family': the hand-authored sibling Pages sites -- the full battery incl. the
+      FAMILY-footer-links assertion.
+    - 'csr': the vendor-neutral academic site (computer-security-research) -- the family
+      battery MINUS the FAMILY-footer-links assertion (not in FAMILY), PLUS its own
+      footer-nav-consistency + stricter-CSP + perfect-SEO assertions.
+    - 'wiki': the MediaWiki-generated static trees (<site>-wiki-static) -- the generic
+      HTML-quality + security battery (links, wording, CSP, no-inline-js, a11y, SEO, ...).
+      The hand-authored family/CSR chrome checks (family footer links + footer-row classes,
+      card layout, review banner, header nav, the family class-vocabulary + generated-class
+      contract) do NOT apply: wiki chrome is mw-* classes with a different footer/nav."""
     declared = config.policies(root)
     if declared is not None:
-        if 'previews' in declared:
-            return 'previews', ''
+        if 'wiki' in declared:
+            return 'wiki', ''
+        if 'csr' in declared:
+            return 'csr', ''
         if 'family' in declared:
             return 'family', ''
-        return None, ('web-tests.yml policies=%s -- no family/previews policy selected '
+        return None, ('web-tests.yml policies=%s -- no family/csr/wiki policy selected '
                       'for this site' % ','.join(declared))
     if _looks_like_wiki(root):
-        return None, ('no web-tests.yml; markup matches a MediaWiki site -- the family '
-                      'policy does not apply (declare policies: [wiki])')
+        return 'wiki', ''
     return 'family', ''
+
+
+class CuratedPathsError(Exception):
+    """The wiki curated-paths file is missing, or a listed path resolves to no file
+    on disk -- a STALE list, a fail-loud bug, never a silent skip."""
+
+
+def _default_curated_paths_file():
+    """The curated wiki sample shipped in usr/share/website-tests. site.py lives at
+    usr/lib/python3/dist-packages/dist_ai/webcheck/; the data file is five levels up
+    at usr/share/website-tests/ -- the same relative layout installed (.deb) or run
+    from a checkout, so no env var and nothing to recall."""
+    here = os.path.dirname(os.path.realpath(__file__))
+    return os.path.normpath(os.path.join(
+        here, '..', '..', '..', '..', '..',
+        'share', 'website-tests', 'axe-wiki-curated-paths.txt'))
+
+
+# The SINGLE source of the wiki sample -- the SAME file the axe lane samples
+# (axe._load_paths_file), so the two lanes audit the identical representative set.
+WIKI_CURATED_PATHS_FILE = _default_curated_paths_file()
+
+
+def _load_curated_paths(curated_file):
+    # Reuse the axe lane's parser (blank / '#' lines skipped) so the file format has
+    # one reader, not a second copy that drifts.
+    from dist_ai.webcheck import axe
+    return axe._load_paths_file(curated_file)
+
+
+def audited_pages(root, policy, curated_file=None):
+    """The HTML pages to AUDIT under `policy`, as absolute file paths.
+
+    family / csr: every navigable page (html_files). wiki: ONLY the curated
+    representative sample -- a MediaWiki tree is thousands of pages, too many to
+    re-parse on every check, so the gate audits a fixed representative subset. The
+    full tree stays on disk, so check_links still resolves every link target against
+    it; only the AUDITED set is restricted.
+
+    A curated flat URL maps to disk via _abs_candidates -- the SAME resolver
+    check_links uses for a root-absolute link, so the two never drift: /wiki/ISO ->
+    wiki/ISO.html, / -> index.html. A curated entry that resolves to no file on disk
+    is a STALE list -> CuratedPathsError (fail loud), never a silent skip."""
+    if policy != 'wiki':
+        return sorted(html_files(root))
+    curated_file = curated_file or WIKI_CURATED_PATHS_FILE
+    if not os.path.isfile(curated_file):
+        raise CuratedPathsError('wiki curated-paths file not found: %s' % curated_file)
+    pages = []
+    missing = []
+    for url in _load_curated_paths(curated_file):
+        candidates = _abs_candidates(url.lstrip('/'), [root])
+        hit = next((c for c in candidates if os.path.isfile(c)), None)
+        if hit is None:
+            missing.append(url)
+        else:
+            pages.append(os.path.normpath(hit))
+    if missing:
+        raise CuratedPathsError(
+            'curated wiki path(s) resolve to no file under %s (stale %s?): %s'
+            % (root, curated_file, ', '.join(missing)))
+    return pages
 
 
 def main():
@@ -2403,7 +2565,7 @@ def main():
     # But a NAMED root that does not resolve is a mistyped target -> FAIL loud, never a silent
     # drop that lets a surviving root exit 0 (the silent-green class).
     roots = cli.require_existing_dirs(argv_roots, 'website-tests')
-    # Applicability guard: a consistency policy (family | previews) runs only where it is
+    # Applicability guard: a consistency policy (family | csr) runs only where it is
     # selected -- by the site's `.github/web-tests.yml` `policies:` (authoritative) or,
     # absent that, by the markup heuristic (a wiki tree is skipped). A malformed config
     # FAILS LOUD (never a silent wrong-policy run).
@@ -2425,7 +2587,7 @@ def main():
         if config_failures:
             sys.stderr.write('website-tests: %d failure(s)\n' % config_failures)
             return 1
-        sys.stderr.write('website-tests: SKIP (no family/previews-policy site root given)\n')
+        sys.stderr.write('website-tests: SKIP (no family/csr-policy site root given)\n')
         return 77
     by_name = {os.path.basename(r): r for r, _policy in applicable}
     total = config_failures
@@ -2440,56 +2602,70 @@ def main():
             parent_name, mount = sub
             if parent_name in by_name:
                 parent_roots = (by_name[parent_name],)
-        check_links(root, failures, mount, parent_roots)
-        check_wording(root, failures)
-        # check_freshness / check_banner / check_seo_current inspect only the site
-        # root index.html by design: the "last generated" freshness line, the
-        # review-status banner, and the canonical-SEO meta are landing-page concerns,
-        # not per-subpage ones. check_footer (family links) and check_footer_structure
-        # run on EVERY page, so a generated subpage's footer cannot drift unchecked.
-        check_freshness(root, failures)
-        # Family policy requires the FAMILY footer links on every page; the previews site is
-        # vendor-neutral (not in FAMILY), so it drops ONLY that assertion and instead has
-        # its own footer-nav-consistency check + the stricter previews CSP assertion. The
-        # footer-EXISTS check and footer-structure apply to both.
-        check_footer(root, failures, require_family_links=(policy == 'family'))
-        check_footer_structure(root, failures)
-        if policy == 'previews':
-            check_footer_nav(root, failures)
-            check_previews_csp(root, failures)
-            check_page_metadata(root, failures)
-        check_banner(root, failures)
-        check_csp(root, failures)
-        check_no_inline_script(root, failures)
-        check_fouc(root, failures)
-        check_supply_chain(root, failures)
-        check_image_format(root, failures)
-        check_assets(root, failures)
-        check_asset_integrity(root, failures)
-        check_card_layout(root, failures)
-        check_repro_raw(root, failures)
-        check_nav(root, failures)
-        check_toc_complete(root, failures)
-        check_heading_breaks(root, failures)
-        check_duplicate_ids(root, failures)
-        check_contrast(root, failures)
-        check_undefined_classes(root, failures)
-        check_generated_class_contract(root, failures)
+        # The pages to AUDIT: every navigable page (family/csr), or the curated
+        # representative sample (wiki -- the full tree is too large to re-parse per
+        # check; it stays on disk for link-target resolution). A stale curated entry
+        # FAILS LOUD, never a silent skip.
+        try:
+            pages = audited_pages(root, policy)
+        except CuratedPathsError as exc:
+            sys.stderr.write('FAIL %s: %s\n' % (os.path.basename(root), exc))
+            total += 1
+            continue
+        # Generic HTML-quality + security battery -- runs under EVERY policy
+        # (family, csr, wiki), scoped to the audited pages. check_footer's
+        # family-links assertion is gated to 'family' (the CSR + wiki trees are not
+        # in FAMILY); its footer-EXISTS check still runs for all.
+        check_links(root, failures, mount, parent_roots, pages)
+        check_wording(root, failures, pages)
+        check_footer(root, failures, require_family_links=(policy == 'family'), pages=pages)
+        check_csp(root, failures, pages)
+        check_no_inline_script(root, failures, pages)
+        check_fouc(root, failures, pages)
+        check_supply_chain(root, failures, pages)
+        check_image_format(root, failures, pages)
+        # Orphaned-image detection needs the WHOLE corpus (an image is orphaned only
+        # when NO page references it), so it is meaningless on a curated subset and
+        # far too slow on a full wiki tree -- family/CSR only.
+        if policy != 'wiki':
+            check_assets(root, failures)
+        # Raster integrity: wiki decodes only the rasters the AUDITED pages reference
+        # (the tree holds thousands, irrelevant to a curated audit); family/csr decode
+        # the whole tree (small, and an unreferenced-but-corrupt image still fails).
+        check_asset_integrity(root, failures, pages if policy == 'wiki' else None)
+        check_heading_breaks(root, failures, pages)
+        check_duplicate_ids(root, failures, pages)
+        check_contrast(root, failures, pages)
+        check_toc_complete(root, failures, pages)
         check_seo_current(root, failures)
+        # Hand-authored family/CSR chrome -- NOT the MediaWiki-generated wiki trees,
+        # whose chrome is mw-* classes with a different footer/nav + its own class
+        # vocabulary, so these would misfire wholesale. check_freshness / check_banner
+        # inspect only the site-root index.html by design (the "last generated" line +
+        # review-status banner are landing-page concerns); check_footer_structure runs
+        # on every page so a generated subpage's footer cannot drift unchecked.
+        if policy != 'wiki':
+            check_freshness(root, failures)
+            check_footer_structure(root, failures)
+            check_banner(root, failures)
+            check_card_layout(root, failures)
+            check_repro_raw(root, failures)
+            check_nav(root, failures)
+            check_undefined_classes(root, failures)
+            check_generated_class_contract(root, failures)
+        # CSR-only (vendor-neutral, not in FAMILY): its own footer-nav-consistency
+        # check, the stricter CSR CSP assertion, and the perfect-SEO page-metadata bar.
+        if policy == 'csr':
+            check_footer_nav(root, failures)
+            check_csr_csp(root, failures)
+            check_page_metadata(root, failures)
         name = os.path.basename(root)
         if failures:
             total += len(failures)
             for item in failures:
                 sys.stderr.write('FAIL %s: %s\n' % (name, item))
         else:
-            sys.stdout.write('ok %s: links + wording + footer + footer-structure + '
-                             'banner + csp + '
-                             'no-inline-js + '
-                             'supply-chain + assets + asset-integrity + card-layout + repro-raw + '
-                             'nav + '
-                             'toc-complete + '
-                             'heading-breaks + duplicate-ids + contrast + undefined-classes + '
-                             'seo + page-metadata clean\n' % name)
+            sys.stdout.write('ok %s: all %s-policy checks clean\n' % (name, policy))
     sys.stdout.write('website-tests: %d failure(s)\n' % total)
     return 1 if total else 0
 

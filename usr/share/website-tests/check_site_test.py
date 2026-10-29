@@ -200,6 +200,33 @@ def run():
         check('external raster reference not flagged must-be-webp',
               _fmt_failures(root) == [], repr(_fmt_failures(root)))
 
+    # 9c. FP: a MediaWiki File:/Image: namespace <a href> ends in .png but resolves
+    # to an HTML description page, not a raster -- it must NOT be flagged, while a
+    # real <img src="x.png"> on the SAME tree still is (the both-way canary; the
+    # pre-fix code flagged the File: link as a must-be-webp content image).
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               _page % ('<a href="./File:Etcher1.png">desc</a>'
+                        '<a href="./wiki/Image:Logo.jpg">desc</a>'
+                        '<img src="photo.png">'))
+        fails = _fmt_failures(root)
+        check('File: namespace <a href> not flagged must-be-webp',
+              not any('Etcher1.png' in f for f in fails), repr(fails))
+        check('Image: namespace <a href> not flagged must-be-webp',
+              not any('Logo.jpg' in f for f in fails), repr(fails))
+        check('real <img src> raster still flagged beside File: links',
+              any('photo.png' in f for f in fails), repr(fails))
+
+    # 9d. Dedup: the SAME raster referenced twice on one page yields ONE failure
+    # line, not one per reference (the ia-archive-logo.png footer-logo double-count).
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               _page % ('<img src="/logo.png"><img src="/logo.png">'
+                        '<a href="/logo.png">again</a>'))
+        fails = _fmt_failures(root)
+        check('duplicate raster reference collapses to one failure',
+              len(fails) == 1, repr(fails))
+
     # 10. og:image / twitter:image / favicon are metadata, not content loads --
     # they may stay PNG/JPEG for social-scraper compatibility.
     with tempfile.TemporaryDirectory() as root:
@@ -243,9 +270,9 @@ def run():
     # so the CLI-shim split does not blind this guard.
     main_body = inspect.getsource(check_site.main)
     check('check_image_format is invoked from main()',
-          'check_image_format(root, failures)' in main_body)
+          'check_image_format(root' in main_body)
     check('check_asset_integrity is invoked from main()',
-          'check_asset_integrity(root, failures)' in main_body)
+          'check_asset_integrity(root' in main_body)
 
     # check_heading_breaks: a hard <br> inside a heading is the mobile-orphan bug.
     def _hb_failures(root):
@@ -340,9 +367,9 @@ def run():
     # 18. Both new checks must be WIRED into main() (defined-but-uncalled = a
     # silent no-op, the exact regression case 13 guards for check_image_format).
     check('check_heading_breaks is invoked from main()',
-          'check_heading_breaks(root, failures)' in main_body)
+          'check_heading_breaks(root' in main_body)
     check('check_contrast is invoked from main()',
-          'check_contrast(root, failures)' in main_body)
+          'check_contrast(root' in main_body)
 
     # check_banner: the status pill may be a <span> OR an <a> (it links to the
     # review-model explanation). Either form must still be text-checked -- a
@@ -560,7 +587,7 @@ def run():
               _inline_failures(root) == [], repr(_inline_failures(root)))
 
     check('check_no_inline_script invoked from main()',
-          'check_no_inline_script(root, failures)' in main_body)
+          'check_no_inline_script(root' in main_body)
 
     # check_fouc: a render-blocking stylesheet in <head> is clean; an onload-swap
     # stylesheet link and a stylesheet in <body> flash unstyled content.
@@ -635,7 +662,7 @@ def run():
         check('non-stylesheet link not flagged',
               _fouc_failures(root) == [], repr(_fouc_failures(root)))
     check('check_fouc invoked from main()',
-          'check_fouc(root, failures)' in main_body)
+          'check_fouc(root' in main_body)
 
     # check_links: a '..'-traversal target that escapes the site root is a BROKEN
     # link (it would 404 on the deployed site), never validated against some
@@ -644,6 +671,20 @@ def run():
         failures: list[str] = []
         check_site.check_links(root, failures, **kw)
         return failures
+    # '#top' (ASCII case-insensitive) and the empty fragment are HTML special fragments:
+    # with no matching id they resolve to the top of the document, so they are NEVER a
+    # broken anchor. A genuinely missing fragment is still flagged. (Regression: the gate
+    # emitted a false "broken in-page anchor #top" on ~every wiki page.)
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               '<!doctype html><html><head><title>t</title></head><body>'
+               '<a href="#top">top</a><a href="#TOP">TOP</a>'
+               '<a href="#missing">x</a></body></html>')
+        fails = _links_failures(root)
+        check('check_links: #top special fragment is not a broken anchor',
+              not any('top' in f.lower() for f in fails), repr(fails))
+        check('check_links: a real missing in-page anchor is still flagged',
+              any('#missing' in f for f in fails), repr(fails))
     cands = check_site._abs_candidates('../../etc/hostname', ['/nonexistent-root'])
     check('_abs_candidates clamps a root-escaping path into the root',
           bool(cands) and all(c.startswith('/nonexistent-root/') for c in cands)
@@ -1412,7 +1453,7 @@ def run():
         check('a noindex content page outside the results plane stays listed',
               any(u.endswith('example.github.io/paper/') for u in urls), repr(urls))
 
-    # check_page_metadata (previews perfect-SEO bar): a complete page passes; a
+    # check_page_metadata (CSR perfect-SEO bar): a complete page passes; a
     # page missing any required tag (here the manifest link) is flagged.
     with tempfile.TemporaryDirectory() as root:
         full_head = (
@@ -1435,12 +1476,12 @@ def run():
         _write(root, 'index.html', tmpl % full_head)
         fails: list = []
         check_site.check_page_metadata(root, fails)
-        check('a complete previews page passes page-metadata', fails == [], repr(fails))
+        check('a complete csr page passes page-metadata', fails == [], repr(fails))
         _write(root, 'index.html', tmpl % full_head.replace(
             '<link rel="manifest" href="m.webmanifest">', ''))
         fails2: list = []
         check_site.check_page_metadata(root, fails2)
-        check('a previews page missing the manifest link is flagged',
+        check('a csr page missing the manifest link is flagged',
               any('PWA manifest' in f for f in fails2), repr(fails2))
         # Head-only scan: a required substring appearing in BODY/code text must
         # NOT satisfy the check (the tag has to be a real head element).
@@ -1515,13 +1556,77 @@ def run():
         check('_looks_like_wiki detects the same tokens on real elements',
               check_site._looks_like_wiki(root))
 
+    # A wiki root RUNS the wiki battery (the old rc-77 SKIP is deliberately gone):
+    # the generic HTML-quality + security checks run over the CURATED representative
+    # sample (axe-wiki-curated-paths.txt). Point the curated lookup at a tiny test
+    # file so the fixture need only ship those pages; restore it after block 2.
+    import shutil
+    _wiki_csp = ("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+                 "img-src 'self' data:; base-uri 'none'; form-action 'none'")
+
+    def _wiki_page(title, canon_path, csp=_wiki_csp, mw=True):
+        # A minimal VALID wiki page: hardened CSP meta, canonical, mw-parser-output
+        # content, a <footer> -- and NO family chrome (no FAMILY footer links, no
+        # .issue cards, no header nav). mw=False drops the mw-* tokens so the HEURISTIC
+        # would read it as family (used to prove a declared policy overrides markup).
+        csp_meta = ('<meta http-equiv="Content-Security-Policy" content="%s">' % csp) if csp else ''
+        edit = '<span class="mw-editsection">e</span>' if mw else ''
+        content_cls = 'mw-parser-output' if mw else 'content'
+        return ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
+                '<title>%s</title>%s'
+                '<link rel="canonical" href="https://wiki.example/%s">'
+                '<meta name="description" content="d">'
+                '</head><body>%s'
+                '<div class="%s"><h1>%s</h1>'
+                '<p>About Open Source and Free Software.</p></div>'
+                '<footer class="site-footer">wiki footer</footer>'
+                '</body></html>') % (title, csp_meta, canon_path, edit, content_cls, title)
+
+    def _build_wiki(root, csp=_wiki_csp, mw=True):
+        # The two curated pages the test curated file lists, plus the SEO artifacts a
+        # wiki generator emits -- so check_seo_current (part of the wiki battery) passes.
+        _write(root, 'index.html', _wiki_page('Home', '', csp, mw))
+        _write(root, 'wiki/ISO.html', _wiki_page('ISO', 'wiki/ISO', csp, mw))
+        host = 'wiki.example'
+        _write(root, 'sitemap.xml', check_site.render_sitemap(root, host))
+        _write(root, 'robots.txt',
+               check_site.render_robots(host, check_site._site_no_index(root)))
+
+    _saved_curated = check_site.WIKI_CURATED_PATHS_FILE
+    _curated_tmp = tempfile.mkdtemp()
+    _curated_file = os.path.join(_curated_tmp, 'curated.txt')
+    with open(_curated_file, 'w', encoding='utf-8') as _cfh:
+        _cfh.write('/\n/wiki/ISO\n')
+    check_site.WIKI_CURATED_PATHS_FILE = _curated_file
+
+    # (block 1) A heuristic-detected wiki root RUNS the wiki battery and a VALID wiki
+    # fixture PASSES (rc 0) -- NOT the old rc-77 skip.
     with tempfile.TemporaryDirectory() as root:
-        _write(root, 'index.html', _mwpage)
-        rc, _out, err = _run_main([root])
-        check('main() skips a wiki root (rc 77)', rc == 77, repr((rc, err)))
-        check('main() names the wiki skip reason', 'MediaWiki' in err, repr(err))
-        check('main() emits no family FAIL lines for a wiki root',
+        _build_wiki(root)
+        rc, out, err = _run_main([root])
+        check('main() runs the wiki battery on a heuristic wiki root (not rc 77)',
+              rc == 0, repr((rc, err)))
+        check('valid minimal wiki fixture passes the wiki battery',
               'FAIL ' not in err, repr(err))
+        check('wiki run reports the wiki policy', 'wiki-policy checks clean' in out, repr(out))
+    # The wiki battery emits NO family-chrome FAIL lines: no family footer links, no
+    # card-layout, no undefined-class / nav complaints -- those checks are gated out.
+    with tempfile.TemporaryDirectory() as root:
+        _build_wiki(root)
+        _rc, _out, err = _run_main([root])
+        for _needle in ('footer missing family link', 'stacks', 'has no CSS rule',
+                        'header nav inconsistent', 'is not a direct <footer> child'):
+            check('wiki battery emits no family-chrome FAIL (%s)' % _needle,
+                  _needle not in err, repr(err))
+    # A wiki page MISSING its CSP meta FAILS (check_csp runs under the wiki policy).
+    with tempfile.TemporaryDirectory() as root:
+        _build_wiki(root, csp=None)
+        rc, _out, err = _run_main([root])
+        check('wiki page missing a CSP meta fails', rc == 1, repr((rc, err)))
+        check('wiki CSP failure is reported',
+              'no Content-Security-Policy meta' in err, repr(err))
+        check('CSP-only wiki failure emits no family-chrome FAIL',
+              'footer missing family link' not in err, repr(err))
     with tempfile.TemporaryDirectory() as root:
         # a non-wiki minimal site is NOT skipped: the family checks run and it fails loudly
         # (no footer etc.), proving the guard does not over-skip a broken family site.
@@ -1609,14 +1714,23 @@ def run():
         check('policies: [family] forces family policy on wiki-looking markup',
               policy == 'family')
     with tempfile.TemporaryDirectory() as root:
-        # family-looking page but policies: [wiki] -> SKIP, with the DECLARED reason
-        # (not the heuristic "MediaWiki markup" message).
-        _write(root, 'index.html', _page % '<p class="kicker">hand page</p>')
+        # family-LOOKING markup (no mw-* tokens) but policies: [wiki] -> the DECLARED
+        # policy wins: the WIKI battery runs (not rc 77, not the family battery). Proof
+        # it is the wiki battery: the footer carries NO family links, which the family
+        # policy would FAIL on, yet the wiki policy (require_family_links=False) passes.
+        _build_wiki(root, mw=False)
         _write(root, _cfg, 'policies: [wiki]\n')
-        rc, _out, err = _run_main([root])
-        check('policies: [wiki] skips a family-looking root (rc 77)', rc == 77, repr((rc, err)))
-        check('policies: [wiki] skip names the declared policy, not the heuristic',
-              'policies=wiki' in err and 'markup matches' not in err, repr(err))
+        rc, out, err = _run_main([root])
+        check('policies: [wiki] runs the wiki battery on family-looking markup (not rc 77)',
+              rc == 0, repr((rc, err)))
+        check('declared wiki policy does not demand family footer links',
+              'footer missing family link' not in err, repr(err))
+        check('declared wiki run reports the wiki policy',
+              'wiki-policy checks clean' in out, repr(out))
+
+    check_site.WIKI_CURATED_PATHS_FILE = _saved_curated
+    shutil.rmtree(_curated_tmp, ignore_errors=True)
+
     with tempfile.TemporaryDirectory() as root:
         # malformed config is a LOUD FAILURE (rc 1 + FAIL line), never a silent 77 skip.
         _write(root, 'index.html', _page % '<p>x</p>')
@@ -1633,15 +1747,15 @@ def run():
     check('_policy_for falls back to the markup heuristic',
           '_looks_like_wiki(root)' in _pf_body)
 
-    # JOURNAL policy (vendor-neutral academic site): same battery as family MINUS the
+    # CSR policy (vendor-neutral academic site): same battery as family MINUS the
     # family-footer-links assertion, PLUS footer-nav-consistency + a stricter CSP.
     with tempfile.TemporaryDirectory() as root:
         _write(root, 'index.html', _page % '<p>x</p>')
-        _write(root, _cfg, 'policies: [previews]\n')
+        _write(root, _cfg, 'policies: [csr]\n')
         policy, _reason = check_site._policy_for(root)
-        check('policies: [previews] selects the previews policy', policy == 'previews')
+        check('policies: [csr] selects the csr policy', policy == 'csr')
 
-    # check_footer under the previews policy: does NOT demand the FAMILY links (vendor-neutral),
+    # check_footer under the csr policy: does NOT demand the FAMILY links (vendor-neutral),
     # but STILL requires the index to have a footer at all.
     with tempfile.TemporaryDirectory() as root:
         _write(root, 'index.html',
@@ -1651,7 +1765,7 @@ def run():
                '</body></html>')
         failures: list = []
         check_site.check_footer(root, failures, require_family_links=False)
-        check('previews check_footer does not demand family links',
+        check('csr check_footer does not demand family links',
               not any('family link' in f for f in failures), repr(failures))
     with tempfile.TemporaryDirectory() as root:
         _write(root, 'index.html',
@@ -1659,7 +1773,7 @@ def run():
                '<title>J</title></head><body><main>x</main></body></html>')
         failures = []
         check_site.check_footer(root, failures, require_family_links=False)
-        check('previews check_footer still requires the index to have a footer',
+        check('csr check_footer still requires the index to have a footer',
               any('no <footer>' in f for f in failures), repr(failures))
 
     # check_footer_nav: present + identical across pages passes; a dropped/reordered item or a
@@ -1718,7 +1832,7 @@ def run():
         check('check_footer_nav flags a retargeted footer link (resolved target differs)',
               any('footer nav inconsistent' in f for f in failures), repr(failures))
 
-    # check_previews_csp: the final previews policy passes; a weaker script-src, an unsafe-inline,
+    # check_csr_csp: the final csr policy passes; a weaker script-src, an unsafe-inline,
     # or a missing Trusted-Types directive fails.
     _jcsp_ok = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; "
                 "base-uri 'none'; form-action 'none'; object-src 'none'; "
@@ -1731,22 +1845,22 @@ def run():
     with tempfile.TemporaryDirectory() as root:
         _write(root, 'index.html', _csp_page(_jcsp_ok))
         failures = []
-        check_site.check_previews_csp(root, failures)
-        check('check_previews_csp passes the final hardened previews CSP', failures == [],
+        check_site.check_csr_csp(root, failures)
+        check('check_csr_csp passes the final hardened CSR CSP', failures == [],
               repr(failures))
     with tempfile.TemporaryDirectory() as root:
         _write(root, 'index.html', _csp_page(_jcsp_ok.replace("script-src 'self'",
                                                               "script-src 'self' 'unsafe-inline'")))
         failures = []
-        check_site.check_previews_csp(root, failures)
-        check('check_previews_csp flags unsafe-inline in script-src',
+        check_site.check_csr_csp(root, failures)
+        check('check_csr_csp flags unsafe-inline in script-src',
               any('unsafe-inline' in f for f in failures), repr(failures))
     with tempfile.TemporaryDirectory() as root:
         _write(root, 'index.html', _csp_page(
             _jcsp_ok.replace("; require-trusted-types-for 'script'", '')))
         failures = []
-        check_site.check_previews_csp(root, failures)
-        check('check_previews_csp flags a missing require-trusted-types-for',
+        check_site.check_csr_csp(root, failures)
+        check('check_csr_csp flags a missing require-trusted-types-for',
               any('require-trusted-types-for' in f for f in failures), repr(failures))
 
     # Pure-predicate unit tests: these functions were reachable only through fixtures, so a
