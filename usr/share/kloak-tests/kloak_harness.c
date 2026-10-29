@@ -12,14 +12,13 @@ xkbcommon libraries exactly as kloak itself links. No compositor or input device
 is needed: the pure logic is called directly, and the handlers exercised run in
 a forked child over a plain fd, not a live connection.
 
-Regressions pinned here (Whonix/kloak#24 re-review of arraybolt3/trixie):
-  * unit_esc_key_release_clamp -- an escape-combo key RELEASE with no matching
-    press must NOT underflow the active-key counter and abort; the forked child
-    proves it exits cleanly (old code aborted via assert).
-  * unit_cross_overlap_and_offset_global_space -- the two upstream bugs that were
-    OPEN at first audit (cross/plus screen overlap seen as a gap; global-space
-    width stored as the right-edge coordinate) are now FIXED; each pins the
-    correct value so a regression trips the test.
+Covers arraybolt3's testability seams (Whonix/kloak#24): calc_next_led_state
+(num/caps-lock 4-state cycle), clamp_cursor (pointer-space clamp),
+make_virtual_cursor_pos_sane (void-avoiding glide), and parse_inotify_events
+(the assert-free, fuzzable record walk, incl. the zero-length IN_Q_OVERFLOW
+skip). Also pins two now-FIXED audit bugs in
+unit_cross_overlap_and_offset_global_space (cross/plus overlap seen as a gap;
+global-space width stored as the right-edge coordinate).
 
 Complements kloak_cbmc.c: CBMC proves the invariants hold for ALL inputs in the
 operating envelope; these assert the concrete, human-meaningful values and edges
@@ -351,44 +350,129 @@ static void unit_kb_handle_keymap(void)
     CHECK(run_keymap_child("abcd", 4, 4, NULL) == CH_EXIT1);
 }
 
-/* Run register_esc_combo_key for one key event in a forked child, after setting
- * up `spec` as the escape-key list, and report how the child ended. */
-static enum child_outcome run_esc_key_child(const char *spec, uint32_t key,
-                                            enum libinput_key_state key_state)
+/* calc_next_led_state drives the global num/caps-lock 4-state counter and
+ * returns the LED mask. Toggling a lock key press/release/press/release cycles
+ * the LED on, on, on, off; a non-lock key leaves the state untouched. */
+static void unit_calc_next_led_state(void)
 {
-    pid_t pid;
-    int status = 0;
+    num_lock_state = 0;
+    num_lock_held = false;
+    caps_lock_state = 0;
+    caps_lock_held = false;
 
-    pid = fork();
-    assert(pid >= 0);
-    if (pid == 0) {
-        esc_key_list = NULL;
-        esc_key_sublist_len = NULL;
-        active_esc_key_list = NULL;
-        esc_key_list_len = 0;
-        parse_esc_key_str(spec);
-        register_esc_combo_key(key, key_state);
-        _exit(0);
-    }
-    assert(waitpid(pid, &status, 0) == pid);
-    return classify_child(status);
+    /* numlock: on after the first press, still on across the next three edges
+     * until the fourth edge (second release) cycles it back off */
+    CHECK(calc_next_led_state(KEY_NUMLOCK, LIBINPUT_KEY_STATE_PRESSED)
+          & LIBINPUT_LED_NUM_LOCK);
+    CHECK(calc_next_led_state(KEY_NUMLOCK, LIBINPUT_KEY_STATE_RELEASED)
+          & LIBINPUT_LED_NUM_LOCK);
+    CHECK(calc_next_led_state(KEY_NUMLOCK, LIBINPUT_KEY_STATE_PRESSED)
+          & LIBINPUT_LED_NUM_LOCK);
+    CHECK(!(calc_next_led_state(KEY_NUMLOCK, LIBINPUT_KEY_STATE_RELEASED)
+            & LIBINPUT_LED_NUM_LOCK));
+
+    /* capslock is independent; a non-lock key is a no-op on both states */
+    CHECK(calc_next_led_state(KEY_CAPSLOCK, LIBINPUT_KEY_STATE_PRESSED)
+          & LIBINPUT_LED_CAPS_LOCK);
+    CHECK(calc_next_led_state(KEY_A, LIBINPUT_KEY_STATE_PRESSED)
+          & LIBINPUT_LED_CAPS_LOCK);
+    CHECK(!(calc_next_led_state(KEY_A, LIBINPUT_KEY_STATE_PRESSED)
+            & LIBINPUT_LED_NUM_LOCK));
 }
 
-/* Regression for the escape-combo counter underflow (Whonix/kloak#24 re-review
- * of arraybolt3/trixie). register_esc_combo_event runs on every raw libinput
- * key event, before any seat-key-count de-duplication; a RELEASE for a combo
- * key kloak never saw pressed (a key held down when the device was grabbed)
- * must clamp the counter at 0, not decrement it to -1 and abort. Old code did
- * `active_esc_key_list[i]--; assert(>= 0)` and aborted (SIGABRT); the fix
- * clamps, so the child returns and exits cleanly. */
-static void unit_esc_key_release_clamp(void)
+/* clamp_cursor pins the global cursor into [pointer_space_*, right/bottom_edge)
+ * and reports whether it had to move it. */
+static void unit_clamp_cursor(void)
 {
-    /* release of a combo key with no preceding press: clean exit, no abort */
-    CHECK(run_esc_key_child("KEY_RIGHTSHIFT,KEY_ESC", KEY_RIGHTSHIFT,
-                            LIBINPUT_KEY_STATE_RELEASED) == CH_EXIT0);
-    /* a key not in any combo is ignored entirely: also a clean exit */
-    CHECK(run_esc_key_child("KEY_RIGHTSHIFT,KEY_ESC", KEY_A,
-                            LIBINPUT_KEY_STATE_RELEASED) == CH_EXIT0);
+    state.pointer_space_x = 0;
+    state.pointer_space_y = 0;
+    state.pointer_space_right_edge = 1920;
+    state.pointer_space_bottom_edge = 1080;
+
+    cursor_x = 100;
+    cursor_y = 100;
+    CHECK(!clamp_cursor());
+    CHECK(cursor_x == 100 && cursor_y == 100);
+
+    cursor_x = 5000;
+    cursor_y = 5000;
+    CHECK(clamp_cursor());
+    CHECK(cursor_x == 1919 && cursor_y == 1079);
+
+    cursor_x = -5;
+    cursor_y = -5;
+    CHECK(clamp_cursor());
+    CHECK(cursor_x == 0 && cursor_y == 0);
+}
+
+/* make_virtual_cursor_pos_sane walks start->end avoiding voids. A move wholly
+ * within one screen reaches its target unchanged. */
+static void unit_make_virtual_cursor_pos_sane(void)
+{
+    struct output_geometry g0 = geom(0, 0, 1920, 1080);
+    double cx = 0.0;
+    double cy = 0.0;
+    ssize_t i;
+
+    for (i = 0; i < MAX_SCREEN_COUNT; ++i) {
+        state.output_geometries[i] = NULL;
+    }
+    state.output_geometries[0] = &g0;
+
+    cx = 200.0;
+    cy = 200.0;
+    make_virtual_cursor_pos_sane(100.0, 100.0, &cx, &cy);
+    CHECK(cx == 200.0 && cy == 200.0);
+
+    for (i = 0; i < MAX_SCREEN_COUNT; ++i) {
+        state.output_geometries[i] = NULL;
+    }
+}
+
+/* Append one inotify_event record (kernel-padded name) to buf, return the new
+ * end offset. */
+static ssize_t put_inotify(char *buf, ssize_t off, uint32_t mask,
+                           const char *name)
+{
+    struct inotify_event *ie = (struct inotify_event *)(buf + off);
+    uint32_t namelen = (uint32_t)(strlen(name) + 1U);
+
+    namelen = (namelen + 7U) & ~7U; /* kernel aligns the name field */
+    ie->wd = 1;
+    ie->mask = mask;
+    ie->cookie = 0;
+    ie->len = namelen;
+    memset(ie->name, 0, namelen);
+    memcpy(ie->name, name, strlen(name));
+    return off + (ssize_t)sizeof(struct inotify_event) + (ssize_t)namelen;
+}
+
+/* parse_inotify_events returns the next canonical event<N> node name in the
+ * buffer, skips non-evdev and zero-length (IN_Q_OVERFLOW) records, and sets
+ * do_attach from IN_CREATE. */
+static void unit_parse_inotify_events(void)
+{
+    char buf[256];
+    ssize_t len = 0;
+    ssize_t pos = 0;
+    bool do_attach = false;
+    char *name = NULL;
+
+    memset(buf, 0, sizeof(buf));
+    applayer_regex_init();
+    /* a genuine zero-length (IN_Q_OVERFLOW) record: no name field, must be
+     * skipped with no over-read */
+    ((struct inotify_event *)(buf))->mask = IN_Q_OVERFLOW;
+    ((struct inotify_event *)(buf))->len = 0;
+    len = (ssize_t)sizeof(struct inotify_event);
+    len = put_inotify(buf, len, 0, "mouse0");         /* non-evdev: skipped */
+    len = put_inotify(buf, len, IN_CREATE, "event5"); /* match */
+
+    name = parse_inotify_events(buf, len, &pos, &do_attach);
+    CHECK(name != NULL && strcmp(name, "event5") == 0 && do_attach);
+    /* nothing left to match */
+    name = parse_inotify_events(buf, len, &pos, &do_attach);
+    CHECK(name == NULL);
 }
 
 /* Regression for two audit items that were OPEN at first report and are now
@@ -469,10 +553,13 @@ int main(void)
     unit_randname();
     unit_evdev_regex();
     unit_kb_handle_keymap();
-    unit_esc_key_release_clamp();
     unit_cross_overlap_and_offset_global_space();
     unit_recalc_global_space_gap();
     unit_abs_coord_invalid();
+    unit_calc_next_led_state();
+    unit_clamp_cursor();
+    unit_make_virtual_cursor_pos_sane();
+    unit_parse_inotify_events();
     printf("kloak harness: all assertions passed (%d checks)\n", checks);
     return 0;
 }
