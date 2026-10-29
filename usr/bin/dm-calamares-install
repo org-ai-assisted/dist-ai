@@ -410,6 +410,9 @@ snap() {
    ## until the frame carries content (same near-black gate main applies to rich shots) or a bounded
    ## number of tries. Non-rich milestones keep the single best-effort capture. A truly-off display
    ## still exhausts the retries and leaves a blank frame for main's gate to fail -- no false green.
+   ## Clear a STALE frame + sibling before capturing, so a failed/hung run cannot pass its gate on a
+   ## prior run's leftover frame (reused --shot-dir); the retries below then rewrite it.
+   clear_stale_capture "${out}"
    tries=1
    [ "${mode}" = 'rich' ] && tries=6
    for (( i = 1; i <= tries; i++ )); do
@@ -475,6 +478,9 @@ milestone_blank_mode() {
 story_snap() {
    local nn="$1" name="$2"
    [ -n "${shot_dir}" ] || return 0
+   ## Clear a STALE frame + sibling first so a failed capture cannot publish a prior run's leftover
+   ## (reused --shot-dir); capture_frame rewrites it on success.
+   clear_stale_capture "${shot_dir}/${nn}-${name}.png"
    capture_frame "${shot_dir}/${nn}-${name}.png" >/dev/null 2>&1 || true
 }
 
@@ -510,14 +516,9 @@ story_snap_nonblank() {
    local story_capture="${7:-${story_capture}}"
    [ -n "${shot_dir}" ] || return 0
    local dest="${shot_dir}/${nn}-${name}.png" start="${SECONDS}"
-   ## Framebuffer mode publishes the guest shot as ${dest} itself and writes NO gate sibling; a failed
-   ## shot (0x0 display) does not rewrite ${dest}. So clear any STALE ${dest} + sibling (a reused
-   ## --shot-dir, or a prior run killed before on_exit swept .gate) ONCE up front: the poll then
-   ## starts clean and neither the content check nor on_exit can trust a PREVIOUS run's frame. Window
-   ## mode rewrites both every poll, so it needs no clearing.
-   if [ "${story_capture}" != 'window' ]; then
-      safe-rm --force -- "${dest}" "${dest%/*}/${gate_subdir}/${dest##*/}" 2>/dev/null || true
-   fi
+   ## Clear any STALE frame + gate sibling ONCE up front so the poll starts clean (see
+   ## clear_stale_capture): a failed capture then leaves nothing a prior run wrote behind.
+   clear_stale_capture "${dest}"
    ## rich polls with image-blank-check's DEFAULT (near-blank) mode; uniform with --uniform-only;
    ## content with --min-content-frac (a mostly-black frame fails even with an AA cursor -- for a
    ## firmware/boot logo that must actually render, not a black screen).
@@ -728,6 +729,18 @@ stop_vm_frontend() {
    done
    kill -KILL "${gui_vm_pid}" 2>/dev/null || true
    gui_vm_pid=""
+}
+
+## Clear any STALE published frame + its gate sibling for milestone $1 BEFORE a capture sequence
+## begins (snap/story_snap single shot; story_snap_nonblank poll). A prior run's frame (reused
+## --shot-dir) or a leftover .gate sibling must never be trusted by the content gate or on_exit when
+## THIS run's capture fails or does not rewrite it. grim (window) and vbox-ctl-local (framebuffer)
+## repopulate $1 on a successful capture, so a failed capture then leaves nothing stale -- in BOTH
+## modes (a window-mode guest-sibling write can also fail, leaving a stale sibling). Scoped to
+## shot_dir so a failure stuck-shot / --shot elsewhere is untouched.
+clear_stale_capture() {
+   [ -n "${shot_dir}" ] && [ "${1%/*}" = "${shot_dir}" ] || return 0
+   safe-rm --force -- "$1" "${1%/*}/${gate_subdir}/${1##*/}" 2>/dev/null || true
 }
 
 ## Capture the current milestone frame to $1: the full VBox VM window (grim grab of our compositor,
