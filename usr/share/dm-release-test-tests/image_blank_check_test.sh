@@ -99,6 +99,11 @@ expect_rc "uniform black is flagged"            1 "${workdir}/black.png"
 expect_rc "near-blank (99% black) is flagged"   1 "${workdir}/near_blank.png"
 expect_rc "content-rich frame is NOT flagged"   0 "${workdir}/rich.png"
 expect_rc "dark-but-real frame is NOT flagged"  0 "${workdir}/dark_real.png"
+## FAIL-CLOSED on a MISSING file: a path that does not exist is an unreadable/absent capture and
+## must be flagged (rc 1), never silently 0-checked. dm-calamares-install's gate_check_path leans on
+## this -- in window mode it points the gate at the REQUIRED guest sibling even when absent, so a
+## dead-guest run FAILS here instead of falling back to the chrome window grab.
+expect_rc "a nonexistent path is flagged (fail-closed)" 1 "${workdir}/does-not-exist.png"
 ## 0.90 frac threshold: a 92%-white few-colour card is degenerate (old 0.98 missed it).
 expect_rc "92%-white few-colour card is flagged"         1 "${workdir}/extra/white_92.png"
 ## The real bug: a white frame with only the systray-redaction box.

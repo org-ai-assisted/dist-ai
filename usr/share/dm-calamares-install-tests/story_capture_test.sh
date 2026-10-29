@@ -286,18 +286,55 @@ probe_out="${work}/outside.png"; printf '%s\n' keep > "${probe_out}"
 clear_stale_capture "${probe_out}"
 got=0; [ -e "${probe_out}" ] || got=1
 check "clear_stale_capture leaves a path OUTSIDE shot_dir untouched" "${got}"
-## WINDOW mode: NO-OP. grim/GUESTCTL rewrite each capture; clearing the sibling would make a failed
-## guest shot fall back to the chrome window grab and pass a black guest (false green), so a stale
-## black sibling MUST survive here for the gate to fail on it.
+## WINDOW mode: CLEARS both the published frame and the guest sibling (same as framebuffer). A
+## successful capture rewrites them; a FAILED capture (dead guest) must leave nothing stale, else a
+## prior run's frame + sibling (reused --shot-dir) pass the gates as THIS run's green. This is the
+## core of the stale-frame false-green fix (pre-fix, window mode was a no-op here).
 story_capture=window
 printf '%s\n' frame > "${shot_dir}/77-probe.png"
 printf '%s\n' sib > "${shot_dir}/${gate_subdir}/77-probe.png"
 clear_stale_capture "${shot_dir}/77-probe.png"
 got=0
-[ -e "${shot_dir}/77-probe.png" ] || got=1
-[ -e "${shot_dir}/${gate_subdir}/77-probe.png" ] || got=1
-check "clear_stale_capture is a NO-OP in window mode (stale sibling survives for the gate)" "${got}"
+[ -e "${shot_dir}/77-probe.png" ] && got=1
+[ -e "${shot_dir}/${gate_subdir}/77-probe.png" ] && got=1
+check "clear_stale_capture (window) removes the stale frame AND its guest sibling" "${got}"
 safe-rm --force -- "${shot_dir}/77-probe.png" "${shot_dir}/${gate_subdir}/77-probe.png" 2>/dev/null || true
+
+## By-design sibling-less window frame: firmware-logo ($7=framebuffer override, line ~1852) and the
+## host-side vbox-manager shots (vbox-host-shot, lines ~1835/266) live under shot_dir in a window run
+## but write NO guest sibling. gate_check_path MUST fall back to $1 (the real content frame), NOT
+## demand a sibling -- else on_exit / the main gate, which call it under the GLOBAL window mode, drop
+## these good frames as "missing guest". REGRESSION GUARD: requiring the sibling here silently
+## discarded every firmware-logo/vbox-manager frame on a passing run.
+printf '%s\n' 'REAL FRAME' > "${shot_dir}/11-firmware-logo.png"
+safe-rm --force -- "${shot_dir}/${gate_subdir}/11-firmware-logo.png" 2>/dev/null || true
+got=0
+[ "$(gate_check_path "${shot_dir}/11-firmware-logo.png")" = "${shot_dir}/11-firmware-logo.png" ] || got=1
+check "gate_check_path falls back to \$1 for a window frame with no sibling by design (firmware-logo/vbox-manager)" "${got}"
+safe-rm --force -- "${shot_dir}/11-firmware-logo.png" 2>/dev/null || true
+
+## End-to-end: window mode, reused --shot-dir seeded with a stale frame + stale sibling, then a DEAD
+## guest -- grim exits 1 writing nothing AND the guest shot exits 3 writing nothing. The up-front
+## clear removes both; the failed capture rewrites neither; so NO stale frame/sibling survives to
+## pass the gate. (Pre-fix, the window no-op left both in place = the false green.)
+cp -- "${work}/grim" "${work}/grim.bak"
+cat > "${work}/grim" <<'STUB'
+#!/bin/bash
+printf 'grim: dead compositor\n' >&2
+exit 1
+STUB
+chmod +x -- "${work}/grim"
+hash -r 2>/dev/null || true
+printf '%s\n' 'STALE CHROME FRAME' > "${shot_dir}/30-welcome.png"
+mkdir --parents -- "${shot_dir}/${gate_subdir}"
+printf '%s\n' 'STALE GUEST FRAME' > "${shot_dir}/${gate_subdir}/30-welcome.png"
+GUESTCTL="${fail_shot}" story_snap 30 welcome
+got=0
+[ -e "${shot_dir}/30-welcome.png" ] && got=1
+[ -e "${shot_dir}/${gate_subdir}/30-welcome.png" ] && got=1
+check "window dead-guest (grim exit1 + guest shot exit3) leaves NO stale frame/sibling" "${got}"
+mv -- "${work}/grim.bak" "${work}/grim"
+hash -r 2>/dev/null || true
 
 ## story_snap (single-shot) also clears a stale frame before capturing: in framebuffer mode a shot
 ## that does not write must leave NO frame (not a prior run's leftover) for on_exit to publish.
