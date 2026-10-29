@@ -234,6 +234,19 @@ else
    install_intact='false'
 fi
 
+## Secret scan (generic): a static site's bytes are public, so a key/token/credential
+## baked into the built tree is an irreversible leak. Runs in-process via gitleaks (a
+## hard debian/control Depends, offline + read-only) for EVERY policy. Reviewed false
+## positives live in secrets-baselines/secrets-baseline-<site>.txt. A shipped required
+## check: absence FATALs, not skip.
+if [ -f "${tests_dir}/check_secrets.py" ]; then
+   "${tests_dir}/check_secrets.py" --baseline-dir "${tests_dir}/secrets-baselines" "${roots[@]}" || overall=1
+else
+   printf '%s\n' "website-tests: FATAL: check_secrets.py not found in ${tests_dir} (required check missing)" >&2
+   overall=1
+   install_intact='false'
+fi
+
 ## Browser lanes -- mobile-overflow ("no sideways scroll at a phone viewport"),
 ## width-utilization ("no tall text section wasted in a narrow column") and
 ## footer-alignment ("every footer row shares the same gutter"). All need
@@ -405,6 +418,7 @@ delegate_sandbox_lane 'website-lint-tests (html-tidy/stylelint)' webcheck-lint-s
 delegate_sandbox_lane 'website-vnu-tests (vnu conformance)' webcheck-vnu-sandbox "${roots[@]}"
 delegate_sandbox_lane 'website-lighthouse-tests (lighthouse)' webcheck-lighthouse-sandbox "${roots[@]}"
 delegate_sandbox_lane 'website-axe-tests (axe-core)' webcheck-axe-sandbox "${roots[@]}"
+delegate_sandbox_lane 'website-cspell-tests (spell-check)' webcheck-cspell-sandbox "${roots[@]}"
 
 ## Shot-inventory guard (secure-terminal site only): every committed shot is a
 ## page-referenced generator artifact and every gallery reference resolves -- no
