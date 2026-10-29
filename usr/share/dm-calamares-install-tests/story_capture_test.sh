@@ -222,6 +222,16 @@ check "story_snap_nonblank framebuffer override captures the GUEST (GUESTCTL sho
 got=0; ! grep --quiet 'firmware-logo' "${grim_log}" || got=1
 check "story_snap_nonblank framebuffer override does NOT grim-grab the window" "${got}"
 
+## framebuffer mode must REMOVE a stale gate sibling: it publishes the guest as the frame itself and
+## writes no sibling, so a leftover (reused --shot-dir / prior killed run) would make on_exit's
+## gate_check_path recheck trust the stale sibling over the real frame and wrongly drop the logo.
+mkdir --parents -- "${shot_dir}/${gate_subdir}"
+printf '%s\n' stale > "${shot_dir}/${gate_subdir}/11-firmware-logo.png"
+true > "${guestctl_log}"
+story_snap_nonblank 11 firmware-logo 1 1 content '' framebuffer || true
+got=0; [ -e "${shot_dir}/${gate_subdir}/11-firmware-logo.png" ] && got=1
+check "story_snap_nonblank framebuffer override REMOVES a stale gate sibling" "${got}"
+
 ## --- story_snap_nonblank TIMEOUT discard is OPT-IN ($6) ---------------------------------------
 ## A frame that never passes the check (ibc always degenerate) times out. With the discard opt-in,
 ## the leftover frame + its gate sibling are REMOVED (a lenient cleanup cannot then publish a missed

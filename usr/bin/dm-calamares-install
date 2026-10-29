@@ -742,6 +742,14 @@ capture_frame() {
       fi
    else
       "${GUESTCTL}" "${vm}" shot "$1"
+      ## Framebuffer mode publishes the guest directly as $1 and writes NO gate sibling, so the gate
+      ## (gate_check_path) reads $1 itself. REMOVE any STALE sibling for $1 (a reused --shot-dir, or a
+      ## prior run killed before on_exit swept .gate): on_exit's --uniform-only recheck would otherwise
+      ## trust that leftover (possibly black) sibling over the real frame and drop a milestone that
+      ## passed its content check. Scoped to shot_dir like the window-mode sibling write above.
+      if [ -n "${shot_dir}" ] && [ "${1%/*}" = "${shot_dir}" ]; then
+         safe-rm --force -- "${shot_dir}/${gate_subdir}/${1##*/}" 2>/dev/null || true
+      fi
    fi
 }
 
