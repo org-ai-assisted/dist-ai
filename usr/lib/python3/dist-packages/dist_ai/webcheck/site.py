@@ -85,6 +85,7 @@ class Extractor(html.parser.HTMLParser):
         self.ids = set()
         self.text_parts = []
         self.csp = None          # content of the CSP <meta http-equiv>
+        self.csp_count = 0       # number of CSP <meta http-equiv> elements seen
         self.styles = []         # CSS text: style="" attrs + <style> element bodies
         self._skip = 0
         self._in_style = 0
@@ -104,6 +105,7 @@ class Extractor(html.parser.HTMLParser):
         if tag == 'meta' and (amap.get('http-equiv') or '').lower() \
                 == 'content-security-policy':
             self.csp = amap.get('content') or ''
+            self.csp_count += 1
         if tag == 'link' and amap.get('href'):
             self.link_rels.append(
                 ((amap.get('rel') or '').lower().split(), amap['href']))
@@ -666,12 +668,14 @@ def _is_navigational(tag, attr, amap):
     """True when an href/src is a NAVIGATED page reference (so the clean-URL
     X.html fallback applies), False when it is a subresource LOAD (fetched
     as-named -- a missing one must read as broken, never be masked by a same-name
-    .html sibling). <a>/<area> href navigate. A <link> href names a page URL
+    .html sibling). <a>/<area> href navigate. An <iframe>/<frame> src loads a
+    browsing-context DOCUMENT (not a resource like img/script), so its clean-URL
+    .html form resolves just like a navigation. A <link> href names a page URL
     (canonical, alternate, prev/next, ...) UNLESS its rel fetches a subresource
     (stylesheet/icon/preload/...), which is a LOAD. Every other src/href/data
-    (img/script/iframe/source/embed/audio/video/track src, <object> data) is a
-    load."""
-    if (tag, attr) in (('a', 'href'), ('area', 'href')):
+    (img/script/source/embed/audio/video/track src, <object> data) is a load."""
+    if (tag, attr) in (('a', 'href'), ('area', 'href'),
+                       ('iframe', 'src'), ('frame', 'src')):
         return True
     if tag == 'link' and attr == 'href':
         rels = set((amap.get('rel') or '').lower().split())
@@ -881,6 +885,18 @@ _CSP_NON_SOURCE = frozenset({
 })
 
 
+# CSP whitespace is ASCII only (space/tab/CR/LF/FF per the CSP grammar). Tokenize
+# on THIS set, not Python str.split() which also splits on Unicode whitespace
+# (U+00A0, ...): a token joined to the directive name by non-ASCII whitespace is
+# NOT a separate source expression, so a `script-src<U+00A0>'sha256-...'` does not
+# parse as a valid script-src and the inline script stays flagged.
+_CSP_WS_RE = re.compile(r'[ \t\r\n\f]+')
+
+
+def _csp_tokens(part):
+    return [tok for tok in _CSP_WS_RE.split(part) if tok]
+
+
 def _csp_directives(csp):
     # CSP is ';'-separated directives; each is a whitespace-separated name then
     # its source tokens. Return {lower-name: [tokens]}. The directive NAME is
@@ -892,7 +908,7 @@ def _csp_directives(csp):
     # matching what the page actually enforces.
     out: dict[str, list[str]] = {}
     for part in csp.split(';'):
-        toks = part.split()
+        toks = _csp_tokens(part)
         if toks:
             out.setdefault(toks[0].lower(), toks[1:])
     return out
@@ -1047,16 +1063,23 @@ _URL_ATTRS = frozenset((
 
 # A CSP hash-source token: 'sha256-<base64>' (sha256/sha384/sha512). The algorithm
 # part is case-insensitive per CSP3; the base64 digest is case-SENSITIVE, so the
-# token must reach here with its case intact (see _csp_directives).
+# token must reach here with its case intact (see _csp_directives). The digest may
+# be standard base64 (+ and /) OR base64url (- and _); browsers normalize -/_ to
+# +/, so both alphabets are accepted here and canonicalized to standard base64
+# before comparison (see _csp_script_elem_hashes).
 _CSP_HASH_RE = re.compile(
-    r"^'(sha(?:256|384|512))-([A-Za-z0-9+/]+={0,2})'$", re.IGNORECASE)
+    r"^'(sha(?:256|384|512))-([A-Za-z0-9+/_-]+={0,2})'$", re.IGNORECASE)
+# Fold a base64url digest onto the standard-base64 alphabet our computed digest
+# uses: '-' -> '+', '_' -> '/'.
+_CSP_HASH_B64URL = str.maketrans('-_', '+/')
 
 
 def _csp_script_elem_hashes(csp):
     """Normalized {'sha256-<b64>', ...} hash-sources that govern an inline
     <script> ELEMENT: the effective script-src-elem list (script-src-elem, else
     script-src, else default-src). Parsed from the RAW CSP so the base64 keeps
-    its case."""
+    its case. A base64url digest is canonicalized to standard base64 so it still
+    matches our standard-base64 computed digest (_inline_script_hashes)."""
     directives = _csp_directives(csp)
     sources = directives.get('script-src-elem', directives.get(
         'script-src', directives.get('default-src', [])))
@@ -1064,7 +1087,8 @@ def _csp_script_elem_hashes(csp):
     for tok in sources:
         match = _CSP_HASH_RE.match(tok)
         if match:
-            hashes.add('%s-%s' % (match.group(1).lower(), match.group(2)))
+            hashes.add('%s-%s' % (match.group(1).lower(),
+                                  match.group(2).translate(_CSP_HASH_B64URL)))
     return hashes
 
 
@@ -1085,11 +1109,16 @@ class _InlineJSAudit(html.parser.HTMLParser):
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
-        self.inline_scripts = []   # body text of each executable inline <script>
+        # (body, csp_seen) per executable inline <script>: csp_seen is whether a
+        # CSP <meta> preceded the script in document order (a meta-CSP governs only
+        # content AFTER it, so a script BEFORE it is unprotected and never hash-exempt).
+        self.inline_scripts = []
         self.handlers = set()
         self.js_url = False
+        self._csp_seen = False
         self._script_depth = 0
         self._script_executable = False
+        self._script_csp_seen = False
         self._script_body = []
 
     def _scan_attrs(self, attrs):
@@ -1118,6 +1147,9 @@ class _InlineJSAudit(html.parser.HTMLParser):
     def handle_starttag(self, tag, attrs):
         self._scan_attrs(attrs)
         self._recurse_srcdoc(tag, attrs)
+        if tag == 'meta' and (dict(attrs).get('http-equiv') or '').lower() \
+                == 'content-security-policy':
+            self._csp_seen = True
         if tag == 'script':
             self._script_depth += 1
             amap = dict(attrs)
@@ -1126,6 +1158,9 @@ class _InlineJSAudit(html.parser.HTMLParser):
             stype = (amap.get('type') or '').strip().lower()
             self._script_executable = (
                 not has_src and stype in _JS_SCRIPT_TYPES)
+            # Snapshot CSP-seen at the START tag: the script's position relative
+            # to the meta is what decides whether the meta-CSP governs it.
+            self._script_csp_seen = self._csp_seen
             self._script_body = []
 
     def handle_endtag(self, tag):
@@ -1137,7 +1172,7 @@ class _InlineJSAudit(html.parser.HTMLParser):
             # nothing, so it is not recorded.
             body = ''.join(self._script_body)
             if self._script_executable and body.strip():
-                self.inline_scripts.append(body)
+                self.inline_scripts.append((body, self._script_csp_seen))
             self._script_body = []
 
     def handle_data(self, data):
@@ -1153,6 +1188,17 @@ def check_no_inline_script(root, failures, pages=None):
     # none of its hashes is in the effective script-src-elem hash set. A plain
     # hash does NOT cover an on*= handler or a javascript: URL (those need
     # 'unsafe-hashes'), so those stay flagged unconditionally.
+    #
+    # The hash exemption assumes the SINGLE well-formed head-level CSP meta our
+    # generator emits (mw-static-generator): exactly ONE
+    # <meta http-equiv=content-security-policy>, with the inline <script> AFTER it
+    # in document order. Any other shape forfeits the exemption (the script is
+    # flagged), erring toward flagging so a generator CSP bug is caught:
+    #   - MORE than one CSP meta: a browser enforces ALL policies (their
+    #     intersection), but the extractor models only one, so honoring a single
+    #     hash would be a false-green -> no exemption;
+    #   - a script BEFORE the CSP meta: the meta-CSP does not apply to content
+    #     preceding it, so such a script is unprotected -> no exemption.
     for page in (html_files(root) if pages is None else pages):
         rel = os.path.relpath(page, root)
         ext = Extractor()
@@ -1161,9 +1207,12 @@ def check_no_inline_script(root, failures, pages=None):
             content = handle.read()
         ext.feed(content)
         audit.feed(content)
-        csp_hashes = _csp_script_elem_hashes(ext.csp) if ext.csp else set()
-        for body in audit.inline_scripts:
-            if _inline_script_hashes(body).isdisjoint(csp_hashes):
+        single_csp = ext.csp is not None and ext.csp_count == 1
+        csp_hashes = _csp_script_elem_hashes(ext.csp) if single_csp else set()
+        for body, csp_seen in audit.inline_scripts:
+            exempt = (single_csp and csp_seen
+                      and not _inline_script_hashes(body).isdisjoint(csp_hashes))
+            if not exempt:
                 failures.append(
                     '%s: inline <script> body -- move it to an external .js '
                     'file or pin it with a CSP script-src hash '

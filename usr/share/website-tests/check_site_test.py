@@ -638,6 +638,74 @@ def run():
               any('onclick' in f for f in _inline_failures(root)),
               repr(_inline_failures(root)))
 
+    with tempfile.TemporaryDirectory() as root:
+        # FIX A: a base64url CSP hash ('-'/'_' for '+'/'/') must still match the
+        # standard-base64 computed digest (browsers normalize '-'/'_' to '+'/'/').
+        # Pick a body whose digest actually contains '+' or '/', so the standard and
+        # base64url forms differ and the test is not trivially satisfied.
+        _ub = _ustd = None
+        for _i in range(10000):
+            _cand = 'u%d();' % _i
+            _std = _b64.b64encode(_hashlib.sha256(
+                _cand.encode('utf-8')).digest()).decode('ascii')
+            if '+' in _std or '/' in _std:
+                _ub, _ustd = _cand, _std
+                break
+        _url = _ustd.translate(str.maketrans('+/', '-_'))
+        _write(root, 'index.html', _cpage % (
+            _csp % ("'self' 'sha256-%s'" % _url),
+            '<script>%s</script>' % _ub))
+        check('base64url CSP hash matches the inline script (not flagged)',
+              _url != _ustd and _inline_failures(root) == [],
+              repr((_url, _ustd, _inline_failures(root))))
+
+    with tempfile.TemporaryDirectory() as root:
+        # FIX D(#1): an inline <script> placed BEFORE the single CSP meta is
+        # unprotected (a meta-CSP governs only content AFTER it in document order),
+        # so even a CSP whose hash matches the body must NOT exempt it.
+        _before = ('<!doctype html><html><head><title>t</title>%s'
+                   '<meta http-equiv="Content-Security-Policy" content="%s">'
+                   '</head><body></body></html>')
+        _write(root, 'index.html', _before % (
+            _js_elem, _csp % ("'self' " + _js_hash)))
+        check('inline <script> BEFORE the CSP meta is flagged (unprotected)',
+              any('inline <script>' in f for f in _inline_failures(root)),
+              repr(_inline_failures(root)))
+
+    with tempfile.TemporaryDirectory() as root:
+        # FIX D(#2): more than one CSP meta forfeits the hash exemption -- a browser
+        # enforces ALL policies (their intersection), but only one is modeled, so
+        # honoring a single hash would be a false-green. Flag the inline script.
+        _two = ('<!doctype html><html><head><title>t</title>'
+                '<meta http-equiv="Content-Security-Policy" '
+                'content="default-src \'none\'; script-src \'none\'">'
+                '<meta http-equiv="Content-Security-Policy" content="%s">'
+                '</head><body>%s</body></html>')
+        _write(root, 'index.html', _two % (
+            _csp % ("'self' " + _js_hash), _js_elem))
+        check('two CSP metas forfeit the hash exemption (inline script flagged)',
+              any('inline <script>' in f for f in _inline_failures(root)),
+              repr(_inline_failures(root)))
+
+    with tempfile.TemporaryDirectory() as root:
+        # FIX D(#4): CSP is tokenized on ASCII whitespace only. A non-ASCII space
+        # (U+00A0) joining the directive name to its value means script-src is NOT
+        # parsed as a valid directive, so the hash is not seen -> script flagged.
+        _nbsp = ("default-src 'none'; script-src" + chr(0xa0) + "'self' "
+                 + _js_hash + "; style-src 'self' 'unsafe-inline'")
+        _write(root, 'index.html', _cpage % (_nbsp, _js_elem))
+        check('non-ASCII whitespace in CSP is not a valid separator (script flagged)',
+              any('inline <script>' in f for f in _inline_failures(root)),
+              repr(_inline_failures(root)))
+
+    with tempfile.TemporaryDirectory() as root:
+        # Positive control: the generator's shape -- a SINGLE head-level CSP meta with
+        # the hash and the script AFTER it -- still exempts the inline script.
+        _write(root, 'index.html', _cpage % (
+            _csp % ("'self' " + _js_hash), _js_elem))
+        check('single well-formed CSP meta still exempts the script after it',
+              _inline_failures(root) == [], repr(_inline_failures(root)))
+
     check('check_no_inline_script invoked from main()',
           'check_no_inline_script(root' in main_body)
 
@@ -877,6 +945,26 @@ def run():
         check('check_links: missing navigational link still reported broken',
               any('broken internal link' in f for f in _links_failures(root)),
               repr(_links_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        # FIX B: an <iframe src> (and <frame src>) loads a browsing-context
+        # DOCUMENT, so the clean-URL .html fallback applies like a navigation --
+        # embed.html satisfies src="embed". (FAILS pre-fix, where iframe src was a
+        # LOAD and the missing clean URL read as broken.)
+        _write(root, 'index.html',
+               '<iframe src="embed"></iframe><frame src="embed2">')
+        _write(root, 'embed.html', '<p>page</p>')
+        _write(root, 'embed2.html', '<p>page</p>')
+        check('check_links: iframe/frame src resolves via the .html fallback',
+              _links_failures(root) == [], repr(_links_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        # Counter-canary (FIX B scope): an <img src> is a resource LOAD, never
+        # navigational -- an absent x.webp with only x.webp.html present is STILL
+        # broken (unchanged by FIX B).
+        _write(root, 'index.html', '<img src="x.webp">')
+        _write(root, 'x.webp.html', '<p>not an image</p>')
+        check('check_links: img src still broken (not navigational)',
+              any('broken internal link' in f for f in _links_failures(root)),
+              repr(_links_failures(root)))
 
     # R2-1 rel-aware <link>: a <link rel="canonical"> (and other non-fetching rels)
     # names a PAGE URL served as a clean URL, so the .html fallback applies and a
@@ -914,6 +1002,15 @@ def run():
     nav_dir = check_site._abs_candidates('d/', ['/r'], navigational=False)
     check('_abs_candidates: index.html dir-candidate is independent of navigational',
           any(c.endswith('d/index.html') for c in nav_dir), repr(nav_dir))
+
+    # FIX B at the predicate level: iframe/frame src navigate a browsing-context
+    # document (clean-URL .html fallback applies); img src is a resource LOAD.
+    check('_is_navigational: iframe src is navigational',
+          check_site._is_navigational('iframe', 'src', {'src': 'embed'}))
+    check('_is_navigational: frame src is navigational',
+          check_site._is_navigational('frame', 'src', {'src': 'embed'}))
+    check('_is_navigational: img src is NOT navigational',
+          not check_site._is_navigational('img', 'src', {'src': 'x.webp'}))
 
     # check_supply_chain: srcset candidates and fetching <link> rels are external
     # subresource LOADS too (Extractor records only href/src for the tag loop).
@@ -2107,6 +2204,13 @@ def run():
     cd = check_site._csp_directives("default-src   'self';; img-src data:")
     check('_csp_directives tolerates multi-space and empty segments',
           cd.get('default-src') == ["'self'"] and cd.get('img-src') == ['data:'], cd)
+    # FIX D(#4): tokenize on ASCII whitespace only -- a U+00A0 is NOT a separator,
+    # so a directive glued by it is one opaque token, never a valid 'script-src'.
+    _nbsp_csp = "default-src 'none'; script-src" + chr(0xa0) + "'self'"
+    cd = check_site._csp_directives(_nbsp_csp)
+    check('_csp_directives does not split on non-ASCII whitespace (U+00A0)',
+          cd.get('script-src') is None
+          and ("script-src" + chr(0xa0) + "'self'") in cd, cd)
 
     # WCAG contrast math.
     check('_contrast black-on-white is 21:1',
