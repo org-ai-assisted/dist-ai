@@ -46,12 +46,26 @@ export LC_ALL=C
 
 if [ "$#" -lt 2 ]; then
   printf '%s\n' 'Usage: github-api <METHOD> <PATH-or-URL> [extra curl args...]' >&2
-  exit 1
+  exit 2
 fi
 
 method="$1"
 target="$2"
 shift 2
+
+## gh-CLI muscle memory: 'gh api ... --input <file>' sends a request body, but
+## this is a curl passthrough -- curl has no --input and dies with the
+## misdirecting 'option --input: is unknown'. Name THIS tool's idiom instead.
+## Detect-and-tell only: a passthrough must not reparse curl's own grammar, so
+## the body still rides curl's documented --data @<file> (see the usage header).
+for arg in "$@"; do
+  case "${arg}" in
+    --input|--input=*|--body-file|--body-file=*)
+      printf '%s\n' "github-api: '${arg%%=*}' is a gh-CLI flag, not curl; this wrapper forwards curl flags. Send a request body with: github-api ${method} <path> --data @<file>" >&2
+      exit 2
+      ;;
+  esac
+done
 
 case "${target}" in
   https://*)

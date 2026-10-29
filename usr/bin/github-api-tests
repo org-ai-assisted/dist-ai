@@ -224,8 +224,86 @@ case "${out}" in
     ;;
 esac
 
+## gh-CLI muscle memory: 'gh api ... --input <file>' sends a body, but curl (and
+## so this passthrough) has no --input. The guard must reject it with exit 2, name
+## the curl idiom (--data), and NEVER reach the transport -- asserted on the ARGV
+## marker the stub prints only when curl ran. Catches --body-file (a plausible gh
+## guess curl also lacks) too.
+printf '%s\n' '{}' > "${tmp}/body.json"
+rc=0
+out="$(run_git_api PATCH /repos/x --input "${tmp}/body.json")" || rc=$?
+if [ "${rc}" -ne 2 ]; then
+  printf '%s\n' "FAIL: --input not rejected with exit 2 (rc ${rc}): ${out}" >&2
+  fails=$(( fails + 1 ))
+else
+  case "${out}" in
+    *ARGV:*)
+      printf '%s\n' "FAIL: --input reached the transport: ${out}" >&2
+      fails=$(( fails + 1 ))
+      ;;
+    *--data*)
+      printf '%s\n' 'ok   --input rejected (exit 2), transport not run, --data named'
+      ;;
+    *)
+      printf '%s\n' "FAIL: --input rejected but did not name --data: ${out}" >&2
+      fails=$(( fails + 1 ))
+      ;;
+  esac
+fi
+
+rc=0
+out="$(run_git_api PATCH /repos/x --body-file "${tmp}/body.json")" || rc=$?
+if [ "${rc}" -ne 2 ]; then
+  printf '%s\n' "FAIL: --body-file not rejected with exit 2 (rc ${rc}): ${out}" >&2
+  fails=$(( fails + 1 ))
+else
+  case "${out}" in
+    *ARGV:*)
+      printf '%s\n' "FAIL: --body-file reached the transport: ${out}" >&2
+      fails=$(( fails + 1 ))
+      ;;
+    *)
+      printf '%s\n' 'ok   --body-file rejected (exit 2), transport not run'
+      ;;
+  esac
+fi
+
+## Anti-over-match: the documented --data @<file> idiom must still forward to the
+## transport untouched.
+out="$(run_git_api POST /repos/x --data @"${tmp}/body.json")" || true
+argv_line=''
+while IFS= read -r line; do
+  case "${line}" in
+    'ARGV: '*)
+      argv_line="${line}"
+      ;;
+    *)
+      true "INFO: not the argv line"
+      ;;
+  esac
+done <<< "${out}"
+case "${argv_line}" in
+  *'--data'*'@'*)
+    printf '%s\n' 'ok   --data @<file> still forwarded to the transport'
+    ;;
+  *)
+    printf '%s\n' "FAIL: --data @<file> not forwarded: ${out}" >&2
+    fails=$(( fails + 1 ))
+    ;;
+esac
+
+## Usage error (too few args) shares the usage exit code 2 with the gh-ism guard.
+rc=0
+out="$(run_git_api GET)" || rc=$?
+if [ "${rc}" -eq 2 ] && [ "${out#*Usage:}" != "${out}" ]; then
+  printf '%s\n' 'ok   too-few-args is a usage error (exit 2)'
+else
+  printf '%s\n' "FAIL: too-few-args not a usage error (rc ${rc}): ${out}" >&2
+  fails=$(( fails + 1 ))
+fi
+
 if (( fails > 0 )); then
   printf '%s\n' "github-api-tests: ${fails} check(s) FAILED" >&2
   exit 1
 fi
-printf '%s\n' 'github-api-tests: PASSED (11 checks, 0 failed, 0 skipped)'
+printf '%s\n' 'github-api-tests: PASSED (15 checks, 0 failed, 0 skipped)'
