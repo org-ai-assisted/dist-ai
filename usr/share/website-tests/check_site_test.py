@@ -227,6 +227,17 @@ def run():
         check('duplicate raster reference collapses to one failure',
               len(fails) == 1, repr(fails))
 
+    # 9e. F4: a root-absolute /logo.png and a relative logo.png AT THE SITE ROOT
+    # address the SAME deployed file, so they must collapse to ONE must-be-webp
+    # failure -- not two. (Pre-fix the root-absolute ref keyed against a bogus '/'
+    # base and never matched the relative ref's key, double-counting the file.)
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               _page % '<img src="logo.png"><img src="/logo.png">')
+        fails = _fmt_failures(root)
+        check('root-absolute and relative ref to the same raster collapse to one failure',
+              len(fails) == 1, repr(fails))
+
     # 10. og:image / twitter:image / favicon are metadata, not content loads --
     # they may stay PNG/JPEG for social-scraper compatibility.
     with tempfile.TemporaryDirectory() as root:
@@ -685,6 +696,24 @@ def run():
               not any('top' in f.lower() for f in fails), repr(fails))
         check('check_links: a real missing in-page anchor is still flagged',
               any('#missing' in f for f in fails), repr(fails))
+    # F1: the '#top' exemption applies to a CROSS-PAGE / other-page target too, not
+    # only the same-page (#self) branch. A link other.html#top (or #TOP) to a page
+    # with no id=top is NOT a broken anchor; a genuinely missing cross-page anchor
+    # IS still flagged. (Regression: the 'targets missing #frag' cross-page branch
+    # lacked the exemption the #self branch already had.)
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               '<!doctype html><html><head><title>t</title></head><body>'
+               '<a href="other.html#top">t</a><a href="other.html#TOP">T</a>'
+               '<a href="other.html#realmissing">m</a></body></html>')
+        _write(root, 'other.html',
+               '<!doctype html><html><head><title>o</title></head><body>'
+               '<p>no matching ids here</p></body></html>')
+        fails = _links_failures(root)
+        check('check_links: cross-page #top/#TOP is not a missing anchor',
+              not any('#top' in f.lower() for f in fails), repr(fails))
+        check('check_links: a real missing cross-page anchor is still flagged',
+              any('#realmissing' in f for f in fails), repr(fails))
     cands = check_site._abs_candidates('../../etc/hostname', ['/nonexistent-root'])
     check('_abs_candidates clamps a root-escaping path into the root',
           bool(cands) and all(c.startswith('/nonexistent-root/') for c in cands)
@@ -715,6 +744,54 @@ def run():
         _write(root, 'my page.html', '<p>ok</p>')
         check('percent-encoded internal link resolves to the decoded file',
               _links_failures(root) == [], repr(_links_failures(root)))
+
+    # Payment / non-http URI schemes are external, not internal relative links:
+    # bitcoin:/monero:/ethereum: have no file on disk, so the pre-fix list (only
+    # mailto/tel/data/javascript) treated them as internal -> false broken link.
+    # resolve_internal must return None (not a ('file', ...) candidate tuple).
+    with tempfile.TemporaryDirectory() as root:
+        page = os.path.join(root, 'index.html')
+        check('resolve_internal: bitcoin: payment URI -> None',
+              check_site.resolve_internal(
+                  root, page,
+                  'bitcoin:3DaJWfHyLv4RVnvMD7K2Mz2AX2r3fwiQwV') is None)
+        check('resolve_internal: monero: payment URI -> None',
+              check_site.resolve_internal(
+                  root, page,
+                  'monero:84ozcSohQfoV6nRgGfaQ8uBvWphXAH8zDTTuotVnJWF1J'
+                  'MNQfvgNFdbEo4ZnJ9hxPMeYfJuUoWGH3MRaXCfbYk8sFFgm4XL') is None)
+    with tempfile.TemporaryDirectory() as root:
+        # bitcoin: link in a page must NOT be reported broken (end-to-end).
+        _write(root, 'index.html',
+               '<a href="bitcoin:3DaJWfHyLv4RVnvMD7K2Mz2AX2r3fwiQwV">donate</a>')
+        check('check_links: payment URI link is not a broken internal link',
+              _links_failures(root) == [], repr(_links_failures(root)))
+
+    # MediaWiki clean-URL serving: /X is served as X.html EVEN when the title X
+    # has a dot (a false extension). The pre-fix code added the .html fallback
+    # only for an extensionless base, so 'File:Foo.svg' (ext '.svg') and
+    # 'Apparmor.d' (ext '.d') false-failed though the generator serves them.
+    with tempfile.TemporaryDirectory() as root:
+        # A MediaWiki File: namespace link, emitted by the generator as './File:'
+        # (leading './'), served from File:Computer-laptop.svg.html on disk.
+        _write(root, 'wiki/ISO.html',
+               '<a href="./File:Computer-laptop.svg">img</a>')
+        _write(root, 'wiki/File:Computer-laptop.svg.html', '<p>description</p>')
+        check('check_links: dotted File: title resolves via .html fallback',
+              _links_failures(root) == [], repr(_links_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        # A dotted page title linked absolutely: /wiki/Apparmor.d -> Apparmor.d.html
+        _write(root, 'index.html', '<a href="/wiki/Apparmor.d">apparmor</a>')
+        _write(root, 'wiki/Apparmor.d.html', '<p>page</p>')
+        check('check_links: dotted page title resolves via .html fallback',
+              _links_failures(root) == [], repr(_links_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        # The unconditional .html fallback must NOT mask a genuinely missing page:
+        # /nope with no nope.html on disk is STILL a broken link.
+        _write(root, 'index.html', '<a href="/nope">x</a>')
+        check('check_links: genuinely missing page still reported broken',
+              any('broken internal link' in f for f in _links_failures(root)),
+              repr(_links_failures(root)))
 
     # check_supply_chain: srcset candidates and fetching <link> rels are external
     # subresource LOADS too (Extractor records only href/src for the tag loop).
@@ -1727,6 +1804,40 @@ def run():
               'footer missing family link' not in err, repr(err))
         check('declared wiki run reports the wiki policy',
               'wiki-policy checks clean' in out, repr(out))
+
+    # F7: a curated file resolving to ZERO pages (empty or comment-only) is a vacuous
+    # pass over an unaudited tree -> CuratedPathsError (fail loud), and main() then
+    # FAILs rather than exiting 0 "all clean".
+    with tempfile.TemporaryDirectory() as root:
+        _build_wiki(root)
+        _empty_curated = os.path.join(_curated_tmp, 'empty.txt')
+        with open(_empty_curated, 'w', encoding='utf-8') as _efh:
+            _efh.write('# only a comment, no paths\n\n')
+        _raised = False
+        try:
+            check_site.audited_pages(root, 'wiki', curated_file=_empty_curated)
+        except check_site.CuratedPathsError:
+            _raised = True
+        check('audited_pages: comment-only curated file raises CuratedPathsError', _raised)
+        _save_empty = check_site.WIKI_CURATED_PATHS_FILE
+        check_site.WIKI_CURATED_PATHS_FILE = _empty_curated
+        try:
+            rc, _out, err = _run_main([root])
+        finally:
+            check_site.WIKI_CURATED_PATHS_FILE = _save_empty
+        check('main() FAILs (rc 1) on a comment-only wiki curated file (no vacuous pass)',
+              rc == 1 and 'FAIL ' in err, repr((rc, err)))
+        # The pre-existing stale-entry behavior is preserved and NOT masked by the
+        # new zero-pages guard: a curated path that resolves to no file still raises.
+        _stale_curated = os.path.join(_curated_tmp, 'stale.txt')
+        with open(_stale_curated, 'w', encoding='utf-8') as _sfh:
+            _sfh.write('/\n/wiki/DoesNotExist\n')
+        _raised = False
+        try:
+            check_site.audited_pages(root, 'wiki', curated_file=_stale_curated)
+        except check_site.CuratedPathsError as _exc:
+            _raised = 'resolve to no file' in str(_exc)
+        check('audited_pages: a stale curated entry still raises CuratedPathsError', _raised)
 
     check_site.WIKI_CURATED_PATHS_FILE = _saved_curated
     shutil.rmtree(_curated_tmp, ignore_errors=True)

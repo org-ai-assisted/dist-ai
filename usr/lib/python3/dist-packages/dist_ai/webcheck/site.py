@@ -187,9 +187,23 @@ def _abs_candidates(rel, search_roots):
     for sr in search_roots:
         base = os.path.normpath(os.path.join(sr, rel))
         candidates.append(base)
-        if is_dir or not os.path.splitext(base)[1] or os.path.isdir(base):
-            candidates += [os.path.join(base, 'index.html'), base + '.html']
+        # A dir-like path serves its index.html; gate stays dir-like (a real
+        # index.html implies the dir exists, so os.path.isdir covers it).
+        if is_dir or os.path.isdir(base):
+            candidates.append(os.path.join(base, 'index.html'))
+        # GitHub Pages and the wiki generator both serve /X as X.html regardless
+        # of a dot in X (a MediaWiki title like 'Apparmor.d' or 'File:Foo.svg'
+        # has a false extension), so the .html fallback is UNCONDITIONAL. A real
+        # file still resolves first -- callers take the first existing candidate.
+        candidates.append(base + '.html')
     return candidates
+
+
+# A URI scheme at the very start (RFC 3986: ALPHA *( ALPHA / DIGIT / + / - / . )
+# then ':'). Matched against the _url_norm (lowercased, control-stripped) form so
+# no whitespace/case trick smuggles a scheme past it. '/' is not a scheme char, so
+# a relative path's first '/' ends the match before any colon.
+_SCHEME_RE = re.compile(r'[a-z][a-z0-9+.-]*:')
 
 
 def resolve_internal(root, page, target, mount=None, parent_roots=()):
@@ -197,8 +211,14 @@ def resolve_internal(root, page, target, mount=None, parent_roots=()):
     the link is external / a pure fragment / non-navigational. For a subsite,
     `mount` is its path under the parent domain and `parent_roots` are the parent
     site checkouts its off-mount absolute links resolve against."""
-    if _is_external(target) or _url_norm(target).startswith(
-            ('mailto:', 'tel:', 'data:', 'javascript:')):
+    # Any leading URI scheme is external / non-navigational (payment URIs like
+    # bitcoin:/monero:/ethereum:, magnet:, mailto:/tel:/data:/javascript:, ...).
+    # A scheme is letters then letters/digits/+/-/. then a colon, anchored at the
+    # start -- so a '/' or '.' before any colon (a relative path like
+    # 'wiki/Apparmor.d', a MediaWiki 'File:' link emitted as './File:Foo') breaks
+    # the match and stays INTERNAL. http/https// also go through _is_external
+    # (covers the '//host' scheme-relative form with no scheme colon).
+    if _is_external(target) or _SCHEME_RE.match(_url_norm(target)):
         return None
     frag = ''
     if '#' in target:
@@ -243,9 +263,12 @@ def resolve_internal(root, page, target, mount=None, parent_roots=()):
     resolved = urllib.parse.urljoin(page_url, target)
     base = os.path.normpath(os.path.join(root, _clamp(resolved.lstrip('/'))))
     candidates = [base]
-    if target.endswith('/') or resolved.endswith('/') \
-            or not os.path.splitext(base)[1] or os.path.isdir(base):
-        candidates += [os.path.join(base, 'index.html'), base + '.html']
+    # index.html only for a dir-like path (a real index.html implies the dir
+    # exists); the .html fallback is unconditional (see _abs_candidates: /X is
+    # served as X.html even when X has a dot).
+    if target.endswith('/') or resolved.endswith('/') or os.path.isdir(base):
+        candidates.append(os.path.join(base, 'index.html'))
+    candidates.append(base + '.html')
     return ('file', candidates, frag)
 
 
@@ -302,7 +325,12 @@ def check_links(root, failures, mount=None, parent_roots=(), pages=None):
                 failures.append('%s: broken internal link %r -> %s'
                                 % (rel, value, target))
                 continue
-            if frag:
+            # 'top' (ASCII case-insensitive) is an HTML special fragment on ANY
+            # page: with no matching id/name it still scrolls to the document top,
+            # so it ALWAYS resolves and is never a broken anchor -- on a cross-page
+            # / other-page target exactly as on the same-page (#self) branch above.
+            # (The empty fragment is already excluded by the enclosing `if frag`.)
+            if frag and frag.lower() != 'top':
                 # The target may live in a PARENT site (a subsite's cross-site
                 # link) or an un-audited page, neither preloaded in `loaded`; load
                 # its ids on demand so a missing cross-site anchor is caught, not
@@ -704,12 +732,17 @@ def _is_wiki_namespace_page(url):
     return seg.startswith(('File:', 'Image:'))
 
 
-def _raster_target(ref_dir, value):
+def _raster_target(ref_dir, value, root):
     # Resolve a raster reference to the file it points at, so the SAME image reached
     # from many pages (a footer logo) or named twice on one page collapses to one
-    # failure. ref_dir is the referencing file's directory; URL path semantics.
+    # failure. A root-absolute ref (/logo.png) resolves against the SITE ROOT, a
+    # relative ref against the referencing file's directory -- so both forms of the
+    # same deployed file (/logo.png and logo.png at the root) collapse to ONE key,
+    # not two (mirrors resolve_internal's root-absolute vs relative split). URL path
+    # semantics. ref_dir/root are filesystem paths; posixpath keys them consistently.
     path = urllib.parse.unquote(value.split('#', 1)[0].split('?', 1)[0])
-    return posixpath.normpath(posixpath.join(ref_dir, path))
+    base = root if path.startswith('/') else ref_dir
+    return posixpath.normpath(posixpath.join(base, path.lstrip('/')))
 
 
 def check_image_format(root, failures, pages=None):
@@ -721,7 +754,7 @@ def check_image_format(root, failures, pages=None):
     seen: set[str] = set()
 
     def report(ref_dir, value, message):
-        target = _raster_target(ref_dir, value)
+        target = _raster_target(ref_dir, value, root)
         if target in seen:
             return
         seen.add(target)
@@ -2552,6 +2585,13 @@ def audited_pages(root, policy, curated_file=None):
         raise CuratedPathsError(
             'curated wiki path(s) resolve to no file under %s (stale %s?): %s'
             % (root, curated_file, ', '.join(missing)))
+    # An empty / comment-only curated file audits ZERO pages: that is a vacuous
+    # pass (exit 0 "all clean" over an unaudited tree), the false green this gate
+    # exists to prevent -- fail loud, never return an empty audit set.
+    if not pages:
+        raise CuratedPathsError(
+            'wiki curated-paths file audits zero pages (empty or comment-only): %s'
+            % curated_file)
     return pages
 
 
