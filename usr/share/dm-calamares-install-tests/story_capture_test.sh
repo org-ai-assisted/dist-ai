@@ -375,6 +375,30 @@ mv -- "${work}/grim.pp3" "${work}/grim"
 hash -r 2>/dev/null || true
 safe-rm --force -- "${shot_dir}/72-terminal-open.png" "${shot_dir}/${gate_subdir}/72-terminal-open.png" 2>/dev/null || true
 
+## grim WROTE a grab but EXITED NONZERO (grim can write $1 AND still fail): the pairing must NOT be
+## keyed on grim's exit code -- the grab it produced must be promoted WITH a matched sibling/sentinel,
+## never left unsibling'd to fall back to the chrome $1. grim writes then exits 1; the guest shot
+## fails -> $1 IS published AND its sibling is the fail-closed sentinel (a matched pair).
+safe-rm --force -- "${shot_dir}/50-summary.png" "${shot_dir}/${gate_subdir}/50-summary.png" 2>/dev/null || true
+cp -- "${work}/grim" "${work}/grim.wnz"
+cat > "${work}/grim" <<'STUB'
+#!/bin/bash
+for a in "$@"; do out="$a"; done
+[ -n "${out:-}" ] && printf PNG > "${out}"
+exit 1
+STUB
+chmod +x -- "${work}/grim"
+hash -r 2>/dev/null || true
+GUESTCTL="${fail_shot}" capture_frame "${shot_dir}/50-summary.png" >/dev/null 2>&1 || true
+got=0
+[ -s "${shot_dir}/50-summary.png" ] || got=1
+[ -s "${shot_dir}/${gate_subdir}/50-summary.png" ] || got=1
+case "$(head -c3 -- "${shot_dir}/${gate_subdir}/50-summary.png" 2>/dev/null)" in PNG) got=1 ;; esac
+check "capture_frame promotes a grim-wrote-but-exited-nonzero grab with a matched sentinel (not keyed on exit code)" "${got}"
+mv -- "${work}/grim.wnz" "${work}/grim"
+hash -r 2>/dev/null || true
+safe-rm --force -- "${shot_dir}/50-summary.png" "${shot_dir}/${gate_subdir}/50-summary.png" 2>/dev/null || true
+
 ## End-to-end: window mode, reused --shot-dir seeded with a stale frame + stale sibling, then a DEAD
 ## guest -- grim exits 1 writing nothing AND the guest shot exits 3 writing nothing. The up-front
 ## clear removes both; the failed capture rewrites neither; so NO stale frame/sibling survives to

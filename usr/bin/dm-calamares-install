@@ -760,23 +760,37 @@ clear_stale_capture() {
 ## The gates read the guest sibling (gate_check_path) instead; it is the real render evidence.
 capture_frame() {
    if [ "${story_capture}" = 'window' ]; then
-      ## The published frame ($1, grim) and the gated guest sibling MUST stay a MATCHED pair, and
-      ## snap / story_snap_nonblank call this in a loop. So (re)write the sibling ONLY when grim
-      ## produced a FRESH $1 this attempt. A FAILED grim leaves the LAST matched pair ($1 + its
-      ## sibling) intact: the floor and story_snap_nonblank's retain-on-timeout still see the last
-      ## real frame, we never delete the only capture (which would drop a blank must-render milestone
-      ## from main's rich_shots and false-pass), and no ORPHAN sibling is left to validate a stale $1
-      ## that grim failed to rewrite (gated != published). A fresh $1 gets a fresh matched sibling
-      ## (any prior one cleared first); a fresh $1 whose guest shot FAILS gets a non-image SENTINEL so
-      ## the blank gate fails closed instead of reading the chrome-bearing $1 (which masks a black
-      ## guest). Sibling ONLY for shot_dir frames: the failure stuck-shot / --shot live elsewhere, are
-      ## never gated and keep their frame (a ${HOME}/.gate would also leak past on_exit's cleanup).
-      if grim "$1" && [ -n "${shot_dir}" ] && [ "${1%/*}" = "${shot_dir}" ]; then
+      if [ -n "${shot_dir}" ] && [ "${1%/*}" = "${shot_dir}" ]; then
+         ## The published frame ($1, grim) and the gated guest sibling MUST be a MATCHED pair from the
+         ## SAME attempt, and snap / story_snap_nonblank call this in a loop. Capture to TEMPS and
+         ## PROMOTE both together only when grim actually produced a grab -- so pairing holds by
+         ## construction, independent of grim's EXIT CODE (grim can write a frame AND exit nonzero, or
+         ## exit zero having written nothing). grim producing NOTHING this attempt leaves the prior
+         ## matched pair intact: the floor + story_snap_nonblank's retain-on-timeout still see the
+         ## last real frame, and we never delete the only capture (which would drop a blank
+         ## must-render milestone from main's rich_shots = false pass). A grab whose guest shot FAILS
+         ## is promoted with a non-image SENTINEL sibling so the blank gate fails closed instead of
+         ## reading the chrome-bearing $1 (which masks a black guest).
          local gate="${shot_dir}/${gate_subdir}/${1##*/}"
+         local wtmp="${1}.capturing" gtmp="${gate}.capturing"
          mkdir --parents -- "${gate%/*}" 2>/dev/null || true
-         safe-rm --force -- "${gate}" 2>/dev/null || true
-         "${GUESTCTL}" "${vm}" shot "${gate}" >/dev/null 2>&1 || true
-         [ -s "${gate}" ] || printf '%s\n' 'dm-calamares-install: guest framebuffer capture failed for this window grab' > "${gate}" 2>/dev/null || true
+         safe-rm --force -- "${wtmp}" "${gtmp}" 2>/dev/null || true
+         grim "${wtmp}" >/dev/null 2>&1 || true
+         if [ -s "${wtmp}" ]; then
+            "${GUESTCTL}" "${vm}" shot "${gtmp}" >/dev/null 2>&1 || true
+            if [ -s "${gtmp}" ]; then
+               mv --force -- "${gtmp}" "${gate}"
+            else
+               safe-rm --force -- "${gtmp}" "${gate}" 2>/dev/null || true
+               printf '%s\n' 'dm-calamares-install: guest framebuffer capture failed for this window grab' > "${gate}" 2>/dev/null || true
+            fi
+            mv --force -- "${wtmp}" "$1"
+         else
+            safe-rm --force -- "${wtmp}" 2>/dev/null || true
+         fi
+      else
+         ## Failure stuck-shot / --shot elsewhere: never gated, no guest sibling, published directly.
+         grim "$1"
       fi
    else
       ## Framebuffer mode: the guest shot IS the published frame $1 (no gate sibling). No per-poll
