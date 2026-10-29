@@ -10,6 +10,8 @@
 Drives the REAL module. The detection tests need the gitleaks binary; when it is absent they
 SKIP (waived) rather than fail, matching the lane's own standalone/CI contract. The pure
 baseline/parse/fingerprint logic is tested unconditionally."""
+import contextlib
+import io
 import os
 import shutil
 import sys
@@ -34,6 +36,32 @@ def run() -> int:
         stats["pass" if cond else "fail"] += 1
         status = "pass" if cond else "FAIL"
         (sys.stdout if cond else sys.stderr).write("check_secrets_test: %s %s\n" % (status, label))
+
+    def _main(argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = s.main(argv)
+        return rc, out.getvalue() + err.getvalue()
+
+    # F10: gitleaks ABSENT is a BROKEN INSTALL, not a mere finding. main() must exit a DISTINCT
+    # env-unmet code (ENV_UNMET_EXIT, neither 0 nor the exit-1 of a real finding) so the wrapper
+    # suppresses suite-complete and site-deploy cannot publish past an un-run secret scan. Force
+    # absence by emptying PATH (sandbox-free; no gitleaks on PATH -> FileNotFoundError). Runs
+    # regardless of whether gitleaks is installed on this host.
+    ck(s.ENV_UNMET_EXIT not in (0, 1), "ENV_UNMET_EXIT is a distinct non-0/non-1 code")
+    with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as bdir, \
+            tempfile.TemporaryDirectory() as emptybin:
+        Path(root, "index.html").write_text("<html></html>", encoding="utf-8")
+        _saved_path = os.environ.get("PATH", "")
+        os.environ["PATH"] = emptybin
+        try:
+            rc, text = _main(["--baseline-dir", bdir, root])
+        finally:
+            os.environ["PATH"] = _saved_path
+        ck(rc == s.ENV_UNMET_EXIT,
+           "gitleaks absent -> main returns the distinct env-unmet code (not 0/1): %r" % rc)
+        ck("FATAL" in text and "gitleaks not found" in text,
+           "gitleaks absent prints a FATAL not-found message")
 
     # pure: baseline parse/format roundtrip (sorted, comments skipped).
     accepted = {"a.txt:aws-access-token:1", "b.txt:github-pat:1"}
@@ -103,20 +131,16 @@ def run() -> int:
         with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as bdir:
             Path(root, "leak.txt").write_text(
                 "token = ghp_1234567890abcdefghijklmnopqrstuvwxyzAB\n", encoding="utf-8")
-            import contextlib
-            import io
-            def _main(argv):
-                out, err = io.StringIO(), io.StringIO()
-                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-                    rc = s.main(argv)
-                return rc, out.getvalue() + err.getvalue()
             rc, _ = _main(["--baseline-dir", bdir, "--write-baseline", root])
             ck(rc == 0, "main --write-baseline exits 0")
             rc, _ = _main(["--baseline-dir", bdir, root])
             ck(rc == 0, "main gate is clean once the finding is baselined")
             os.remove(s._baseline_path(Path(bdir), root))
             rc, text = _main(["--baseline-dir", bdir, root])
-            ck(rc == 1 and "SECRET" in text, "main FAILs (rc 1) on an un-baselined secret")
+            # a real secret finding stays exit 1 -- DISTINCT from the env-unmet code (F10): a
+            # finding must read as a finding, not as a broken install, and vice versa.
+            ck(rc == 1 and rc != s.ENV_UNMET_EXIT and "SECRET" in text,
+               "main FAILs (rc 1, not the env code) on an un-baselined secret")
 
     passed, failed, skipped = stats["pass"], stats["fail"], stats["skip"]
     sys.stdout.write("check_secrets_test: %d pass, %d fail, %d skip\n" % (passed, failed, skipped))

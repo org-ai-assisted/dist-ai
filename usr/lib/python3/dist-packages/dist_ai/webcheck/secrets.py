@@ -15,9 +15,13 @@ gitleaks output is REDACTED (`--redact`), so the secret value never reaches a lo
 this gate's stderr -- only the rule id + file:line locate it for a human to rotate + remove.
 
 gitleaks is a hard dependency of this package (debian/control Depends): it is ASSUMED present
-and called directly. Its absence is an ENVIRONMENT BUG that FAILS LOUD (exit 1), never a SKIP --
-a secret-scan that silently did not run is exactly the false green this gate exists to prevent.
-Pure JSON parsing + baseline; only `_run_gitleaks` shells out.
+and called directly. Its absence -- or any condition where it could not produce a trustworthy
+result (no report, bad JSON, error exit, FTL log) -- is an ENVIRONMENT/INSTALL BUG: the scan
+did NOT run, so main() exits a DISTINCT env-unmet code (ENV_UNMET_EXIT, 78), NEVER 0 and NEVER
+the exit-1 of a real secret finding. The wrapper maps that distinct code to a BROKEN INSTALL
+(suppress suite-complete), so a secret-scan that silently did not run can never read as green --
+exactly the false green this gate exists to prevent. Pure JSON parsing + baseline; only
+`_run_gitleaks` shells out.
 """
 from __future__ import annotations
 
@@ -36,6 +40,21 @@ _KEEP = ("RuleID", "File", "StartLine")
 # A config/ignore file shipped IN the scanned tree -- gitleaks auto-loads a source .gitleaks.toml
 # when no trusted --config is given, so the scanned content could weaken its own scan.
 _FORBIDDEN_IN_TREE = (".gitleaks.toml", ".gitleaksignore")
+
+# gitleaks absent, or unrunnable (no report, bad JSON, error exit, FTL, nonzero-but-empty): the
+# scan did NOT run. main() returns THIS distinct code -- not 0, not the exit-1 of a real finding
+# -- so the wrapper treats it as a BROKEN INSTALL and suppresses suite-complete. 78 == the
+# suite-exit.bash env-unmet value; a runtime capability (the scanner) is simply absent here.
+ENV_UNMET_EXIT = 78
+
+
+class GitleaksUnavailable(RuntimeError):
+    """gitleaks could not produce a trustworthy result (binary absent is a separate
+    FileNotFoundError; this covers: no report written, non-JSON report, error exit code,
+    an FTL log line, or a nonzero exit with an empty report). The scan did NOT run -- an
+    environment/install bug, NEVER a clean result and NEVER a secret finding. Distinct from
+    a plain RuntimeError (an adversarial tree shipping its own gitleaks config), which is a
+    real content FAILURE of the published tree."""
 
 
 def _run_gitleaks(root: str) -> List[dict]:
@@ -64,19 +83,20 @@ def _run_gitleaks(root: str) -> List[dict]:
             with open(report, encoding="utf-8") as handle:
                 data = json.load(handle)
         except FileNotFoundError:
-            raise RuntimeError("gitleaks wrote no report (rc=%d): %s"
-                               % (proc.returncode, (proc.stderr or "")[-300:]))
+            raise GitleaksUnavailable("gitleaks wrote no report (rc=%d): %s"
+                                      % (proc.returncode, (proc.stderr or "")[-300:]))
         except json.JSONDecodeError as exc:
-            raise RuntimeError("gitleaks report is not valid JSON: %s" % exc)
+            raise GitleaksUnavailable("gitleaks report is not valid JSON: %s" % exc)
     findings = data if isinstance(data, list) else []
     stderr = proc.stderr or ""
     # rc 0 = clean, rc 1 = leaks found. Anything else, a fatal (FTL) log, or rc 1 with an EMPTY
     # report (exited nonzero yet found nothing -- a scan error, e.g. an unreadable file) is an
     # ERROR -> fail loud, never the false-clean this gate exists to prevent.
     if proc.returncode not in (0, 1) or "FTL" in stderr:
-        raise RuntimeError("gitleaks errored (rc=%d): %s" % (proc.returncode, stderr[-300:]))
+        raise GitleaksUnavailable("gitleaks errored (rc=%d): %s" % (proc.returncode, stderr[-300:]))
     if proc.returncode == 1 and not findings:
-        raise RuntimeError("gitleaks exit 1 with an empty report (scan error): %s" % stderr[-300:])
+        raise GitleaksUnavailable("gitleaks exit 1 with an empty report (scan error): %s"
+                                  % stderr[-300:])
     return findings
 
 
@@ -151,17 +171,29 @@ def main(argv: List[str]) -> int:
     roots = cli.require_existing_dirs(args.roots, "secrets")
     baseline_dir = Path(args.baseline_dir)
     overall = 0
+    env_unmet = 0
     for root in roots:
         bpath = _baseline_path(baseline_dir, root)
         baseline = parse_baseline(bpath) if bpath.is_file() else set()
         try:
             new, all_keys = scan_root(root, set() if args.write_baseline else baseline)
         except FileNotFoundError:
-            # gitleaks is a Depends; its absence is an ENVIRONMENT BUG, a loud fatal, not a skip.
+            # gitleaks is a Depends; its absence is an ENVIRONMENT/INSTALL BUG -- the scan did
+            # NOT run, so exit the DISTINCT env-unmet code (not the exit-1 of a real finding).
+            # The wrapper maps it to a broken install and suppresses suite-complete.
             print("secrets: FATAL: gitleaks not found -- it is a required dependency "
                   "(dist-ai Depends); install it, do not skip the scan", file=sys.stderr)
-            return 1
+            return ENV_UNMET_EXIT
+        except GitleaksUnavailable as exc:
+            # gitleaks ran but produced no trustworthy result: the scan did NOT execute, an
+            # env/install bug -- the SAME distinct code, never a clean pass nor a secret finding.
+            print("secrets: FATAL %s: gitleaks could not run (scan did NOT execute): %s"
+                  % (os.path.basename(root), exc), file=sys.stderr)
+            env_unmet = 1
+            continue
         except RuntimeError as exc:
+            # A real content FAILURE of the published tree (e.g. it ships its own gitleaks
+            # config to weaken the scan): a genuine finding-class failure, exit 1.
             print("secrets: FAIL %s: gitleaks error: %s" % (os.path.basename(root), exc),
                   file=sys.stderr)
             overall = 1
@@ -181,6 +213,11 @@ def main(argv: List[str]) -> int:
             overall = 1
         else:
             print("%s: ok -- no newly-detected secrets" % name)
+    # A broken/unrunnable scan dominates: return the distinct env-unmet code so the wrapper
+    # suppresses suite-complete even if another root also had a real finding (overall was set,
+    # the SECRET lines were already printed -- nothing is masked, the result is just not green).
+    if env_unmet:
+        return ENV_UNMET_EXIT
     return overall
 
 

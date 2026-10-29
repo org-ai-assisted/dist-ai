@@ -240,7 +240,20 @@ fi
 ## positives live in secrets-baselines/secrets-baseline-<site>.txt. A shipped required
 ## check: absence FATALs, not skip.
 if [ -f "${tests_dir}/check_secrets.py" ]; then
-   "${tests_dir}/check_secrets.py" --baseline-dir "${tests_dir}/secrets-baselines" "${roots[@]}" || overall=1
+   secrets_rc=0
+   "${tests_dir}/check_secrets.py" --baseline-dir "${tests_dir}/secrets-baselines" "${roots[@]}" || secrets_rc="$?"
+   if [ "${secrets_rc}" = '78' ]; then
+      ## gitleaks absent / unrunnable (check_secrets.py's distinct env-unmet code): the secret
+      ## scan NEVER RAN. That is a BROKEN INSTALL -- not a clean pass and not a mere finding --
+      ## so set install_intact='false' (suppress suite-complete), exactly like a missing required
+      ## checker, so site-deploy --record-and-publish cannot publish past an un-run secret scan.
+      printf '%s\n' 'website-tests: FATAL secret-scan did not run (gitleaks absent/unrunnable) -- broken install' >&2
+      overall=1
+      install_intact='false'
+   elif [ "${secrets_rc}" != '0' ]; then
+      ## A real secret finding (or an adversarial-tree content failure): a complete red.
+      overall=1
+   fi
 else
    printf '%s\n' "website-tests: FATAL: check_secrets.py not found in ${tests_dir} (required check missing)" >&2
    overall=1
