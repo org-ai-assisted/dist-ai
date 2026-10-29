@@ -108,6 +108,44 @@ if [ -x "${cspell_driver}" ]; then
    fi
    safe-rm --recursive --force -- "${dup_a}" "${dup_b}"
 
+   ## FIX C: the dedup must key on the ORIGINAL-argument basename -- the SAME key spelling.py's
+   ## _baseline_path uses (os.path.basename of the abspath'd arg, NO symlink resolution). Two roots
+   ## that are symlinks to DISTINCT targets but share one ORIGINAL basename still map to one baseline,
+   ## so they MUST be rejected. Pre-fix the dedup canonicalized first: the distinct link targets gave
+   ## distinct basenames, the pair slipped the dedup, and the local path then clobbered one baseline.
+   sl_root="$(mktemp --directory)"
+   mkdir --parents -- "${sl_root}/targets/foo" "${sl_root}/targets/bar" "${sl_root}/a" "${sl_root}/b"
+   printf '%s\n' '<html></html>' > "${sl_root}/targets/foo/index.html"
+   printf '%s\n' '<html></html>' > "${sl_root}/targets/bar/index.html"
+   ln --symbolic -- "${sl_root}/targets/foo" "${sl_root}/a/site"
+   ln --symbolic -- "${sl_root}/targets/bar" "${sl_root}/b/site"
+   slrc=0
+   slout="$(env WEBCHECK_NO_LOCAL=1 WEBSITE_TESTS_NO_SANDBOX=1 \
+      "${cspell_driver}" "${sl_root}/a/site" "${sl_root}/b/site" 2>&1)" || slrc="$?"
+   if [ "${slrc}" != '0' ] && grep --quiet 'duplicate site-root basename' <<< "${slout}"; then
+      pass 'cspell driver: same original basename via distinct symlink targets rejected (keys original arg, not canonical)'
+   else
+      fail "cspell driver symlink-basename collision not rejected (rc=${slrc}): ${slout}"
+   fi
+   safe-rm --recursive --force -- "${sl_root}"
+
+   ## Distinct original basenames must STILL be allowed: the dedup passes and the run reaches the
+   ## env-unmet SKIP (77), never a spurious duplicate rejection.
+   ok_a="$(mktemp --directory)"
+   ok_b="$(mktemp --directory)"
+   mkdir --parents -- "${ok_a}/alpha" "${ok_b}/beta"
+   printf '%s\n' '<html></html>' > "${ok_a}/alpha/index.html"
+   printf '%s\n' '<html></html>' > "${ok_b}/beta/index.html"
+   okrc=0
+   env WEBCHECK_NO_LOCAL=1 WEBSITE_TESTS_NO_SANDBOX=1 \
+      "${cspell_driver}" "${ok_a}/alpha" "${ok_b}/beta" >/dev/null 2>&1 || okrc="$?"
+   if [ "${okrc}" = '77' ]; then
+      pass 'cspell driver: distinct original basenames allowed (reach env-unmet 77, not dup-rejected)'
+   else
+      fail "cspell driver wrongly rejected distinct basenames (rc=${okrc}, want 77)"
+   fi
+   safe-rm --recursive --force -- "${ok_a}" "${ok_b}"
+
    ## R2-2: a local cspell whose version is NOT the pinned 8.19.4 must NOT be run directly -- the
    ## driver falls through to the sandbox path. With WEBSITE_TESTS_NO_SANDBOX=1 that path is
    ## env-unmet -> exit 77. Pre-fix the local branch gated on mere presence, so a wrong-version
