@@ -741,14 +741,21 @@ capture_frame() {
          "${GUESTCTL}" "${vm}" shot "${gate}" >/dev/null 2>&1 || true
       fi
    else
-      "${GUESTCTL}" "${vm}" shot "$1"
-      ## Framebuffer mode publishes the guest directly as $1 and writes NO gate sibling, so the gate
-      ## (gate_check_path) reads $1 itself. REMOVE any STALE sibling for $1 (a reused --shot-dir, or a
-      ## prior run killed before on_exit swept .gate): on_exit's --uniform-only recheck would otherwise
-      ## trust that leftover (possibly black) sibling over the real frame and drop a milestone that
-      ## passed its content check. Scoped to shot_dir like the window-mode sibling write above.
-      if [ -n "${shot_dir}" ] && [ "${1%/*}" = "${shot_dir}" ]; then
-         safe-rm --force -- "${shot_dir}/${gate_subdir}/${1##*/}" 2>/dev/null || true
+      ## Framebuffer mode publishes the guest shot directly as $1 (the gate reads $1 itself, no
+      ## sibling). The shot can FAIL without writing $1 -- vbox-ctl-local returns nonzero and does
+      ## not truncate the path on a 0x0 pre-framebuffer display -- so handle the two cases:
+      if "${GUESTCTL}" "${vm}" shot "$1"; then
+         ## SUCCESS: $1 is a fresh guest frame. Drop any STALE sibling (reused --shot-dir, or a prior
+         ## run killed before on_exit swept .gate) so on_exit's gate_check_path reads $1, not a
+         ## leftover it would --uniform-only-drop. Scoped to shot_dir like the window sibling write.
+         if [ -n "${shot_dir}" ] && [ "${1%/*}" = "${shot_dir}" ]; then
+            safe-rm --force -- "${shot_dir}/${gate_subdir}/${1##*/}" 2>/dev/null || true
+         fi
+      elif [ -n "${shot_dir}" ] && [ "${1%/*}" = "${shot_dir}" ]; then
+         ## FAILURE: $1 was NOT written. Drop any STALE $1 (a prior run's leftover) so the content
+         ## check cannot pass on it and publish a previous run's frame as this milestone. The gate
+         ## sibling is left alone; a real capture on a later poll replaces $1 and drops the sibling.
+         safe-rm --force -- "$1" 2>/dev/null || true
       fi
    fi
 }

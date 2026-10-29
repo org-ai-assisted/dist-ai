@@ -232,6 +232,27 @@ story_snap_nonblank 11 firmware-logo 1 1 content '' framebuffer || true
 got=0; [ -e "${shot_dir}/${gate_subdir}/11-firmware-logo.png" ] && got=1
 check "story_snap_nonblank framebuffer override REMOVES a stale gate sibling" "${got}"
 
+## framebuffer mode on a FAILED guest shot (vbox-ctl-local returns nonzero and does NOT write the
+## frame, e.g. a 0x0 pre-framebuffer display): a STALE $1 (a prior run's frame left in a reused
+## --shot-dir) must be REMOVED so the content check cannot pass on it and publish a previous run's
+## frame as this milestone, and the call must NOT return success.
+fail_shot="${work}/guestctl-failshot"
+cat > "${fail_shot}" <<'STUB'
+#!/bin/bash
+for a in "$@"; do [ "${a}" = 'shot' ] && exit 3; done
+exit 0
+STUB
+chmod +x -- "${fail_shot}"
+printf '%s\n' 'STALE CHROME FRAME' > "${shot_dir}/11-firmware-logo.png"
+mkdir --parents -- "${shot_dir}/${gate_subdir}"
+printf '%s\n' black > "${shot_dir}/${gate_subdir}/11-firmware-logo.png"
+fs_rc=0
+GUESTCTL="${fail_shot}" story_snap_nonblank 11 firmware-logo 1 1 content '' framebuffer || fs_rc=$?
+got=0; [ -e "${shot_dir}/11-firmware-logo.png" ] && got=1
+check "framebuffer shot-failure REMOVES the stale frame (no stale publish)" "${got}"
+got=0; [ "${fs_rc}" -eq 0 ] && got=1
+check "framebuffer shot-failure does NOT return success" "${got}"
+
 ## --- story_snap_nonblank TIMEOUT discard is OPT-IN ($6) ---------------------------------------
 ## A frame that never passes the check (ibc always degenerate) times out. With the discard opt-in,
 ## the leftover frame + its gate sibling are REMOVED (a lenient cleanup cannot then publish a missed
