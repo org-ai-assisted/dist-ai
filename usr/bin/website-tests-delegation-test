@@ -245,6 +245,46 @@ SBSTUB
    else
       fail 'WEBCHECK_BROWSERS comma value wrongly rejected as an invalid engine'
    fi
+
+   ## Scenario 8: the staging tree must be sync-safe regardless of TMPDIR. `sandbox sync`
+   ## refuses a /var/tmp path as a system dir, and the ambient TMPDIR here IS /var/tmp, so
+   ## a mktemp-default staging dir lands there and the gate dies at the sync. The driver
+   ## must anchor staging under $HOME instead. Drive the REAL driver (exit-0 stub so it
+   ## reaches the sync step) with a tiny synthetic root under TMPDIR=/var/tmp, capture the
+   ## local path handed to `sync`, and assert it is under $HOME. Fails on the pre-fix
+   ## `mktemp --directory` (TMPDIR-honored -> a /var/tmp staging path).
+   sync_cap="${stub_dir}/sync-path"
+   safe-rm --force -- "${sync_cap}"
+   mini_root="${stub_dir}/miniroot"
+   mkdir --parents -- "${mini_root}"
+   printf '%s\n' '<!doctype html><html><head><title>t</title></head><body><h1>ok</h1></body></html>' > "${mini_root}/index.html"
+   cat > "${stub_dir}/sandbox" <<'SBSTUB'
+#!/bin/bash
+## Record the LOCAL tree handed to `sync` (sandbox sync --delete <local> <remote>); exit 0
+## for every verb so the real driver reaches and passes the sync step.
+if [ "$1" = 'sync' ]; then
+   for a in "$@"; do
+      case "${a}" in
+         sync|--delete) ;;
+         *) printf '%s\n' "${a}" >> "${SYNC_PATH_CAPTURE}"; break ;;
+      esac
+   done
+fi
+exit 0
+SBSTUB
+   chmod +x -- "${stub_dir}/sandbox"
+   env PATH="${stub_dir}:${PATH}" QUBE_CTL_TARGET='temp-claude' \
+       TMPDIR='/var/tmp' SYNC_PATH_CAPTURE="${sync_cap}" \
+       "${wts}" "${mini_root}" >/dev/null 2>&1 || true
+   staged_path="$(head -n 1 -- "${sync_cap}" 2>/dev/null || true)"
+   if [ -n "${staged_path}" ] && [ "${staged_path#"${HOME}/"}" != "${staged_path}" ]; then
+      pass 'staging tree anchored under the home dir (sync-safe regardless of TMPDIR)'
+   else
+      fail "staging tree not under \$HOME (got '${staged_path:-<none>}'; a /var/tmp path trips the sandbox-sync guard)"
+   fi
+   ## Restore the clean exit-0 stub.
+   printf '%s\n' '#!/bin/bash' 'exit 0' > "${stub_dir}/sandbox"
+   chmod +x -- "${stub_dir}/sandbox"
 else
    fail 'website-tests-sandbox not found for the target-default check'
 fi
