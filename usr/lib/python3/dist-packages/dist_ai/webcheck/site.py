@@ -77,7 +77,7 @@ class Extractor(html.parser.HTMLParser):
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
-        self.links = []          # (tag, attr, value) for href/src/data
+        self.links = []          # (tag, attr, value, navigational) for href/src/data
         self.loads = []          # (tag, attr, value) subresource LOADS (supply-chain)
         self.srcdocs = []        # iframe srcdoc HTML: a nested document to recurse
         self.link_rels = []      # (rel-tokens, href) for every <link href=...>
@@ -113,10 +113,11 @@ class Extractor(html.parser.HTMLParser):
         # that entry is not dead. Scoped to <object> so a stray data="" attribute
         # on another element is never mistaken for a link.
         if tag == 'object' and amap.get('data'):
-            self.links.append((tag, 'data', amap['data']))
+            self.links.append((tag, 'data', amap['data'], False))
         for key in ('href', 'src'):
             if key in amap and amap[key] is not None:
-                self.links.append((tag, key, amap[key]))
+                self.links.append(
+                    (tag, key, amap[key], _is_navigational(tag, key, amap)))
         # Subresource loads (supply-chain surface): the RESOURCE_ATTR base plus the
         # attrs it misses (poster, legacy background=, SVG href/xlink:href, input
         # type=image). Kept separate from `links` so link/format checks are unchanged.
@@ -176,10 +177,17 @@ def _clamp(rel):
     return posixpath.normpath('/' + rel).lstrip('/')
 
 
-def _abs_candidates(rel, search_roots):
+def _abs_candidates(rel, search_roots, navigational=False):
     """Filesystem candidates for a root-absolute path `rel` across search_roots,
     with '..' clamped at each root so a candidate can never escape it (matching
-    how a static server serves the path)."""
+    how a static server serves the path).
+
+    `navigational` gates the `base + '.html'` clean-URL fallback: a browser-
+    NAVIGATED reference (<a href>/<area href>, or a curated page URL) is served
+    as X.html by GitHub Pages / the wiki generator, so the fallback applies. A
+    subresource LOAD (<img>/<script>/<link>/<source> src/href, CSS url()) is
+    fetched as-named -- the browser never tries X.html -- so an absent subresource
+    with a same-name .html sibling must still read as MISSING, not be masked."""
     # Capture the directory intent BEFORE clamp (posixpath.normpath strips the
     # trailing '/'); also treat a real directory as one even if its name has a
     # dot (a 'blog.v2/' would otherwise look like it has a file extension).
@@ -190,14 +198,17 @@ def _abs_candidates(rel, search_roots):
         base = os.path.normpath(os.path.join(sr, rel))
         candidates.append(base)
         # A dir-like path serves its index.html; gate stays dir-like (a real
-        # index.html implies the dir exists, so os.path.isdir covers it).
+        # index.html implies the dir exists, so os.path.isdir covers it). This
+        # applies to EVERY caller, navigational or not.
         if is_dir or os.path.isdir(base):
             candidates.append(os.path.join(base, 'index.html'))
         # GitHub Pages and the wiki generator both serve /X as X.html regardless
         # of a dot in X (a MediaWiki title like 'Apparmor.d' or 'File:Foo.svg'
-        # has a false extension), so the .html fallback is UNCONDITIONAL. A real
-        # file still resolves first -- callers take the first existing candidate.
-        candidates.append(base + '.html')
+        # has a false extension) -- but ONLY for a navigated link, never a
+        # subresource load (see the docstring). A real file still resolves first
+        # -- callers take the first existing candidate.
+        if navigational:
+            candidates.append(base + '.html')
     return candidates
 
 
@@ -208,11 +219,17 @@ def _abs_candidates(rel, search_roots):
 _SCHEME_RE = re.compile(r'[a-z][a-z0-9+.-]*:')
 
 
-def resolve_internal(root, page, target, mount=None, parent_roots=()):
+def resolve_internal(root, page, target, mount=None, parent_roots=(),
+                     navigational=False):
     """Map an internal href/src to a filesystem path candidate list, or None if
     the link is external / a pure fragment / non-navigational. For a subsite,
     `mount` is its path under the parent domain and `parent_roots` are the parent
-    site checkouts its off-mount absolute links resolve against."""
+    site checkouts its off-mount absolute links resolve against.
+
+    `navigational` (a NAVIGATED page reference -- see _is_navigational) gates the
+    clean-URL `base + '.html'` fallback: a subresource LOAD must not resolve to a
+    same-name .html sibling and so mask a 404'd image/script/stylesheet (see
+    _abs_candidates)."""
     # Any leading URI scheme is external / non-navigational (payment URIs like
     # bitcoin:/monero:/ethereum:, magnet:, mailto:/tel:/data:/javascript:, ...).
     # A scheme is letters then letters/digits/+/-/. then a colon, anchored at the
@@ -246,7 +263,8 @@ def resolve_internal(root, page, target, mount=None, parent_roots=()):
             # Match on a PATH boundary, not a bare string prefix, so a sibling
             # like /git-diffs-lie-extra/ is not mistaken for /git-diffs-lie/.
             return ('file',
-                    _abs_candidates(target[len(mnt):].lstrip('/'), [root]), frag)
+                    _abs_candidates(target[len(mnt):].lstrip('/'), [root],
+                                    navigational), frag)
         if mount:
             # A subsite's OFF-mount absolute link (/terminal/, /paste/, ...) points
             # at the PARENT site, so verify it ONLY there -- searching the subsite
@@ -254,10 +272,11 @@ def resolve_internal(root, page, target, mount=None, parent_roots=()):
             # With no parent checked out it is external / unverifiable, not a fail.
             if not parent_roots:
                 return None
-            return ('file', _abs_candidates(target.lstrip('/'), list(parent_roots)), frag)
+            return ('file', _abs_candidates(target.lstrip('/'),
+                                            list(parent_roots), navigational), frag)
         if any(target.startswith(prefix) for prefix in KNOWN_PROJECT_PATHS):
             return None                          # valid sibling project-Pages path
-        return ('file', _abs_candidates(target.lstrip('/'), [root]), frag)
+        return ('file', _abs_candidates(target.lstrip('/'), [root], navigational), frag)
     # Resolve the relative link as a URL path against the page's own URL,
     # clamping '..' at the site root exactly as a browser does (urljoin drops the
     # leading '..' rather than escaping), then map that in-root path to disk.
@@ -266,11 +285,14 @@ def resolve_internal(root, page, target, mount=None, parent_roots=()):
     base = os.path.normpath(os.path.join(root, _clamp(resolved.lstrip('/'))))
     candidates = [base]
     # index.html only for a dir-like path (a real index.html implies the dir
-    # exists); the .html fallback is unconditional (see _abs_candidates: /X is
-    # served as X.html even when X has a dot).
+    # exists); the .html fallback is navigational-only (see _abs_candidates: /X is
+    # served as X.html even when X has a dot, but ONLY for a navigated link).
     if target.endswith('/') or resolved.endswith('/') or os.path.isdir(base):
         candidates.append(os.path.join(base, 'index.html'))
-    candidates.append(base + '.html')
+    # Clean-URL .html fallback: navigated links only (see _abs_candidates) -- a
+    # subresource load must not be masked by a same-name .html sibling.
+    if navigational:
+        candidates.append(base + '.html')
     return ('file', candidates, frag)
 
 
@@ -306,8 +328,13 @@ def check_links(root, failures, mount=None, parent_roots=(), pages=None):
         loaded[os.path.normpath(page)] = ext
     for page, ext in loaded.items():
         rel = os.path.relpath(page, root)
-        for _tag, _attr, value in ext.links:
-            resolved = resolve_internal(root, page, value, mount, parent_roots)
+        for _tag, _attr, value, navigational in ext.links:
+            # `navigational` (set by the Extractor, rel-aware for <link>) gates the
+            # clean-URL X.html fallback: a navigated page reference gets it, a
+            # subresource load (img/script/stylesheet/source/object) does not, so a
+            # missing load is never masked by a same-name .html sibling.
+            resolved = resolve_internal(root, page, value, mount, parent_roots,
+                                        navigational)
             if resolved is None:
                 continue
             if resolved[0] == '#self':
@@ -634,6 +661,23 @@ FETCHING_LINK_RELS = frozenset({
     'icon', 'apple-touch-icon', 'mask-icon', 'manifest',
 })
 
+
+def _is_navigational(tag, attr, amap):
+    """True when an href/src is a NAVIGATED page reference (so the clean-URL
+    X.html fallback applies), False when it is a subresource LOAD (fetched
+    as-named -- a missing one must read as broken, never be masked by a same-name
+    .html sibling). <a>/<area> href navigate. A <link> href names a page URL
+    (canonical, alternate, prev/next, ...) UNLESS its rel fetches a subresource
+    (stylesheet/icon/preload/...), which is a LOAD. Every other src/href/data
+    (img/script/iframe/source/embed/audio/video/track src, <object> data) is a
+    load."""
+    if (tag, attr) in (('a', 'href'), ('area', 'href')):
+        return True
+    if tag == 'link' and attr == 'href':
+        rels = set((amap.get('rel') or '').lower().split())
+        return not (rels & FETCHING_LINK_RELS)
+    return False
+
 # Content raster references (an <img>/<source> load, a CSS url(), or an <a href>
 # to an image) must be webp -- the site-image-optimize tool converts them, so a
 # leftover .png/.jpg is either unoptimized or a rewrite that missed. og:image /
@@ -763,7 +807,7 @@ def check_image_format(root, failures, pages=None):
         failures.append(message)
 
     def scan(ext, rel, ref_dir):
-        for tag, attr, value in ext.links:
+        for tag, attr, value, _navigational in ext.links:
             # Only the site's OWN rasters can be converted; an external URL is a
             # supply-chain concern (gated there), not a must-be-webp target.
             if _is_external(value):
@@ -1446,7 +1490,7 @@ def _page_raster_files(root, pages):
         ext = Extractor()
         with open(page, encoding='utf-8') as handle:
             ext.feed(handle.read())
-        for _tag, _attr, value in ext.links:
+        for _tag, _attr, value, _navigational in ext.links:
             consider(page, value)
         for _tag, _attr, value in ext.loads:
             consider(page, value)
@@ -2624,8 +2668,9 @@ def audited_pages(root, policy, curated_file=None):
 
     A curated flat URL maps to disk via _abs_candidates -- the SAME resolver
     check_links uses for a root-absolute link, so the two never drift: /wiki/ISO ->
-    wiki/ISO.html, / -> index.html. A curated entry that resolves to no file on disk
-    is a STALE list -> CuratedPathsError (fail loud), never a silent skip."""
+    wiki/ISO.html, / -> index.html. These ARE page URLs (navigational=True), so the
+    clean-URL .html fallback applies here. A curated entry that resolves to no file
+    on disk is a STALE list -> CuratedPathsError (fail loud), never a silent skip."""
     if policy != 'wiki':
         return sorted(html_files(root))
     curated_file = curated_file or WIKI_CURATED_PATHS_FILE
@@ -2634,7 +2679,7 @@ def audited_pages(root, policy, curated_file=None):
     pages = []
     missing = []
     for url in _load_curated_paths(curated_file):
-        candidates = _abs_candidates(url.lstrip('/'), [root])
+        candidates = _abs_candidates(url.lstrip('/'), [root], navigational=True)
         hit = next((c for c in candidates if os.path.isfile(c)), None)
         if hit is None:
             missing.append(url)

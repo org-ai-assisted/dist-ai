@@ -827,12 +827,93 @@ def run():
         check('check_links: dotted page title resolves via .html fallback',
               _links_failures(root) == [], repr(_links_failures(root)))
     with tempfile.TemporaryDirectory() as root:
-        # The unconditional .html fallback must NOT mask a genuinely missing page:
+        # The .html clean-URL fallback must NOT mask a genuinely missing page:
         # /nope with no nope.html on disk is STILL a broken link.
         _write(root, 'index.html', '<a href="/nope">x</a>')
         check('check_links: genuinely missing page still reported broken',
               any('broken internal link' in f for f in _links_failures(root)),
               repr(_links_failures(root)))
+
+    # R2-1: the clean-URL X.html fallback is NAVIGATIONAL-ONLY (<a>/<area> href).
+    # A subresource LOAD is fetched as-named, so a MISSING subresource must NOT be
+    # masked by a same-name .html sibling -- the browser would 404 the image/script.
+    with tempfile.TemporaryDirectory() as root:
+        # (a) <img src="photo.webp"> with photo.webp ABSENT but photo.webp.html
+        # present: STILL broken. (FAILS on pre-fix, where the unconditional .html
+        # fallback resolved the image to its .html sibling and hid the 404.)
+        _write(root, 'index.html', '<img src="photo.webp">')
+        _write(root, 'photo.webp.html', '<p>not an image</p>')
+        check('check_links: missing subresource not masked by a .html sibling (img src)',
+              any('broken internal link' in f for f in _links_failures(root)),
+              repr(_links_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        # Same, for the other resource loads: a <script src>, <link href>, and
+        # <source src> each absent with only a .html sibling -> all broken.
+        _write(root, 'index.html',
+               '<script src="app.js"></script>'
+               '<link rel="stylesheet" href="style.css">'
+               '<video><source src="clip.mp4"></video>')
+        for sib in ('app.js.html', 'style.css.html', 'clip.mp4.html'):
+            _write(root, sib, '<p>x</p>')
+        fails = _links_failures(root)
+        check('check_links: missing <script>/<link>/<source> not masked by .html siblings',
+              sum('broken internal link' in f for f in fails) == 3, repr(fails))
+    with tempfile.TemporaryDirectory() as root:
+        # (b) a NAVIGATIONAL relative link to a dotted wiki title STILL resolves via
+        # the .html fallback (the wiki-clean-URL fix is preserved for <a href>).
+        _write(root, 'index.html', '<a href="wiki/Apparmor.d">apparmor</a>')
+        _write(root, 'wiki/Apparmor.d.html', '<p>page</p>')
+        check('check_links: navigational wiki clean-URL link still resolves (relative)',
+              _links_failures(root) == [], repr(_links_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        # (c) a MediaWiki File: namespace link (navigational) still resolves via .html.
+        _write(root, 'index.html', '<a href="./File:X.png">img</a>')
+        _write(root, 'File:X.png.html', '<p>description</p>')
+        check('check_links: navigational File: clean-URL link still resolves',
+              _links_failures(root) == [], repr(_links_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        # (d) a genuinely-missing navigational link (no .html on disk) is still broken.
+        _write(root, 'index.html', '<a href="wiki/Nope">x</a>')
+        check('check_links: missing navigational link still reported broken',
+              any('broken internal link' in f for f in _links_failures(root)),
+              repr(_links_failures(root)))
+
+    # R2-1 rel-aware <link>: a <link rel="canonical"> (and other non-fetching rels)
+    # names a PAGE URL served as a clean URL, so the .html fallback applies and a
+    # root-relative canonical to a real page resolves -- NOT a broken link. (This is
+    # the real false positive the naive (a/area)-only rule produced on the whonix
+    # wiki: <link rel="canonical" href="/wiki/Whonix-Host"> with Whonix-Host.html on
+    # disk.) A FETCHING <link> (stylesheet/icon/preload/...) stays a LOAD: no
+    # fallback, so a missing one is still broken.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'wiki/ISO.html',
+               '<link rel="canonical" href="/wiki/Whonix-Host">')
+        _write(root, 'wiki/Whonix-Host.html', '<p>page</p>')
+        check('check_links: canonical <link> to a clean page URL resolves (not broken)',
+              _links_failures(root) == [], repr(_links_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        # A stylesheet <link> is a LOAD: an absent s.css with only s.css.html present
+        # is STILL broken (no clean-URL masking of a missing subresource).
+        _write(root, 'index.html', '<link rel="stylesheet" href="/s.css">')
+        _write(root, 's.css.html', '<p>x</p>')
+        check('check_links: stylesheet <link> load not masked by a .html sibling',
+              any('broken internal link' in f for f in _links_failures(root)),
+              repr(_links_failures(root)))
+
+    # R2-1 at the resolver level: _abs_candidates adds the X.html fallback ONLY when
+    # navigational, never for a subresource load; the index.html dir-candidate is
+    # unaffected by the flag.
+    nav = check_site._abs_candidates('wiki/Apparmor.d', ['/r'], navigational=True)
+    load = check_site._abs_candidates('wiki/Apparmor.d', ['/r'], navigational=False)
+    check('_abs_candidates: navigational adds the .html fallback',
+          any(c.endswith('wiki/Apparmor.d.html') for c in nav), repr(nav))
+    check('_abs_candidates: a load gets NO .html fallback',
+          not any(c.endswith('wiki/Apparmor.d.html') for c in load), repr(load))
+    check('_abs_candidates: navigational defaults to False (safe: no masking)',
+          check_site._abs_candidates('wiki/Apparmor.d', ['/r']) == load, repr(load))
+    nav_dir = check_site._abs_candidates('d/', ['/r'], navigational=False)
+    check('_abs_candidates: index.html dir-candidate is independent of navigational',
+          any(c.endswith('d/index.html') for c in nav_dir), repr(nav_dir))
 
     # check_supply_chain: srcset candidates and fetching <link> rels are external
     # subresource LOADS too (Extractor records only href/src for the tag loop).
