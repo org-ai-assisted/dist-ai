@@ -123,9 +123,9 @@ def run():
        "two roots resolving to one site-name are rejected (one baseline would mask the other)")
     ck(_exits(lambda: cli.require_distinct_site_names(["/_site"], "spelling")),
        "a root whose name is a build-dir token (no identifiable site) is rejected")
-    ck(cli.require_distinct_site_names(
-        ["/x/output-lies.github.io", "/x/p/computer-security-research.github.io/_site"], "spelling") is None,
-       "distinct resolved site-names pass")
+    ck(not _exits(lambda: cli.require_distinct_site_names(
+        ["/x/output-lies.github.io", "/x/p/computer-security-research.github.io/_site"], "spelling")),
+       "distinct resolved site-names pass (no exit)")
 
     # --- error handling (stub subprocess.run) --------------------------------------------------
     class _P:
