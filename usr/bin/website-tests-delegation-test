@@ -88,6 +88,43 @@ if [ -x "${cspell_driver}" ]; then
    env WEBCHECK_NO_LOCAL=1 DIST_AI_IN_SANDBOX=1 \
       "${cspell_driver}" "${roots[0]}" >/dev/null 2>&1 || crc="$?"
    if [ "${crc}" = '77' ]; then pass 'cspell driver: DIST_AI_IN_SANDBOX=1 -> 77 SKIP (cannot nest)'; else fail "cspell driver in-sandbox rc=${crc}, want 77"; fi
+
+   ## R2-3: two site roots sharing a BASENAME must be rejected BEFORE the local/sandbox split
+   ## (both map to cspell-baseline-<basename>.txt; a collision clobbers one). The check is hoisted
+   ## ahead of the split, so it fires with no sandbox and no local cspell -- deterministic here.
+   ## Pre-fix the rejection lived only in the sandbox staging loop, unreached on the local path.
+   dup_a="$(mktemp --directory)"
+   dup_b="$(mktemp --directory)"
+   mkdir --parents -- "${dup_a}/site" "${dup_b}/site"
+   printf '%s\n' '<html></html>' > "${dup_a}/site/index.html"
+   printf '%s\n' '<html></html>' > "${dup_b}/site/index.html"
+   drc=0
+   dout="$(env WEBCHECK_NO_LOCAL=1 WEBSITE_TESTS_NO_SANDBOX=1 \
+      "${cspell_driver}" "${dup_a}/site" "${dup_b}/site" 2>&1)" || drc="$?"
+   if [ "${drc}" != '0' ] && grep --quiet 'duplicate site-root basename' <<< "${dout}"; then
+      pass 'cspell driver: duplicate site-root basename rejected before the local/sandbox split'
+   else
+      fail "cspell driver duplicate-basename not rejected (rc=${drc}): ${dout}"
+   fi
+   safe-rm --recursive --force -- "${dup_a}" "${dup_b}"
+
+   ## R2-2: a local cspell whose version is NOT the pinned 8.19.4 must NOT be run directly -- the
+   ## driver falls through to the sandbox path. With WEBSITE_TESTS_NO_SANDBOX=1 that path is
+   ## env-unmet -> exit 77. Pre-fix the local branch gated on mere presence, so a wrong-version
+   ## (node-22-only 10.x) cspell was run instead of delegating -> rc != 77.
+   vstub="$(mktemp --directory)"
+   printf '%s\n' '#!/bin/bash' 'echo 10.1.0' > "${vstub}/cspell"
+   chmod +x -- "${vstub}/cspell"
+   vrc=0
+   env --unset=WEBCHECK_NO_LOCAL --unset=DIST_AI_IN_SANDBOX \
+      PATH="${vstub}:${PATH}" WEBSITE_TESTS_NO_SANDBOX=1 \
+      "${cspell_driver}" "${roots[0]}" >/dev/null 2>&1 || vrc="$?"
+   if [ "${vrc}" = '77' ]; then
+      pass 'cspell driver: unpinned-version local cspell falls through to sandbox (77, not run)'
+   else
+      fail "cspell driver ran an unpinned local cspell instead of delegating (rc=${vrc}, want 77)"
+   fi
+   safe-rm --recursive --force -- "${vstub}"
 else
    fail 'webcheck-cspell-sandbox not found for the delegation-contract check'
 fi

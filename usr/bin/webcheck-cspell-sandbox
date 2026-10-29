@@ -63,11 +63,29 @@ baselines_src="${tests_dir}/cspell-baselines"
 [ -d "${core_src}/webcheck" ] || die "missing webcheck core: ${core_src}/webcheck"
 [ -f "${assets_src}/cspell.json" ] || die "missing cspell config: ${assets_src}/cspell.json"
 
+## Reject two site roots that share a basename BEFORE the local/sandbox split, so BOTH paths
+## honor it (hoisted so the two cannot drift). Each root maps to cspell-baseline-<basename>.txt;
+## two same-basename roots would clobber one baseline with the other. Canonicalize first (match
+## the sandbox staging loop's basename), tolerating a non-resolvable path for a clean dup error.
+declare -A seen_base=()
+for root in "$@"; do
+   base="$(basename -- "$(readlink --canonicalize -- "${root}" || printf '%s' "${root}")")"
+   [ -z "${seen_base[${base}]:-}" ] || die "duplicate site-root basename '${base}'"
+   seen_base[${base}]=1
+done
+
 ## Local-first (mirrors webcheck-vnu-sandbox / webcheck-axe-sandbox): run cspell DIRECTLY
 ## where it resolves (a CI runner with cspell on PATH, or in-sandbox-direct) -- so the lane
 ## RUNS in CI, not only ever delegate. cspell absent locally -> fall through to the sandbox
 ## path below. WEBCHECK_NO_LOCAL=1 forces the sandbox path (regression test / orchestrator).
-if [ "${WEBCHECK_NO_LOCAL:-}" != '1' ] && command -v cspell >/dev/null 2>&1; then
+##
+## Gate the local cspell on the EXACT pinned version too, mirroring the sandbox provisioning
+## guard: a host cspell 10.x (needs node>=22) dies instead of spell-checking, and any other
+## unpinned 8.x is non-reproducible. A version MISMATCH (not just absence) FALLS THROUGH to
+## the sandbox path, which installs + runs the pinned CSPELL_PKG -- never runs the wrong local
+## cspell. `cspell --version` prints just the version string (grep -Fxq: fixed whole-line).
+if [ "${WEBCHECK_NO_LOCAL:-}" != '1' ] && command -v cspell >/dev/null 2>&1 \
+   && grep --fixed-strings --line-regexp --quiet "${CSPELL_VERSION}" <<< "$(cspell --version 2>/dev/null)"; then
    declare -a local_args=( --baseline-dir "${baselines_src}" --config "${assets_src}/cspell.json" )
    [ "${write_baseline}" = '1' ] && local_args+=( --write-baseline )
    rc=0
@@ -141,13 +159,11 @@ if [ -d "${baselines_src}" ]; then
 fi
 
 declare -a remote_roots=()
-declare -A seen_base=()
 for root in "$@"; do
    [ -f "${root}/index.html" ] || die "not a site root (no index.html): ${root}"
    root="$(readlink --canonicalize -- "${root}")"
    base="$(basename -- "${root}")"
-   [ -z "${seen_base[${base}]:-}" ] || die "duplicate site-root basename '${base}'"
-   seen_base[${base}]=1
+   ## Duplicate basenames are already rejected before the local/sandbox split.
    ## Only the .html files are checked; rsync them (preserving tree), skip .git (exclude first, so
    ## it is not re-included by '*/').
    ## Keep rsync's DEFAULT safe symlink handling (symlinks staged AS symlinks, never dereferenced):
