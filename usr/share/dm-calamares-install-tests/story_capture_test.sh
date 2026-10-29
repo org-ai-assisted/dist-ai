@@ -270,8 +270,9 @@ got=0
 if ! { [ "${wf_rc}" -eq 0 ] && [ -s "${shot_dir}/11-firmware-logo.png" ]; }; then got=1; fi
 check "framebuffer shot that wrote-then-exited-nonzero KEEPS the captured frame" "${got}"
 
-## clear_stale_capture: the shared pre-capture clear used by snap / story_snap / story_snap_nonblank.
-## Removes BOTH the published frame and its gate sibling, scoped to shot_dir.
+## clear_stale_capture: the shared pre-capture clear (snap / story_snap / story_snap_nonblank).
+## FRAMEBUFFER mode: removes BOTH the published frame and its gate sibling, scoped to shot_dir.
+story_capture=framebuffer
 printf '%s\n' frame > "${shot_dir}/77-probe.png"
 mkdir --parents -- "${shot_dir}/${gate_subdir}"
 printf '%s\n' sib > "${shot_dir}/${gate_subdir}/77-probe.png"
@@ -279,16 +280,28 @@ clear_stale_capture "${shot_dir}/77-probe.png"
 got=0
 [ -e "${shot_dir}/77-probe.png" ] && got=1
 [ -e "${shot_dir}/${gate_subdir}/77-probe.png" ] && got=1
-check "clear_stale_capture removes the frame AND its gate sibling" "${got}"
+check "clear_stale_capture (framebuffer) removes the frame AND its gate sibling" "${got}"
 ## A path OUTSIDE shot_dir (a failure stuck-shot / --shot) is untouched.
 probe_out="${work}/outside.png"; printf '%s\n' keep > "${probe_out}"
 clear_stale_capture "${probe_out}"
 got=0; [ -e "${probe_out}" ] || got=1
 check "clear_stale_capture leaves a path OUTSIDE shot_dir untouched" "${got}"
+## WINDOW mode: NO-OP. grim/GUESTCTL rewrite each capture; clearing the sibling would make a failed
+## guest shot fall back to the chrome window grab and pass a black guest (false green), so a stale
+## black sibling MUST survive here for the gate to fail on it.
+story_capture=window
+printf '%s\n' frame > "${shot_dir}/77-probe.png"
+printf '%s\n' sib > "${shot_dir}/${gate_subdir}/77-probe.png"
+clear_stale_capture "${shot_dir}/77-probe.png"
+got=0
+[ -e "${shot_dir}/77-probe.png" ] || got=1
+[ -e "${shot_dir}/${gate_subdir}/77-probe.png" ] || got=1
+check "clear_stale_capture is a NO-OP in window mode (stale sibling survives for the gate)" "${got}"
+safe-rm --force -- "${shot_dir}/77-probe.png" "${shot_dir}/${gate_subdir}/77-probe.png" 2>/dev/null || true
 
 ## story_snap (single-shot) also clears a stale frame before capturing: in framebuffer mode a shot
 ## that does not write must leave NO frame (not a prior run's leftover) for on_exit to publish.
-## snap() uses the identical clear_stale_capture call (covered by the helper test above).
+## snap() uses the identical clear_stale_capture call (covered by the helper tests above).
 story_capture=framebuffer
 printf '%s\n' 'STALE PRIOR FRAME' > "${shot_dir}/64-sysmaint-terminal.png"
 GUESTCTL="${fail_shot}" story_snap 64 sysmaint-terminal
