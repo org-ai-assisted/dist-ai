@@ -760,33 +760,23 @@ clear_stale_capture() {
 ## The gates read the guest sibling (gate_check_path) instead; it is the real render evidence.
 capture_frame() {
    if [ "${story_capture}" = 'window' ]; then
-      local gate=""
-      ## The published frame ($1, grim) and the gated guest sibling MUST come from the SAME capture.
-      ## snap / story_snap_nonblank call this in a loop, so if an EARLIER poll's $1 or sibling
-      ## survives, the gate can validate a frame that is NOT the one published (gated != published):
-      ## a stale good sibling passing a dead-guest window grab, or a fresh sibling passing a stale $1
-      ## that grim failed to rewrite. So for a shot_dir frame, clear BOTH up front -- a failed grim
-      ## then leaves no stale $1 (the poll's `-s dest` check fails it), a failed guest shot leaves no
-      ## sibling (sentinel below). Gate sibling ONLY for shot_dir frames: the failure stuck-shot /
-      ## --shot live elsewhere, are never gated and keep their frame (and a ${HOME}/.gate would leak
-      ## past on_exit's shot_dir-scoped cleanup).
-      if [ -n "${shot_dir}" ] && [ "${1%/*}" = "${shot_dir}" ]; then
-         gate="${shot_dir}/${gate_subdir}/${1##*/}"
+      ## The published frame ($1, grim) and the gated guest sibling MUST stay a MATCHED pair, and
+      ## snap / story_snap_nonblank call this in a loop. So (re)write the sibling ONLY when grim
+      ## produced a FRESH $1 this attempt. A FAILED grim leaves the LAST matched pair ($1 + its
+      ## sibling) intact: the floor and story_snap_nonblank's retain-on-timeout still see the last
+      ## real frame, we never delete the only capture (which would drop a blank must-render milestone
+      ## from main's rich_shots and false-pass), and no ORPHAN sibling is left to validate a stale $1
+      ## that grim failed to rewrite (gated != published). A fresh $1 gets a fresh matched sibling
+      ## (any prior one cleared first); a fresh $1 whose guest shot FAILS gets a non-image SENTINEL so
+      ## the blank gate fails closed instead of reading the chrome-bearing $1 (which masks a black
+      ## guest). Sibling ONLY for shot_dir frames: the failure stuck-shot / --shot live elsewhere, are
+      ## never gated and keep their frame (a ${HOME}/.gate would also leak past on_exit's cleanup).
+      if grim "$1" && [ -n "${shot_dir}" ] && [ "${1%/*}" = "${shot_dir}" ]; then
+         local gate="${shot_dir}/${gate_subdir}/${1##*/}"
          mkdir --parents -- "${gate%/*}" 2>/dev/null || true
-         safe-rm --force -- "$1" "${gate}" 2>/dev/null || true
-      fi
-      grim "$1"
-      if [ -n "${gate}" ]; then
+         safe-rm --force -- "${gate}" 2>/dev/null || true
          "${GUESTCTL}" "${vm}" shot "${gate}" >/dev/null 2>&1 || true
-         ## Dead guest with a grim window grab PRESENT: the guest shot wrote no sibling, so the gate
-         ## would fall back to the chrome-bearing $1 -- whose many-coloured VBox menu/status bar masks
-         ## a black guest and passes (false green). Leave a non-image SENTINEL at the sibling path so
-         ## the blank gate (gate_check_path) reads IT and FAILS CLOSED (unreadable) instead. Guarded by
-         ## [ -s "$1" ]: a failed grim leaves no $1, gate_check_path falls back to the absent $1 and
-         ## already fails closed -- no sentinel needed. Only a GENUINE window grab reaches here; a
-         ## by-design sibling-less frame (framebuffer / $7 override, host-side vbox-host-shot) never
-         ## does, so it keeps its legitimate $1.
-         [ -s "${gate}" ] || [ ! -s "$1" ] || printf '%s\n' 'dm-calamares-install: guest framebuffer capture failed for this window grab' > "${gate}" 2>/dev/null || true
+         [ -s "${gate}" ] || printf '%s\n' 'dm-calamares-install: guest framebuffer capture failed for this window grab' > "${gate}" 2>/dev/null || true
       fi
    else
       ## Framebuffer mode: the guest shot IS the published frame $1 (no gate sibling). No per-poll

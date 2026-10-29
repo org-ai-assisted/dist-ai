@@ -328,14 +328,16 @@ case "$(head -c3 -- "${shot_dir}/${gate_subdir}/66-checks-complete.png" 2>/dev/n
 check "dead-guest window grab writes a non-image sentinel sibling (gate reads it, no chrome \$1 fallback)" "${got}"
 safe-rm --force -- "${shot_dir}/66-checks-complete.png" "${shot_dir}/${gate_subdir}/66-checks-complete.png" 2>/dev/null || true
 
-## PER-POLL stale-sibling mismatch: snap / story_snap_nonblank call capture_frame in a loop, so an
-## EARLIER poll's guest sibling must NOT validate a LATER poll's different published window grab.
-## Poll 1: grim FAILS (no $1) but the guest shot writes a valid sibling. Poll 2: grim writes a fresh
-## chrome $1 but the guest shot FAILS. capture_frame must clear the sibling before each guest shot,
-## so poll 2 reads its OWN sentinel (fail closed), NOT poll 1's stale valid sibling. (Pre-fix: no
-## per-poll clear -> poll 1's sibling survived, [ -s gate ] skipped the sentinel, and the gate
-## validated poll 2's chrome grab on a frame from a different capture = gated frame != published.)
+## MATCHED-PAIR invariant: the published $1 (grim) and the gated sibling must stay a matched pair,
+## and snap / story_snap_nonblank call capture_frame in a loop. capture_frame (re)writes the sibling
+## ONLY when grim produced a FRESH $1 this attempt.
+## (a) grim FAILS -> the LAST matched pair ($1 + sibling) is RETAINED untouched. A poll must never
+## delete the only capture (else main() drops a blank must-render milestone from rich_shots and
+## false-passes) nor leave an orphan sibling. Seed a matched pair, then a FAILING grim.
 safe-rm --force -- "${shot_dir}/70-first-boot.png" "${shot_dir}/${gate_subdir}/70-first-boot.png" 2>/dev/null || true
+printf '%s\n' 'LAST GOOD GRAB' > "${shot_dir}/70-first-boot.png"
+mkdir --parents -- "${shot_dir}/${gate_subdir}"
+printf '%s' 'PNGLASTGUEST' > "${shot_dir}/${gate_subdir}/70-first-boot.png"
 cp -- "${work}/grim" "${work}/grim.pp"
 cat > "${work}/grim" <<'STUB'
 #!/bin/bash
@@ -343,25 +345,19 @@ exit 1
 STUB
 chmod +x -- "${work}/grim"
 hash -r 2>/dev/null || true
-capture_frame "${shot_dir}/70-first-boot.png" >/dev/null 2>&1 || true   ## poll 1: grim fails, normal guest shot writes a valid sibling
+capture_frame "${shot_dir}/70-first-boot.png" >/dev/null 2>&1 || true   ## grim fails; must NOT touch the last matched pair
 got=0
-## head -c3 PNG confirms poll 1 left a REAL guest sibling (the normal guestctl stub writes "PNG").
-case "$(head -c3 -- "${shot_dir}/${gate_subdir}/70-first-boot.png" 2>/dev/null)" in PNG) : ;; *) got=1 ;; esac
+[ "$(cat "${shot_dir}/70-first-boot.png" 2>/dev/null)" = 'LAST GOOD GRAB' ] || got=1
+[ "$(cat "${shot_dir}/${gate_subdir}/70-first-boot.png" 2>/dev/null)" = 'PNGLASTGUEST' ] || got=1
+check "capture_frame retains the last matched pair when grim fails (no delete of the only capture)" "${got}"
 mv -- "${work}/grim.pp" "${work}/grim"
 hash -r 2>/dev/null || true
-GUESTCTL="${fail_shot}" capture_frame "${shot_dir}/70-first-boot.png" >/dev/null 2>&1 || true   ## poll 2: grim writes chrome $1, guest shot fails
-## poll 2's sibling must be THIS attempt's sentinel (non-image), never poll 1's stale "PNG" sibling.
-case "$(head -c3 -- "${shot_dir}/${gate_subdir}/70-first-boot.png" 2>/dev/null)" in PNG) got=1 ;; esac
-[ -s "${shot_dir}/${gate_subdir}/70-first-boot.png" ] || got=1
-check "capture_frame clears the guest sibling per attempt (an earlier poll's sibling cannot validate a later window grab)" "${got}"
 safe-rm --force -- "${shot_dir}/70-first-boot.png" "${shot_dir}/${gate_subdir}/70-first-boot.png" 2>/dev/null || true
 
-## PER-POLL stale PUBLISHED $1 (the $1 side of the same mismatch): capture_frame must clear $1 too
-## before each window grab, so a poll whose grim FAILS to rewrite $1 does not leave a PRIOR poll's
-## window grab to be validated by this poll's fresh guest sibling (published != gated). Sim: seed a
-## stale $1 (an earlier poll's grab), then capture with grim FAILING (does not touch $1) while the
-## guest shot writes a valid sibling. The stale $1 must be CLEARED -- grim did not rewrite it, so the
-## poll has no published frame to falsely approve (its `-s dest` check then fails and polling goes on).
+## (b) grim FAILS -> NO guest sibling is (re)written, even with a WORKING guest shot. An orphan
+## sibling with no matching fresh $1 would validate a STALE $1 that grim failed to rewrite (gated !=
+## published). Seed a stale $1 + NO sibling; a FAILING grim + the normal (working) guest stub must
+## leave the sibling ABSENT -- the guest shot is not reached when grim failed.
 safe-rm --force -- "${shot_dir}/72-terminal-open.png" "${shot_dir}/${gate_subdir}/72-terminal-open.png" 2>/dev/null || true
 printf '%s\n' 'STALE PRIOR WINDOW GRAB' > "${shot_dir}/72-terminal-open.png"
 cp -- "${work}/grim" "${work}/grim.pp3"
@@ -371,10 +367,10 @@ exit 1
 STUB
 chmod +x -- "${work}/grim"
 hash -r 2>/dev/null || true
-capture_frame "${shot_dir}/72-terminal-open.png" >/dev/null 2>&1 || true   ## grim fails (leaves $1 untouched); normal guest shot writes a valid sibling
+GUESTCTL="${guestctl_stub}" capture_frame "${shot_dir}/72-terminal-open.png" >/dev/null 2>&1 || true   ## grim fails; working guest stub must NOT be reached
 got=0
-[ -e "${shot_dir}/72-terminal-open.png" ] && got=1
-check "capture_frame clears a stale published \$1 when grim fails (no stale window grab validated by a fresh sibling)" "${got}"
+[ -e "${shot_dir}/${gate_subdir}/72-terminal-open.png" ] && got=1
+check "capture_frame writes no guest sibling when grim fails (no orphan sibling validates a stale \$1)" "${got}"
 mv -- "${work}/grim.pp3" "${work}/grim"
 hash -r 2>/dev/null || true
 safe-rm --force -- "${shot_dir}/72-terminal-open.png" "${shot_dir}/${gate_subdir}/72-terminal-open.png" 2>/dev/null || true
