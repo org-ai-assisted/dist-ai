@@ -768,6 +768,16 @@ capture_frame() {
          local gate="${shot_dir}/${gate_subdir}/${1##*/}"
          mkdir --parents -- "${gate%/*}" 2>/dev/null || true
          "${GUESTCTL}" "${vm}" shot "${gate}" >/dev/null 2>&1 || true
+         ## Dead guest with a grim window grab PRESENT: the guest shot wrote no sibling, so the gate
+         ## would fall back to the chrome-bearing $1 -- whose many-coloured VBox menu/status bar masks
+         ## a black guest and passes (false green). Leave a non-image SENTINEL at the sibling path so
+         ## the blank gate (gate_check_path) reads IT and FAILS CLOSED (unreadable) instead. Guarded by
+         ## [ -s "$1" ]: when grim ALSO produced nothing, gate_check_path falls back to the absent $1
+         ## and already fails closed -- no sentinel needed. Only a GENUINE window grab reaches here; a
+         ## by-design sibling-less frame (framebuffer / $7 override, host-side vbox-host-shot) never
+         ## does, so it keeps its legitimate $1. A later retry whose shot succeeds overwrites the
+         ## sentinel with the real guest frame.
+         [ -s "${gate}" ] || [ ! -s "$1" ] || printf '%s\n' 'dm-calamares-install: guest framebuffer capture failed for this window grab' > "${gate}" 2>/dev/null || true
       fi
    else
       ## Framebuffer mode: the guest shot IS the published frame $1 (no gate sibling). No per-poll
@@ -778,14 +788,12 @@ capture_frame() {
 }
 
 ## The blank-gate input for a published milestone frame ${1}: the bare-guest sibling (honest render
-## evidence, no chrome) when window mode WROTE one, else ${1} itself. A present sibling is now
-## guaranteed THIS run's -- clear_stale_capture removes any prior one in BOTH modes, so a stale prior
-## sibling can no longer pass the gate. The fallback to ${1} serves a frame with NO sibling by design
-## (framebuffer / $7 override, host-side vbox-host-shot), where ${1} already IS the guest/content
-## frame. KNOWN RESIDUAL (not this fix): a window grab whose guest shot alone fails leaves a
-## chrome-bearing ${1} that the blank gate reads as content; the content gate's golden-token OCR
-## still catches it for golden-backed milestones, but a general fail-closed on a dead-guest window
-## grab needs per-milestone required-capture tracking (separate follow-up).
+## evidence, no chrome) in window mode, else ${1} itself. clear_stale_capture removes any prior
+## sibling in BOTH modes, so a present sibling is THIS run's; and a window grab whose guest shot
+## FAILED leaves a non-image SENTINEL sibling (capture_frame) that fails the gate CLOSED. So the
+## ${1} fallback is reached ONLY for a frame with no sibling BY DESIGN (framebuffer / $7 override,
+## host-side vbox-host-shot), where ${1} already IS the guest/content frame -- a dead-guest window
+## grab can no longer fall back to the chrome ${1} and false-green.
 gate_check_path() {
    local gate="${1%/*}/${gate_subdir}/${1##*/}"
    if [ "${story_capture}" = 'window' ] && [ -f "${gate}" ]; then

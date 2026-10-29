@@ -313,6 +313,21 @@ got=0
 check "gate_check_path falls back to \$1 for a window frame with no sibling by design (firmware-logo/vbox-manager)" "${got}"
 safe-rm --force -- "${shot_dir}/11-firmware-logo.png" 2>/dev/null || true
 
+## Dead-guest window grab (CHROME-FALLBACK closed): grim writes the chrome $1 (exit 0) but the
+## guest-sibling shot FAILS (exit 3, no sibling). capture_frame leaves a non-image SENTINEL at the
+## sibling path, so the blank gate (gate_check_path) reads the sentinel -- which image-blank-check
+## flags unreadable (asserted in image_blank_check_test.sh) -- instead of falling back to the chrome
+## $1 and false-greening. Also covers the reused-dir + stale-BLACK-sibling case (the stale sibling is
+## cleared, then the sentinel, NOT chrome, is what the gate reads). grim here is the normal stub.
+safe-rm --force -- "${shot_dir}/66-checks-complete.png" "${shot_dir}/${gate_subdir}/66-checks-complete.png" 2>/dev/null || true
+GUESTCTL="${fail_shot}" capture_frame "${shot_dir}/66-checks-complete.png" >/dev/null 2>&1 || true
+got=0
+[ -s "${shot_dir}/${gate_subdir}/66-checks-complete.png" ] || got=1
+[ "$(gate_check_path "${shot_dir}/66-checks-complete.png")" = "${shot_dir}/${gate_subdir}/66-checks-complete.png" ] || got=1
+case "$(head -c3 -- "${shot_dir}/${gate_subdir}/66-checks-complete.png" 2>/dev/null)" in PNG) got=1 ;; esac
+check "dead-guest window grab writes a non-image sentinel sibling (gate reads it, no chrome \$1 fallback)" "${got}"
+safe-rm --force -- "${shot_dir}/66-checks-complete.png" "${shot_dir}/${gate_subdir}/66-checks-complete.png" 2>/dev/null || true
+
 ## End-to-end: window mode, reused --shot-dir seeded with a stale frame + stale sibling, then a DEAD
 ## guest -- grim exits 1 writing nothing AND the guest shot exits 3 writing nothing. The up-front
 ## clear removes both; the failed capture rewrites neither; so NO stale frame/sibling survives to

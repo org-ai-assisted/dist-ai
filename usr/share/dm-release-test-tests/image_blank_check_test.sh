@@ -104,6 +104,13 @@ expect_rc "dark-but-real frame is NOT flagged"  0 "${workdir}/dark_real.png"
 ## this -- in window mode it points the gate at the REQUIRED guest sibling even when absent, so a
 ## dead-guest run FAILS here instead of falling back to the chrome window grab.
 expect_rc "a nonexistent path is flagged (fail-closed)" 1 "${workdir}/does-not-exist.png"
+## FAIL-CLOSED on a NON-IMAGE file: capture_frame leaves a text SENTINEL at the guest-sibling path
+## when a window-grab's guest shot fails, so the blank gate reads an unreadable file and fails closed
+## (never the chrome window grab). A non-PNG/text file must be flagged, in default AND --uniform-only
+## mode (require_vt_captures gates with the latter).
+printf '%s\n' 'dm-calamares-install: guest framebuffer capture failed for this window grab' > "${workdir}/extra/sentinel.png"
+expect_rc "a non-image (text) sentinel is flagged"            1 "${workdir}/extra/sentinel.png"
+expect_rc "a non-image sentinel is flagged (--uniform-only)"  1 --uniform-only "${workdir}/extra/sentinel.png"
 ## 0.90 frac threshold: a 92%-white few-colour card is degenerate (old 0.98 missed it).
 expect_rc "92%-white few-colour card is flagged"         1 "${workdir}/extra/white_92.png"
 ## The real bug: a white frame with only the systray-redaction box.
