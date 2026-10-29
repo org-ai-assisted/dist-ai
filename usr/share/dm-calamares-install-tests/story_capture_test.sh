@@ -356,6 +356,29 @@ case "$(head -c3 -- "${shot_dir}/${gate_subdir}/70-first-boot.png" 2>/dev/null)"
 check "capture_frame clears the guest sibling per attempt (an earlier poll's sibling cannot validate a later window grab)" "${got}"
 safe-rm --force -- "${shot_dir}/70-first-boot.png" "${shot_dir}/${gate_subdir}/70-first-boot.png" 2>/dev/null || true
 
+## PER-POLL stale PUBLISHED $1 (the $1 side of the same mismatch): capture_frame must clear $1 too
+## before each window grab, so a poll whose grim FAILS to rewrite $1 does not leave a PRIOR poll's
+## window grab to be validated by this poll's fresh guest sibling (published != gated). Sim: seed a
+## stale $1 (an earlier poll's grab), then capture with grim FAILING (does not touch $1) while the
+## guest shot writes a valid sibling. The stale $1 must be CLEARED -- grim did not rewrite it, so the
+## poll has no published frame to falsely approve (its `-s dest` check then fails and polling goes on).
+safe-rm --force -- "${shot_dir}/72-terminal-open.png" "${shot_dir}/${gate_subdir}/72-terminal-open.png" 2>/dev/null || true
+printf '%s\n' 'STALE PRIOR WINDOW GRAB' > "${shot_dir}/72-terminal-open.png"
+cp -- "${work}/grim" "${work}/grim.pp3"
+cat > "${work}/grim" <<'STUB'
+#!/bin/bash
+exit 1
+STUB
+chmod +x -- "${work}/grim"
+hash -r 2>/dev/null || true
+capture_frame "${shot_dir}/72-terminal-open.png" >/dev/null 2>&1 || true   ## grim fails (leaves $1 untouched); normal guest shot writes a valid sibling
+got=0
+[ -e "${shot_dir}/72-terminal-open.png" ] && got=1
+check "capture_frame clears a stale published \$1 when grim fails (no stale window grab validated by a fresh sibling)" "${got}"
+mv -- "${work}/grim.pp3" "${work}/grim"
+hash -r 2>/dev/null || true
+safe-rm --force -- "${shot_dir}/72-terminal-open.png" "${shot_dir}/${gate_subdir}/72-terminal-open.png" 2>/dev/null || true
+
 ## End-to-end: window mode, reused --shot-dir seeded with a stale frame + stale sibling, then a DEAD
 ## guest -- grim exits 1 writing nothing AND the guest shot exits 3 writing nothing. The up-front
 ## clear removes both; the failed capture rewrites neither; so NO stale frame/sibling survives to
