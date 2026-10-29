@@ -268,6 +268,27 @@ else
   esac
 fi
 
+## gh's flags-first order 'github-api --input <file> <endpoint>' (method omitted)
+## must be caught too: the scan runs over the WHOLE argv, not just the post-shift
+## extras -- else --input lands in the method slot, slips the guard, and fires a
+## bogus authenticated request.
+rc=0
+out="$(run_git_api --input "${tmp}/body.json" repos/x)" || rc=$?
+if [ "${rc}" -ne 2 ]; then
+  printf '%s\n' "FAIL: flags-first --input not rejected with exit 2 (rc ${rc}): ${out}" >&2
+  fails=$(( fails + 1 ))
+else
+  case "${out}" in
+    *ARGV:*)
+      printf '%s\n' "FAIL: flags-first --input reached the transport: ${out}" >&2
+      fails=$(( fails + 1 ))
+      ;;
+    *)
+      printf '%s\n' 'ok   flags-first --input (method slot) rejected, transport not run'
+      ;;
+  esac
+fi
+
 ## Anti-over-match: the documented --data @<file> idiom must still forward to the
 ## transport untouched.
 out="$(run_git_api POST /repos/x --data @"${tmp}/body.json")" || true
@@ -306,4 +327,4 @@ if (( fails > 0 )); then
   printf '%s\n' "github-api-tests: ${fails} check(s) FAILED" >&2
   exit 1
 fi
-printf '%s\n' 'github-api-tests: PASSED (15 checks, 0 failed, 0 skipped)'
+printf '%s\n' 'github-api-tests: PASSED (16 checks, 0 failed, 0 skipped)'
