@@ -139,10 +139,12 @@ sandbox exec --pid-scope private -- type sandbox-confine >/dev/null 2>&1 \
 ## dist-packages self-bootstrap resolves exactly as in a checkout -- no env passthrough
 ## relied on), plus each site root (no .git), into one tree; sync it in and run every
 ## lane confined. Basenames must be unique across the roots.
-## Anchor the staging tree under $HOME, not the ambient TMPDIR: `sandbox sync` refuses a
-## /var/tmp path as a system dir, and TMPDIR is /var/tmp here, so a mktemp default would
-## break the gate. A sync-safe location is the DEFAULT -- no caller env to remember.
-staging="$(mktemp --directory -- "${HOME}/website-tests-sandbox-stage.XXXXXXXX")"
+## Anchor the staging tree beside SANDBOX_WORKDIR (its parent), NOT the ambient TMPDIR:
+## `sandbox sync` refuses a /var/tmp path as a system dir, and TMPDIR is /var/tmp here, so
+## a mktemp default would break the gate. Reusing SANDBOX_WORKDIR's own already-sync-safe
+## base keeps the safe location the DEFAULT without depending on $HOME (which may be unset
+## under nounset, or itself a system path) -- nothing for a caller to remember.
+staging="$(mktemp --directory -- "$(dirname -- "${SANDBOX_WORKDIR}")/website-tests-sandbox-stage.XXXXXXXX")"
 synced=0
 cleanup(){
    # Local cleanup is best-effort too: under errexit a failing command in the EXIT

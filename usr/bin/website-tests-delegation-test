@@ -277,10 +277,13 @@ SBSTUB
        TMPDIR='/var/tmp' SYNC_PATH_CAPTURE="${sync_cap}" \
        "${wts}" "${mini_root}" >/dev/null 2>&1 || true
    staged_path="$(head -n 1 -- "${sync_cap}" 2>/dev/null || true)"
-   if [ -n "${staged_path}" ] && [ "${staged_path#"${HOME}/"}" != "${staged_path}" ]; then
-      pass 'staging tree anchored under the home dir (sync-safe regardless of TMPDIR)'
+   ## Assert the staging path did NOT land under the system TMPDIR we injected (/var/tmp) --
+   ## the precise regression, independent of $HOME's value. Old code (mktemp honoring TMPDIR)
+   ## yields /var/tmp/... which the sandbox-sync guard refuses; the fix must ignore TMPDIR.
+   if [ -n "${staged_path}" ] && [ "${staged_path#/var/tmp}" = "${staged_path}" ]; then
+      pass 'staging tree not under the system TMPDIR (sync-safe; TMPDIR ignored)'
    else
-      fail "staging tree not under \$HOME (got '${staged_path:-<none>}'; a /var/tmp path trips the sandbox-sync guard)"
+      fail "staging tree under the system TMPDIR (got '${staged_path:-<none>}'; a /var/tmp path trips the sandbox-sync guard)"
    fi
    ## Restore the clean exit-0 stub.
    printf '%s\n' '#!/bin/bash' 'exit 0' > "${stub_dir}/sandbox"
