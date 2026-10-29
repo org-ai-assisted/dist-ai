@@ -739,12 +739,13 @@ stop_vm_frontend() {
 ## modes (a window-mode guest-sibling write can also fail, leaving a stale sibling). Scoped to
 ## shot_dir so a failure stuck-shot / --shot elsewhere is untouched.
 clear_stale_capture() {
-   ## Window mode only: grim rewrites $1 and the GUESTCTL sibling every capture, so there is nothing
-   ## stale to clear -- and clearing WOULD harm: a failed guest-sibling shot then leaves no sibling,
-   ## gate_check_path falls back to the chrome-bearing window grab, and image-blank-check passes a
-   ## black guest (false green). So clear ONLY in framebuffer mode, where $1 is the guest frame
-   ## itself and the gate reads it directly.
-   [ "${story_capture}" = 'window' ] && return 0
+   ## Clear BOTH modes: grim (window) and vbox-ctl-local (framebuffer) rewrite $1 on a successful
+   ## capture, and window mode also (re)writes the .gate guest sibling -- so a successful capture is
+   ## never harmed. A FAILED capture must leave nothing stale: a dead guest fails grim AND the guest
+   ## sibling shot, so a prior run's $1 + sibling (reused --shot-dir) would otherwise survive and pass
+   ## the gates as THIS run's green. A missing sibling then FAILS the gate (gate_check_path requires
+   ## it in window mode), it does NOT fall back to the chrome-bearing window grab. Scoped to shot_dir
+   ## so a failure stuck-shot / --shot elsewhere is untouched.
    [ -n "${shot_dir}" ] && [ "${1%/*}" = "${shot_dir}" ] || return 0
    safe-rm --force -- "$1" "${1%/*}/${gate_subdir}/${1##*/}" 2>/dev/null || true
 }
@@ -775,13 +776,17 @@ capture_frame() {
    fi
 }
 
-## The blank-gate input for a published milestone frame ${1}: the bare-guest sibling captured in
-## window mode (honest render evidence, no chrome), or ${1} itself in framebuffer mode / if the
-## guest grab is missing (there the published frame already IS the guest framebuffer).
+## The blank-gate input for a published milestone frame ${1}. Window mode, shot_dir frame: the
+## bare-guest sibling (honest render evidence, no chrome) is REQUIRED -- return its path even when
+## ABSENT, so a dead-guest run (no sibling written this capture; clear_stale_capture removed any
+## prior one) FAILS image-blank-check (missing file -> flagged) instead of falling back to the
+## chrome-bearing ${1}, whose many-coloured VBox menu/status bar would mask a black guest (false
+## green). A present sibling is guaranteed THIS run's (stale cleared up front, capture rewrote it).
+## Frames OUTSIDE shot_dir get no guest sibling by design; framebuffer mode's ${1} already IS the
+## guest frame -- both return ${1}.
 gate_check_path() {
-   local gate="${1%/*}/${gate_subdir}/${1##*/}"
-   if [ "${story_capture}" = 'window' ] && [ -f "${gate}" ]; then
-      printf '%s' "${gate}"
+   if [ "${story_capture}" = 'window' ] && [ -n "${shot_dir}" ] && [ "${1%/*}" = "${shot_dir}" ]; then
+      printf '%s' "${1%/*}/${gate_subdir}/${1##*/}"
    else
       printf '%s' "$1"
    fi
