@@ -93,11 +93,39 @@ def run():
     ck(cli.site_name("/x/computer-security-research.github.io/_site") == "computer-security-research.github.io",
        "site_name of a '_site' build output falls back to the parent repo (not '_site')")
     ck(cli.site_name("/x/repo/_site/") == "repo", "trailing slash does not defeat the fallback")
-    ck(cli.site_name("_site") == "_site", "a bare '_site' with no parent keeps '_site'")
+    ck(cli.site_name("/x/repo/./_site") == "repo",
+       "an interior '.' component is normalized (matches the bash driver's realpath -ms)")
+    ck(cli.site_name("/_site") == "_site", "a build dir with no usable parent keeps its own name")
+    # NARROW set: a repo LITERALLY named 'build'/'dist'/'site' is a real repo, NOT a build output,
+    # so it is NOT reparented (the set is underscore-prefixed only).
+    ck(cli.site_name("/x/build") == "build", "a repo named 'build' is not reparented (narrow set)")
+    ck(cli.site_name("/x/site") == "site", "a repo named 'site' is not reparented (narrow set)")
+    # IDEMPOTENT: site_name of an already-resolved staged path ('roots/<repo>') returns <repo>, so
+    # the sandbox driver's stage-then-core-reread cannot double-apply the fallback to 'roots'.
+    ck(cli.site_name("/tmp/stage/roots/output-lies.github.io") == "output-lies.github.io",
+       "site_name is idempotent on a staged 'roots/<repo>' path (no double-apply to 'roots')")
+    ck(cli.site_name("/tmp/stage/roots/computer-security-research.github.io") == "computer-security-research.github.io",
+       "a resolved repo name under 'roots/' stays put (not re-fallen-back)")
     with tempfile.TemporaryDirectory() as tmp:
         bp = spelling._baseline_path(Path(tmp), "/x/computer-security-research.github.io/_site")
         ck(bp.name == "cspell-baseline-computer-security-research.github.io.txt",
            "a '_site' root's baseline is named for the repo, not the generic '_site'")
+
+    # --- require_distinct_site_names: no shared/masking or unnamable baseline ------------------
+    def _exits(fn):
+        try:
+            fn()
+            return False
+        except SystemExit:
+            return True
+    ck(_exits(lambda: cli.require_distinct_site_names(
+        ["/x/a/output-lies.github.io", "/x/b/output-lies.github.io"], "spelling")),
+       "two roots resolving to one site-name are rejected (one baseline would mask the other)")
+    ck(_exits(lambda: cli.require_distinct_site_names(["/_site"], "spelling")),
+       "a root whose name is a build-dir token (no identifiable site) is rejected")
+    ck(cli.require_distinct_site_names(
+        ["/x/output-lies.github.io", "/x/p/computer-security-research.github.io/_site"], "spelling") is None,
+       "distinct resolved site-names pass")
 
     # --- error handling (stub subprocess.run) --------------------------------------------------
     class _P:

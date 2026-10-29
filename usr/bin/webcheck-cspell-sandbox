@@ -63,15 +63,17 @@ baselines_src="${tests_dir}/cspell-baselines"
 [ -d "${core_src}/webcheck" ] || die "missing webcheck core: ${core_src}/webcheck"
 [ -f "${assets_src}/cspell.json" ] || die "missing cspell config: ${assets_src}/cspell.json"
 
-## Mirror dist_ai.webcheck.cli.site_name: a generator build-output dir ('_site' etc.) does NOT
+## Mirror dist_ai.webcheck.cli.site_name: a generator build-output dir ('_site'/'_build') does NOT
 ## name the site, so it is named by its parent repo instead. The per-site baseline keys on this
 ## name in BOTH layers (here for staging/dedup/pull-back, the python core for _baseline_path), so
-## the two MUST agree -- keep _BUILD_DIR_NAMES in sync with cli.py. Keyed on the ORIGINAL argument
-## (the full path still carries the parent), never the staged path (which has dropped it).
-_BUILD_DIR_NAMES=' _site _build build dist public out site '
+## the two MUST agree -- keep _BUILD_DIR_NAMES in sync with cli.py (deliberately UNDERSCORE-prefixed
+## only: a plain 'build'/'site' can be a real repo name). Computed on the LEXICAL absolute path
+## (realpath -ms: abspath + '.'/'..' collapse, NO symlink deref) so it matches the python core's
+## os.path.normpath(os.path.abspath(...)) byte-for-byte regardless of a relative or '.'-laden arg.
+_BUILD_DIR_NAMES=' _site _build '
 site_name(){
    local root base parent
-   root="${1%/}"
+   root="$(realpath --canonicalize-missing --no-symlinks -- "$1")"
    base="$(basename -- "${root}")"
    case "${_BUILD_DIR_NAMES}" in
       *" ${base} "*)
@@ -82,13 +84,19 @@ site_name(){
    printf '%s\n' "${base}"
 }
 
-## Reject two site roots that share a resolved site-name BEFORE the local/sandbox split, so BOTH
-## paths honor it (hoisted so the two cannot drift). Each root maps to cspell-baseline-<name>.txt,
-## and dist_ai.webcheck.spelling keys that baseline on the SAME site_name. So two args resolving to
-## the same name clobber one baseline even when their canonical paths differ.
+## Reject BEFORE the local/sandbox split (hoisted so both paths honor it): two roots resolving to
+## the SAME site-name (they would clobber one baseline), and a root whose name is STILL a build-dir
+## token (a bare '_site' with no identifying parent -- unnamable, and it would re-trigger the
+## fallback against the staged path). Each root maps to cspell-baseline-<name>.txt, and the python
+## core keys on the SAME site_name, so the two agree.
 declare -A seen_base=()
 for root in "$@"; do
    base="$(site_name "${root}")"
+   case "${_BUILD_DIR_NAMES}" in
+      *" ${base} "*)
+         die "cannot derive a site name from '${root}' (a build-output dir with no identifying parent) -- pass the repository root"
+         ;;
+   esac
    [ -z "${seen_base[${base}]:-}" ] || die "duplicate site-root name '${base}'"
    seen_base[${base}]=1
 done

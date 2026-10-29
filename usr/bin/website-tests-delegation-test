@@ -89,8 +89,8 @@ if [ -x "${cspell_driver}" ]; then
       "${cspell_driver}" "${roots[0]}" >/dev/null 2>&1 || crc="$?"
    if [ "${crc}" = '77' ]; then pass 'cspell driver: DIST_AI_IN_SANDBOX=1 -> 77 SKIP (cannot nest)'; else fail "cspell driver in-sandbox rc=${crc}, want 77"; fi
 
-   ## R2-3: two site roots sharing a BASENAME must be rejected BEFORE the local/sandbox split
-   ## (both map to cspell-baseline-<basename>.txt; a collision clobbers one). The check is hoisted
+   ## R2-3: two site roots resolving to the SAME site-name must be rejected BEFORE the local/sandbox
+   ## split (both map to cspell-baseline-<name>.txt; a collision clobbers one). The check is hoisted
    ## ahead of the split, so it fires with no sandbox and no local cspell -- deterministic here.
    ## Pre-fix the rejection lived only in the sandbox staging loop, unreached on the local path.
    dup_a="$(mktemp --directory)"
@@ -101,18 +101,18 @@ if [ -x "${cspell_driver}" ]; then
    drc=0
    dout="$(env WEBCHECK_NO_LOCAL=1 WEBSITE_TESTS_NO_SANDBOX=1 \
       "${cspell_driver}" "${dup_a}/site" "${dup_b}/site" 2>&1)" || drc="$?"
-   if [ "${drc}" != '0' ] && grep --quiet 'duplicate site-root basename' <<< "${dout}"; then
-      pass 'cspell driver: duplicate site-root basename rejected before the local/sandbox split'
+   if [ "${drc}" != '0' ] && grep --quiet 'duplicate site-root name' <<< "${dout}"; then
+      pass 'cspell driver: duplicate site-root name rejected before the local/sandbox split'
    else
-      fail "cspell driver duplicate-basename not rejected (rc=${drc}): ${dout}"
+      fail "cspell driver duplicate-name not rejected (rc=${drc}): ${dout}"
    fi
    safe-rm --recursive --force -- "${dup_a}" "${dup_b}"
 
-   ## FIX C: the dedup must key on the ORIGINAL-argument basename -- the SAME key spelling.py's
-   ## _baseline_path uses (os.path.basename of the abspath'd arg, NO symlink resolution). Two roots
-   ## that are symlinks to DISTINCT targets but share one ORIGINAL basename still map to one baseline,
-   ## so they MUST be rejected. Pre-fix the dedup canonicalized first: the distinct link targets gave
-   ## distinct basenames, the pair slipped the dedup, and the local path then clobbered one baseline.
+   ## The site-name is the LEXICAL path's basename (realpath --no-symlinks, NO symlink resolution) --
+   ## the SAME key the python core's _baseline_path uses. Two roots that are symlinks to DISTINCT
+   ## targets but share one lexical basename still map to one baseline, so they MUST be rejected.
+   ## A symlink-resolving dedup would read distinct target basenames and let the pair slip, then the
+   ## local path would clobber one baseline.
    sl_root="$(mktemp --directory)"
    mkdir --parents -- "${sl_root}/targets/foo" "${sl_root}/targets/bar" "${sl_root}/a" "${sl_root}/b"
    printf '%s\n' '<html></html>' > "${sl_root}/targets/foo/index.html"
@@ -122,14 +122,14 @@ if [ -x "${cspell_driver}" ]; then
    slrc=0
    slout="$(env WEBCHECK_NO_LOCAL=1 WEBSITE_TESTS_NO_SANDBOX=1 \
       "${cspell_driver}" "${sl_root}/a/site" "${sl_root}/b/site" 2>&1)" || slrc="$?"
-   if [ "${slrc}" != '0' ] && grep --quiet 'duplicate site-root basename' <<< "${slout}"; then
-      pass 'cspell driver: same original basename via distinct symlink targets rejected (keys original arg, not canonical)'
+   if [ "${slrc}" != '0' ] && grep --quiet 'duplicate site-root name' <<< "${slout}"; then
+      pass 'cspell driver: same lexical basename via distinct symlink targets rejected (keys lexical path, not symlink-resolved)'
    else
-      fail "cspell driver symlink-basename collision not rejected (rc=${slrc}): ${slout}"
+      fail "cspell driver symlink-name collision not rejected (rc=${slrc}): ${slout}"
    fi
    safe-rm --recursive --force -- "${sl_root}"
 
-   ## Distinct original basenames must STILL be allowed: the dedup passes and the run reaches the
+   ## Distinct site-names must STILL be allowed: the dedup passes and the run reaches the
    ## env-unmet SKIP (77), never a spurious duplicate rejection.
    ok_a="$(mktemp --directory)"
    ok_b="$(mktemp --directory)"
@@ -140,9 +140,9 @@ if [ -x "${cspell_driver}" ]; then
    env WEBCHECK_NO_LOCAL=1 WEBSITE_TESTS_NO_SANDBOX=1 \
       "${cspell_driver}" "${ok_a}/alpha" "${ok_b}/beta" >/dev/null 2>&1 || okrc="$?"
    if [ "${okrc}" = '77' ]; then
-      pass 'cspell driver: distinct original basenames allowed (reach env-unmet 77, not dup-rejected)'
+      pass 'cspell driver: distinct site-names allowed (reach env-unmet 77, not dup-rejected)'
    else
-      fail "cspell driver wrongly rejected distinct basenames (rc=${okrc}, want 77)"
+      fail "cspell driver wrongly rejected distinct site-names (rc=${okrc}, want 77)"
    fi
    safe-rm --recursive --force -- "${ok_a}" "${ok_b}"
 

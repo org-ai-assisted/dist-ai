@@ -137,6 +137,7 @@ def main(argv: List[str]) -> int:
     # A named root that does not resolve FAILS loud (not a silent drop / skip). nargs="+"
     # guarantees at least one named root, so there is no genuinely-empty case to skip.
     roots = cli.require_existing_dirs(args.roots, "spelling")
+    cli.require_distinct_site_names(roots, "spelling")
     baseline_dir = Path(args.baseline_dir)
     overall = 0
     for root in roots:

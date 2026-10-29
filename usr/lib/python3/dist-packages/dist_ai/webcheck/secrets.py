@@ -183,6 +183,7 @@ def main(argv: List[str]) -> int:
     # A named root that does not resolve FAILS loud (not a silent drop / skip). nargs="+"
     # guarantees at least one named root, so there is no genuinely-empty case to skip.
     roots = cli.require_existing_dirs(args.roots, "secrets")
+    cli.require_distinct_site_names(roots, "secrets")
     baseline_dir = Path(args.baseline_dir)
     overall = 0
     env_unmet = 0

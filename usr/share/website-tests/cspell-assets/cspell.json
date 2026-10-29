@@ -9,6 +9,9 @@
       "path": "./project-dictionary.txt"
     }
   ],
+  "ignorePaths": [
+    "**/automated-test-results/**"
+  ],
   "ignoreRegExpList": [
     "https?://[^\\s\"'<>)]+",
     "&[a-zA-Z#0-9]+;",
