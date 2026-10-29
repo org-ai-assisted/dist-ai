@@ -50,9 +50,11 @@ ENV_UNMET_EXIT = 78
 
 class GitleaksUnavailable(RuntimeError):
     """gitleaks could not produce a trustworthy result (binary absent is a separate
-    FileNotFoundError; this covers: no report written, non-JSON report, error exit code,
-    an FTL log line, or a nonzero exit with an empty report). The scan did NOT run -- an
-    environment/install bug, NEVER a clean result and NEVER a secret finding. Distinct from
+    FileNotFoundError routed to main()'s install hint; this covers: un-launchable binary
+    (a directory / non-executable / other OSError at launch), no report written, non-JSON
+    report, error exit code, an FTL log line, or a nonzero exit with an empty report). The
+    scan did NOT run -- an environment/install bug, NEVER a clean result and NEVER a secret
+    finding. Distinct from
     a plain RuntimeError (an adversarial tree shipping its own gitleaks config), which is a
     real content FAILURE of the published tree."""
 
@@ -74,11 +76,23 @@ def _run_gitleaks(root: str) -> List[dict]:
         # Debian gitleaks 8.16 -> `detect --no-git --source`; --redact keeps secret values out of
         # the report; --exit-code 1 is gitleaks' leaks-found code (0 = clean) so we can tell a
         # real scan error (any other outcome) from a clean run and never read an error as clean.
-        proc = subprocess.run(  # nosec B603 -- fixed argv, no shell=True, paths are ours
-            ["gitleaks", "detect", "--no-git", "--source", root,
-             "--report-format", "json", "--report-path", report,
-             "--redact", "--no-banner", "--exit-code", "1"],
-            capture_output=True, text=True)
+        try:
+            proc = subprocess.run(  # nosec B603 -- fixed argv, no shell=True, paths are ours
+                ["gitleaks", "detect", "--no-git", "--source", root,
+                 "--report-format", "json", "--report-path", report,
+                 "--redact", "--no-banner", "--exit-code", "1"],
+                capture_output=True, text=True)
+        except FileNotFoundError:
+            # Binary ABSENT: propagate to main()'s dedicated handler, which prints the
+            # required-dependency install hint and returns the distinct env-unmet code.
+            raise
+        except OSError as exc:
+            # gitleaks is on PATH but could NOT be launched -- a directory, a
+            # non-executable file, ETXTBSY, ... (PermissionError and the other OSError
+            # subclasses). The scan did NOT run: the SAME env/install-bug class as
+            # absence, so raise GitleaksUnavailable (never an uncaught exit-1 the wrapper
+            # would misread as a real secret finding and keep suite-complete).
+            raise GitleaksUnavailable("gitleaks could not be launched: %s" % exc)
         try:
             with open(report, encoding="utf-8") as handle:
                 data = json.load(handle)

@@ -63,6 +63,35 @@ def run() -> int:
         ck("FATAL" in text and "gitleaks not found" in text,
            "gitleaks absent prints a FATAL not-found message")
 
+    # R2-4: gitleaks PRESENT on PATH but UN-LAUNCHABLE (a non-executable file or a directory)
+    # raises PermissionError -- an OSError, NOT FileNotFoundError -- at subprocess launch. The
+    # scan did NOT run, the same env/install-bug class as absence, so main() must return the
+    # DISTINCT env-unmet code (78), never the uncaught exit-1 the wrapper would misread as a
+    # real secret finding and keep suite-complete (false green). FAILS on pre-fix code, where
+    # _run_gitleaks caught only the report-open FileNotFoundError and let PermissionError escape
+    # to an exit-1. (Runs regardless of whether a real gitleaks is installed on this host.)
+    for label, make in (
+        ("a non-executable file",
+         lambda d: (Path(d, "gitleaks").write_text("#!/bin/sh\n", encoding="utf-8"),
+                    os.chmod(os.path.join(d, "gitleaks"), 0o644))),
+        ("a directory",
+         lambda d: os.mkdir(os.path.join(d, "gitleaks"))),
+    ):
+        with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as bdir, \
+                tempfile.TemporaryDirectory() as badbin:
+            Path(root, "index.html").write_text("<html></html>", encoding="utf-8")
+            make(badbin)
+            _saved_path = os.environ.get("PATH", "")
+            os.environ["PATH"] = badbin
+            try:
+                rc, text = _main(["--baseline-dir", bdir, root])
+            finally:
+                os.environ["PATH"] = _saved_path
+            ck(rc == s.ENV_UNMET_EXIT and rc != 1,
+               "un-launchable gitleaks (%s) -> env-unmet code (not exit-1): %r" % (label, rc))
+            ck("FATAL" in text and "scan did NOT execute" in text,
+               "un-launchable gitleaks (%s) prints the scan-did-NOT-execute FATAL" % label)
+
     # pure: baseline parse/format roundtrip (sorted, comments skipped).
     accepted = {"a.txt:aws-access-token:1", "b.txt:github-pat:1"}
     with tempfile.TemporaryDirectory() as d:
