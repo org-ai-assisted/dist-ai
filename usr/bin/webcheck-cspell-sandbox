@@ -17,7 +17,8 @@
 ##
 ## Baselines live in usr/share/website-tests/cspell-baselines/ (committed, per site); the project
 ## dictionary + config in usr/share/website-tests/cspell-assets/.
-## Exit: 0 all clean (no NEW unknown words), 1 a new word / a cspell error.
+## Exit: 0 all clean (no NEW unknown words), 1 a new word / a cspell error, 77 cspell absent
+## locally AND no usable sandbox (env-unmet SKIP, like vnu/axe -- never a masked pass).
 ##
 ## cspell is PINNED to the 8.x line: 10.x requires NodeJS >= 22 and refuses to run on the sandbox's
 ## node 20, so a bare `cspell` install breaks the lane.
@@ -62,8 +63,30 @@ baselines_src="${tests_dir}/cspell-baselines"
 [ -d "${core_src}/webcheck" ] || die "missing webcheck core: ${core_src}/webcheck"
 [ -f "${assets_src}/cspell.json" ] || die "missing cspell config: ${assets_src}/cspell.json"
 
-command -v sandbox >/dev/null 2>&1 \
-   || die 'the review sandbox (sandbox command) is not available on this host'
+## Local-first (mirrors webcheck-vnu-sandbox / webcheck-axe-sandbox): run cspell DIRECTLY
+## where it resolves (a CI runner with cspell on PATH, or in-sandbox-direct) -- so the lane
+## RUNS in CI, not only ever delegate. cspell absent locally -> fall through to the sandbox
+## path below. WEBCHECK_NO_LOCAL=1 forces the sandbox path (regression test / orchestrator).
+if [ "${WEBCHECK_NO_LOCAL:-}" != '1' ] && command -v cspell >/dev/null 2>&1; then
+   declare -a local_args=( --baseline-dir "${baselines_src}" --config "${assets_src}/cspell.json" )
+   [ "${write_baseline}" = '1' ] && local_args+=( --write-baseline )
+   rc=0
+   PYTHONPATH="${core_src%/dist_ai}" python3 -Bsu -m dist_ai.webcheck.spelling \
+      "${local_args[@]}" "$@" || rc="$?"
+   exit "${rc}"
+fi
+
+## No local cspell. Reach the review sandbox -- unless we are inside it already (cannot nest),
+## it is disabled, or there is none: then the lane is genuinely env-unmet, so exit 77 (the
+## launcher's delegate_sandbox_lane maps 77 to SKIP) like the vnu/axe siblings -- NEVER die 1,
+## which delegate_sandbox_lane would turn into a FAIL. Never a masked failure: a lane that RAN
+## exits 0/non-77 above.
+if [ "${DIST_AI_IN_SANDBOX:-}" = '1' ] || [ "${WEBSITE_TESTS_NO_SANDBOX:-}" = '1' ] \
+   || ! command -v sandbox >/dev/null 2>&1; then
+   printf '%s\n' 'webcheck-cspell-sandbox: cspell absent locally and no usable sandbox -- SKIP (77)' >&2
+   ## style-ok: allow-skip: env-unmet -- no local cspell and no usable sandbox; delegate_sandbox_lane maps 77 to SKIP, never a masked pass (a lane that RAN exits 0/non-77 above)
+   exit 77
+fi
 : "${QUBE_CTL_TARGET:=temp-claude}"
 export QUBE_CTL_TARGET
 sandbox exec --pid-scope private -- type sandbox-confine >/dev/null 2>&1 \

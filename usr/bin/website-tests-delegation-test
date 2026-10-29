@@ -70,6 +70,28 @@ resolve "${SECURE_TERMINAL_SITE_REPO}" "${HOME}/private-sources/secure-terminal.
 resolve "${ORG_AI_ASSISTED_REPO}"      "${HOME}/private-sources/org-ai-assisted.github.io"
 [ "${#roots[@]}" -ge 1 ] || skip 'no site checkout found'
 
+## cspell-lane delegation contract (F11): webcheck-cspell-sandbox must honor the 77
+## env-unmet contract like its vnu/axe siblings -- when cspell is absent locally AND the
+## sandbox is unusable (WEBSITE_TESTS_NO_SANDBOX=1 / DIST_AI_IN_SANDBOX=1 / no `sandbox`),
+## it must exit 77 (delegate_sandbox_lane maps 77 to SKIP), NEVER die 1 (which becomes a
+## FAIL). WEBCHECK_NO_LOCAL=1 forces the no-local-cspell path so the assertion is
+## deterministic regardless of whether cspell happens to be on PATH here. Runs independent
+## of Playwright (this contract has nothing to do with the browser lanes).
+cspell_driver="${script_dir}/webcheck-cspell-sandbox"
+[ -x "${cspell_driver}" ] || cspell_driver="$(command -v webcheck-cspell-sandbox 2>/dev/null || true)"
+if [ -x "${cspell_driver}" ]; then
+   crc=0
+   env --unset=DIST_AI_IN_SANDBOX WEBCHECK_NO_LOCAL=1 WEBSITE_TESTS_NO_SANDBOX=1 \
+      "${cspell_driver}" "${roots[0]}" >/dev/null 2>&1 || crc="$?"
+   if [ "${crc}" = '77' ]; then pass 'cspell driver: WEBSITE_TESTS_NO_SANDBOX=1 -> 77 SKIP (not 1 FAIL)'; else fail "cspell driver no-sandbox rc=${crc}, want 77 (env-unmet SKIP like vnu/axe)"; fi
+   crc=0
+   env WEBCHECK_NO_LOCAL=1 DIST_AI_IN_SANDBOX=1 \
+      "${cspell_driver}" "${roots[0]}" >/dev/null 2>&1 || crc="$?"
+   if [ "${crc}" = '77' ]; then pass 'cspell driver: DIST_AI_IN_SANDBOX=1 -> 77 SKIP (cannot nest)'; else fail "cspell driver in-sandbox rc=${crc}, want 77"; fi
+else
+   fail 'webcheck-cspell-sandbox not found for the delegation-contract check'
+fi
+
 ## The delegation branch fires only when the local mobile probe returns 77 (no local
 ## Playwright). If a local browser is present the branch is unreachable here.
 probe_rc=0
