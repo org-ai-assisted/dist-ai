@@ -1,0 +1,58 @@
+# Spell-check: accepted finding keys for computer-security-research.github.io, one per line: <relative file>:<word>.
+# A key listed here is tolerated (a proper noun, a deliberate string, a term not worth
+# adding to the shared project dictionary). The gate flags only a NEWLY-unknown word.
+# A word for EVERY site belongs in cspell-assets/project-dictionary.txt instead. Prune
+# when the prose changes.
+android-insecurity/index.html:adbd
+android-insecurity/index.html:anonymization
+android-insecurity/index.html:aosp
+android-insecurity/index.html:arxan
+android-insecurity/index.html:backdoored
+android-insecurity/index.html:baliga
+android-insecurity/index.html:beijnum
+android-insecurity/index.html:bickford
+android-insecurity/index.html:breeuwsma
+android-insecurity/index.html:brodbeck
+android-insecurity/index.html:brubaker
+android-insecurity/index.html:chrysaor
+android-insecurity/index.html:diin
+android-insecurity/index.html:garfinkel
+android-insecurity/index.html:gmscore
+android-insecurity/index.html:guri
+android-insecurity/index.html:hoog
+android-insecurity/index.html:iciw
+android-insecurity/index.html:ifip
+android-insecurity/index.html:iftode
+android-insecurity/index.html:imei
+android-insecurity/index.html:ispa
+android-insecurity/index.html:jtag
+android-insecurity/index.html:kang
+android-insecurity/index.html:kralevich
+android-insecurity/index.html:lkrg
+android-insecurity/index.html:lnicst
+android-insecurity/index.html:magnuson
+android-insecurity/index.html:marczak
+android-insecurity/index.html:mastg
+android-insecurity/index.html:nazario
+android-insecurity/index.html:ndss
+android-insecurity/index.html:poliak
+android-insecurity/index.html:relocking
+android-insecurity/index.html:rkchk
+android-insecurity/index.html:rombertik
+android-insecurity/index.html:rosenblum
+android-insecurity/index.html:ruggia
+android-insecurity/index.html:sepolicy
+android-insecurity/index.html:seredynski
+android-insecurity/index.html:sguigna
+android-insecurity/index.html:steinboeck
+android-insecurity/index.html:stoep
+android-insecurity/index.html:sudhakar
+android-insecurity/index.html:symp
+android-insecurity/index.html:syngress
+android-insecurity/index.html:syscall
+android-insecurity/index.html:thalium
+android-insecurity/index.html:triaging
+android-insecurity/index.html:troost
+android-insecurity/index.html:unbootable
+android-insecurity/index.html:untampered
+android-insecurity/index.html:zenfyrdev

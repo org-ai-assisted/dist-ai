@@ -101,6 +101,13 @@ def run() -> int:
         p.write_text("# only a comment\n\n", encoding="utf-8")
         ck(s.parse_baseline(p) == set(), "comment/blank-only baseline -> empty set")
 
+    # pure: a build-output root ('_site') is named by its repo, not the generic '_site', so its
+    # per-site baseline is identifiable and cannot collide with another generator's '_site'.
+    with tempfile.TemporaryDirectory() as d:
+        bp = s._baseline_path(Path(d), "/x/computer-security-research.github.io/_site")
+        ck(bp.name == "secrets-baseline-computer-security-research.github.io.txt",
+           "a '_site' root's secrets baseline is named for the repo, not '_site'")
+
     # pure: finding_key is <File>:<RuleID>:<StartLine> and IGNORES gitleaks' absolute Fingerprint
     # (which would embed the checkout path and never match a committed baseline elsewhere).
     ck(s.finding_key({"File": "x.txt", "RuleID": "r", "StartLine": 7}) == "x.txt:r:7",

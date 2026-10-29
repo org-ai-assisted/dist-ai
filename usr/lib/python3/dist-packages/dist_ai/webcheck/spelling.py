@@ -118,8 +118,8 @@ def format_baseline(keys: Set[str], site: Optional[str] = None) -> str:
 
 
 def _baseline_path(baseline_dir: Path, root: str) -> Path:
-    return baseline_dir / ("cspell-baseline-%s.txt"
-                           % os.path.basename(os.path.normpath(root)))
+    from dist_ai.webcheck import cli
+    return baseline_dir / ("cspell-baseline-%s.txt" % cli.site_name(root))
 
 
 def main(argv: List[str]) -> int:
@@ -150,11 +150,11 @@ def main(argv: List[str]) -> int:
                   "sandbox); install it, do not skip the scan", file=sys.stderr)
             return 1
         except RuntimeError as exc:
-            print("spelling: FAIL %s: cspell error: %s" % (os.path.basename(root), exc),
+            print("spelling: FAIL %s: cspell error: %s" % (cli.site_name(root), exc),
                   file=sys.stderr)
             overall = 1
             continue
-        name = os.path.basename(root)
+        name = cli.site_name(root)
         if args.write_baseline:
             baseline_dir.mkdir(parents=True, exist_ok=True)
             bpath.write_text(format_baseline(all_keys, site=name), encoding="utf-8")

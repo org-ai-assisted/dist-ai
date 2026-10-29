@@ -166,8 +166,8 @@ def format_baseline(keys: Set[str], site: Optional[str] = None) -> str:
 
 
 def _baseline_path(baseline_dir: Path, root: str) -> Path:
-    return baseline_dir / ("secrets-baseline-%s.txt"
-                           % os.path.basename(os.path.normpath(root)))
+    from dist_ai.webcheck import cli
+    return baseline_dir / ("secrets-baseline-%s.txt" % cli.site_name(root))
 
 
 def main(argv: List[str]) -> int:
@@ -202,17 +202,17 @@ def main(argv: List[str]) -> int:
             # gitleaks ran but produced no trustworthy result: the scan did NOT execute, an
             # env/install bug -- the SAME distinct code, never a clean pass nor a secret finding.
             print("secrets: FATAL %s: gitleaks could not run (scan did NOT execute): %s"
-                  % (os.path.basename(root), exc), file=sys.stderr)
+                  % (cli.site_name(root), exc), file=sys.stderr)
             env_unmet = 1
             continue
         except RuntimeError as exc:
             # A real content FAILURE of the published tree (e.g. it ships its own gitleaks
             # config to weaken the scan): a genuine finding-class failure, exit 1.
-            print("secrets: FAIL %s: gitleaks error: %s" % (os.path.basename(root), exc),
+            print("secrets: FAIL %s: gitleaks error: %s" % (cli.site_name(root), exc),
                   file=sys.stderr)
             overall = 1
             continue
-        name = os.path.basename(root)
+        name = cli.site_name(root)
         if args.write_baseline:
             baseline_dir.mkdir(parents=True, exist_ok=True)
             bpath.write_text(format_baseline(all_keys, site=name), encoding="utf-8")

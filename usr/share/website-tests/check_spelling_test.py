@@ -86,6 +86,19 @@ def run():
         p.write_text("# comment\n\na.html:teh\n", encoding="utf-8")
         ck(spelling.parse_baseline(p) == {"a.html:teh"}, "parse_baseline skips '#'/blank lines")
 
+    # --- site_name / _baseline_path: a build-output root is named by its repo, not '_site' ------
+    from dist_ai.webcheck import cli
+    ck(cli.site_name("/x/output-lies.github.io") == "output-lies.github.io",
+       "site_name of a repo-root is its basename")
+    ck(cli.site_name("/x/computer-security-research.github.io/_site") == "computer-security-research.github.io",
+       "site_name of a '_site' build output falls back to the parent repo (not '_site')")
+    ck(cli.site_name("/x/repo/_site/") == "repo", "trailing slash does not defeat the fallback")
+    ck(cli.site_name("_site") == "_site", "a bare '_site' with no parent keeps '_site'")
+    with tempfile.TemporaryDirectory() as tmp:
+        bp = spelling._baseline_path(Path(tmp), "/x/computer-security-research.github.io/_site")
+        ck(bp.name == "cspell-baseline-computer-security-research.github.io.txt",
+           "a '_site' root's baseline is named for the repo, not the generic '_site'")
+
     # --- error handling (stub subprocess.run) --------------------------------------------------
     class _P:
         def __init__(self, rc, out="", err=""):

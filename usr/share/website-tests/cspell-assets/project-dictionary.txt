@@ -32,3 +32,5 @@ timestamps
 checksum
 checksums
 changelog
+# Patrick Schleizer -- project founder / author; recurs on author + license pages across sites.
+Schleizer
