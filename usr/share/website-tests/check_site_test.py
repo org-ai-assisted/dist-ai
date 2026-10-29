@@ -597,6 +597,47 @@ def run():
         check('javascript: in a data-* attr not flagged',
               _inline_failures(root) == [], repr(_inline_failures(root)))
 
+    # CSP-hash exemption: the wiki-static pages ship a hash-pinned inline
+    # bootstrap script (script-src 'self' 'sha256-<body hash>'), which the CSP
+    # ALLOWS. An inline <script> is a violation ONLY when no CSP hash covers it;
+    # with the matching hash it must NOT be flagged. Compute the hash here so the
+    # fixture is self-consistent.
+    import base64 as _b64
+    import hashlib as _hashlib
+    _js_body = 'doThing();'
+    _js_elem = '<script>%s</script>' % _js_body
+    _js_hash = "'sha256-%s'" % _b64.b64encode(
+        _hashlib.sha256(_js_body.encode('utf-8')).digest()).decode('ascii')
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _cpage % (
+            _csp % ("'self' " + _js_hash), _js_elem))
+        check('CSP-hash-pinned inline <script> not flagged',
+              _inline_failures(root) == [], repr(_inline_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        # Family parity: a hash-LESS 'self' CSP keeps the inline script flagged.
+        _write(root, 'index.html', _cpage % (_csp % "'self'", _js_elem))
+        check('hash-less CSP still flags the inline <script> (family parity)',
+              any('inline <script>' in f for f in _inline_failures(root)),
+              repr(_inline_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        # A NON-matching hash does not cover this body -> still flagged.
+        _wrong = "'sha256-%s'" % _b64.b64encode(
+            _hashlib.sha256(b'otherScript();').digest()).decode('ascii')
+        _write(root, 'index.html', _cpage % (
+            _csp % ("'self' " + _wrong), _js_elem))
+        check('CSP hash that does not match the body still flags it',
+              any('inline <script>' in f for f in _inline_failures(root)),
+              repr(_inline_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        # A script-body hash does NOT cover an on*= handler (needs 'unsafe-hashes')
+        # -> the handler is STILL flagged even alongside a valid script hash.
+        _write(root, 'index.html', _cpage % (
+            _csp % ("'self' " + _js_hash),
+            _js_elem + '<button onClick="x()">go</button>'))
+        check('on*= handler still flagged even with a script hash present',
+              any('onclick' in f for f in _inline_failures(root)),
+              repr(_inline_failures(root)))
+
     check('check_no_inline_script invoked from main()',
           'check_no_inline_script(root' in main_body)
 

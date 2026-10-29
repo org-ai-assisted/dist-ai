@@ -20,8 +20,10 @@ Each <site-root> is the directory holding a site's index.html. The site's own
 identity is inferred from its directory name (matched against the known family).
 """
 
+import base64
 import calendar
 import datetime
+import hashlib
 import html.parser
 import math
 import os
@@ -837,14 +839,18 @@ _CSP_NON_SOURCE = frozenset({
 
 def _csp_directives(csp):
     # CSP is ';'-separated directives; each is a whitespace-separated name then
-    # its source tokens. Return {name: [tokens]} (all lower-cased). A repeated
-    # directive is ignored by the browser after its FIRST occurrence, so keep
-    # the first (setdefault) -- matching what the page actually enforces.
+    # its source tokens. Return {lower-name: [tokens]}. The directive NAME is
+    # case-insensitive (folded); source TOKENS keep their case, because a
+    # hash-source base64 ('sha256-...') is case-SENSITIVE and folding it would
+    # corrupt the digest -- callers that want case-folded tokens lowercase the
+    # CSP string themselves before calling. A repeated directive is ignored by
+    # the browser after its FIRST occurrence, so keep the first (setdefault) --
+    # matching what the page actually enforces.
     out: dict[str, list[str]] = {}
     for part in csp.split(';'):
         toks = part.split()
         if toks:
-            out.setdefault(toks[0].lower(), [t.lower() for t in toks[1:]])
+            out.setdefault(toks[0].lower(), toks[1:])
     return out
 
 
@@ -995,6 +1001,37 @@ _URL_ATTRS = frozenset((
     'href', 'xlink:href', 'src', 'action', 'formaction', 'data', 'poster',
 ))
 
+# A CSP hash-source token: 'sha256-<base64>' (sha256/sha384/sha512). The algorithm
+# part is case-insensitive per CSP3; the base64 digest is case-SENSITIVE, so the
+# token must reach here with its case intact (see _csp_directives).
+_CSP_HASH_RE = re.compile(
+    r"^'(sha(?:256|384|512))-([A-Za-z0-9+/]+={0,2})'$", re.IGNORECASE)
+
+
+def _csp_script_elem_hashes(csp):
+    """Normalized {'sha256-<b64>', ...} hash-sources that govern an inline
+    <script> ELEMENT: the effective script-src-elem list (script-src-elem, else
+    script-src, else default-src). Parsed from the RAW CSP so the base64 keeps
+    its case."""
+    directives = _csp_directives(csp)
+    sources = directives.get('script-src-elem', directives.get(
+        'script-src', directives.get('default-src', [])))
+    hashes = set()
+    for tok in sources:
+        match = _CSP_HASH_RE.match(tok)
+        if match:
+            hashes.add('%s-%s' % (match.group(1).lower(), match.group(2)))
+    return hashes
+
+
+def _inline_script_hashes(body):
+    # The CSP hash is base64(digest(exact script text)), prefixed by the algo.
+    # Return all three so a match against any CSP-listed algorithm exempts it.
+    data = body.encode('utf-8')
+    return {'%s-%s' % (algo, base64.b64encode(
+        hashlib.new(algo, data).digest()).decode('ascii'))
+        for algo in ('sha256', 'sha384', 'sha512')}
+
 
 class _InlineJSAudit(html.parser.HTMLParser):
     """Flag anything that needs 'unsafe-inline' to run: an executable inline
@@ -1004,11 +1041,12 @@ class _InlineJSAudit(html.parser.HTMLParser):
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
-        self.inline_script = False
+        self.inline_scripts = []   # body text of each executable inline <script>
         self.handlers = set()
         self.js_url = False
         self._script_depth = 0
         self._script_executable = False
+        self._script_body = []
 
     def _scan_attrs(self, attrs):
         for name, value in attrs:
@@ -1029,7 +1067,7 @@ class _InlineJSAudit(html.parser.HTMLParser):
         if srcdoc:
             sub = _InlineJSAudit()
             sub.feed(srcdoc)
-            self.inline_script = self.inline_script or sub.inline_script
+            self.inline_scripts += sub.inline_scripts
             self.handlers |= sub.handlers
             self.js_url = self.js_url or sub.js_url
 
@@ -1044,27 +1082,48 @@ class _InlineJSAudit(html.parser.HTMLParser):
             stype = (amap.get('type') or '').strip().lower()
             self._script_executable = (
                 not has_src and stype in _JS_SCRIPT_TYPES)
+            self._script_body = []
 
     def handle_endtag(self, tag):
         if tag == 'script' and self._script_depth:
             self._script_depth -= 1
+            # Capture the EXACT text between <script> and </script> (HTMLParser
+            # delivers script content raw, un-char-ref-decoded), so a CSP
+            # hash-source can be matched against it. A whitespace-only body runs
+            # nothing, so it is not recorded.
+            body = ''.join(self._script_body)
+            if self._script_executable and body.strip():
+                self.inline_scripts.append(body)
+            self._script_body = []
 
     def handle_data(self, data):
-        if self._script_depth and self._script_executable and data.strip():
-            self.inline_script = True
+        if self._script_depth and self._script_executable:
+            self._script_body.append(data)
 
 
 def check_no_inline_script(root, failures, pages=None):
     # Belt to check_csp's braces: even with the right CSP, a leftover inline
     # <script> / on*= / javascript: would just silently stop working. Flag it.
+    # Exception: an inline <script> BODY the page's own CSP pins by hash
+    # (script-src 'sha256-...') is ALLOWED to execute, so it is flagged only when
+    # none of its hashes is in the effective script-src-elem hash set. A plain
+    # hash does NOT cover an on*= handler or a javascript: URL (those need
+    # 'unsafe-hashes'), so those stay flagged unconditionally.
     for page in (html_files(root) if pages is None else pages):
         rel = os.path.relpath(page, root)
+        ext = Extractor()
         audit = _InlineJSAudit()
         with open(page, encoding='utf-8') as handle:
-            audit.feed(handle.read())
-        if audit.inline_script:
-            failures.append('%s: inline <script> body -- move it to an external '
-                            '.js file (script-src forbids inline)' % rel)
+            content = handle.read()
+        ext.feed(content)
+        audit.feed(content)
+        csp_hashes = _csp_script_elem_hashes(ext.csp) if ext.csp else set()
+        for body in audit.inline_scripts:
+            if _inline_script_hashes(body).isdisjoint(csp_hashes):
+                failures.append(
+                    '%s: inline <script> body -- move it to an external .js '
+                    'file or pin it with a CSP script-src hash '
+                    '(script-src forbids inline)' % rel)
         for name in sorted(audit.handlers):
             failures.append('%s: inline event handler %s= -- bind it in an '
                             'external .js file (script-src forbids inline)'
