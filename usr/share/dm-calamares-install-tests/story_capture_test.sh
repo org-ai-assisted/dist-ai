@@ -200,6 +200,18 @@ check "story_snap_nonblank default mode checks uniform-only" "${got}"
 got=0; ! grep --quiet --extended-regexp 'key 2a aa' "${guestctl_log}" || got=1
 check "story_snap_nonblank default mode does NOT tap Shift" "${got}"
 
+## --- story_snap_nonblank capture-mode override ($7) -------------------------------------------
+## $7='framebuffer' publishes the GUEST framebuffer (GUESTCTL shot) instead of grim's window grab,
+## even though the run is in window mode -- the VBox EFI splash renders in the guest, which grim
+## lags. Window mode (above, line "default mode") grim-grabs; the override flips it to GUESTCTL.
+story_capture="window"
+true > "${grim_log}"; true > "${guestctl_log}"
+story_snap_nonblank 11 firmware-logo 1 1 content '' framebuffer
+got=0; has 'testvm shot' "$(cat -- "${guestctl_log}")" || got=1
+check "story_snap_nonblank framebuffer override captures the GUEST (GUESTCTL shot)" "${got}"
+got=0; ! grep --quiet 'firmware-logo' "${grim_log}" || got=1
+check "story_snap_nonblank framebuffer override does NOT grim-grab the window" "${got}"
+
 ## --- story_snap_nonblank TIMEOUT discard is OPT-IN ($6) ---------------------------------------
 ## A frame that never passes the check (ibc always degenerate) times out. With the discard opt-in,
 ## the leftover frame + its gate sibling are REMOVED (a lenient cleanup cannot then publish a missed

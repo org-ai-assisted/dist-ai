@@ -502,6 +502,12 @@ story_snap_nonblank() {
    ## presence is later REQUIRED (vt-graphical-restored -> require_vt_captures) must NOT discard,
    ## or a slow render turns into a "capture missing" die instead of publishing what rendered.
    local discard_on_timeout="${6:-}"
+   ## Non-empty $7: override the capture mode for THIS milestone ('framebuffer' = publish the GUEST
+   ## framebuffer directly instead of the window grab). The VBox EFI logo renders in the guest
+   ## framebuffer, but the GUI window grab (grim) lags it during the brief (~0.6s) splash and records
+   ## black -- so firmware-logo captures the guest directly, where the splash is actually present. A
+   ## local shadows the global for capture_frame/gate_check_path (bash dynamic scope).
+   local story_capture="${7:-${story_capture}}"
    [ -n "${shot_dir}" ] || return 0
    local dest="${shot_dir}/${nn}-${name}.png" start="${SECONDS}"
    ## rich polls with image-blank-check's DEFAULT (near-blank) mode; uniform with --uniform-only;
@@ -1800,13 +1806,15 @@ main() {
    ## Start the coreboot COM1 drain as soon as the VM is up (a no-op without --coreboot-rom). One
    ## reconnecting drainer survives every later power-cycle (reboot_installed / mok_host_enroll).
    cb_drain_start
-   ## Firmware logo: the VBox EFI firmware DOES draw a splash (a ~1024x768 VirtualBox logo) about
-   ## a second after power-on in both efi and efi-secureboot, then blacks out ~1s later for the
-   ## GRUB mode switch. A blind single shot races that short window and usually grabs black, so
-   ## POLL fast over the first few seconds and keep the frame that actually rendered. On a genuine
-   ## miss story_snap_nonblank DISCARDS the black leftover (no misleading firmware-logo published);
+   ## Firmware logo: the VBox EFI firmware draws a ~1024x768 VirtualBox logo ~1s after power-on
+   ## (efi + efi-secureboot), then blacks out ~1s later for the GRUB mode switch. CAPTURE MODE =
+   ## framebuffer: the logo renders in the GUEST framebuffer, but grim's GUI window grab LAGS the
+   ## brief splash and records a black guest region (confirmed: the guest capture shows the logo
+   ## while the same-moment window grab is black). So publish the guest framebuffer directly, and
+   ## POLL fast over the first few seconds to land on the frame that rendered. On a genuine miss
+   ## story_snap_nonblank DISCARDS the black leftover (no misleading firmware-logo published);
    ## `|| true`: the universal floor owns the verdict (and keeps errexit off the timeout path).
-   story_snap_nonblank 11 firmware-logo 6 0.4 content discard || true
+   story_snap_nonblank 11 firmware-logo 6 0.4 content discard framebuffer || true
    ## No "live-kernel-boot" capture: Kicksecure boots SILENTLY (security-misc; no plymouth, no
    ## console), so the whole window between the GRUB menu and the painted desktop is black BY
    ## DESIGN -- there is no non-black kernel-boot frame to publish. The boot is evidenced by the
