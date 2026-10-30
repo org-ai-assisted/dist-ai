@@ -71,25 +71,72 @@ WORDING = [
 ]
 
 
-def _enforced_csp_contents(html_text):
-    """The `content` of every <meta http-equiv=content-security-policy> that is a
-    genuine CHILD of <head> -- i.e. BROWSER-ENFORCED (HTML spec: a meta-delivered CSP
-    is honored only as a head child). Uses the real HTML parser (BeautifulSoup + lxml,
-    already a dependency via domsnap) so head-child-ness is correct across the cases a
-    flat html.parser event stream cannot model: a meta in <body>, an implicit </head>
-    (a <body> with no explicit close), RCDATA text in <title>/<textarea> (a <meta>
-    there is text, not an element), and <template>/<noscript> content (not a direct
-    head child). recursive=False keeps only direct children, so a meta nested in any
-    head element is excluded. A non-enforced meta is never returned, so it can neither
-    exempt an inline script nor satisfy check_csp -- never a false green."""
+def _is_exec_inline_script(tag):
+    # An inline <script> the browser EXECUTES: no src (a src makes the body inert), a JS
+    # (or empty) type, and a non-whitespace body. Used by the CSP order check + the audit.
+    if tag.get('src') is not None:
+        return False
+    if (tag.get('type') or '').strip().lower() not in _JS_SCRIPT_TYPES:
+        return False
+    return bool((tag.string or '').strip())
+
+
+def _csp_meta_and_order(html_text):
+    """Parse with html5lib -- the WHATWG-spec HTML parser (already a dependency; bs4's
+    'lxml'/'html.parser' backends are NOT HTML5-spec) -- and return (enforced, script_
+    precedes):
+
+    `enforced` is the `content` of each <meta http-equiv=content-security-policy> that
+    is a genuine CHILD of <head>, i.e. BROWSER-ENFORCED (a meta-CSP is honored only as a
+    head child). The spec parser gets head placement right where libxml2/html.parser do
+    not: a tag that implicitly closes <head> (<body>, <svg>, <math>, <noembed>, ...), an
+    omitted </head>, RCDATA in <title>/<textarea>, <template>/<noscript> content, and the
+    after-head insertion mode. The http-equiv match is EXACT ASCII-case-insensitive, NOT
+    whitespace-stripped -- a browser ignores a padded ' content-security-policy ' pragma.
+
+    `script_precedes` is True when an executable inline <script> appears BEFORE the first
+    enforced meta in document order (a meta-CSP governs only content after it, so such a
+    script is unprotected)."""
     from bs4 import BeautifulSoup
-    soup = BeautifulSoup(html_text, 'lxml')
+    soup = BeautifulSoup(html_text, 'html5lib')
     head = soup.head
-    if head is None:
-        return []
-    return [meta.get('content') or ''
-            for meta in head.find_all('meta', recursive=False)
-            if (meta.get('http-equiv') or '').strip().lower() == 'content-security-policy']
+    metas = []
+    if head is not None:
+        metas = [m for m in head.find_all('meta', recursive=False)
+                 if (m.get('http-equiv') or '').lower() == 'content-security-policy']
+    enforced = [m.get('content') or '' for m in metas]
+    script_precedes = False
+    if metas:
+        for el in soup.descendants:
+            if el is metas[0]:
+                break
+            if getattr(el, 'name', None) == 'script' and _is_exec_inline_script(el):
+                script_precedes = True
+                break
+    return enforced, script_precedes
+
+
+def _enforced_csp_contents(html_text):
+    """The browser-ENFORCED (head-child) CSP meta contents -- see _csp_meta_and_order."""
+    return _csp_meta_and_order(html_text)[0]
+
+
+def _applied_csp_sets(html_text, inherited=()):
+    """The policy hash-set list governing THIS document's inline scripts (for the hash
+    exemption), as a list of frozensets: a body is exempt iff the list is NON-EMPTY and
+    the body hash is in EVERY set (CSP intersection). `inherited` are the ancestor
+    (srcdoc) policy sets. This document contributes: NOTHING if it has no enforced CSP
+    (the inherited policy passes through unchanged -- a srcdoc with no own meta still
+    obeys the embedder); its script-src-elem hashes if it has exactly ONE enforced CSP
+    and no inline script precedes it; else an EMPTY set (multiple metas, or a script
+    before the meta -> forfeit, nothing exempt)."""
+    enforced, script_precedes = _csp_meta_and_order(html_text)
+    applied = list(inherited)
+    if len(enforced) == 1 and not script_precedes:
+        applied.append(frozenset(_csp_script_elem_hashes(enforced[0])))
+    elif enforced:
+        applied.append(frozenset())
+    return applied
 
 
 class Extractor(html.parser.HTMLParser):
@@ -1146,27 +1193,19 @@ class _InlineJSAudit(html.parser.HTMLParser):
     (on*=), or a javascript: URL. All three are blocked once script-src drops
     'unsafe-inline', so the suite fails BEFORE such a page publishes broken."""
 
-    def __init__(self, enforced=(), inherited=None):
+    def __init__(self, applied=()):
         super().__init__(convert_charrefs=True)
-        # Which CSP metas are BROWSER-ENFORCED is decided by the real parser
-        # (_enforced_csp_contents) and handed in as `enforced` (their content strings);
-        # html.parser here only tracks DOCUMENT ORDER (did an enforced meta precede a
-        # script). `inherited` (srcdoc only) is the ancestor-policy predicate a srcdoc
-        # script must ALSO satisfy (CSP intersection).
-        self._enforced = set(enforced)
-        self.csp = enforced[0] if len(enforced) == 1 else None
-        self.csp_count = len(enforced)
-        self._inherited = inherited
-        # (body, csp_seen) per executable inline <script>: csp_seen = an enforced CSP
-        # preceded it in document order (a meta-CSP governs only content AFTER it).
-        self.inline_scripts = []
+        # CSP ENFORCEMENT (which metas count, document order, srcdoc inheritance) is
+        # decided by the spec parser (_applied_csp_sets); this html.parser pass only
+        # COLLECTS. `applied` is this document's policy hash-set list: a body is exempt
+        # iff `applied` is non-empty and the body hash is in EVERY set (CSP intersection).
+        self._applied = list(applied)
+        self.inline_scripts = []   # executable inline <script> bodies (exact text)
         self.handlers = set()
         self.js_url = False
-        self._flagged_srcdoc = []  # srcdoc bodies already resolved (parent-intersected)
-        self._csp_seen = False
+        self._flagged_srcdoc = []  # srcdoc bodies already resolved against their policy
         self._script_depth = 0
         self._script_executable = False
-        self._script_csp_seen = False
         self._script_body = []
 
     def _scan_attrs(self, attrs):
@@ -1178,25 +1217,19 @@ class _InlineJSAudit(html.parser.HTMLParser):
                 self.js_url = True
 
     def _recurse_srcdoc(self, tag, attrs):
-        # A srcdoc is a SEPARATE document; CSP3 has it INHERIT the embedder's policy,
-        # and its own head CSP applies too -- the effective policy is their INTERSECTION.
-        # So a srcdoc script is exempt only when BOTH the srcdoc's own policy AND every
-        # inherited ancestor policy hash-pin it: the parent hash alone never exempts (it
-        # could hide one the srcdoc blocks), nor the srcdoc's own alone (the parent could
-        # block it). Nested srcdoc chains the inherited predicate. Runs for the start-tag
-        # and the self-closing <iframe/>.
+        # A srcdoc is a SEPARATE document; CSP3 has it INHERIT the embedder's policy, and
+        # its own head CSP applies too -- the effective policy is their INTERSECTION. So
+        # resolve the srcdoc's scripts against (inherited parent policy + srcdoc's own);
+        # a srcdoc with no own CSP passes the inherited policy through unchanged. The
+        # parent hash alone never exempts a srcdoc script (it could hide one the srcdoc
+        # blocks), nor the srcdoc's own alone (the parent could block it). Nested srcdoc
+        # chains. Runs for the start-tag and the self-closing <iframe/>.
         if tag != 'iframe':
             return
         srcdoc = dict(attrs).get('srcdoc')
         if not srcdoc:
             return
-        parent_single = self.csp is not None and self.csp_count == 1
-        parent_hashes = _csp_script_elem_hashes(self.csp) if parent_single else set()
-        ancestor = self._inherited
-        def inherited(body):
-            here = parent_single and not _inline_script_hashes(body).isdisjoint(parent_hashes)
-            return here and (ancestor is None or ancestor(body))
-        sub = _InlineJSAudit(_enforced_csp_contents(srcdoc), inherited=inherited)
+        sub = _InlineJSAudit(_applied_csp_sets(srcdoc, inherited=self._applied))
         sub.feed(srcdoc)
         self._flagged_srcdoc += sub.flagged_bodies()
         self.handlers |= sub.handlers
@@ -1205,12 +1238,6 @@ class _InlineJSAudit(html.parser.HTMLParser):
     def handle_starttag(self, tag, attrs):
         self._scan_attrs(attrs)
         self._recurse_srcdoc(tag, attrs)
-        if tag == 'meta' and (dict(attrs).get('http-equiv') or '').lower() \
-                == 'content-security-policy' \
-                and (dict(attrs).get('content') or '') in self._enforced:
-            # A browser-enforced (head-child) CSP, per the real parser; mark it seen so
-            # a LATER inline script is hash-exempt (a script BEFORE it is unprotected).
-            self._csp_seen = True
         if tag == 'script':
             self._script_depth += 1
             amap = dict(attrs)
@@ -1219,9 +1246,6 @@ class _InlineJSAudit(html.parser.HTMLParser):
             stype = (amap.get('type') or '').strip().lower()
             self._script_executable = (
                 not has_src and stype in _JS_SCRIPT_TYPES)
-            # Snapshot CSP-seen at the START tag: the script's position relative
-            # to the meta is what decides whether the meta-CSP governs it.
-            self._script_csp_seen = self._csp_seen
             self._script_body = []
 
     def handle_endtag(self, tag):
@@ -1233,7 +1257,7 @@ class _InlineJSAudit(html.parser.HTMLParser):
             # nothing, so it is not recorded.
             body = ''.join(self._script_body)
             if self._script_executable and body.strip():
-                self.inline_scripts.append((body, self._script_csp_seen))
+                self.inline_scripts.append(body)
             self._script_body = []
 
     def handle_data(self, data):
@@ -1241,19 +1265,18 @@ class _InlineJSAudit(html.parser.HTMLParser):
             self._script_body.append(data)
 
     def flagged_bodies(self):
-        """Executable inline-script bodies that are NOT CSP-exempt, plus any srcdoc
-        bodies already resolved against their policy intersection. A body is exempt
-        only when this document has exactly ONE enforced CSP that preceded the script
-        in document order and hash-pins it AND (srcdoc only) every inherited ancestor
-        policy also pins it. Any other shape (no enforced CSP, multiple, script before
-        the meta) forfeits -- erring toward flagging so a generator CSP bug is caught."""
-        single = self.csp is not None and self.csp_count == 1
-        hashes = _csp_script_elem_hashes(self.csp) if single else set()
-        inh = self._inherited
-        own = [body for body, csp_seen in self.inline_scripts
-               if not (single and csp_seen
-                       and not _inline_script_hashes(body).isdisjoint(hashes)
-                       and (inh is None or inh(body)))]
+        """Executable inline-script bodies NOT CSP-exempt, plus srcdoc bodies already
+        resolved against their policy intersection. A body is exempt iff `applied` is
+        non-empty AND the body hash is in EVERY applied policy set (CSP intersection) --
+        so no enforced CSP, a forfeited one (multiple metas / a script before the meta),
+        or a parent/srcdoc policy that does not pin it all leave the body flagged."""
+        own = []
+        for body in self.inline_scripts:
+            hashes = _inline_script_hashes(body)
+            exempt = bool(self._applied) and all(
+                not hashes.isdisjoint(policy) for policy in self._applied)
+            if not exempt:
+                own.append(body)
         return own + self._flagged_srcdoc
 
 
@@ -1266,23 +1289,22 @@ def check_no_inline_script(root, failures, pages=None):
     # hash does NOT cover an on*= handler or a javascript: URL (those need
     # 'unsafe-hashes'), so those stay flagged unconditionally.
     #
-    # The hash exemption assumes the SINGLE well-formed head-level CSP meta our
-    # generator emits (mw-static-generator): exactly ONE head-enforced
-    # <meta http-equiv=content-security-policy>, with the inline <script> AFTER it
-    # in document order. _InlineJSAudit.flagged_bodies() owns that logic (per
-    # document, so a srcdoc judges against its OWN CSP, not the parent's); any other
-    # shape forfeits the exemption, erring toward flagging so a generator CSP bug is
-    # caught:
-    #   - no head-enforced CSP (a body/inert meta is NOT browser-enforced);
-    #   - MORE than one CSP meta: a browser enforces ALL policies (their
-    #     intersection), but we model one, so honoring a single hash would be a
-    #     false-green -> no exemption;
-    #   - a script BEFORE the CSP meta: unprotected -> no exemption.
+    # The hash exemption assumes the SINGLE well-formed head-level CSP meta our generator
+    # emits (mw-static-generator): exactly ONE head-enforced
+    # <meta http-equiv=content-security-policy>, with the inline <script> AFTER it in
+    # document order. _applied_csp_sets() (spec parser) computes the governing policy
+    # hash-set list -- head placement, exact http-equiv, document order and srcdoc
+    # inheritance all correct; any other shape forfeits the exemption, erring toward
+    # flagging so a generator CSP bug is caught:
+    #   - no head-enforced CSP (a body/inert/padded meta is NOT browser-enforced);
+    #   - MORE than one CSP meta, or a script BEFORE the meta: forfeit (an empty set in
+    #     the applied list -> nothing exempt);
+    #   - a srcdoc script must satisfy the inherited parent policy AND its own.
     for page in (html_files(root) if pages is None else pages):
         rel = os.path.relpath(page, root)
         with open(page, encoding='utf-8') as handle:
             content = handle.read()
-        audit = _InlineJSAudit(_enforced_csp_contents(content))
+        audit = _InlineJSAudit(_applied_csp_sets(content))
         audit.feed(content)
         for _ in audit.flagged_bodies():
             failures.append(

@@ -821,6 +821,48 @@ def run():
         check('CSP meta after a mismatched </textarea> inside <title> does not exempt',
               any('inline <script>' in f for f in _inline_failures(root)),
               repr(_inline_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        # An <svg> in <head> implicitly CLOSES head (HTML "in head" insertion mode), so a
+        # meta after it is a body element -- NOT browser-enforced. (libxml2/lxml keep it a
+        # head child; the WHATWG-spec parser does not.)
+        _svg = ('<!doctype html><html><head><svg></svg>'
+                '<meta http-equiv="Content-Security-Policy" content="%s">'
+                '</head><body>%s</body></html>')
+        _write(root, 'index.html', _svg % (_csp % ("'self' " + _js_hash), _js_elem))
+        check('CSP meta after <svg> in head (implicit close) does not exempt the script',
+              any('inline <script>' in f for f in _inline_failures(root)),
+              repr(_inline_failures(root)))
+        check('CSP meta after <svg> in head is not credited by check_csp',
+              any('no Content-Security-Policy' in f for f in _csp_failures(root)),
+              repr(_csp_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        # http-equiv is an enumerated attribute: the browser matches the value EXACTLY
+        # (ASCII case-insensitive, NOT whitespace-trimmed). A padded pragma is ignored,
+        # so it is no CSP -- the script runs unprotected and must be flagged.
+        _padded = ('<!doctype html><html><head>'
+                   '<meta http-equiv=" content-security-policy " content="%s">'
+                   '</head><body>%s</body></html>')
+        _write(root, 'index.html', _padded % (_csp % ("'self' " + _js_hash), _js_elem))
+        check('a whitespace-padded http-equiv is not a CSP pragma (script flagged)',
+              any('inline <script>' in f for f in _inline_failures(root)),
+              repr(_inline_failures(root)))
+        check('a whitespace-padded http-equiv is not credited by check_csp',
+              any('no Content-Security-Policy' in f for f in _csp_failures(root)),
+              repr(_csp_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        # An inert <template> meta whose content EQUALS the real CSP must not mark the
+        # policy "already seen": here the real head CSP comes AFTER the script, so the
+        # script is unprotected and must be flagged. (Correlating parser events by content
+        # string credits the inert meta; the spec-tree order check does not.)
+        _dup = ('<!doctype html><html><head>'
+                '<template><meta http-equiv="Content-Security-Policy" content="%s"></template>'
+                '%s<meta http-equiv="Content-Security-Policy" content="%s">'
+                '</head><body></body></html>')
+        _pol = _csp % ("'self' " + _js_hash)
+        _write(root, 'index.html', _dup % (_pol, _js_elem, _pol))
+        check('a <template> meta with duplicate content does not pre-exempt a later script',
+              any('inline <script>' in f for f in _inline_failures(root)),
+              repr(_inline_failures(root)))
 
     import html as _html
     # FIX(grok-2): a srcdoc INHERITS the embedder's CSP (CSP3) and its own head CSP
@@ -859,6 +901,26 @@ def run():
         _write(root, 'index.html', _srcdoc_page(
             _csp % ("'self' " + _js_hash), _inner(_csp % ("'self' " + _js_hash))))
         check('srcdoc pinned by BOTH parent and own CSP is exempt (intersection)',
+              _inline_failures(root) == [], repr(_inline_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        # srcdoc with no own CSP INHERITS the parent policy unchanged (CSP3): the parent
+        # pins the script -> it runs -> exempt. (A model that blocks when a level has no
+        # own policy false-fails here.)
+        _write(root, 'index.html', _srcdoc_page(
+            _csp % ("'self' " + _js_hash),
+            '<head></head><body>%s</body>' % _js_elem))
+        check('srcdoc with no own CSP inherits the parent pin and is exempt',
+              _inline_failures(root) == [], repr(_inline_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        # NESTED srcdoc: an intermediate with NO own policy must pass the outer policy
+        # through to the grandchild (which also pins it) -> exempt. (Breaking the inherited
+        # chain at a policy-less middle level false-fails the grandchild.)
+        _inner_grandchild = ('<head></head><body><iframe srcdoc="%s"></iframe></body>'
+                             % _html.escape(_inner(_csp % ("'self' " + _js_hash)),
+                                            quote=True))
+        _write(root, 'index.html', _srcdoc_page(
+            _csp % ("'self' " + _js_hash), _inner_grandchild))
+        check('nested srcdoc inherits through a policy-less middle level (exempt)',
               _inline_failures(root) == [], repr(_inline_failures(root)))
     with tempfile.TemporaryDirectory() as root:
         # Non-regression: the ordinary head-child CSP hash exemption still holds.
