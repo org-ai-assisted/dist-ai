@@ -134,22 +134,32 @@ def _enforced_csp_contents(html_text):
     return _csp_meta_and_order(html_text)[0]
 
 
-def _applied_csp_sets(html_text, inherited=()):
-    """The policy hash-set list governing THIS document's inline scripts (for the hash
-    exemption), as a list of frozensets: a body is exempt iff the list is NON-EMPTY and
-    the body hash is in EVERY set (CSP intersection). `inherited` are the ancestor
-    (srcdoc) policy sets. This document contributes: NOTHING if it has no enforced CSP
-    (the inherited policy passes through unchanged -- a srcdoc with no own meta still
-    obeys the embedder); its script-src-elem hashes if it has exactly ONE enforced CSP
-    and no inline script precedes it; else an EMPTY set (multiple metas, or a script
-    before the meta -> forfeit, nothing exempt)."""
-    enforced, script_precedes = _csp_meta_and_order(html_text)
-    applied = list(inherited)
-    if len(enforced) == 1 and not script_precedes:
-        applied.append(frozenset(_csp_script_elem_hashes(enforced[0])))
-    elif enforced:
-        applied.append(frozenset())
-    return applied
+def _enforced_sets(enforced):
+    """The hash-set list a document's enforced head CSP imposes on GOVERNED content,
+    as the browser applies it to the document AND to any srcdoc it embeds (CSP3
+    inheritance): [script-src-elem hashes] for exactly one enforced head meta,
+    [frozenset()] for more than one (their intersection we do not model -> forfeit,
+    so nothing is exempt; safe over-flag), [] for none. This is independent of the
+    document's own internal script ordering -- a meta governs everything it covers
+    regardless of where a sibling script sits (that ordering is an OWN-script concern,
+    handled by _own_applied), so it is what a srcdoc INHERITS."""
+    if len(enforced) == 1:
+        return [frozenset(_csp_script_elem_hashes(enforced[0]))]
+    if enforced:
+        return [frozenset()]
+    return []
+
+
+def _own_applied(enforced, script_precedes):
+    """The policy hash-set list governing a document's OWN inline scripts: its enforced
+    head CSP (see _enforced_sets), additionally forfeited (an empty set) when an inline
+    script PRECEDES the meta in document order -- that script is unprotected, so the
+    whole document's own exemption is forfeited (over-flag, never a false green). The
+    ordering forfeit is OWN-only: it must not travel into a srcdoc (which inherits the
+    _enforced_sets regardless of the embedder's internal ordering)."""
+    if script_precedes and enforced:
+        return [frozenset()]
+    return _enforced_sets(enforced)
 
 
 class Extractor(html.parser.HTMLParser):
@@ -1206,13 +1216,18 @@ class _InlineJSAudit(html.parser.HTMLParser):
     (on*=), or a javascript: URL. All three are blocked once script-src drops
     'unsafe-inline', so the suite fails BEFORE such a page publishes broken."""
 
-    def __init__(self, applied=()):
+    def __init__(self, applied=(), inherited_enforced=()):
         super().__init__(convert_charrefs=True)
         # CSP ENFORCEMENT (which metas count, document order, srcdoc inheritance) is
-        # decided by the spec parser (_applied_csp_sets); this html.parser pass only
-        # COLLECTS. `applied` is this document's policy hash-set list: a body is exempt
-        # iff `applied` is non-empty and the body hash is in EVERY set (CSP intersection).
+        # decided by the spec parser (_csp_meta_and_order); this html.parser pass only
+        # COLLECTS. `applied` is this document's policy hash-set list governing its OWN
+        # scripts: a body is exempt iff `applied` is non-empty and the body hash is in
+        # EVERY set (CSP intersection). `inherited_enforced` is the ENFORCED-policy chain
+        # (ancestors + this doc, with NO own-ordering forfeit) a srcdoc inherits -- kept
+        # separate from `applied` so the embedder's own-script forfeit never poisons a
+        # srcdoc's inheritance.
         self._applied = list(applied)
+        self._inherited_enforced = list(inherited_enforced)
         self.inline_scripts = []   # executable inline <script> bodies (exact text)
         self.handlers = set()
         self.js_url = False
@@ -1230,19 +1245,25 @@ class _InlineJSAudit(html.parser.HTMLParser):
                 self.js_url = True
 
     def _recurse_srcdoc(self, tag, attrs):
-        # A srcdoc is a SEPARATE document; CSP3 has it INHERIT the embedder's policy, and
-        # its own head CSP applies too -- the effective policy is their INTERSECTION. So
-        # resolve the srcdoc's scripts against (inherited parent policy + srcdoc's own);
-        # a srcdoc with no own CSP passes the inherited policy through unchanged. The
-        # parent hash alone never exempts a srcdoc script (it could hide one the srcdoc
-        # blocks), nor the srcdoc's own alone (the parent could block it). Nested srcdoc
-        # chains. Runs for the start-tag and the self-closing <iframe/>.
+        # A srcdoc is a SEPARATE document; CSP3 has it INHERIT the embedder's ENFORCED
+        # policy, and its own head CSP applies too -- the effective policy is their
+        # INTERSECTION. It inherits what the embedder ENFORCES (_inherited_enforced),
+        # NOT the embedder's own-script forfeit state: the browser applies the inherited
+        # policy to the srcdoc regardless of the embedder's internal script ordering. So
+        # the srcdoc's OWN scripts are governed by (inherited enforced chain + the
+        # srcdoc's own applied, which keeps the srcdoc's OWN ordering forfeit), and the
+        # chain passed to a NESTED srcdoc is (inherited enforced + the srcdoc's own
+        # enforced, no ordering forfeit). Neither the parent nor the srcdoc's own policy
+        # alone exempts. Runs for the start-tag and the self-closing <iframe/>.
         if tag != 'iframe':
             return
         srcdoc = dict(attrs).get('srcdoc')
         if not srcdoc:
             return
-        sub = _InlineJSAudit(_applied_csp_sets(srcdoc, inherited=self._applied))
+        enforced, precedes = _csp_meta_and_order(srcdoc)
+        srcdoc_applied = self._inherited_enforced + _own_applied(enforced, precedes)
+        srcdoc_chain = self._inherited_enforced + _enforced_sets(enforced)
+        sub = _InlineJSAudit(srcdoc_applied, inherited_enforced=srcdoc_chain)
         sub.feed(srcdoc)
         self._flagged_srcdoc += sub.flagged_bodies()
         self.handlers |= sub.handlers
@@ -1305,10 +1326,10 @@ def check_no_inline_script(root, failures, pages=None):
     # The hash exemption assumes the SINGLE well-formed head-level CSP meta our generator
     # emits (mw-static-generator): exactly ONE head-enforced
     # <meta http-equiv=content-security-policy>, with the inline <script> AFTER it in
-    # document order. _applied_csp_sets() (spec parser) computes the governing policy
-    # hash-set list -- head placement, exact http-equiv, document order and srcdoc
-    # inheritance all correct; any other shape forfeits the exemption, erring toward
-    # flagging so a generator CSP bug is caught:
+    # document order. _csp_meta_and_order() (spec parser) + _own_applied() compute the
+    # governing policy hash-set list -- head placement, exact http-equiv, document order
+    # and srcdoc inheritance all correct; any other shape forfeits the exemption, erring
+    # toward flagging so a generator CSP bug is caught:
     #   - no head-enforced CSP (a body/inert/padded meta is NOT browser-enforced);
     #   - MORE than one CSP meta, or a script BEFORE the meta: forfeit (an empty set in
     #     the applied list -> nothing exempt);
@@ -1317,7 +1338,9 @@ def check_no_inline_script(root, failures, pages=None):
         rel = os.path.relpath(page, root)
         with open(page, encoding='utf-8') as handle:
             content = handle.read()
-        audit = _InlineJSAudit(_applied_csp_sets(content))
+        enforced, precedes = _csp_meta_and_order(content)
+        audit = _InlineJSAudit(_own_applied(enforced, precedes),
+                               inherited_enforced=_enforced_sets(enforced))
         audit.feed(content)
         for _ in audit.flagged_bodies():
             failures.append(

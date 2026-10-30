@@ -923,6 +923,23 @@ def run():
         check('nested srcdoc inherits through a policy-less middle level (exempt)',
               _inline_failures(root) == [], repr(_inline_failures(root)))
     with tempfile.TemporaryDirectory() as root:
+        # The embedder's OWN forfeit (a script before its meta) must NOT poison a srcdoc's
+        # inheritance: the browser enforces the embedder's policy on the srcdoc regardless
+        # of the embedder's internal ordering. Parent forfeits (before() precedes its meta)
+        # but its meta pins run(); srcdoc also pins run() -> run() runs (inherited AND own
+        # pin it) -> only before() is flagged, NOT run(). (A model inheriting the parent's
+        # forfeit STATE spuriously flags run() too.)
+        _before = '<script>before();</script>'
+        _parent = ('<!doctype html><html><head>%s'
+                   '<meta http-equiv="Content-Security-Policy" content="%s">'
+                   '</head><body><iframe srcdoc="%s"></iframe></body></html>'
+                   % (_before, _csp % ("'self' " + _js_hash),
+                      _html.escape(_inner(_csp % ("'self' " + _js_hash)), quote=True)))
+        _write(root, 'index.html', _parent)
+        fails = _inline_failures(root)
+        check('embedder own-forfeit does not poison srcdoc inheritance (only before() flagged)',
+              len(fails) == 1 and all('inline <script>' in f for f in fails), repr(fails))
+    with tempfile.TemporaryDirectory() as root:
         # Non-regression: the ordinary head-child CSP hash exemption still holds.
         _write(root, 'index.html', _cpage % (_csp % ("'self' " + _js_hash), _js_elem))
         check('head-child CSP hash still exempts the inline script (no regression)',
