@@ -10,6 +10,7 @@ const assert = require('node:assert');
 const { loadScript, sitePath } = require('./harness.js');
 
 const JS = sitePath('secure-terminal.github.io', 'copy.js');
+if (!require('node:fs').existsSync(JS)) { return; }   // skip when this site is absent (partial checkout)
 const BOX = '<div class="copybox"><code class="cmd">sudo apt update</code>'
           + '<button class="copybtn">Copy</button></div>';
 const tick = function () { return new Promise(function (r) { setImmediate(r); }); };

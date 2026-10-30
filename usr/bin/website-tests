@@ -432,6 +432,7 @@ delegate_sandbox_lane 'website-vnu-tests (vnu conformance)' webcheck-vnu-sandbox
 delegate_sandbox_lane 'website-lighthouse-tests (lighthouse)' webcheck-lighthouse-sandbox "${roots[@]}"
 delegate_sandbox_lane 'website-axe-tests (axe-core)' webcheck-axe-sandbox "${roots[@]}"
 delegate_sandbox_lane 'website-cspell-tests (spell-check)' webcheck-cspell-sandbox "${roots[@]}"
+delegate_sandbox_lane 'website-jscov-tests (JS unit coverage)' webcheck-jscov-sandbox "${roots[@]}"
 
 ## Shot-inventory guard (secure-terminal site only): every committed shot is a
 ## page-referenced generator artifact and every gallery reference resolves -- no

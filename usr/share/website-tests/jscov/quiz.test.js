@@ -9,6 +9,7 @@ const assert = require('node:assert');
 const { loadScript, sitePath } = require('./harness.js');
 
 const JS = sitePath('output-lies.github.io', 'quiz/quiz.js');
+if (!require('node:fs').existsSync(JS)) { return; }   // skip when this site is absent (partial checkout)
 const tick = function () { return new Promise(function (r) { setImmediate(r); }); };
 
 /* One question: answer is 'lie' or 'honest'; two choice buttons; a verdict span. */

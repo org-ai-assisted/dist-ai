@@ -10,6 +10,7 @@ const assert = require('node:assert');
 const { loadScript, sitePath } = require('./harness.js');
 
 const JS = sitePath('secure-terminal.github.io', 'share.js');
+if (!require('node:fs').existsSync(JS)) { return; }   // skip when this site is absent (partial checkout)
 const tick = function () { return new Promise(function (r) { setImmediate(r); }); };
 
 const FSHARE =

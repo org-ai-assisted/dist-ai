@@ -13,7 +13,7 @@ const COPIES = [
   sitePath('output-lies.github.io', 'share.js'),
   sitePath('org-ai-assisted.github.io', 'share.js'),
   sitePath('output-lies.github.io', 'git-diffs-lie/share.js'),
-];
+].filter(function (p) { return require('node:fs').existsSync(p); });   // drop sites absent in a partial checkout
 
 const FSHARE =
   '<div class="fshare">'

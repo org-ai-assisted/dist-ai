@@ -15,6 +15,7 @@ const SIMPLE = [
   sitePath('output-lies.github.io', 'paste/copy.js'),
 ];
 const WITHNAV = sitePath('output-lies.github.io', 'git-diffs-lie/all/copy.js');
+if (!require('node:fs').existsSync(WITHNAV)) { return; }   // skip when this site is absent (partial checkout)
 const BOX = '<div class="copybox"><code class="cmd">cmd text</code>'
           + '<button class="copybtn">Copy</button></div>';
 const tick = function () { return new Promise(function (r) { setImmediate(r); }); };

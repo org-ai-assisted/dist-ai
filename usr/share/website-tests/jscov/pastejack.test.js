@@ -10,6 +10,7 @@ const assert = require('node:assert');
 const { loadScript, sitePath } = require('./harness.js');
 
 const JS = sitePath('secure-terminal.github.io', 'attacks/pastejack.js');
+if (!require('node:fs').existsSync(JS)) { return; }   // skip when this site is absent (partial checkout)
 const DOM = '<button id="pd-copy">c</button><button id="pd-reveal">r</button>'
           + '<div id="pd-status"></div><div id="pd-out" hidden></div>';
 const tick = function () { return new Promise(function (r) { setImmediate(r); }); };

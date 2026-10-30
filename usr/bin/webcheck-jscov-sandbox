@@ -14,7 +14,8 @@
 ##
 ##   webcheck-jscov-sandbox <site-root> [<site-root> ...]
 ##
-## Exit: 0 all covered JS at 100%; 1 a test failure or a coverage shortfall.
+## Exit: 0 all covered JS at 100%; 1 a test failure or a coverage shortfall; 77 node+c8 absent
+## locally AND no usable sandbox (env-unmet SKIP, like vnu/axe/cspell -- never a masked pass).
 
 set -o errexit
 set -o nounset
@@ -46,12 +47,50 @@ if [ "$#" -eq 0 ]; then
    die 'usage: webcheck-jscov-sandbox <site-root> [<site-root> ...]'
 fi
 
-command -v sandbox >/dev/null 2>&1 \
-   || die 'the review sandbox (sandbox command) is not available on this host'
-: "${QUBE_CTL_TARGET:=temp-claude}"
-export QUBE_CTL_TARGET
-sandbox exec --pid-scope private -- type sandbox-confine >/dev/null 2>&1 \
-   || die 'sandbox is missing sandbox-confine (bwrap confinement)'
+## Local-first (mirrors webcheck-cspell-sandbox / vnu / axe): run the gate DIRECTLY where node
+## + c8 + jsdom resolve (a CI runner provisioned like `provision jstest`, or in-sandbox-direct)
+## -- so the lane RUNS in CI, not only ever delegate. On this trusted dev VM node is
+## external-tool-guarded and c8 is not on PATH, so this is naturally inert and we delegate to the
+## sandbox. WEBCHECK_NO_LOCAL=1 forces the sandbox path (regression test / orchestrator). run.sh
+## itself sets NODE_PATH="$(npm root -g)" so jsdom + c8 resolve, and its jscov-selftest keeps the
+## gate honest wherever it runs.
+run_local=0
+if [ "${WEBCHECK_NO_LOCAL:-}" != '1' ] && command -v node >/dev/null 2>&1 \
+   && command -v c8 >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
+   ## The local path runs run.sh, whose actual requirements are: Node >= 22 (its
+   ## `node --test <glob>` needs the ** glob Node 20 lacks), c8, npm (run.sh sets
+   ## NODE_PATH="$(npm root -g)"), AND jsdom resolvable THERE (harness.js require('jsdom')).
+   ## Probe ALL of them so a runner with only some -- e.g. jsdom installed project-locally, not
+   ## global -- FALLS THROUGH to the sandbox (pinned Node 22 + provisioned jsdom) instead of a
+   ## false-RED local run. Mirrors cspell's version gate: the local precondition must match what
+   ## the gate actually needs. ${//[0-9]/} empties an all-numeric string (non-numeric/empty -> 0).
+   node_major="$(node --version 2>/dev/null || true)"
+   node_major="${node_major#v}"
+   node_major="${node_major%%.*}"
+   if [ -n "${node_major}" ] && [ -z "${node_major//[0-9]/}" ] \
+      && [ "${node_major}" -ge 22 ] \
+      && NODE_PATH="$(npm root -g 2>/dev/null)" node -e 'require.resolve("jsdom")' >/dev/null 2>&1; then
+      run_local=1
+   fi
+fi
+
+if [ "${run_local}" != '1' ]; then
+   ## No local node+c8. Reach the review sandbox -- unless we are inside it already (cannot nest),
+   ## it is disabled, or there is none: then the lane is genuinely env-unmet, so exit 77 (the
+   ## launcher's delegate_sandbox_lane maps 77 to SKIP) like the vnu/axe/cspell siblings -- NEVER
+   ## die 1, which delegate_sandbox_lane would turn into a FAIL. Never a masked failure: a lane
+   ## that RAN exits 0/non-77.
+   if [ "${DIST_AI_IN_SANDBOX:-}" = '1' ] || [ "${WEBSITE_TESTS_NO_SANDBOX:-}" = '1' ] \
+      || ! command -v sandbox >/dev/null 2>&1; then
+      printf '%s\n' 'webcheck-jscov-sandbox: node+c8 absent locally and no usable sandbox -- SKIP (77)' >&2
+      ## style-ok: allow-skip: env-unmet -- no local node+c8 and no usable sandbox; delegate_sandbox_lane maps 77 to SKIP, never a masked pass (a lane that RAN exits 0/non-77 above)
+      exit 77
+   fi
+   : "${QUBE_CTL_TARGET:=temp-claude}"
+   export QUBE_CTL_TARGET
+   sandbox exec --pid-scope private -- type sandbox-confine >/dev/null 2>&1 \
+      || die 'sandbox is missing sandbox-confine (bwrap confinement)'
+fi
 
 ## Stage the jscov harness + each site root (no .git) into one tree, sync it in, run the gate
 ## confined. Site-root basenames must be unique (they become roots/<base>). The tests reference
@@ -91,6 +130,57 @@ for root in "$@"; do
    rsync --archive --prune-empty-dirs --exclude='.git' --include='*/' --include='*.js' \
       --exclude='*' -- "${root}/" "${staging}/roots/${base}/"
 done
+
+## Scope covered.txt to the sites actually passed. website-tests resolves site roots
+## DYNAMICALLY (add_root), so a PARTIAL checkout -- some covered sites absent -- is a supported
+## state; every other lane handles roots independently. covered.txt pins a GLOBAL cross-site
+## set, so without scoping run.sh would FATAL on a covered file whose site was not passed -- a
+## false RED that can block a single-site deploy. Drop covered entries whose site is not among
+## the passed roots (seen_base holds exactly those); a PRESENT site with a MISSING covered file
+## still FATALs in run.sh (a real regression, never masked).
+scoped_covered="${staging}/jscov/covered.txt"
+scoped_tmp="${scoped_covered}.scoped"
+touch -- "${scoped_tmp}"
+kept_entries=0
+while IFS= read -r cov_line || [ -n "${cov_line}" ]; do
+   case "${cov_line}" in
+      ''|'#'*)
+         printf '%s\n' "${cov_line}" >> "${scoped_tmp}"
+         continue
+         ;;
+      roots/*/*)
+         cov_rest="${cov_line#roots/}"
+         cov_base="${cov_rest%%/*}"
+         if [ -n "${seen_base[${cov_base}]:-}" ]; then
+            printf '%s\n' "${cov_line}" >> "${scoped_tmp}"
+            kept_entries=$(( kept_entries + 1 ))
+         fi
+         ## else: this covered site was not passed as a root -- not under test, so drop it.
+         ;;
+      *)
+         ## Not a roots/<site>/... entry (unexpected); keep it so run.sh validates/FATALs.
+         printf '%s\n' "${cov_line}" >> "${scoped_tmp}"
+         kept_entries=$(( kept_entries + 1 ))
+         ;;
+   esac
+done < "${scoped_covered}"
+mv -- "${scoped_tmp}" "${scoped_covered}"
+
+## No covered first-party JS among the passed roots -- nothing to gate this run.
+if [ "${kept_entries}" -eq 0 ]; then
+   printf '%s\n' 'webcheck-jscov-sandbox: no covered first-party JS among the passed roots -- SKIP (77)' >&2
+   ## style-ok: allow-skip: env-unmet -- none of the passed roots carries a covered.txt site; a present site with a missing covered file still FATALs in run.sh, so this is never a masked pass
+   exit 77
+fi
+
+## Run the gate locally where node+c8 resolve, else confined in the sandbox. Both use the SAME
+## staged tree (jscov/ + jscov-selftest/ + roots/<base>/); run.sh needs cwd = the staging root
+## (it references jscov/..., jscov-selftest/... and roots/... as plain relative paths).
+if [ "${run_local}" = '1' ]; then
+   rc=0
+   ( cd -- "${staging}" && ./jscov/run.sh ) || rc="$?"
+   exit "${rc}"
+fi
 
 sandbox sync --delete "${staging}" "$(basename -- "${SANDBOX_WORKDIR}")" >&2 \
    || die 'failed to sync the staging tree into the sandbox'

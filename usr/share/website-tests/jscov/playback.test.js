@@ -9,6 +9,7 @@ const assert = require('node:assert');
 const { loadScript, sitePath } = require('./harness.js');
 
 const JS = sitePath('output-lies.github.io', 'terminal/playback.js');
+if (!require('node:fs').existsSync(JS)) { return; }   // skip when this site is absent (partial checkout)
 const DOM = '<div id="as-screen"></div><div id="as-cap"></div>'
           + '<button id="as-play">Play</button><div id="as-state"></div>';
 

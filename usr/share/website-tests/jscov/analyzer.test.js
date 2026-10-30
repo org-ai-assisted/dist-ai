@@ -11,6 +11,7 @@ const assert = require('node:assert');
 const { loadScript, sitePath } = require('./harness.js');
 
 const PATH = sitePath('output-lies.github.io', 'analyze/analyzer.js');
+if (!require('node:fs').existsSync(PATH)) { return; }   // skip when this site is absent (partial checkout)
 const OL = require(PATH);   // UMD: module.exports = factory()
 
 /* [codepoint, expected cls] -- one entry per classify() branch; null = safe (returns null). */

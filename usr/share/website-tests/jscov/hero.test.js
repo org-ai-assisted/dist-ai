@@ -11,6 +11,7 @@ const assert = require('node:assert');
 const { loadScript, sitePath } = require('./harness.js');
 
 const JS = sitePath('secure-terminal.github.io', 'hero.js');
+if (!require('node:fs').existsSync(JS)) { return; }   // skip when this site is absent (partial checkout)
 
 function cmpDom(dataStart) {
   return '<div class="herocmp"' + (dataStart === undefined ? '' : ' data-start="' + dataStart + '"') + '>'
