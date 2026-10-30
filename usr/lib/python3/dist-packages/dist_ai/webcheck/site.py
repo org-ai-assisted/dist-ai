@@ -865,7 +865,7 @@ def check_image_format(root, failures, pages=None):
                 continue
             path = os.path.join(base_dir, name)
             rel = os.path.relpath(path, root)
-            with open(path, encoding='utf-8') as handle:
+            with open(path, encoding='utf-8', errors='replace') as handle:
                 css = handle.read()
             for value in _css_urls(css):
                 if _is_raster(value) and not _allowed_raster(value):
@@ -1371,7 +1371,7 @@ def check_supply_chain(root, failures, pages=None):
                 continue
             path = os.path.join(base_dir, name)
             crel = os.path.relpath(path, root)
-            with open(path, encoding='utf-8') as handle:
+            with open(path, encoding='utf-8', errors='replace') as handle:
                 for value in _css_external_refs(handle.read()):
                     if _is_external(value):
                         failures.append('%s: CSS url() loads an external '
@@ -1567,7 +1567,11 @@ def _page_raster_files(root, pages):
                 continue
             css_path = os.path.join(base, name)
             try:
-                with open(css_path, encoding='utf-8') as handle:
+                # errors='replace' (as the HTML reads do): a non-UTF-8 CSS file must
+                # not abort the audit. url()/@import tokens are ASCII, so a U+FFFD
+                # elsewhere cannot forge or hide a raster ref. except OSError still
+                # covers a genuinely unreadable file.
+                with open(css_path, encoding='utf-8', errors='replace') as handle:
                     css_text = handle.read()
             except OSError:
                 continue
@@ -2221,7 +2225,7 @@ def _css_sources(root, pages=None):
                 continue
             path = os.path.join(base, name)
             try:
-                with open(path, encoding='utf-8') as handle:
+                with open(path, encoding='utf-8', errors='replace') as handle:
                     yield os.path.relpath(path, root), _strip_css_comments(handle.read())
             except OSError:
                 continue

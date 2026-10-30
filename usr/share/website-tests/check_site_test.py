@@ -175,6 +175,33 @@ def run():
         check('curated audit decodes a stylesheet-only raster (url() in external CSS)',
               any('bg.png' in f for f in fails), repr(fails))
 
+    # 7d. A non-UTF-8 .css file must not ABORT the audit. The read is errors='replace'
+    # (as the HTML reads are); the pre-fix 'encoding=utf-8' raised UnicodeDecodeError,
+    # which `except OSError` does not catch, so the whole asset-integrity lane threw
+    # instead of producing a result. url() stays ASCII, so the raster is still checked.
+    with tempfile.TemporaryDirectory() as root:
+        os.makedirs(os.path.join(root, 'media'))
+        _write(root, 'wiki/Page.html',
+               '<!doctype html><html><head><title>t</title>'
+               '<link rel="stylesheet" href="../style.css"></head>'
+               '<body>x</body></html>')
+        with open(os.path.join(root, 'style.css'), 'wb') as handle:
+            # a lone Latin-1 0xe9 -> invalid UTF-8; the url() and the rest stay ASCII.
+            handle.write(b'body{background:url(media/bg.png)} /* \xe9 */')
+        with open(os.path.join(root, 'media', 'bg.png'), 'wb') as handle:
+            handle.write(b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01'
+                         b'\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89'
+                         b'\x00\x00\x00\nIDATx\x9cc')
+        fails = []
+        try:
+            check_site.check_asset_integrity(
+                root, fails, pages=[os.path.join(root, 'wiki', 'Page.html')])
+            raised = False
+        except Exception:  # noqa: BLE001 -- the pre-fix bug was an uncaught decode error
+            raised = True
+        check('non-UTF-8 CSS does not abort the audit; its raster is still checked',
+              not raised and any('bg.png' in f for f in fails), repr(fails))
+
     # check_image_format: a CONTENT raster reference must be webp; og:image /
     # favicon may stay PNG; the static allowlist exempts a basename.
     _page = ('<!doctype html><html><head><title>t</title></head>'
@@ -671,6 +698,7 @@ def run():
             if '+' in _std or '/' in _std:
                 _ub, _ustd = _cand, _std
                 break
+        assert _ustd is not None and _ub is not None  # a digest with '+'/'/' always exists
         _url = _ustd.translate(str.maketrans('+/', '-_'))
         _write(root, 'index.html', _cpage % (
             _csp % ("'self' 'sha256-%s'" % _url),
@@ -1820,7 +1848,7 @@ def run():
             '<link rel="manifest" href="m.webmanifest">')
         tmpl = '<!doctype html><html><head>%s</head><body>x</body></html>'
         _write(root, 'index.html', tmpl % full_head)
-        fails: list = []
+        fails = []
         check_site.check_page_metadata(root, fails)
         check('a complete csr page passes page-metadata', fails == [], repr(fails))
         _write(root, 'index.html', tmpl % full_head.replace(
