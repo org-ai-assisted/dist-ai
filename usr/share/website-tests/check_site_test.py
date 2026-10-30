@@ -768,6 +768,75 @@ def run():
               any('inline <script>' in f for f in _inline_failures(root)),
               repr(_inline_failures(root)))
 
+    # FIX(grok-1): a CSP <meta> that is NOT a <head> child is NOT browser-enforced,
+    # so it must neither exempt an inline script nor satisfy check_csp. html.parser
+    # surfaces a <meta> in <body>, and inside <title>/<template>/<textarea>/<noscript>,
+    # as a real element; crediting it green-lights a script that runs with NO CSP.
+    with tempfile.TemporaryDirectory() as root:
+        _body_meta = ('<!doctype html><html><head><title>t</title></head><body>'
+                      '<meta http-equiv="Content-Security-Policy" content="%s">'
+                      '%s</body></html>')
+        _write(root, 'index.html', _body_meta % (_csp % ("'self' " + _js_hash), _js_elem))
+        check('CSP meta in <body> does not exempt the inline script (not head-enforced)',
+              any('inline <script>' in f for f in _inline_failures(root)),
+              repr(_inline_failures(root)))
+        check('CSP meta in <body> is not credited by check_csp (reports no CSP)',
+              any('no Content-Security-Policy' in f for f in _csp_failures(root)),
+              repr(_csp_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        _title_meta = ('<!doctype html><html><head><title>t'
+                       '<meta http-equiv="Content-Security-Policy" content="%s">'
+                       '</title></head><body>%s</body></html>')
+        _write(root, 'index.html', _title_meta % (_csp % ("'self' " + _js_hash), _js_elem))
+        check('CSP meta inside <title> (html.parser-surfaced) does not exempt the script',
+              any('inline <script>' in f for f in _inline_failures(root)),
+              repr(_inline_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        _tmpl_meta = ('<!doctype html><html><head>'
+                      '<template><meta http-equiv="Content-Security-Policy" '
+                      'content="%s"></template></head><body>%s</body></html>')
+        _write(root, 'index.html', _tmpl_meta % (_csp % ("'self' " + _js_hash), _js_elem))
+        check('CSP meta inside <template> (inert) does not exempt the script',
+              any('inline <script>' in f for f in _inline_failures(root)),
+              repr(_inline_failures(root)))
+
+    import html as _html
+    # FIX(grok-2): a srcdoc is a SEPARATE document judged by its OWN CSP, never the
+    # parent's hash. A srcdoc whose own policy BLOCKS its inline script (script-src
+    # 'none') must be flagged even though the PARENT CSP would hash-allow the body --
+    # the parent hash must not mask a script the srcdoc blocks (a dead script).
+    with tempfile.TemporaryDirectory() as root:
+        _inner_blocked = ('<head><meta http-equiv="Content-Security-Policy" '
+                          "content=\"default-src 'none'; script-src 'none'\">"
+                          '</head><body>%s</body>' % _js_elem)
+        _parent = ('<!doctype html><html><head><title>t</title>'
+                   '<meta http-equiv="Content-Security-Policy" content="%s">'
+                   '</head><body><iframe srcdoc="%s"></iframe></body></html>'
+                   % (_csp % ("'self' " + _js_hash),
+                      _html.escape(_inner_blocked, quote=True)))
+        _write(root, 'index.html', _parent)
+        check('srcdoc script blocked by the srcdoc own CSP is flagged (not parent-exempt)',
+              any('inline <script>' in f for f in _inline_failures(root)),
+              repr(_inline_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        # The exempt direction: a srcdoc whose OWN CSP hash-pins its script exempts it,
+        # even when the PARENT CSP (hash-less) would have flagged it.
+        _inner_ok = ('<head><meta http-equiv="Content-Security-Policy" content="%s">'
+                     '</head><body>%s</body>'
+                     % (_csp % ("'self' " + _js_hash), _js_elem))
+        _parent_ok = ('<!doctype html><html><head><title>t</title>'
+                      '<meta http-equiv="Content-Security-Policy" content="%s">'
+                      '</head><body><iframe srcdoc="%s"></iframe></body></html>'
+                      % (_csp % "'self'", _html.escape(_inner_ok, quote=True)))
+        _write(root, 'index.html', _parent_ok)
+        check('srcdoc script hash-pinned by the srcdoc own CSP is not flagged',
+              _inline_failures(root) == [], repr(_inline_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        # Non-regression: the ordinary head-child CSP hash exemption still holds.
+        _write(root, 'index.html', _cpage % (_csp % ("'self' " + _js_hash), _js_elem))
+        check('head-child CSP hash still exempts the inline script (no regression)',
+              _inline_failures(root) == [], repr(_inline_failures(root)))
+
     with tempfile.TemporaryDirectory() as root:
         # Positive control: the generator's shape -- a SINGLE head-level CSP meta with
         # the hash and the script AFTER it -- still exempts the inline script.

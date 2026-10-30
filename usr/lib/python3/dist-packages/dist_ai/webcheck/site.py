@@ -71,6 +71,45 @@ WORDING = [
 ]
 
 
+# A <meta http-equiv=content-security-policy> is BROWSER-ENFORCED only as a child
+# of <head> (HTML spec). html.parser, unlike a real parser, does NOT treat
+# title/textarea as RCDATA nor template/noscript as inert, so it surfaces a <meta>
+# placed there as a real element -- and a <meta> in <body> is an element too. A CSP
+# meta in any of those is NOT enforced, so crediting it would green-light a page
+# whose inline script actually runs with no CSP. These four tags mark a context
+# where a meta is inert; <head> depth marks where it is enforced.
+_INERT_META_TAGS = ('title', 'textarea', 'template', 'noscript')
+
+
+class _HeadScope:
+    """Track whether the parser is positioned where a CSP <meta> would be browser-
+    enforced: inside <head> and not inside an inert/RCDATA container. Composed into a
+    parser (not inherited) so it adds no MRO coupling; the parser calls start()/end()
+    from its own handlers and gates CSP recognition on enforced(). NOTE: relies on an
+    explicit <head> (html.parser does not imply one); our generators always emit it,
+    and a head-less page fails SAFE (its CSP is not credited -> inline script flagged,
+    CSP reported missing -> never a false green)."""
+
+    def __init__(self):
+        self._head = 0
+        self._inert = 0
+
+    def start(self, tag):
+        if tag == 'head':
+            self._head += 1
+        elif tag in _INERT_META_TAGS:
+            self._inert += 1
+
+    def end(self, tag):
+        if tag == 'head' and self._head:
+            self._head -= 1
+        elif tag in _INERT_META_TAGS and self._inert:
+            self._inert -= 1
+
+    def enforced(self):
+        return self._head > 0 and self._inert == 0
+
+
 class Extractor(html.parser.HTMLParser):
     """Collect (attr) link targets, element ids, and the concatenated visible
     text (script/style excluded) of one HTML document."""
@@ -89,8 +128,10 @@ class Extractor(html.parser.HTMLParser):
         self.styles = []         # CSS text: style="" attrs + <style> element bodies
         self._skip = 0
         self._in_style = 0
+        self._scope = _HeadScope()
 
     def handle_starttag(self, tag, attrs):
+        self._scope.start(tag)
         if tag in ('script', 'style'):
             self._skip += 1
         if tag == 'style':
@@ -103,7 +144,10 @@ class Extractor(html.parser.HTMLParser):
         if amap.get('style'):
             self.styles.append(amap['style'])
         if tag == 'meta' and (amap.get('http-equiv') or '').lower() \
-                == 'content-security-policy':
+                == 'content-security-policy' and self._scope.enforced():
+            # Only a head-child CSP meta is browser-enforced; a body/inert one is
+            # ignored, so it must not be credited as the page's policy (else check_csp
+            # passes a page with no effective CSP).
             self.csp = amap.get('content') or ''
             self.csp_count += 1
         if tag == 'link' and amap.get('href'):
@@ -129,6 +173,7 @@ class Extractor(html.parser.HTMLParser):
             self.srcdocs.append(amap['srcdoc'])
 
     def handle_endtag(self, tag):
+        self._scope.end(tag)
         if tag in ('script', 'style') and self._skip:
             self._skip -= 1
         if tag == 'style' and self._in_style:
@@ -1129,12 +1174,16 @@ class _InlineJSAudit(html.parser.HTMLParser):
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
-        # (body, csp_seen) per executable inline <script>: csp_seen is whether a
-        # CSP <meta> preceded the script in document order (a meta-CSP governs only
-        # content AFTER it, so a script BEFORE it is unprotected and never hash-exempt).
+        # (body, csp_seen) per executable inline <script> in THIS document: csp_seen is
+        # whether a head-ENFORCED CSP <meta> preceded the script in document order (a
+        # meta-CSP governs only content AFTER it, so a script BEFORE it is unprotected).
         self.inline_scripts = []
         self.handlers = set()
         self.js_url = False
+        self.csp = None            # content of THIS document's head-enforced CSP meta
+        self.csp_count = 0         # head-enforced CSP metas in THIS document
+        self._flagged_srcdoc = []  # srcdoc bodies already RESOLVED against their own CSP
+        self._scope = _HeadScope()
         self._csp_seen = False
         self._script_depth = 0
         self._script_executable = False
@@ -1150,26 +1199,33 @@ class _InlineJSAudit(html.parser.HTMLParser):
                 self.js_url = True
 
     def _recurse_srcdoc(self, tag, attrs):
-        # srcdoc is a nested document the browser renders; an inline <script>, an
-        # on*= handler, or a javascript: URL inside it needs 'unsafe-inline' just
-        # the same, so audit it too (nested srcdoc recurses). Runs for both the
-        # start-tag and the self-closing <iframe/> form (text/html ignores the /).
+        # A srcdoc is a SEPARATE document the browser renders, with its OWN CSP -- the
+        # PARENT policy does not govern it (an enforced srcdoc meta applies, policies
+        # intersect). So resolve the srcdoc's inline scripts against the SRCDOC's own CSP
+        # here and lift only the bodies that STILL would not run; never let the parent's
+        # hash exempt a srcdoc script (which could hide one the srcdoc's own CSP blocks).
+        # Nested srcdoc recurses. Runs for the start-tag and the self-closing <iframe/>.
         if tag != 'iframe':
             return
         srcdoc = dict(attrs).get('srcdoc')
         if srcdoc:
             sub = _InlineJSAudit()
             sub.feed(srcdoc)
-            self.inline_scripts += sub.inline_scripts
+            self._flagged_srcdoc += sub.flagged_bodies()
             self.handlers |= sub.handlers
             self.js_url = self.js_url or sub.js_url
 
     def handle_starttag(self, tag, attrs):
         self._scan_attrs(attrs)
         self._recurse_srcdoc(tag, attrs)
+        self._scope.start(tag)
         if tag == 'meta' and (dict(attrs).get('http-equiv') or '').lower() \
-                == 'content-security-policy':
+                == 'content-security-policy' and self._scope.enforced():
+            # Only a head-child CSP meta is browser-enforced; a body/inert one does not
+            # govern a later script, so it must not mark it CSP-seen / hash-exempt.
             self._csp_seen = True
+            self.csp = dict(attrs).get('content') or ''
+            self.csp_count += 1
         if tag == 'script':
             self._script_depth += 1
             amap = dict(attrs)
@@ -1184,6 +1240,7 @@ class _InlineJSAudit(html.parser.HTMLParser):
             self._script_body = []
 
     def handle_endtag(self, tag):
+        self._scope.end(tag)
         if tag == 'script' and self._script_depth:
             self._script_depth -= 1
             # Capture the EXACT text between <script> and </script> (HTMLParser
@@ -1199,6 +1256,21 @@ class _InlineJSAudit(html.parser.HTMLParser):
         if self._script_depth and self._script_executable:
             self._script_body.append(data)
 
+    def flagged_bodies(self):
+        """Executable inline-script bodies that need 'unsafe-inline' / are not CSP-
+        exempt, judged against THIS document's OWN policy, plus any srcdoc bodies
+        already resolved against theirs. A body is exempt only when the document has
+        exactly ONE head-enforced CSP meta, that meta preceded the script, and the
+        body's hash is in the effective script-src-elem set. Any other shape (no CSP,
+        multiple CSPs, script before the meta) forfeits the exemption -- erring toward
+        flagging so a generator CSP bug is caught."""
+        single = self.csp is not None and self.csp_count == 1
+        hashes = _csp_script_elem_hashes(self.csp) if single else set()
+        own = [body for body, csp_seen in self.inline_scripts
+               if not (single and csp_seen
+                       and not _inline_script_hashes(body).isdisjoint(hashes))]
+        return own + self._flagged_srcdoc
+
 
 def check_no_inline_script(root, failures, pages=None):
     # Belt to check_csp's braces: even with the right CSP, a leftover inline
@@ -1210,33 +1282,27 @@ def check_no_inline_script(root, failures, pages=None):
     # 'unsafe-hashes'), so those stay flagged unconditionally.
     #
     # The hash exemption assumes the SINGLE well-formed head-level CSP meta our
-    # generator emits (mw-static-generator): exactly ONE
+    # generator emits (mw-static-generator): exactly ONE head-enforced
     # <meta http-equiv=content-security-policy>, with the inline <script> AFTER it
-    # in document order. Any other shape forfeits the exemption (the script is
-    # flagged), erring toward flagging so a generator CSP bug is caught:
+    # in document order. _InlineJSAudit.flagged_bodies() owns that logic (per
+    # document, so a srcdoc judges against its OWN CSP, not the parent's); any other
+    # shape forfeits the exemption, erring toward flagging so a generator CSP bug is
+    # caught:
+    #   - no head-enforced CSP (a body/inert meta is NOT browser-enforced);
     #   - MORE than one CSP meta: a browser enforces ALL policies (their
-    #     intersection), but the extractor models only one, so honoring a single
-    #     hash would be a false-green -> no exemption;
-    #   - a script BEFORE the CSP meta: the meta-CSP does not apply to content
-    #     preceding it, so such a script is unprotected -> no exemption.
+    #     intersection), but we model one, so honoring a single hash would be a
+    #     false-green -> no exemption;
+    #   - a script BEFORE the CSP meta: unprotected -> no exemption.
     for page in (html_files(root) if pages is None else pages):
         rel = os.path.relpath(page, root)
-        ext = Extractor()
         audit = _InlineJSAudit()
         with open(page, encoding='utf-8') as handle:
-            content = handle.read()
-        ext.feed(content)
-        audit.feed(content)
-        single_csp = ext.csp is not None and ext.csp_count == 1
-        csp_hashes = _csp_script_elem_hashes(ext.csp) if single_csp else set()
-        for body, csp_seen in audit.inline_scripts:
-            exempt = (single_csp and csp_seen
-                      and not _inline_script_hashes(body).isdisjoint(csp_hashes))
-            if not exempt:
-                failures.append(
-                    '%s: inline <script> body -- move it to an external .js '
-                    'file or pin it with a CSP script-src hash '
-                    '(script-src forbids inline)' % rel)
+            audit.feed(handle.read())
+        for _body in audit.flagged_bodies():
+            failures.append(
+                '%s: inline <script> body -- move it to an external .js '
+                'file or pin it with a CSP script-src hash '
+                '(script-src forbids inline)' % rel)
         for name in sorted(audit.handlers):
             failures.append('%s: inline event handler %s= -- bind it in an '
                             'external .js file (script-src forbids inline)'
