@@ -503,7 +503,7 @@ check "cb_gui_ns_reexec is a no-op in framebuffer mode" "$(( rc == 0 ? 0 : 1 ))"
 
 ## --- gui_compositor_stop: restore the overridden global GUI/SuppressMessages -----------------
 ## was-set -> restored to the saved value; absent -> deleted (setextradata with no value).
-story_capture="window"; vm_kept=""; gui_vm_pid=""; gui_session_pgid=""; gui_xdg_dir=""
+story_capture="window"; vm_kept=""; gui_vm_pid=""; gui_session_leader=""; gui_xdg_dir=""
 true > "${vbox_log}"
 gui_supmsg_was_set="yes"; gui_supmsg_saved="oldsup"
 gui_compositor_stop
@@ -526,7 +526,7 @@ check "gui_compositor_stop is a no-op in framebuffer mode" "${got}"
 ## --- vm_kept: a KEPT --keep-failed VM must NOT have its in-process window frontend killed -----
 ## (killing VirtualBoxVM would abort the very VM being kept for inspection). Stand in for the
 ## frontend with a real sleep; vm_kept=true leaves it alive, vm_kept unset kills it.
-story_capture="window"; gui_session_pgid=""; gui_xdg_dir=""
+story_capture="window"; gui_session_leader=""; gui_xdg_dir=""
 gui_supmsg_was_set="no"; gui_supmsg_saved=""
 vm_kept="true"
 sleep 30 & keep_pid=$!
@@ -543,20 +543,34 @@ wait "${kill_pid}" 2>/dev/null || true
 got=0; kill -0 "${kill_pid}" 2>/dev/null && got=1
 check "gui_compositor_stop KILLS the frontend when vm_kept is unset" "${got}"
 
-## --- gui_compositor_stop group-signals the WHOLE session, not just the frontend ---------------
+## --- gui_compositor_stop reaps the WHOLE session by SESSION id, not just the frontend ----------
 ## window mode runs a full LXQt session (labwc + panel + pcmanfm-qt + portals + notificationd) in
-## one setsid process group; teardown must signal the GROUP (kill -- -PGID) or those clients leak
-## every run. Stub kill to record its argv and assert the negative-PGID (group) form, TERM then KILL.
+## one setsid session; teardown must signal the SESSION (pkill -s <leader>) or those clients leak
+## every run. Stub pkill to record its argv and assert the session-scoped form, TERM then KILL.
 story_capture="window"; vm_kept=""; gui_vm_pid=""; gui_xdg_dir=""
 gui_supmsg_was_set="no"; gui_supmsg_saved=""
-gui_session_pgid="4242"
-kill_log="${work}/kill.calls"; true > "${kill_log}"
+gui_session_leader="4242"
+pkill_log="${work}/pkill.calls"; true > "${pkill_log}"
 # shellcheck disable=SC2317  ## called indirectly by gui_compositor_stop
-kill() { printf '%s\n' "$*" >> "${kill_log}"; }
+pkill() { printf '%s\n' "$*" >> "${pkill_log}"; }
 gui_compositor_stop
-unset -f kill
-got=0; { has '-TERM -4242' "$(cat -- "${kill_log}")" && has '-KILL -4242' "$(cat -- "${kill_log}")"; } || got=1
-check "gui_compositor_stop group-signals the session PGID (kill -- -PGID, TERM then KILL)" "${got}"
+unset -f pkill
+got=0; { has '-TERM -s 4242' "$(cat -- "${pkill_log}")" && has '-KILL -s 4242' "$(cat -- "${pkill_log}")"; } || got=1
+check "gui_compositor_stop reaps the session by id (pkill -s <leader>, TERM then KILL)" "${got}"
+
+## --- capture_frame clears THIS session's host notifications before EVERY window grab -----------
+## The host popup clear must fire on all window captures (snap / story_snap / nonblank / --shot),
+## session-scoped so it never touches another LXQt session the account may have. Assert capture_frame
+## (window) issues `pkill -s <leader> --exact lxqt-notificati`. Stub pkill (grim already stubbed).
+story_capture="window"; gui_session_leader="7777"
+cf_hc_dir="${work}/cf-hostclear"; mkdir -- "${cf_hc_dir}"; shot_dir="${cf_hc_dir}"
+pkill_hc_log="${work}/pkill-hc.calls"; true > "${pkill_hc_log}"
+# shellcheck disable=SC2317  ## called indirectly by capture_frame -> clear_host_notifications
+pkill() { printf '%s\n' "$*" >> "${pkill_hc_log}"; }
+capture_frame "${cf_hc_dir}/60-host-clear.png" >/dev/null 2>&1 || true
+unset -f pkill
+got=0; has '-s 7777 --exact lxqt-notificati' "$(cat -- "${pkill_hc_log}")" || got=1
+check "capture_frame (window) clears host notifications session-scoped before the grab" "${got}"
 
 ## --- story_card: emits a state card as TEXT (showvminfo -> NN-name.card.txt), NO image --------
 ## The synthetic cards publish their text directly: no PNG, no dm-text-to-png round-trip (the page
