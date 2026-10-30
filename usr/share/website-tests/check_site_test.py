@@ -202,6 +202,28 @@ def run():
         check('non-UTF-8 CSS does not abort the audit; its raster is still checked',
               not raised and any('bg.png' in f for f in fails), repr(fails))
 
+    # 7e. A UTF-16-BOM stylesheet's url() raster must still be decoded + its corruption
+    # flagged in a curated (page-scoped) audit: the BOM-aware read tokenizes the sheet;
+    # a plain utf-8/errors='replace' read would garble the url() and leave the corrupt
+    # raster unchecked.
+    with tempfile.TemporaryDirectory() as root:
+        os.makedirs(os.path.join(root, 'media'))
+        _write(root, 'wiki/Page.html',
+               '<!doctype html><html><head><title>t</title>'
+               '<link rel="stylesheet" href="../style.css"></head>'
+               '<body>x</body></html>')
+        with open(os.path.join(root, 'style.css'), 'wb') as handle:
+            handle.write('body{background:url(media/bg.png)}'.encode('utf-16'))
+        with open(os.path.join(root, 'media', 'bg.png'), 'wb') as handle:
+            handle.write(b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01'
+                         b'\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89'
+                         b'\x00\x00\x00\nIDATx\x9cc')
+        fails = []
+        check_site.check_asset_integrity(
+            root, fails, pages=[os.path.join(root, 'wiki', 'Page.html')])
+        check('UTF-16-BOM CSS url() raster is still integrity-checked (page-scoped)',
+              any('bg.png' in f for f in fails), repr(fails))
+
     # check_image_format: a CONTENT raster reference must be webp; og:image /
     # favicon may stay PNG; the static allowlist exempts a basename.
     _page = ('<!doctype html><html><head><title>t</title></head>'
@@ -1115,6 +1137,17 @@ def run():
                _page % '<link rel="canonical" href="https://example.com/">')
         check('external canonical link NOT flagged (metadata)',
               _supply_failures(root) == [], repr(_supply_failures(root)))
+    # A UTF-16-BOM stylesheet must still be TOKENIZED (a browser decodes CSS by BOM):
+    # its @import of an external sheet is flagged, exactly as the UTF-8 form is. Reading
+    # it as UTF-8/errors='replace' turns every char to U+FFFD and silently MISSES the
+    # external load the browser still performs -- a fabricated clean pass.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _page % '<link rel="stylesheet" href="s.css">')
+        with open(os.path.join(root, 's.css'), 'wb') as handle:
+            handle.write('@import "https://evil.example/x.css";'.encode('utf-16'))
+        check('UTF-16-BOM CSS external @import is still flagged (not silently missed)',
+              any('evil.example' in f for f in _supply_failures(root)),
+              repr(_supply_failures(root)))
 
     # _is_external matches browser URL parsing: case, whitespace, backslash.
     check('_is_external: HTTPS scheme (case-insensitive)',

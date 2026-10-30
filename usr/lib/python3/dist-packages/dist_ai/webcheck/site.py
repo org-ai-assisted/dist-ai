@@ -714,6 +714,22 @@ def _strip_css_comments(text):
         lambda m: ' ' if m.group(1) is not None else m.group(0), text)
 
 
+def _read_css_text(path):
+    """Read a stylesheet the way a browser decodes one -- honoring a leading BOM --
+    so a mis-encoded sheet is TOKENIZED, not read as a false clean pass. A UTF-16
+    (LE/BE) or UTF-8 BOM selects that codec; otherwise UTF-8 with errors='replace'
+    (a stray invalid byte becomes U+FFFD, never an abort). Plain errors='replace' on
+    UTF-16 would turn every char into U+FFFD and silently HIDE a url()/@import the
+    browser still acts on -- the exact silent-green this gate exists to prevent."""
+    with open(path, 'rb') as handle:
+        data = handle.read()
+    if data[:3] == b'\xef\xbb\xbf':
+        return data[3:].decode('utf-8', errors='replace')
+    if data[:2] in (b'\xff\xfe', b'\xfe\xff'):
+        return data.decode('utf-16', errors='replace')  # BOM picks endianness, stripped
+    return data.decode('utf-8', errors='replace')
+
+
 def _css_urls(text):
     for match in _CSS_URL.finditer(_strip_css_comments(text)):
         yield next(group for group in match.groups() if group is not None)
@@ -865,8 +881,7 @@ def check_image_format(root, failures, pages=None):
                 continue
             path = os.path.join(base_dir, name)
             rel = os.path.relpath(path, root)
-            with open(path, encoding='utf-8', errors='replace') as handle:
-                css = handle.read()
+            css = _read_css_text(path)
             for value in _css_urls(css):
                 if _is_raster(value) and not _allowed_raster(value):
                     report(base_dir, value,
@@ -1371,11 +1386,10 @@ def check_supply_chain(root, failures, pages=None):
                 continue
             path = os.path.join(base_dir, name)
             crel = os.path.relpath(path, root)
-            with open(path, encoding='utf-8', errors='replace') as handle:
-                for value in _css_external_refs(handle.read()):
-                    if _is_external(value):
-                        failures.append('%s: CSS url() loads an external '
-                                        'resource: %s' % (crel, value))
+            for value in _css_external_refs(_read_css_text(path)):
+                if _is_external(value):
+                    failures.append('%s: CSS url() loads an external '
+                                    'resource: %s' % (crel, value))
 
 
 # Class names of the layout containers that place cards in a multi-column grid
@@ -1567,12 +1581,7 @@ def _page_raster_files(root, pages):
                 continue
             css_path = os.path.join(base, name)
             try:
-                # errors='replace' (as the HTML reads do): a non-UTF-8 CSS file must
-                # not abort the audit. url()/@import tokens are ASCII, so a U+FFFD
-                # elsewhere cannot forge or hide a raster ref. except OSError still
-                # covers a genuinely unreadable file.
-                with open(css_path, encoding='utf-8', errors='replace') as handle:
-                    css_text = handle.read()
+                css_text = _read_css_text(css_path)
             except OSError:
                 continue
             for value in _css_external_refs(css_text):
@@ -2225,8 +2234,7 @@ def _css_sources(root, pages=None):
                 continue
             path = os.path.join(base, name)
             try:
-                with open(path, encoding='utf-8', errors='replace') as handle:
-                    yield os.path.relpath(path, root), _strip_css_comments(handle.read())
+                yield os.path.relpath(path, root), _strip_css_comments(_read_css_text(path))
             except OSError:
                 continue
     for page in (html_files(root) if pages is None else pages):
