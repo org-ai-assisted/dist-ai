@@ -326,7 +326,11 @@ def run():
                 return line
 
         class _StreamIn:
-            buffer = _StreamSrc()
+            def __init__(self):
+                # Per-instance source: a class attribute would share ONE cursor
+                # across every _StreamIn(), so a later reuse reads an exhausted
+                # buffer (false coverage / spurious FAIL under a read-first impl).
+                self.buffer = _StreamSrc()
 
         saved_stdin = sys.stdin
         try:
