@@ -246,6 +246,77 @@ def run() -> int:
             os.environ.pop("AXE_SOURCE", None)
             os.unlink(_axe_js)
 
+    # redirect-stub hermetic skip (_axe_page): a page whose meta-refresh navigates OFF the local
+    # mount (a Moved:/redirect stub -> production) must be SKIPPED, not audited -- else axe reports
+    # PRODUCTION's live a11y against our stub (the old-MediaWiki ghosts). The route handler aborts
+    # the off-mount navigation and records it so _axe_page returns a {"redirect": ...} marker; a
+    # same-origin page audits normally (no false redirect).
+    import asyncio as _asyncio
+
+    class _FakeRequest:
+        def __init__(self, url, frame, nav):
+            self.url, self._frame, self._nav = url, frame, nav
+
+        @property
+        def frame(self):
+            return self._frame
+
+        def is_navigation_request(self):
+            return self._nav
+
+    class _FakeRoute:
+        def __init__(self, request):
+            self.request, self.action = request, None
+
+        async def continue_(self):
+            self.action = "continue"
+
+        async def abort(self):
+            self.action = "abort"
+
+    class _FakeResponse:
+        status = 200
+
+    class _FakePage:
+        def __init__(self, offsite):
+            self.main_frame = object()
+            self._handler = None
+            self._offsite = offsite   # None, or the off-mount URL a meta-refresh targets
+
+        async def route(self, _pattern, handler):
+            self._handler = handler
+
+        async def goto(self, url, **_k):
+            await self._handler(_FakeRoute(_FakeRequest(url, self.main_frame, True)))
+            if self._offsite is not None:   # a redirect stub fires a meta-refresh off-mount
+                await self._handler(_FakeRoute(_FakeRequest(self._offsite, self.main_frame, True)))
+            return _FakeResponse()
+
+        async def wait_for_timeout(self, _ms):
+            pass
+
+        async def evaluate(self, _src):
+            return []                      # axe inject, then a clean run
+
+        async def close(self):
+            pass
+
+    class _FakeBrowser:
+        def __init__(self, offsite):
+            self._offsite = offsite
+
+        async def new_page(self):
+            return _FakePage(self._offsite)
+
+    _local = "http://127.0.0.1:8000/wiki/Stub.html"
+    _redir = _asyncio.run(ax._axe_page(
+        _FakeBrowser("https://www.kicksecure.com/wiki/Real"), _local, "axe=1", 0))
+    ck(_redir.get("redirect") == "https://www.kicksecure.com/wiki/Real",
+       "off-mount meta-refresh -> redirect skip, production never audited: %r" % _redir)
+    _okpage = _asyncio.run(ax._axe_page(_FakeBrowser(None), _local, "axe=1", 0))
+    ck("redirect" not in _okpage and _okpage.get("status") == 200,
+       "a same-origin page audits normally (no false redirect): %r" % _okpage)
+
     # _skip raises SystemExit(77) (the shared env-unmet contract).
     try:
         ax._skip("canary")

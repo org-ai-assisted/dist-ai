@@ -212,9 +212,39 @@ async def _axe_page(browser, url: str, axe_src: str, settle_ms: int) -> dict:
     sites ship a strict `script-src 'self'` CSP (exactly what the console lane guards), which
     blocks an injected inline <script> tag. page.evaluate runs via CDP, outside the page's CSP, so
     axe installs regardless -- the only injection that works against the hardened sites."""
+    from urllib.parse import urlparse
+    allowed = urlparse(url).netloc
+    offsite_nav: Dict[str, Optional[str]] = {"url": None}
     page = await browser.new_page()
+
+    async def _hermetic(route):
+        # The audit serves a LOCAL tree and must never fetch off that mount. A redirect stub's
+        # meta-refresh points at PRODUCTION (www.kicksecure.com / www.whonix.org); without this the
+        # browser navigates there and axe audits PRODUCTION's live DOM, reporting its a11y against
+        # our stub (the old-MediaWiki Prism/cookiewarning/toctogglecheckbox ghosts). Abort any
+        # request whose host:port differs from the page under audit. A top-level (main-frame)
+        # navigation off-mount means this page is a redirect stub -> record it so the caller SKIPS
+        # it (a redirect carries no audit-worthy content of its own; its target is audited directly).
+        req = route.request
+        if urlparse(req.url).netloc == allowed:
+            await route.continue_()
+            return
+        if req.is_navigation_request() and req.frame == page.main_frame:
+            offsite_nav["url"] = req.url
+        await route.abort()
+
+    await page.route("**/*", _hermetic)
     try:
-        resp = await page.goto(url, wait_until="networkidle", timeout=45000)
+        try:
+            resp = await page.goto(url, wait_until="networkidle", timeout=45000)
+        except Exception:
+            # A blocked off-mount meta-refresh can surface as a main-frame navigation error -- that
+            # is the redirect-stub case, not a wedge. Re-raise anything else (a real load failure).
+            if offsite_nav["url"]:
+                return {"redirect": offsite_nav["url"]}
+            raise
+        if offsite_nav["url"]:
+            return {"redirect": offsite_nav["url"]}
         # Playwright does NOT raise on a 404/500; without this a served error page reads as
         # auditable and a missing/broken page is silently 'clean'.
         status = resp.status if resp is not None else 0
@@ -271,6 +301,11 @@ async def check(base: str, paths: List[str], axe_source: str, settle_ms: int = 1
                 browser = await p.chromium.launch()
                 print("TIMEOUT   %s" % path, flush=True)
                 problems.append("wedged: %s" % path)
+                continue
+            if res.get("redirect"):
+                # A redirect stub (meta-refresh off-mount); not an auditable content page. Its
+                # target is a real page audited on its own. Skip -- never a violation or a problem.
+                print("redir     %s" % path, flush=True)
                 continue
             status = res.get("status", 0)
             if status < 200 or status >= 400:
