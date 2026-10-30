@@ -109,5 +109,39 @@ else
    fail "webcheck-jscov-sandbox: non-covered-site root did not exit 77 (rc=${empty_rc}, err='${empty_err}')"
 fi
 
+## --- 5. local-first requires GLOBAL jsdom, not a cwd-resolvable project-local copy ---
+
+## run.sh runs from the STAGING cwd (NODE_PATH=global only), so local-first must gate on jsdom
+## in the GLOBAL npm root -- a checkout's project-local ./node_modules/jsdom must NOT engage it
+## (run.sh could not resolve jsdom there -> every test throws -> false RED). Pre-fix the probe was
+## `node -e require.resolve("jsdom")`, which resolves from the probe's OWN cwd first, so a project-
+## local jsdom satisfied it -> run_local=1. Stub node(v22)+c8+npm(global root WITHOUT jsdom); run
+## FROM a dir that HAS ./node_modules/jsdom; WEBSITE_TESTS_NO_SANDBOX=1 so a correct run_local=0
+## settles as env-unmet 77. The root is a COVERED site (output-lies.github.io) so a WRONG
+## run_local=1 does NOT also land on the no-covered-site 77 -- it proceeds to the local gate and
+## FATALs (exit 1) on the stub toolchain. New probe -> 77; pre-fix (node -e) -> run_local=1 -> 1.
+stub2="${work}/stub2"
+mkdir --parents -- "${stub2}"
+printf '%s\n' '#!/bin/sh' 'echo v22.99.0' 'exit 0' > "${stub2}/node"
+printf '%s\n' '#!/bin/sh' 'exit 0' > "${stub2}/c8"
+fakeglobal="${work}/fake-global"            # a global npm root with NO jsdom
+mkdir --parents -- "${fakeglobal}"
+printf '%s\n' '#!/bin/sh' "echo ${fakeglobal}" 'exit 0' > "${stub2}/npm"
+chmod +x -- "${stub2}/node" "${stub2}/c8" "${stub2}/npm"
+proj="${work}/proj"                         # launch cwd WITH a shadowing project-local jsdom
+mkdir --parents -- "${proj}/node_modules/jsdom"
+printf '%s\n' '{"name":"jsdom","main":"index.js"}' > "${proj}/node_modules/jsdom/package.json"
+site3="${work}/output-lies.github.io"       # a covered-site basename (so run_local=1 reaches the gate)
+mkdir --parents -- "${site3}"
+touch -- "${site3}/index.html"
+shadow_rc=0
+shadow_err="$(cd -- "${proj}" && PATH="${stub2}:${PATH}" WEBSITE_TESTS_NO_SANDBOX=1 \
+   "${driver}" "${site3}" 2>&1 1>/dev/null)" || shadow_rc=$?
+if [ "${shadow_rc}" -eq 77 ]; then
+   pass 'webcheck-jscov-sandbox: project-local jsdom does not engage local-first (global-root probe) -> 77'
+else
+   fail "webcheck-jscov-sandbox: project-local jsdom wrongly engaged local-first (rc=${shadow_rc}, err='${shadow_err}')"
+fi
+
 printf '%s\n' "" "test_website_jscov_lane: ${pass_count} pass, ${fail_count} fail, 0 skip"
 [ "${fail_count}" -eq 0 ]

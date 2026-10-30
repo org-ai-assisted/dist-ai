@@ -60,16 +60,19 @@ if [ "${WEBCHECK_NO_LOCAL:-}" != '1' ] && command -v node >/dev/null 2>&1 \
    ## The local path runs run.sh, whose actual requirements are: Node >= 22 (its
    ## `node --test <glob>` needs the ** glob Node 20 lacks), c8, npm (run.sh sets
    ## NODE_PATH="$(npm root -g)"), AND jsdom resolvable THERE (harness.js require('jsdom')).
-   ## Probe ALL of them so a runner with only some -- e.g. jsdom installed project-locally, not
-   ## global -- FALLS THROUGH to the sandbox (pinned Node 22 + provisioned jsdom) instead of a
-   ## false-RED local run. Mirrors cspell's version gate: the local precondition must match what
+   ## Probe ALL of them so a runner with only some FALLS THROUGH to the sandbox (pinned Node 22 +
+   ## provisioned jsdom) instead of a false-RED local run. Check jsdom in the GLOBAL npm root
+   ## DIRECTLY -- NOT `node -e require.resolve`, which resolves from the probe's OWN cwd first, so
+   ## a checkout's project-local ./node_modules/jsdom would satisfy the probe yet be invisible to
+   ## run.sh (its cwd is the staging tree, where only NODE_PATH=global resolves -> every test
+   ## throws -> false RED). Mirrors cspell's version gate: the local precondition must match what
    ## the gate actually needs. ${//[0-9]/} empties an all-numeric string (non-numeric/empty -> 0).
    node_major="$(node --version 2>/dev/null || true)"
    node_major="${node_major#v}"
    node_major="${node_major%%.*}"
    if [ -n "${node_major}" ] && [ -z "${node_major//[0-9]/}" ] \
       && [ "${node_major}" -ge 22 ] \
-      && NODE_PATH="$(npm root -g 2>/dev/null)" node -e 'require.resolve("jsdom")' >/dev/null 2>&1; then
+      && [ -e "$(npm root -g 2>/dev/null)/jsdom/package.json" ]; then
       run_local=1
    fi
 fi
