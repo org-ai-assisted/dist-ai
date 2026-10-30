@@ -799,37 +799,66 @@ def run():
         check('CSP meta inside <template> (inert) does not exempt the script',
               any('inline <script>' in f for f in _inline_failures(root)),
               repr(_inline_failures(root)))
-
-    import html as _html
-    # FIX(grok-2): a srcdoc is a SEPARATE document judged by its OWN CSP, never the
-    # parent's hash. A srcdoc whose own policy BLOCKS its inline script (script-src
-    # 'none') must be flagged even though the PARENT CSP would hash-allow the body --
-    # the parent hash must not mask a script the srcdoc blocks (a dead script).
     with tempfile.TemporaryDirectory() as root:
-        _inner_blocked = ('<head><meta http-equiv="Content-Security-Policy" '
-                          "content=\"default-src 'none'; script-src 'none'\">"
-                          '</head><body>%s</body>' % _js_elem)
-        _parent = ('<!doctype html><html><head><title>t</title>'
-                   '<meta http-equiv="Content-Security-Policy" content="%s">'
-                   '</head><body><iframe srcdoc="%s"></iframe></body></html>'
-                   % (_csp % ("'self' " + _js_hash),
-                      _html.escape(_inner_blocked, quote=True)))
-        _write(root, 'index.html', _parent)
-        check('srcdoc script blocked by the srcdoc own CSP is flagged (not parent-exempt)',
+        # </head> is OPTIONAL -- a <body> implicitly closes head, so a meta after it is
+        # NOT a head child. (A tag counter that only pops on an explicit </head> credits
+        # it; the real parser does not.)
+        _implicit = ('<!doctype html><html><head><title>t</title><body>'
+                     '<meta http-equiv="Content-Security-Policy" content="%s">'
+                     '%s</body></html>')
+        _write(root, 'index.html', _implicit % (_csp % ("'self' " + _js_hash), _js_elem))
+        check('CSP meta after an implicit </head> (<body>) does not exempt the script',
               any('inline <script>' in f for f in _inline_failures(root)),
               repr(_inline_failures(root)))
     with tempfile.TemporaryDirectory() as root:
-        # The exempt direction: a srcdoc whose OWN CSP hash-pins its script exempts it,
-        # even when the PARENT CSP (hash-less) would have flagged it.
-        _inner_ok = ('<head><meta http-equiv="Content-Security-Policy" content="%s">'
-                     '</head><body>%s</body>'
-                     % (_csp % ("'self' " + _js_hash), _js_elem))
-        _parent_ok = ('<!doctype html><html><head><title>t</title>'
-                      '<meta http-equiv="Content-Security-Policy" content="%s">'
-                      '</head><body><iframe srcdoc="%s"></iframe></body></html>'
-                      % (_csp % "'self'", _html.escape(_inner_ok, quote=True)))
-        _write(root, 'index.html', _parent_ok)
-        check('srcdoc script hash-pinned by the srcdoc own CSP is not flagged',
+        # Inside <title> (RCDATA), a </textarea> is TEXT, not a real close; a meta after
+        # it is still inside the title, not a head child. (A shared inert counter that
+        # a mismatched end tag decrements wrongly credits it; the real parser does not.)
+        _rc = ('<!doctype html><html><head><title>t</textarea>'
+               '<meta http-equiv="Content-Security-Policy" content="%s"></title>'
+               '</head><body>%s</body></html>')
+        _write(root, 'index.html', _rc % (_csp % ("'self' " + _js_hash), _js_elem))
+        check('CSP meta after a mismatched </textarea> inside <title> does not exempt',
+              any('inline <script>' in f for f in _inline_failures(root)),
+              repr(_inline_failures(root)))
+
+    import html as _html
+    # FIX(grok-2): a srcdoc INHERITS the embedder's CSP (CSP3) and its own head CSP
+    # also applies -- effective policy is the INTERSECTION. So a srcdoc inline script is
+    # exempt only when BOTH the srcdoc's own policy AND the parent policy hash-pin it.
+
+    def _srcdoc_page(parent_csp, inner):
+        return ('<!doctype html><html><head><title>t</title>'
+                '<meta http-equiv="Content-Security-Policy" content="%s">'
+                '</head><body><iframe srcdoc="%s"></iframe></body></html>'
+                % (parent_csp, _html.escape(inner, quote=True)))
+
+    def _inner(child_csp):
+        return ('<head><meta http-equiv="Content-Security-Policy" content="%s">'
+                '</head><body>%s</body>' % (child_csp, _js_elem))
+
+    with tempfile.TemporaryDirectory() as root:
+        # srcdoc own policy BLOCKS the script (script-src 'none'); even though the PARENT
+        # hash-pins it, the browser blocks it -> flagged (the parent hash cannot mask it).
+        _write(root, 'index.html', _srcdoc_page(
+            _csp % ("'self' " + _js_hash),
+            _inner("default-src 'none'; script-src 'none'")))
+        check('srcdoc blocked by its OWN CSP is flagged though the parent pins it',
+              any('inline <script>' in f for f in _inline_failures(root)),
+              repr(_inline_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        # srcdoc OWN policy hash-pins it, but the PARENT (hash-less 'self') does NOT ->
+        # the inherited parent policy blocks it -> flagged (own-pin alone never exempts).
+        _write(root, 'index.html', _srcdoc_page(
+            _csp % "'self'", _inner(_csp % ("'self' " + _js_hash))))
+        check('srcdoc pinned only by its OWN CSP (parent does not) is still flagged',
+              any('inline <script>' in f for f in _inline_failures(root)),
+              repr(_inline_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        # BOTH the parent AND the srcdoc own policy hash-pin it -> it runs -> exempt.
+        _write(root, 'index.html', _srcdoc_page(
+            _csp % ("'self' " + _js_hash), _inner(_csp % ("'self' " + _js_hash))))
+        check('srcdoc pinned by BOTH parent and own CSP is exempt (intersection)',
               _inline_failures(root) == [], repr(_inline_failures(root)))
     with tempfile.TemporaryDirectory() as root:
         # Non-regression: the ordinary head-child CSP hash exemption still holds.
