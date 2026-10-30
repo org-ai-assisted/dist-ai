@@ -211,10 +211,12 @@ _AXE_RUN_JS = (
 # rendering AND the a11y tree (forcing that visible would audit unreachable content). Set each such
 # element's own style via CSSOM: a property assignment, not markup, so it is unaffected by the
 # page's strict style-src CSP (the same reason axe-core is injected by evaluate, not a <script>).
+# Set it `important` so an author `content-visibility: auto !important` (which would otherwise beat
+# a normal inline declaration and keep the element unrendered) is still overridden.
 _FORCE_RENDER_JS = (
     "() => { try { for (const el of document.querySelectorAll('*')) { "
     "if (getComputedStyle(el).contentVisibility === 'auto') { "
-    "el.style.contentVisibility = 'visible'; } } } catch (e) {} }")
+    "el.style.setProperty('content-visibility', 'visible', 'important'); } } } catch (e) {} }")
 
 
 async def _axe_page(browser, url: str, axe_src: str, settle_ms: int) -> dict:
