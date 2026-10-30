@@ -279,23 +279,29 @@ def run() -> int:
         status = 200
 
     class _FakePage:
-        def __init__(self, offsite):
+        def __init__(self, offsite, delayed=False):
             self.main_frame = object()
             self._handler: Optional[Callable[[Any], Awaitable[Any]]] = None
             self._offsite = offsite   # None, or a URL a meta-refresh retargets to (any origin)
+            self._delayed = delayed   # True = the refresh fires DURING settle, not at load
 
         async def route(self, _pattern, handler):
             self._handler = handler
 
+        async def _refresh(self):
+            assert self._handler is not None
+            await self._handler(_FakeRoute(_FakeRequest(self._offsite, self.main_frame, True)))
+
         async def goto(self, url, **_k):
             assert self._handler is not None   # route() always runs before goto()
             await self._handler(_FakeRoute(_FakeRequest(url, self.main_frame, True)))
-            if self._offsite is not None:   # a redirect stub fires a SECOND main-frame navigation
-                await self._handler(_FakeRoute(_FakeRequest(self._offsite, self.main_frame, True)))
+            if self._offsite is not None and not self._delayed:   # immediate (content="0") refresh
+                await self._refresh()
             return _FakeResponse()
 
         async def wait_for_timeout(self, _ms):
-            pass
+            if self._offsite is not None and self._delayed:       # delayed (content="N") refresh
+                await self._refresh()
 
         async def evaluate(self, _src):
             return []                      # axe inject, then a clean run
@@ -304,11 +310,12 @@ def run() -> int:
             pass
 
     class _FakeBrowser:
-        def __init__(self, offsite):
+        def __init__(self, offsite, delayed=False):
             self._offsite = offsite
+            self._delayed = delayed
 
         async def new_page(self):
-            return _FakePage(self._offsite)
+            return _FakePage(self._offsite, self._delayed)
 
     _local = "http://127.0.0.1:8000/wiki/Stub.html"
     _redir = _asyncio.run(ax._axe_page(
@@ -321,6 +328,12 @@ def run() -> int:
         _FakeBrowser("http://127.0.0.1:8000/wiki/Design"), _local, "axe=1", 0))
     ck(_same.get("redirect") == "http://127.0.0.1:8000/wiki/Design",
        "same-origin meta-refresh -> redirect skip, target not audited as the stub: %r" % _same)
+    # a DELAYED meta-refresh (content="N") fires DURING the settle window, after the pre-settle
+    # redirect check -- the post-settle re-check must still skip it, not audit the stub as a page.
+    _delayed = _asyncio.run(ax._axe_page(
+        _FakeBrowser("http://127.0.0.1:8000/wiki/Later", delayed=True), _local, "axe=1", 0))
+    ck(_delayed.get("redirect") == "http://127.0.0.1:8000/wiki/Later",
+       "a meta-refresh firing DURING settle is caught post-settle, not audited: %r" % _delayed)
     _okpage = _asyncio.run(ax._axe_page(_FakeBrowser(None), _local, "axe=1", 0))
     ck("redirect" not in _okpage and _okpage.get("status") == 200,
        "a non-redirecting page audits normally (no false redirect): %r" % _okpage)

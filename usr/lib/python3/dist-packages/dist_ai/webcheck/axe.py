@@ -207,14 +207,14 @@ _AXE_RUN_JS = (
 # rendering (and layout/paint) of OFF-SCREEN content as a perf win, but axe-core then samples
 # color-contrast against an unrendered element's indeterminate background and reports FALSE
 # failures (a link that is perfectly legible once scrolled into view). An a11y audit must measure
-# RENDERED content. A constructable stylesheet via adoptedStyleSheets is NOT subject to the page's
-# strict style-src CSP (it is programmatic, not markup), so it installs on the hardened sites --
-# the same reason axe-core is injected by evaluate rather than a <script> tag.
+# RENDERED content. Flip ONLY `auto` -- never `hidden`, which intentionally drops content from
+# rendering AND the a11y tree (forcing that visible would audit unreachable content). Set each such
+# element's own style via CSSOM: a property assignment, not markup, so it is unaffected by the
+# page's strict style-src CSP (the same reason axe-core is injected by evaluate, not a <script>).
 _FORCE_RENDER_JS = (
-    "() => { try { const s = new CSSStyleSheet(); "
-    "s.replaceSync('*, ::before, ::after { content-visibility: visible !important; "
-    "contain-intrinsic-size: auto !important; }'); "
-    "document.adoptedStyleSheets = [...document.adoptedStyleSheets, s]; } catch (e) {} }")
+    "() => { try { for (const el of document.querySelectorAll('*')) { "
+    "if (getComputedStyle(el).contentVisibility === 'auto') { "
+    "el.style.contentVisibility = 'visible'; } } } catch (e) {} }")
 
 
 async def _axe_page(browser, url: str, axe_src: str, settle_ms: int) -> dict:
@@ -272,6 +272,10 @@ async def _axe_page(browser, url: str, axe_src: str, settle_ms: int) -> dict:
             return {"status": status}
         await page.evaluate(_FORCE_RENDER_JS)
         await page.wait_for_timeout(settle_ms)
+        # A delayed meta-refresh (content="N") can fire DURING settle: _hermetic aborts + records it,
+        # so re-check here -- else axe would run on the stub and report its a11y as a real page.
+        if nav["redirect"]:
+            return {"redirect": nav["redirect"]}
         await page.evaluate(axe_src)
         violations = await page.evaluate(_AXE_RUN_JS)
         return {"status": status, "violations": violations}
