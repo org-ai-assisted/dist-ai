@@ -96,7 +96,20 @@ def _csp_meta_and_order(html_text):
 
     `script_precedes` is True when an executable inline <script> appears BEFORE the first
     enforced meta in document order (a meta-CSP governs only content after it, so such a
-    script is unprotected)."""
+    script is unprotected).
+
+    SCOPE (settled -- do NOT chase further): this gate validates our GENERATOR's output;
+    the threat is a generator REGRESSION (a CSP meta drifting into <body>, a padded
+    pragma, an un-pinned inline script), all of which it catches. It is NOT a browser-
+    grade CSP engine for adversarial HTML, and a few parser edges stay out of scope
+    because they need hand-crafted markup the generator cannot emit AND are limits of the
+    parser LIBRARY, not this code: a CSP meta inside <noscript> (html5lib parses with
+    scripting DISABLED, so noscript content is live here but inert in a real browser), a
+    <template> as a direct <head> child (html5lib 1.2 lacks the in-head <template>
+    insertion mode), and duplicate attributes / legacy JS MIME types (where this html5lib
+    pass and the html.parser collection pass below could disagree). Fixing these would
+    mean reimplementing HTML5 tokenizer states -- the parser-reinvention trap; a page that
+    hits them is already a severe generator bug caught elsewhere."""
     from bs4 import BeautifulSoup
     soup = BeautifulSoup(html_text, 'html5lib')
     head = soup.head
