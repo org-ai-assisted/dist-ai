@@ -213,6 +213,39 @@ got=0
 [ ! -s "${order}" ] || got=1
 check "snap with no --shot-dir issues neither quiesce nor shot" "${got}"
 
+## --- window mode ALSO clears the HOST notification daemon (not only the in-guest one) ----------
+## In window mode the lane runs a full HOST LXQt session whose own passive popups (lxqt-
+## powermanagement "No battery") would land in the grab. quiesce_notifications must kill the HOST
+## daemon (comm 'lxqt-notificati') too. Record-only gc_run here, so ONLY the host pkill can reap the
+## host decoy -- isolates the new path (the in-guest quiesce is pinned above). command sleep bypasses
+## the no-op sleep stub for the real readiness wait.
+# shellcheck disable=SC2034  ## story_capture + snap_account are read by the sourced subject
+story_capture="window"
+# shellcheck disable=SC2034  ## read by the sourced quiesce_notifications
+snap_account="user"
+true > "${order}"
+# shellcheck disable=SC2317  ## called indirectly by quiesce_notifications
+gc_run() { printf '%s\n' "GCRUN role=$1 snippet=$2" >> "${order}"; }
+hdecoy="${work}/lxqt-notificationd"
+cp -- /bin/sleep "${hdecoy}"
+"${hdecoy}" 5 &
+hdecoy_pid=$!
+hready=0
+for _ in $(seq 1 40); do
+   if [ "$(cat "/proc/${hdecoy_pid}/comm" 2>/dev/null)" = "lxqt-notificati" ]; then
+      hready=1
+      break
+   fi
+   command sleep 0.05
+done
+check "host notification decoy reached comm 'lxqt-notificati'" "$(( hready == 1 ? 0 : 1 ))"
+quiesce_notifications
+## || capture: a signal-killed child makes wait return >128, which errexit would abort on first.
+hrc=0
+wait "${hdecoy_pid}" 2>/dev/null || hrc=$?
+got=0; [ "${hrc}" -gt 128 ] || got=1
+check "window mode quiesce ALSO kills the HOST notification daemon (signalled, not survived)" "${got}"
+
 printf '%s\n' "" "$(basename -- "$0"): ${pass} pass, ${fail} fail"
 [ "${fail}" -eq 0 ] || exit 1
 exit 0

@@ -391,6 +391,13 @@ quiesce_notifications() {
    ## Match the truncated comm; a plain-name match also cannot self-kill the gc_run bash (comm
    ## 'bash'), unlike a 'pkill -f lxqt-notificationd' which would match its own command line.
    gc_run "${snap_account}" 'pkill --exact lxqt-notificati >/dev/null 2>&1; true' 5 >/dev/null 2>&1 || true
+   ## window mode runs a full HOST LXQt session; its own transient popups (lxqt-powermanagement
+   ## "No battery", update/boot notifications) would also land in the grab. Clear the HOST
+   ## notification daemon too -- D-Bus-activated, so it respawns clean. Scoped to THIS account's uid
+   ## (a non-root user cannot signal another session's processes anyway; -u makes the scope explicit).
+   if [ "${story_capture}" = 'window' ]; then
+      pkill -u "$(id -u)" --exact lxqt-notificati >/dev/null 2>&1 || true
+   fi
 }
 
 ## Capture a milestone screenshot into ${shot_dir} as NN-<name>.png when --shot-dir is set
@@ -552,10 +559,12 @@ story_snap_nonblank() {
 }
 
 ## --- #18: full-VM-window story capture --------------------------------------------------------
-## story_capture=window (default, operator "maximum faithful"): the VM runs in a maximized
-## VirtualBoxVM GUI window inside a private headless labwc compositor the lane owns; every milestone
-## frame is a grim grab of that window (full guest desktop + the real VirtualBox chrome). Driving +
-## OCR stay on vbox-ctl-local (vboxapi, frontend-agnostic). story_capture=framebuffer: the legacy
+## story_capture=window (default; operator "maximum faithful -- as close to real usage as possible"):
+## the VM runs in a FLOATING VirtualBoxVM GUI window on a full headless Kicksecure LXQt desktop
+## session the lane owns (the real greetd entry start-lxqt-session), so every milestone grim grab
+## shows the guest window on the ACTUAL host desktop -- branded wallpaper, desktop icons, and the
+## lxqt-panel taskbar -- not a bare window on an empty compositor. Driving + OCR stay on
+## vbox-ctl-local (vboxapi, frontend-agnostic). story_capture=framebuffer: the legacy
 ## bare-guest-framebuffer grab (vbox-ctl-local shot) -- an escape hatch (STORY_CAPTURE=framebuffer).
 ## coreboot: the fork has no GUI frontend, so main() re-execs the whole lane inside a private mount
 ## namespace with the fork VBoxDD bind-mounted over /usr/lib/virtualbox and switches to STOCK tools
@@ -565,10 +574,9 @@ VBOX_VM_BIN="${VBOX_VM_BIN:-VirtualBoxVM}"
 ## hidden subdir (beside each published frame) holding the bare-guest gate siblings; removed from
 ## shot_dir in on_exit so it is never published. See capture_frame / gate_check_path.
 gate_subdir=".gate"
-gui_labwc_pid=""
+gui_session_pgid=""
 gui_vm_pid=""
 gui_xdg_dir=""
-gui_cfg_dir=""
 gui_supmsg_was_set=""
 gui_supmsg_saved=""
 ## set by on_exit when a --keep-failed run KEPT the VM running for inspection: gui_compositor_stop
@@ -621,24 +629,30 @@ cb_gui_ns_reexec() {
    die "${FAIL_RC}" "coreboot window capture: could not re-exec into a mount namespace (unshare failed)"
 }
 
-## Start the private headless labwc compositor (maximize-on-map) the VM window renders in, and set
-## WAYLAND_DISPLAY so grim + the launched GUI target it. window mode only. FATAL on failure -- a
+## Start a FAITHFUL full Kicksecure LXQt desktop session headless (the real greetd entry
+## start-lxqt-session -> startlxqtwayland -> labwc -m -S lxqt-session), set WAYLAND_DISPLAY so grim +
+## the launched VM window target it, and wait for the panel. window mode only. The VM window then
+## floats on the real host desktop (wallpaper + icons + lxqt-panel taskbar) -- reproduction as close
+## to real usage as possible. Two things a non-login fleet account needs that a greetd login gives
+## for free (both proven on the server): a LOGIN shell (bash -lc) so /etc/profile.d sets the
+## Kicksecure branding XDG_CONFIG_DIRS, and a D-Bus SESSION bus (dbus-run-session) -- without the bus
+## lxqt-session starts but none of its modules (panel, pcmanfm-qt desktop) do. FATAL on failure -- a
 ## broken GUI pipeline must surface before the ~40min install, not as silent blank milestones.
 gui_compositor_start() {
    [ "${story_capture}" = 'window' ] || return 0
    gui_xdg_dir="$(mktemp --directory --tmpdir "${me}-gui-xdg.XXXXXX")"
    chmod 0700 -- "${gui_xdg_dir}"
    export XDG_RUNTIME_DIR="${gui_xdg_dir}"
-   gui_cfg_dir="$(mktemp --directory --tmpdir "${me}-gui-cfg.XXXXXX")"
-   cat > "${gui_cfg_dir}/rc.xml" <<'RCXML'
-<?xml version="1.0"?>
-<labwc_config><windowRules><windowRule identifier="*"><action name="Maximize"/></windowRule></windowRules></labwc_config>
-RCXML
+   local gui_session_log="${gui_xdg_dir}/session.log"
+   ## Own PROCESS GROUP (setsid) so gui_compositor_stop can reap the WHOLE session -- labwc, panel,
+   ## pcmanfm-qt, portals, notificationd -- with one group signal. WLR_* are a command prefix so they
+   ## scope to the session, not the lane's own environment.
    WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_HEADLESS_OUTPUTS=1 \
-      labwc --config-dir "${gui_cfg_dir}" >/dev/null 2>&1 &
-   gui_labwc_pid="$!"
+      setsid bash -lc 'exec dbus-run-session -- /usr/libexec/desktop-config-dist/start-lxqt-session' \
+      >"${gui_session_log}" 2>&1 &
+   gui_session_pgid="$!"
    local sock="" _ cand
-   for _ in $(seq 1 40); do
+   for _ in $(seq 1 60); do
       for cand in "${gui_xdg_dir}"/wayland-*; do
          [ "${cand}" = "${cand%.lock}" ] || continue
          [ -S "${cand}" ] || continue
@@ -646,12 +660,24 @@ RCXML
          break
       done
       [ -n "${sock}" ] && break
-      kill -0 "${gui_labwc_pid}" 2>/dev/null || die "${FAIL_RC}" "story GUI: labwc exited before creating a socket"
+      kill -0 "${gui_session_pgid}" 2>/dev/null || die "${FAIL_RC}" "story GUI: LXQt session exited before creating a wayland socket (see ${gui_session_log})"
       sleep 0.25
    done
-   [ -n "${sock}" ] || die "${FAIL_RC}" "story GUI: labwc did not create a wayland socket"
+   [ -n "${sock}" ] || die "${FAIL_RC}" "story GUI: LXQt session did not create a wayland socket (see ${gui_session_log})"
    export WAYLAND_DISPLAY="${sock##*/}"
    wlr-randr --output HEADLESS-1 --custom-mode 1920x1080 >/dev/null 2>&1 || true
+   ## Wait for lxqt-panel (the taskbar) to come up so a milestone grab is never taken before the
+   ## desktop is painted. Scoped to THIS account's uid -- never another session's panel.
+   local panel_up="" i
+   for (( i = 0; i < 60; i++ )); do
+      if pgrep -u "$(id -u)" -x lxqt-panel >/dev/null 2>&1; then
+         panel_up="yes"
+         break
+      fi
+      kill -0 "${gui_session_pgid}" 2>/dev/null || die "${FAIL_RC}" "story GUI: LXQt session exited before the panel started (see ${gui_session_log})"
+      sleep 0.5
+   done
+   [ -n "${panel_up}" ] || die "${FAIL_RC}" "story GUI: lxqt-panel did not start within the wait (see ${gui_session_log})"
    ## Suppress the VBox GUI popups that would otherwise appear MODAL over the VM window and be
    ## grim-grabbed instead of the guest: the hint reminders AND the suppressible runtime warnings
    ## (showRuntimeError.warning.*, e.g. HostAudioNotResponding). This list MUST stay identical to
@@ -676,13 +702,17 @@ RCXML
       >/dev/null 2>&1 || true
 }
 
-## Launch (or re-launch after a power-cycle) the VM in a maximized VirtualBoxVM GUI window in our
-## compositor. The window frontend runs the VM; the lane keeps driving it via vbox-ctl-local.
+## Launch (or re-launch after a power-cycle) the VM as a FLOATING VirtualBoxVM window on the LXQt
+## desktop -- a modest guest-size hint keeps it a window so the taskbar, wallpaper and icons stay
+## visible around it (not maximized over them). The window frontend runs the VM; the lane keeps
+## driving it via vbox-ctl-local.
 gui_vm_launch() {
    local uuid
    uuid="$("${VBOXMANAGE}" showvminfo "${vm}" --machinereadable 2>/dev/null | sed -n 's/^UUID="\(.*\)"$/\1/p' | head -1)" || true
    [ -n "${uuid}" ] || die "${FAIL_RC}" "story GUI: could not resolve a UUID for VM '${vm}'"
-   "${VBOXMANAGE}" setextradata "${uuid}" GUI/LastGuestSizeHint "1920,1040" >/dev/null 2>&1 || true
+   ## Modest guest size -> the VM window floats on the desktop (GA resizes a booted guest to it);
+   ## labwc centres it, leaving the panel + icons + wallpaper framing every milestone grab.
+   "${VBOXMANAGE}" setextradata "${uuid}" GUI/LastGuestSizeHint "1280,720" >/dev/null 2>&1 || true
    QT_QPA_PLATFORM="wayland" "${VBOX_VM_BIN}" --startvm "${uuid}" >/dev/null 2>&1 &
    gui_vm_pid="$!"
    ## Fail FAST with the REAL reason if the window frontend cannot power the VM on. Launch is
@@ -830,13 +860,17 @@ gui_compositor_stop() {
    ## VirtualBoxVM would abort the VM being kept for inspection; dm-release-test's next ephemeral
    ## cleanup reclaims it). Only the SuppressMessages restore above applies.
    [ "${vm_kept}" = 'true' ] && return 0
+   ## Stop the VM frontend first (clean in-process VMM exit), then signal the WHOLE session process
+   ## group (labwc + panel + pcmanfm-qt + portals + notificationd) setsid grouped under the leader.
    [ -z "${gui_vm_pid}" ] || kill "${gui_vm_pid}" 2>/dev/null || true
-   [ -z "${gui_labwc_pid}" ] || kill "${gui_labwc_pid}" 2>/dev/null || true
    sleep 1
    [ -z "${gui_vm_pid}" ] || kill -KILL "${gui_vm_pid}" 2>/dev/null || true
-   [ -z "${gui_labwc_pid}" ] || kill -KILL "${gui_labwc_pid}" 2>/dev/null || true
+   if [ -n "${gui_session_pgid}" ]; then
+      kill -TERM "-${gui_session_pgid}" 2>/dev/null || true
+      sleep 1
+      kill -KILL "-${gui_session_pgid}" 2>/dev/null || true
+   fi
    [ -z "${gui_xdg_dir}" ] || safe-rm --recursive --force -- "${gui_xdg_dir}" 2>/dev/null || true
-   [ -z "${gui_cfg_dir}" ] || safe-rm --recursive --force -- "${gui_cfg_dir}" 2>/dev/null || true
    [ -z "${DM_GUI_NS_STAGE:-}" ] || safe-rm --recursive --force -- "${DM_GUI_NS_STAGE}" 2>/dev/null || true
 }
 

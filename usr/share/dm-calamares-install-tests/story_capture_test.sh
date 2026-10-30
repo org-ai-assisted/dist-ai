@@ -9,7 +9,7 @@
 ##   capture_frame PATH   -- window mode (default, operator "maximum faithful"): a grim grab of the
 ##                           compositor (full VBox VM window); framebuffer mode: a bare-guest grab
 ##                           via GUESTCTL shot. The one seam every milestone capture goes through.
-##   start_vm_frontend    -- window mode: a maximized VirtualBoxVM --startvm GUI window; framebuffer
+##   start_vm_frontend    -- window mode: a floating VirtualBoxVM --startvm GUI window; framebuffer
 ##                           mode: the legacy `VBoxManage startvm --type headless`.
 ##   story_snap NN name   -- a capture_frame into ${shot_dir}/NN-name.png, NO quiesce.
 ##   story_card NN name T -- a state card emitted as TEXT (showvminfo -> NN-name.card.txt), no image.
@@ -503,7 +503,7 @@ check "cb_gui_ns_reexec is a no-op in framebuffer mode" "$(( rc == 0 ? 0 : 1 ))"
 
 ## --- gui_compositor_stop: restore the overridden global GUI/SuppressMessages -----------------
 ## was-set -> restored to the saved value; absent -> deleted (setextradata with no value).
-story_capture="window"; vm_kept=""; gui_vm_pid=""; gui_labwc_pid=""; gui_xdg_dir=""; gui_cfg_dir=""
+story_capture="window"; vm_kept=""; gui_vm_pid=""; gui_session_pgid=""; gui_xdg_dir=""
 true > "${vbox_log}"
 gui_supmsg_was_set="yes"; gui_supmsg_saved="oldsup"
 gui_compositor_stop
@@ -526,7 +526,7 @@ check "gui_compositor_stop is a no-op in framebuffer mode" "${got}"
 ## --- vm_kept: a KEPT --keep-failed VM must NOT have its in-process window frontend killed -----
 ## (killing VirtualBoxVM would abort the very VM being kept for inspection). Stand in for the
 ## frontend with a real sleep; vm_kept=true leaves it alive, vm_kept unset kills it.
-story_capture="window"; gui_labwc_pid=""; gui_xdg_dir=""; gui_cfg_dir=""
+story_capture="window"; gui_session_pgid=""; gui_xdg_dir=""
 gui_supmsg_was_set="no"; gui_supmsg_saved=""
 vm_kept="true"
 sleep 30 & keep_pid=$!
@@ -542,6 +542,21 @@ gui_compositor_stop
 wait "${kill_pid}" 2>/dev/null || true
 got=0; kill -0 "${kill_pid}" 2>/dev/null && got=1
 check "gui_compositor_stop KILLS the frontend when vm_kept is unset" "${got}"
+
+## --- gui_compositor_stop group-signals the WHOLE session, not just the frontend ---------------
+## window mode runs a full LXQt session (labwc + panel + pcmanfm-qt + portals + notificationd) in
+## one setsid process group; teardown must signal the GROUP (kill -- -PGID) or those clients leak
+## every run. Stub kill to record its argv and assert the negative-PGID (group) form, TERM then KILL.
+story_capture="window"; vm_kept=""; gui_vm_pid=""; gui_xdg_dir=""
+gui_supmsg_was_set="no"; gui_supmsg_saved=""
+gui_session_pgid="4242"
+kill_log="${work}/kill.calls"; true > "${kill_log}"
+# shellcheck disable=SC2317  ## called indirectly by gui_compositor_stop
+kill() { printf '%s\n' "$*" >> "${kill_log}"; }
+gui_compositor_stop
+unset -f kill
+got=0; { has '-TERM -4242' "$(cat -- "${kill_log}")" && has '-KILL -4242' "$(cat -- "${kill_log}")"; } || got=1
+check "gui_compositor_stop group-signals the session PGID (kill -- -PGID, TERM then KILL)" "${got}"
 
 ## --- story_card: emits a state card as TEXT (showvminfo -> NN-name.card.txt), NO image --------
 ## The synthetic cards publish their text directly: no PNG, no dm-text-to-png round-trip (the page
