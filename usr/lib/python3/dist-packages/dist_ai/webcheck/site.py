@@ -255,6 +255,11 @@ def resolve_internal(root, page, target, mount=None, parent_roots=(),
     # BEFORE the '..' clamp / urljoin below so an encoded '..' ('%2e%2e') is clamped
     # too, never slipped past it.
     target = urllib.parse.unquote(target)
+    # Decode the fragment too (split out above, BEFORE this unquote). A browser
+    # percent-decodes #frag and matches it against an element id, which is a literal
+    # attribute value never percent-encoded -- so an encoded anchor ('#%74op' = #top,
+    # or a non-ASCII heading id) must be decoded here or it false-fails as broken.
+    frag = urllib.parse.unquote(frag)
     if target == '':
         return ('#self', None, frag)         # same-page fragment (no candidate list)
     if target.startswith('/'):
@@ -1550,6 +1555,24 @@ def _page_raster_files(root, pages):
                     consider(page, token[0])
         for value in _css_external_refs('\n'.join(ext.styles)):
             consider(page, value)
+    # A raster referenced only from a site-wide stylesheet (a CSS url() background)
+    # ships on every page that links the sheet, so it is in scope for a curated wiki
+    # audit even though no audited PAGE inlines it. CSS is a handful of site-wide
+    # sheets (mirrors _css_sources' whole-tree read); a url() is relative to the CSS
+    # file's own directory, so resolve each against the sheet's path, not a page's.
+    for base, dirs, files in os.walk(root):
+        _prune_git(dirs)
+        for name in sorted(files):
+            if not name.endswith('.css'):
+                continue
+            css_path = os.path.join(base, name)
+            try:
+                with open(css_path, encoding='utf-8') as handle:
+                    css_text = handle.read()
+            except OSError:
+                continue
+            for value in _css_external_refs(css_text):
+                consider(css_path, value)
     return found
 
 

@@ -155,6 +155,26 @@ def run():
               repr(fails))
         check('truncated image flagged', any('bad.png' in f for f in fails), repr(fails))
 
+    # 7c. In a curated (wiki) audit the raster set is scoped to the pages' refs, but a
+    # corrupt raster referenced ONLY from a site-wide stylesheet url() still ships on
+    # every page that links the sheet -- so it must be decoded + flagged, not skipped.
+    with tempfile.TemporaryDirectory() as root:
+        os.makedirs(os.path.join(root, 'media'))
+        _write(root, 'wiki/Page.html',
+               '<!doctype html><html><head><title>t</title>'
+               '<link rel="stylesheet" href="../style.css"></head>'
+               '<body>x</body></html>')
+        _write(root, 'style.css', 'body{background:url(media/bg.png)}')
+        with open(os.path.join(root, 'media', 'bg.png'), 'wb') as handle:
+            handle.write(b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01'
+                         b'\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89'
+                         b'\x00\x00\x00\nIDATx\x9cc')
+        fails = []
+        check_site.check_asset_integrity(
+            root, fails, pages=[os.path.join(root, 'wiki', 'Page.html')])
+        check('curated audit decodes a stylesheet-only raster (url() in external CSS)',
+              any('bg.png' in f for f in fails), repr(fails))
+
     # check_image_format: a CONTENT raster reference must be webp; og:image /
     # favicon may stay PNG; the static allowlist exempts a basename.
     _page = ('<!doctype html><html><head><title>t</title></head>'
@@ -853,6 +873,36 @@ def run():
         _write(root, 'my page.html', '<p>ok</p>')
         check('percent-encoded internal link resolves to the decoded file',
               _links_failures(root) == [], repr(_links_failures(root)))
+    # A percent-encoded FRAGMENT must be decoded before being matched against an
+    # element id (a browser does): '#%74op' is the #top special fragment, and
+    # '#se%63tion' names the real id 'section' (same-page AND cross-page). All three
+    # resolve -> NO failure. Without the decode the raw encoded form matches nothing,
+    # so the gate false-fails -- the signal is the failure COUNT, not a substring (the
+    # raw '%74op'/'se%63tion' do not even contain 'top'/'section').
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               '<!doctype html><html><head><title>t</title></head><body>'
+               '<h2 id="section">S</h2>'
+               '<a href="#%74op">top</a><a href="#se%63tion">s</a>'
+               '<a href="other.html#se%63tion">x</a></body></html>')
+        _write(root, 'other.html',
+               '<!doctype html><html><head><title>o</title></head><body>'
+               '<h2 id="section">S</h2></body></html>')
+        check('check_links: percent-encoded fragments decode before the id match',
+              _links_failures(root) == [], repr(_links_failures(root)))
+    # Guard the exemption did not over-reach: a genuinely absent (decoded) fragment
+    # is still flagged, same-page and cross-page.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               '<!doctype html><html><head><title>t</title></head><body>'
+               '<a href="#re%61lgone">a</a>'
+               '<a href="other.html#re%61lgone">b</a></body></html>')
+        _write(root, 'other.html',
+               '<!doctype html><html><head><title>o</title></head><body>'
+               '<p>no ids</p></body></html>')
+        fails = _links_failures(root)
+        check('check_links: a decoded-but-absent fragment is still flagged twice',
+              len(fails) == 2 and all('realgone' in f for f in fails), repr(fails))
 
     # Payment / non-http URI schemes are external, not internal relative links:
     # bitcoin:/monero:/ethereum: have no file on disk, so the pre-fix list (only
