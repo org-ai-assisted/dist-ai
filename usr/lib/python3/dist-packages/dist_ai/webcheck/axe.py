@@ -50,7 +50,7 @@ import re
 import sys
 import threading
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from dist_ai.webcheck.mobile import (
     _MountHandler, _MountingTCPServer, _page_urls, _skip, SUBSITES)
@@ -203,6 +203,19 @@ _AXE_RUN_JS = (
     "async () => { const r = await axe.run(document, "
     "{resultTypes: ['violations']}); return r.violations; }")
 
+# Force every `content-visibility: auto` section to render before axe measures. That CSS defers
+# rendering (and layout/paint) of OFF-SCREEN content as a perf win, but axe-core then samples
+# color-contrast against an unrendered element's indeterminate background and reports FALSE
+# failures (a link that is perfectly legible once scrolled into view). An a11y audit must measure
+# RENDERED content. A constructable stylesheet via adoptedStyleSheets is NOT subject to the page's
+# strict style-src CSP (it is programmatic, not markup), so it installs on the hardened sites --
+# the same reason axe-core is injected by evaluate rather than a <script> tag.
+_FORCE_RENDER_JS = (
+    "() => { try { const s = new CSSStyleSheet(); "
+    "s.replaceSync('*, ::before, ::after { content-visibility: visible !important; "
+    "contain-intrinsic-size: auto !important; }'); "
+    "document.adoptedStyleSheets = [...document.adoptedStyleSheets, s]; } catch (e) {} }")
+
 
 async def _axe_page(browser, url: str, axe_src: str, settle_ms: int) -> dict:
     """Load one page, inject axe-core, run it, return its violations. Own close is time-boxed so a
@@ -214,42 +227,50 @@ async def _axe_page(browser, url: str, axe_src: str, settle_ms: int) -> dict:
     axe installs regardless -- the only injection that works against the hardened sites."""
     from urllib.parse import urlparse
     allowed = urlparse(url).netloc
-    offsite_nav: Dict[str, Optional[str]] = {"url": None}
+    nav: Dict[str, Any] = {"count": 0, "redirect": None}
     page = await browser.new_page()
 
     async def _hermetic(route):
-        # The audit serves a LOCAL tree and must never fetch off that mount. A redirect stub's
-        # meta-refresh points at PRODUCTION (www.kicksecure.com / www.whonix.org); without this the
-        # browser navigates there and axe audits PRODUCTION's live DOM, reporting its a11y against
-        # our stub (the old-MediaWiki Prism/cookiewarning/toctogglecheckbox ghosts). Abort any
-        # request whose host:port differs from the page under audit. A top-level (main-frame)
-        # navigation off-mount means this page is a redirect stub -> record it so the caller SKIPS
-        # it (a redirect carries no audit-worthy content of its own; its target is audited directly).
+        # A redirect stub (meta-refresh / JS) issues a SECOND main-frame navigation after the page
+        # we asked for -- to a SAME-ORIGIN target (/wiki/Design, a 404 when that target is absent),
+        # or to an absolute off-mount url (PRODUCTION www.kicksecure.com, whose old-MediaWiki DOM
+        # then leaks Prism/cookiewarning/toctogglecheckbox ghosts). Following it audits the TARGET
+        # and mis-attributes its a11y to this stub. Allow ONLY the first main-frame navigation (the
+        # requested page); treat any later one as a redirect and SKIP (the target is a real page
+        # audited on its own). Separately, abort any OFF-MOUNT subresource so the audit stays
+        # hermetic (never fetch off the local mount).
         req = route.request
+        if req.is_navigation_request() and req.frame == page.main_frame:
+            nav["count"] += 1
+            if nav["count"] == 1:
+                await route.continue_()
+                return
+            nav["redirect"] = req.url
+            await route.abort()
+            return
         if urlparse(req.url).netloc == allowed:
             await route.continue_()
-            return
-        if req.is_navigation_request() and req.frame == page.main_frame:
-            offsite_nav["url"] = req.url
-        await route.abort()
+        else:
+            await route.abort()
 
     await page.route("**/*", _hermetic)
     try:
         try:
             resp = await page.goto(url, wait_until="networkidle", timeout=45000)
         except Exception:
-            # A blocked off-mount meta-refresh can surface as a main-frame navigation error -- that
-            # is the redirect-stub case, not a wedge. Re-raise anything else (a real load failure).
-            if offsite_nav["url"]:
-                return {"redirect": offsite_nav["url"]}
+            # A blocked redirect navigation can surface as a main-frame navigation error -- that is
+            # the redirect-stub case, not a wedge. Re-raise anything else (a real load failure).
+            if nav["redirect"]:
+                return {"redirect": nav["redirect"]}
             raise
-        if offsite_nav["url"]:
-            return {"redirect": offsite_nav["url"]}
+        if nav["redirect"]:
+            return {"redirect": nav["redirect"]}
         # Playwright does NOT raise on a 404/500; without this a served error page reads as
         # auditable and a missing/broken page is silently 'clean'.
         status = resp.status if resp is not None else 0
         if status < 200 or status >= 400:
             return {"status": status}
+        await page.evaluate(_FORCE_RENDER_JS)
         await page.wait_for_timeout(settle_ms)
         await page.evaluate(axe_src)
         violations = await page.evaluate(_AXE_RUN_JS)

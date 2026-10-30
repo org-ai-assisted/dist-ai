@@ -15,6 +15,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any, Awaitable, Callable, Optional
 
 
 def _load():
@@ -280,15 +281,16 @@ def run() -> int:
     class _FakePage:
         def __init__(self, offsite):
             self.main_frame = object()
-            self._handler = None
-            self._offsite = offsite   # None, or the off-mount URL a meta-refresh targets
+            self._handler: Optional[Callable[[Any], Awaitable[Any]]] = None
+            self._offsite = offsite   # None, or a URL a meta-refresh retargets to (any origin)
 
         async def route(self, _pattern, handler):
             self._handler = handler
 
         async def goto(self, url, **_k):
+            assert self._handler is not None   # route() always runs before goto()
             await self._handler(_FakeRoute(_FakeRequest(url, self.main_frame, True)))
-            if self._offsite is not None:   # a redirect stub fires a meta-refresh off-mount
+            if self._offsite is not None:   # a redirect stub fires a SECOND main-frame navigation
                 await self._handler(_FakeRoute(_FakeRequest(self._offsite, self.main_frame, True)))
             return _FakeResponse()
 
@@ -313,9 +315,15 @@ def run() -> int:
         _FakeBrowser("https://www.kicksecure.com/wiki/Real"), _local, "axe=1", 0))
     ck(_redir.get("redirect") == "https://www.kicksecure.com/wiki/Real",
        "off-mount meta-refresh -> redirect skip, production never audited: %r" % _redir)
+    # a SAME-ORIGIN meta-refresh (a Moved:/Dev.html stub -> /wiki/Design) is also a redirect: its
+    # target (or a 404 when absent) must not be audited under the stub's path.
+    _same = _asyncio.run(ax._axe_page(
+        _FakeBrowser("http://127.0.0.1:8000/wiki/Design"), _local, "axe=1", 0))
+    ck(_same.get("redirect") == "http://127.0.0.1:8000/wiki/Design",
+       "same-origin meta-refresh -> redirect skip, target not audited as the stub: %r" % _same)
     _okpage = _asyncio.run(ax._axe_page(_FakeBrowser(None), _local, "axe=1", 0))
     ck("redirect" not in _okpage and _okpage.get("status") == 200,
-       "a same-origin page audits normally (no false redirect): %r" % _okpage)
+       "a non-redirecting page audits normally (no false redirect): %r" % _okpage)
 
     # _skip raises SystemExit(77) (the shared env-unmet contract).
     try:
