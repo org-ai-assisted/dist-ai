@@ -339,6 +339,80 @@ def run():
         ok(stream_broken_rc == 1,
            '--stream: a closed output pipe exits 1 (BrokenPipeError)')
 
+        # A CLOSED fd 1 / fd 0 (a caller's `exec >&-` / `0<&-`) makes CPython set
+        # sys.stdout / sys.stdin to None at startup -- there is NO stream object.
+        # The display path (qube-ctl's untrusted-output neutralizer) must fail CLEANLY
+        # here (rc 1), never AttributeError on None.buffer -- a Python TRACEBACK that
+        # alarmed the operator and made a SUCCEEDING command look broken. `.buffer` is
+        # never touched, so capture an unexpected raise as a FAIL rather than let it
+        # abort the suite (that is exactly the traceback this closes).
+        def _none_stream_rc(argv, *, out_none, in_none):
+            saved_i, saved_o = sys.stdin, sys.stdout
+            try:
+                if in_none:
+                    sys.stdin = None
+                else:
+                    sys.stdin = _StreamIn()
+                if out_none:
+                    sys.stdout = None
+                else:
+                    sys.stdout = io.TextIOWrapper(io.BytesIO(), encoding='utf-8')
+                return unicode_tag.main_stdin(argv)
+            except Exception as exc:          # a traceback instead of a clean rc IS the bug
+                return 'raised: %s' % type(exc).__name__
+            finally:
+                sys.stdin, sys.stdout = saved_i, saved_o
+
+        ok(_none_stream_rc(['--stream'], out_none=True, in_none=False) == 1,
+           '--stream: a CLOSED stdout (sys.stdout is None) exits 1, no traceback')
+        ok(_none_stream_rc(['--stream'], out_none=False, in_none=True) == 1,
+           '--stream: a CLOSED stdin (sys.stdin is None) exits 1, no traceback')
+        ok(_none_stream_rc([], out_none=False, in_none=True) == 1,
+           'whole-stream: a CLOSED stdin (sys.stdin is None) exits 1, no traceback')
+
+        # Whole-stream emit (_write_tagged) with a CLOSED stdout exits 1, no traceback.
+        saved_o = sys.stdout
+        try:
+            sys.stdout = None
+            try:
+                none_out_rc = unicode_tag._write_tagged(b'x')
+            except Exception as exc:
+                none_out_rc = 'raised: %s' % type(exc).__name__
+        finally:
+            sys.stdout = saved_o
+        ok(none_out_rc == 1,
+           '_write_tagged: a CLOSED stdout (sys.stdout is None) exits 1, no traceback')
+
+        # --json with a CLOSED stdout exits 1 (the reply cannot be written), no traceback.
+        saved_i, saved_o = sys.stdin, sys.stdout
+        try:
+            sys.stdin = io.TextIOWrapper(
+                io.BytesIO(json.dumps({unicode_tag.JSON_REQUEST_KEY: 'x'}).encode('ascii')),
+                encoding='utf-8')
+            sys.stdout = None
+            try:
+                json_none_rc = unicode_tag.main_stdin(['--json'])
+            except Exception as exc:
+                json_none_rc = 'raised: %s' % type(exc).__name__
+        finally:
+            sys.stdin, sys.stdout = saved_i, saved_o
+        ok(json_none_rc == 1,
+           '--json: a CLOSED stdout (sys.stdout is None) exits 1, no traceback')
+
+        # main() (the file/stdin entry) with a CLOSED stdin and NO file argv exits 1,
+        # no traceback -- it reads stdin only when no path is given.
+        saved_i = sys.stdin
+        try:
+            sys.stdin = None
+            try:
+                main_none_rc = unicode_tag.main([])
+            except Exception as exc:
+                main_none_rc = 'raised: %s' % type(exc).__name__
+        finally:
+            sys.stdin = saved_i
+        ok(main_none_rc == 1,
+           'main(): a CLOSED stdin (sys.stdin is None) with no argv exits 1, no traceback')
+
         # --stream: an unreadable stdin (readline raises OSError) exits 1 cleanly.
         class _BadReadlineBuffer:
             @staticmethod
