@@ -815,6 +815,34 @@ test("hero video: a player missing its <video> is skipped without error", () => 
   assert.ok(w.document.querySelector(".overview-image"), "built without throwing");
 });
 
+test("endorsement show-more: collapses the grid and the button toggles it", () => {
+  let cards = "";
+  for (let i = 0; i < 8; i++) cards += '<div class="endorsement-card">c' + i + "</div>";
+  const w = load('<div class="endorsement-grid">' + cards + "</div>" +
+    '<button class="endorsement-more" hidden aria-expanded="false">Show more</button>');
+  const grid = w.document.querySelector(".endorsement-grid");
+  const btn = w.document.querySelector(".endorsement-more");
+  assert.ok(grid.classList.contains("endorsement-collapsed"), "grid collapsed when >6 cards");
+  assert.equal(btn.hidden, false, "button revealed");
+  btn.dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
+  assert.ok(!grid.classList.contains("endorsement-collapsed"), "click expands");
+  assert.equal(btn.textContent, "Show less");
+  assert.equal(btn.getAttribute("aria-expanded"), "true");
+  btn.dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
+  assert.ok(grid.classList.contains("endorsement-collapsed"), "second click collapses again");
+  assert.equal(btn.textContent, "Show more");
+});
+
+test("endorsement show-more: no collapse when 6 or fewer cards", () => {
+  let cards = "";
+  for (let i = 0; i < 4; i++) cards += '<div class="endorsement-card">c</div>';
+  const w = load('<div class="endorsement-grid">' + cards + "</div>" +
+    '<button class="endorsement-more" hidden>Show more</button>');
+  assert.ok(!w.document.querySelector(".endorsement-grid").classList.contains("endorsement-collapsed"),
+    "not collapsed with few cards");
+  assert.equal(w.document.querySelector(".endorsement-more").hidden, true, "button stays hidden");
+});
+
 test("hovercards: reference card has a 'Footnote N' headline, nav on top, arrow + Escape keys", async () => {
   const w = load('<div class="wiki-content">' +
     '<sup class="reference"><a href="#fn1">[1]</a></sup>' +
