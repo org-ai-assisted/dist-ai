@@ -1348,11 +1348,29 @@ test("storage failures are swallowed: theme, banners, sitenotice and the viewer 
 
 // ---- bottom-stack spacer --------------------------------------------------------------------
 
-test("bottom-stack spacer: recomputed on resize (rAF-coalesced), lifts the back-to-top button", async () => {
+test("bottom-stack spacer: ResizeObserver-driven (no init-time forced reflow), lifts back-to-top", () => {
   const w = load('<div class="bottom-stack"><div class="stage-banner">s</div></div>' +
     '<a class="back-to-top" href="#top">Top</a>');
   const btt = w.document.querySelector(".back-to-top");
-  // two resizes in the same frame: the second must be coalesced (the rAF guard returns early).
+  const stack = w.document.querySelector(".bottom-stack");
+  // The spacer is measured in a ResizeObserver callback (runs AFTER the browser's layout), NOT
+  // synchronously at init -- that init-time offsetHeight read was the ~51ms forced reflow. So
+  // observe() sets nothing; firing the RO is the frame's measure delivery (init + resize + any
+  // banner-dismiss reflow all route through it).
+  const ro = w.__resizeObservers.find((o) => o.targets.includes(stack));
+  assert.ok(ro, "a ResizeObserver observes the bottom-stack");
+  ro.cb();
+  assert.equal(typeof w.document.body.style.paddingBottom, "string", "body padding reserved for the stack");
+  assert.ok(/px$/.test(btt.style.bottom), "back-to-top is lifted above the stack");
+});
+
+test("bottom-stack spacer: no-ResizeObserver fallback recomputes on resize (rAF-coalesced)", async () => {
+  const w = load('<div class="bottom-stack"><div class="stage-banner">s</div></div>' +
+    '<a class="back-to-top" href="#top">Top</a>',
+    { preEval: (win) => { delete win.ResizeObserver; } });
+  const btt = w.document.querySelector(".back-to-top");
+  // No RO: the first read is rAF-deferred (still no SYNCHRONOUS init reflow) and a resize
+  // recomputes, coalesced to one remeasure per frame (the second resize returns early).
   w.dispatchEvent(new w.Event("resize"));
   w.dispatchEvent(new w.Event("resize"));
   await new Promise((r) => setTimeout(r, 30));
@@ -1877,13 +1895,14 @@ test("syncTabsFromHash scrolls the target into view and skips a controller-less 
   assert.ok(scrolled >= 1, "the fragment target is scrolled into view (no controller to activate)");
 });
 
-test("bottom-stack: a measured stack height lifts the back-to-top above it", async () => {
+test("bottom-stack: a measured stack height lifts the back-to-top above it", () => {
   const w = load('<div class="bottom-stack"><div class="stage-banner">s</div></div>' +
     '<a class="back-to-top" href="#top">Top</a>');
   const stack = w.document.querySelector(".bottom-stack");
   Object.defineProperty(stack, "offsetHeight", { value: 50, configurable: true });
-  w.dispatchEvent(new w.Event("resize"));
-  await new Promise((r) => setTimeout(r, 30));
+  // Fire the ResizeObserver (the measure delivery) -> a 50px stack reserves 50px and lifts the
+  // back-to-top to 50+20px (exercises the non-zero-height branch of the spacer write).
+  w.__resizeObservers.find((o) => o.targets.includes(stack)).cb();
   assert.equal(w.document.querySelector(".back-to-top").style.bottom, "70px", "back-to-top sits 20px above the 50px stack");
 });
 
