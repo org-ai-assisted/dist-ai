@@ -92,7 +92,7 @@ gc_wait_gui_started() {
    local calls
    calls="$(cat "${WAIT_CALLS}")"
    printf '%s' "$(( calls + 1 ))" > "${WAIT_CALLS}"
-   printf '%s\n' "WAITSTART role=$1 pattern=$2" >> "${order}"
+   printf '%s\n' "WAITSTART role=$1 pattern=$2 match=${4:-DEFAULT}" >> "${order}"
    if [ "${calls}" -eq 0 ]; then
       return "${GC_WAIT_FIRST_RC:-0}"
    fi
@@ -166,6 +166,16 @@ got=0
 { [ -n "${push_line}" ] && [ -n "${edit_line}" ] && [ "${push_line}" -lt "${edit_line}" ]; } || got=1
 check "the awk is pushed BEFORE the edit snippet runs" "${got}"
 
+## The panel-respawn wait MUST ask for exact (-x) matching: this poll runs right after the
+## SIGKILL, and a -f poll self-matches the invoking guest shell (its own command line carries
+## 'lxqt-panel'), falsely reporting the panel up without a real respawn (pgrep self-match class).
+got=0
+has 'WAITSTART role=user pattern=lxqt-panel match=-x' "${log}" || got=1
+check "the panel-respawn wait requests exact (-x) matching, not the default -f (self-match)" "${got}"
+got=0
+{ has 'match=-f' "${log}" || has 'match=DEFAULT' "${log}"; } && got=1
+check "the panel wait does NOT use -f/default matching (would self-match)" "${got}"
+
 ## --- case 2: DM_STORY_CLOCK_TEXT override flows to fmt ---------------------------------------
 reset_case
 GC_WAIT_FIRST_RC=0 DM_STORY_CLOCK_TEXT='CI-SNAPSHOT' gui_freeze_guest_clock user
@@ -173,6 +183,24 @@ log="$(cat -- "${order}")"
 got=0
 has "awk -v fmt='CI-SNAPSHOT' -v drop_volume=0 -f " "${log}" || got=1
 check "DM_STORY_CLOCK_TEXT overrides the frozen clock literal in the guest snippet" "${got}"
+
+## --- case 2b: a single quote in DM_STORY_CLOCK_TEXT is ESCAPED for the guest shell ----------
+## fmt embeds in a single-quoted guest-shell arg (fmt='...'); a benign "12 o'clock" would close
+## the quote and corrupt (codex/grok injection finding). The snippet must POSIX-escape '->'\''.
+reset_case
+GC_WAIT_FIRST_RC=0 DM_STORY_CLOCK_TEXT="12 o'clock" gui_freeze_guest_clock user
+log="$(cat -- "${order}")"
+got=0
+has "fmt='12 o'\\''clock'" "${log}" || got=1
+check "a single quote in DM_STORY_CLOCK_TEXT is escaped ('->'\\'') in the guest snippet" "${got}"
+
+## --- case 2c: a single quote in DM_GUEST_FREEZE_AWK_DEST is ESCAPED too ----------------------
+reset_case
+GC_WAIT_FIRST_RC=0 DM_GUEST_FREEZE_AWK_DEST="/var/tmp/x'y.awk" gui_freeze_guest_clock user
+log="$(cat -- "${order}")"
+got=0
+has "-f '/var/tmp/x'\\''y.awk'" "${log}" || got=1
+check "a single quote in DM_GUEST_FREEZE_AWK_DEST is escaped in the guest snippet" "${got}"
 
 ## --- case 3: account routing (sysmaint) -----------------------------------------------------
 reset_case

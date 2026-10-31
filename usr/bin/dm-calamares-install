@@ -1154,12 +1154,18 @@ source "${content_gate_lib}"
 ## missing panel.conf is a no-op (exit 0) -- the branded image ships one; the frame check is
 ## the backstop if it is somehow absent.
 guest_freeze_panel_snippet() {
-   local awk_dest="$1" fmt="$2"
+   local awk_dest="$1" fmt="$2" fmt_quoted awk_dest_quoted
+   ## FMT and AWK_DEST each embed in a single-quoted guest-shell arg, and both derive from
+   ## operator-settable env (DM_STORY_CLOCK_TEXT / DM_GUEST_FREEZE_AWK_DEST), so escape any
+   ## single quote ('->'\'') to keep the arg intact (a benign "12 o'clock" would otherwise
+   ## break the command, and the snippet's exit 0 would be misread as a successful edit).
+   fmt_quoted=${fmt//\'/\'\\\'\'}
+   awk_dest_quoted=${awk_dest//\'/\'\\\'\'}
    ## ${HOME}/${panel} MUST stay single-quoted: they expand IN-GUEST (bash -lc), not on the host.
    # shellcheck disable=SC2016
    printf '%s' \
       'panel="${HOME}/.config/lxqt/panel.conf"; [ -f "${panel}" ] || exit 0; ' \
-      "awk -v fmt='${fmt}' -v drop_volume=0 -f '${awk_dest}' " \
+      "awk -v fmt='${fmt_quoted}' -v drop_volume=0 -f '${awk_dest_quoted}' " \
       '"${panel}" > "${panel}.dm-new" && mv -- "${panel}.dm-new" "${panel}"'
 }
 
@@ -1191,7 +1197,10 @@ gui_freeze_guest_clock() {
       return 0
    fi
    gc_run "${account}" 'pkill --signal KILL --exact lxqt-panel >/dev/null 2>&1; true' 15 >/dev/null 2>&1 || true
-   if ! gc_wait_gui_started "${account}" 'lxqt-panel' 40; then
+   ## Exact (-x) match, NOT the default -f: this poll runs right after the SIGKILL, and a -f
+   ## poll self-matches the invoking guest shell (its own command line carries "lxqt-panel"),
+   ## falsely reporting the panel back up without a real respawn -- the frame could then lack it.
+   if ! gc_wait_gui_started "${account}" 'lxqt-panel' 40 '-x'; then
       printf '%s\n' "${me}: WARNING: guest clock freeze: lxqt-panel did not respawn after the restart; a frame may lack a panel" >&2
    fi
 }
