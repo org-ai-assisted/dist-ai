@@ -553,10 +553,11 @@ story_snap_nonblank() {
 
 ## --- #18: full-VM-window story capture --------------------------------------------------------
 ## story_capture=window (default; operator "maximum faithful -- as close to real usage as possible"):
-## the VM runs in a FLOATING VirtualBoxVM GUI window on a full headless Kicksecure LXQt desktop
+## the VM runs in a MAXIMIZED VirtualBoxVM GUI window on a full headless Kicksecure LXQt desktop
 ## session the lane owns (the real greetd entry start-lxqt-session), so every milestone grim grab
-## shows the guest window on the ACTUAL host desktop -- branded wallpaper, desktop icons, and the
-## lxqt-panel taskbar -- not a bare window on an empty compositor. Driving + OCR stay on
+## shows the guest window on the ACTUAL host desktop -- the lxqt-panel taskbar stays visible above
+## the maximized window (never truncated). The session config is made DETERMINISTIC for reproducible
+## frames (clean tray, frozen clock) by gui_seed_capture_config. Driving + OCR stay on
 ## vbox-ctl-local (vboxapi, frontend-agnostic). story_capture=framebuffer: the legacy
 ## bare-guest-framebuffer grab (vbox-ctl-local shot) -- an escape hatch (STORY_CAPTURE=framebuffer).
 ## coreboot: the fork has no GUI frontend, so main() re-execs the whole lane inside a private mount
@@ -571,6 +572,7 @@ gui_session_leader=""
 gui_session_log=""
 gui_vm_pid=""
 gui_xdg_dir=""
+gui_cfg_dir=""
 gui_supmsg_was_set=""
 gui_supmsg_saved=""
 ## set by on_exit when a --keep-failed run KEPT the VM running for inspection: gui_compositor_stop
@@ -645,6 +647,48 @@ clear_host_notifications() {
    pkill -s "${gui_session_leader}" --exact lxqt-notificati >/dev/null 2>&1 || true
 }
 
+## Seed a dedicated, deterministic XDG_CONFIG_HOME for the capture session so every milestone frame
+## is REPRODUCIBLE and clean -- WITHOUT mutating the fleet account's real ~/.config. Copied from the
+## account's real config (so the wallpaper, desktop icons and theme stay faithful), then three edits
+## applied to the COPY only:
+##   - drop the `volume` panel plugin -- this headless host has no audio device, so the plugin shows
+##     a false red error badge ("!"); it is misleading in a success story and irrelevant to a guest
+##     install test (root cause: lxqt-panel volume plugin with no PulseAudio/sound card);
+##   - freeze the worldclock to a fixed literal (formatType=custom, token-free customFormat) -- the
+##     wall clock is the only tray element that changes run to run, so a constant makes the host
+##     frame reproducible (DM_STORY_CLOCK_TEXT overrides the literal);
+##   - a labwc windowRule maximizing toplevels -- the VM window fills below the panel (taskbar stays
+##     visible, never truncated) rather than a floating window that could drift off-screen.
+## The real ~/.config is never touched; gui_cfg_dir lives under gui_xdg_dir, reaped in _stop.
+gui_seed_capture_config() {
+   gui_cfg_dir="${gui_xdg_dir}/xdg-config"
+   mkdir -p -- "${gui_cfg_dir}"
+   [ -d "${HOME}/.config" ] && cp -a -- "${HOME}/.config/." "${gui_cfg_dir}/" 2>/dev/null
+   mkdir -p -- "${gui_cfg_dir}/lxqt" "${gui_cfg_dir}/labwc"
+   local panel="${gui_cfg_dir}/lxqt/panel.conf"
+   [ -f "${panel}" ] || cp -- "${DM_STORY_PANEL_CONF_SRC:-/usr/share/kicksecure/lxqt/panel.conf}" "${panel}" 2>/dev/null || true
+   if [ -f "${panel}" ]; then
+      ## drop the `volume` plugin token (leading / mid / trailing, with optional spaces)
+      sed -i -E 's/(^plugins=.*),[[:space:]]*volume/\1/; s/(^plugins=)volume,[[:space:]]*/\1/; s/(^plugins=)volume$/\1/' -- "${panel}" 2>/dev/null || true
+      ## freeze the clock: rewrite [worldclock] to a custom token-free literal (drop existing dup keys)
+      local tmp="${panel}.dm-new"
+      if awk -v fmt="${DM_STORY_CLOCK_TEXT:-00:00}" '
+            /^\[worldclock\]/ { print; print "formatType=custom"; print "customFormat=" fmt; print "timeShowSeconds=false"; inw=1; next }
+            inw && /^\[/ { inw=0 }
+            inw && /^(formatType|customFormat|timeShowSeconds)=/ { next }
+            { print }
+         ' "${panel}" > "${tmp}" 2>/dev/null; then
+         mv -- "${tmp}" "${panel}" 2>/dev/null || safe-rm --force -- "${tmp}" 2>/dev/null || true
+      fi
+   fi
+   ## maximize the VM window (any toplevel) so it fills below the panel -- never truncated
+   printf '%s\n' \
+      '<?xml version="1.0"?>' \
+      '<labwc_config><windowRules><windowRule identifier="*"><action name="Maximize"/></windowRule></windowRules></labwc_config>' \
+      > "${gui_cfg_dir}/labwc/rc.xml"
+   export XDG_CONFIG_HOME="${gui_cfg_dir}"
+}
+
 ## Start a FAITHFUL full Kicksecure LXQt desktop session headless (the real greetd entry
 ## start-lxqt-session -> startlxqtwayland -> labwc -m -S lxqt-session), set WAYLAND_DISPLAY so grim +
 ## the launched VM window target it, and wait for the panel. window mode only. The VM window then
@@ -660,6 +704,10 @@ gui_compositor_start() {
    chmod 0700 -- "${gui_xdg_dir}"
    export XDG_RUNTIME_DIR="${gui_xdg_dir}"
    gui_session_log="${gui_xdg_dir}/session.log"
+   ## Redirect XDG_CONFIG_HOME to a deterministic copy of the account config BEFORE the session
+   ## starts, so the panel + labwc read it (clean tray, frozen clock, maximized VM window). Exported
+   ## here so the setsid login shell inherits it; /etc/profile sets XDG_CONFIG_DIRS, never _HOME.
+   gui_seed_capture_config
    ## Own SESSION (setsid) so gui_compositor_stop can reap the WHOLE session -- labwc, panel,
    ## pcmanfm-qt, portals, notificationd -- by session id, and so panel/notification scoping targets
    ## THIS session, never another the account may have. $! is the session leader (== session id) ONLY
@@ -725,17 +773,18 @@ gui_compositor_start() {
       >/dev/null 2>&1 || true
 }
 
-## Launch (or re-launch after a power-cycle) the VM as a FLOATING VirtualBoxVM window on the LXQt
-## desktop -- a modest guest-size hint keeps it a window so the taskbar, wallpaper and icons stay
-## visible around it (not maximized over them). The window frontend runs the VM; the lane keeps
-## driving it via vbox-ctl-local.
+## Launch (or re-launch after a power-cycle) the VM as a VirtualBoxVM GUI window on the LXQt desktop.
+## The labwc windowRule (gui_seed_capture_config) MAXIMIZES the window so it fills below the host
+## panel -- the taskbar stays visible, the guest is never truncated off-screen. The window frontend
+## runs the VM; the lane keeps driving it via vbox-ctl-local.
 gui_vm_launch() {
    local uuid
    uuid="$("${VBOXMANAGE}" showvminfo "${vm}" --machinereadable 2>/dev/null | sed -n 's/^UUID="\(.*\)"$/\1/p' | head -1)" || true
    [ -n "${uuid}" ] || die "${FAIL_RC}" "story GUI: could not resolve a UUID for VM '${vm}'"
-   ## Modest guest size -> the VM window floats on the desktop (GA resizes a booted guest to it);
-   ## labwc centres it, leaving the panel + icons + wallpaper framing every milestone grab.
-   "${VBOXMANAGE}" setextradata "${uuid}" GUI/LastGuestSizeHint "1280,720" >/dev/null 2>&1 || true
+   ## Large initial size hint aligned with the maximized window (1920 wide, minus the 32px panel and
+   ## the VBox title+menu chrome) so a GA-equipped guest auto-resizes to fill it with minimal letterbox;
+   ## pre-GA console frames (GRUB/LUKS) sit centred in the maximized window regardless.
+   "${VBOXMANAGE}" setextradata "${uuid}" GUI/LastGuestSizeHint "1920,960" >/dev/null 2>&1 || true
    QT_QPA_PLATFORM="wayland" "${VBOX_VM_BIN}" --startvm "${uuid}" >/dev/null 2>&1 &
    gui_vm_pid="$!"
    ## Fail FAST with the REAL reason if the window frontend cannot power the VM on. Launch is
