@@ -151,8 +151,12 @@ test('ui: render is injection-safe and chip count matches analyzer', function ()
     const input = d.getElementById('in');
     input.value = str;
     input.dispatchEvent(new r.win.Event('input'));
-    const chips = d.getElementById('out').querySelectorAll('.mark').length;
-    return chips === OL.analyze(str).flagged;
+    const out = d.getElementById('out');
+    /* EVERY rendered element is a <span> (render builds .safe / .mark / .g spans via
+       createElement + textContent); an innerHTML regression injecting any other tag from the input
+       fails here -- counting .mark alone would miss injected non-.mark markup. */
+    for (const el of Array.from(out.querySelectorAll('*'))) { if (el.tagName !== 'SPAN') { return false; } }
+    return out.querySelectorAll('.mark').length === OL.analyze(str).flagged;
   }), { seed: 1, numRuns: 60 });
 });
 

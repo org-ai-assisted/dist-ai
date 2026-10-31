@@ -176,8 +176,12 @@ fi
 ## --- 8. a '..' / traversal site identity is rejected, never used as a staging path component ---
 ## The site becomes roots/<site>/; a '..' identity would resolve outside roots/ and let rsync
 ## overwrite the staged harness. The driver must die on it, not stage it.
+## Force the local-first toolchain (stub2 from case 5: node22+c8+npm+global jsdom+fast-check) so
+## run_local=1 and the driver REACHES the staging loop + identity validation -- WITHOUT it, a host
+## lacking node/c8 AND a usable sandbox exits env-unmet 77 before validation, so the test would
+## pass/fail for the wrong reason (env-dependent). WEBSITE_TESTS_NO_SANDBOX=1 belt-and-suspenders.
 trav_rc=0
-trav_err="$("${driver}" "..=${site7}" 2>&1 1>/dev/null)" || trav_rc=$?
+trav_err="$(PATH="${stub2}:${PATH}" WEBSITE_TESTS_NO_SANDBOX=1 "${driver}" "..=${site7}" 2>&1 1>/dev/null)" || trav_rc=$?
 if [ "${trav_rc}" -ne 0 ] && [[ "${trav_err}" == *'invalid site identity'* ]]; then
    pass 'webcheck-jsfuzz-sandbox: a .. / traversal site identity is rejected (no staging-path escape)'
 else

@@ -119,13 +119,18 @@ fuzz('analyze: lossless partition, flagged count consistent',
   },
   CORPUS_STRINGS);
 
-/* toAscii(str): output contains only classify===null codepoints; idempotent; never throws. */
-fuzz('toAscii: strips every flagged codepoint, idempotent',
+/* toAscii(str): output contains only classify===null codepoints; idempotent; never throws; AND it
+   PRESERVES every safe codepoint verbatim, in order. The preservation clause is load-bearing -- a
+   trivial impl that just returns '' (deleting all text) satisfies "only safe codepoints" + idempotent
+   vacuously, so without it the property is not a real anti-regression. */
+fuzz('toAscii: strips flagged codepoints, preserves safe ones, idempotent',
   fc.string({ maxLength: 64 }),
   function (str) {
     const out = OL.toAscii(str);
     for (const ch of Array.from(out)) { if (OL.classify(ch.codePointAt(0)) !== null) { return false; } }
-    return OL.toAscii(out) === out;
+    if (OL.toAscii(out) !== out) { return false; }
+    const keptSafe = Array.from(str).filter(function (ch) { return OL.classify(ch.codePointAt(0)) === null; }).join('');
+    return out === keptSafe;   // safe codepoints survive unchanged; a '' / lossy impl fails here
   },
   CORPUS_STRINGS);
 
