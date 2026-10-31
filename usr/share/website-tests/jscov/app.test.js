@@ -779,6 +779,22 @@ test("hovercards: a reference card carries a prev/next navigator that browses al
   assert.ok(/Third note/.test(w.document.querySelector(".hovercard").textContent), "prev wraps to the last note");
 });
 
+test("hovercards: a citation low in the viewport flips the card ABOVE and caps to the room", async () => {
+  const w = load('<div class="wiki-content"><sup class="reference"><a href="#fn1">[1]</a></sup>' +
+    '<li id="fn1">A footnote.</li></div>');
+  const a = w.document.querySelector("sup.reference a");
+  // Put the citation near the viewport bottom: above(=top-14)=686 > below(=innerHeight-bottom-14)=34
+  // and above>160, so place() takes the useAbove=true path (flip above, cap maxHeight to the room).
+  a.getBoundingClientRect = () => ({ top: 700, bottom: 720, left: 10, right: 30, width: 20, height: 20 });
+  a.dispatchEvent(new w.MouseEvent("mouseover", { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 260));
+  const card = w.document.querySelector(".hovercard");
+  assert.ok(card, "card built");
+  // maxHeight capped to the (large) room ABOVE, not the tiny room below -> useAbove branch taken.
+  assert.ok(parseFloat(card.style.maxHeight) > 120, "maxHeight capped to the room above, not below");
+  assert.ok(parseFloat(card.style.top) < 700, "card placed above the low citation");
+});
+
 test("hovercards: reference card has a 'Footnote N' headline, nav on top, arrow + Escape keys", async () => {
   const w = load('<div class="wiki-content">' +
     '<sup class="reference"><a href="#fn1">[1]</a></sup>' +
