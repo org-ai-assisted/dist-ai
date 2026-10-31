@@ -359,6 +359,31 @@ def _baseline_path(baseline_dir: Path, root: str) -> Path:
     return baseline_dir / ("axe-baseline-%s.txt" % os.path.basename(os.path.normpath(root)))
 
 
+def _ignore_path(baseline_dir: Path, root: str) -> Path:
+    """Per-site axe ignore-list (mirrors vnu's vnu-ignore-<site>.txt): pages EXCLUDED from the a11y
+    gate ENTIRELY -- not audited, not baselined. For generator demo/test FIXTURES whose job is to
+    DISPLAY rejected/demo states (auditing them for contrast is a category error, not a baseline).
+    ENUMERATED pages only; a real /wiki/ content page is never excluded, so a regression still reds."""
+    return baseline_dir / ("axe-ignore-%s.txt" % os.path.basename(os.path.normpath(root)))
+
+
+def parse_axe_ignore(text: str) -> Set[str]:
+    """One built-tree-relative path per line (blank / '#' skipped), canonicalised (extensionless, no
+    leading slash) so an entry like `wiki/Dev/wikitest.html` matches the audited URL path form."""
+    out: Set[str] = set()
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line and not line.startswith('#'):
+            out.add(_canon_path(line).lstrip('/'))
+    return out
+
+
+def _load_axe_ignore(baseline_dir: str, root: str) -> Set[str]:
+    """The ignore set for a root, or empty if no ignore file is committed (so absence = audit all)."""
+    ipath = _ignore_path(Path(baseline_dir), root)
+    return parse_axe_ignore(ipath.read_text(encoding='utf-8')) if ipath.is_file() else set()
+
+
 def _docroots(roots: List[str]) -> Dict[str, dict]:
     """Group roots into docroots exactly like console/mobile main(): a top-level site serves
     itself; a subsite is mounted under its parent's docroot at its mount path (skipped if the
@@ -415,9 +440,11 @@ def _merge_seed(existing: Set[Key], fresh: Set[Key], restrict: Optional[List[str
 
 
 def _serve_and_audit(docroot: str, entry: dict, axe_source: str, settle_ms: int,
-                     hard_timeout: int, restrict: Optional[List[str]] = None) -> Tuple[Set[Key], List[str]]:
+                     hard_timeout: int, restrict: Optional[List[str]] = None,
+                     ignore: Optional[Set[str]] = None) -> Tuple[Set[Key], List[str]]:
     """Serve one docroot on a localhost mount (reusing mobile.py's harness) and audit its pages.
-    `restrict` (a curated path list) overrides the enumerated tree -- audit only those paths."""
+    `restrict` (a curated path list) overrides the enumerated tree -- audit only those paths.
+    `ignore` (canonicalised paths) drops enumerated demo/test fixtures from the audit set."""
     handler = functools.partial(_MountHandler, directory=docroot)
     httpd = _MountingTCPServer(('127.0.0.1', 0), handler)
     httpd.mounts = entry['mounts']
@@ -427,6 +454,13 @@ def _serve_and_audit(docroot: str, entry: dict, axe_source: str, settle_ms: int,
     try:
         base = 'http://127.0.0.1:%d' % port
         paths = sorted(set(entry['urls'])) if restrict is None else list(restrict)
+        if ignore:
+            kept = [p for p in paths if _canon_path(p).lstrip('/') not in ignore]
+            skipped = len(paths) - len(kept)
+            if skipped:
+                print("  ....  excluding %d enumerated demo/test fixture(s) (axe-ignore)" % skipped,
+                      flush=True)
+            paths = kept
         return asyncio.run(check(base, paths, axe_source, settle_ms, hard_timeout))
     finally:
         httpd.shutdown()
@@ -455,9 +489,10 @@ def check_roots(roots: List[str], baseline_dir: str, settle_ms: int = 1000,
     audited = 0
     for docroot, entry in _docroots(roots).items():
         site = os.path.basename(os.path.normpath(docroot))
+        ignore = _load_axe_ignore(baseline_dir, docroot)
         try:
             fresh, problems = _serve_and_audit(docroot, entry, axe_source, settle_ms,
-                                               hard_timeout, restrict)
+                                               hard_timeout, restrict, ignore)
         except _EngineUnavailable as exc:
             if audited == 0:
                 _skip('chromium engine unavailable: %s' % exc)  # nothing ran -> env-unmet SKIP(77)
@@ -484,7 +519,9 @@ def check_roots(roots: List[str], baseline_dir: str, settle_ms: int = 1000,
         for problem in problems:
             print("%s: FAIL    %s" % (site, problem), file=sys.stderr)
         print("%s: %d accepted, %d fresh, %d NEW, %d resolved, %d problem(s)"
-              % (site, len(baseline), len(fresh), len(new), len(resolved), len(problems)))
+              " (excluding %d enumerated demo/test fixture(s))"
+              % (site, len(baseline), len(fresh), len(new), len(resolved), len(problems),
+                 len(ignore)))
         if rc or problems:
             overall = 1
     return overall
@@ -512,9 +549,10 @@ def write_roots(roots: List[str], baseline_dir: str, settle_ms: int = 1000,
     audited = 0
     for docroot, entry in _docroots(roots).items():
         site = os.path.basename(os.path.normpath(docroot))
+        ignore = _load_axe_ignore(baseline_dir, docroot)
         try:
             fresh, problems = _serve_and_audit(docroot, entry, axe_source, settle_ms,
-                                               hard_timeout, restrict)
+                                               hard_timeout, restrict, ignore)
         except _EngineUnavailable as exc:
             if audited == 0:
                 _skip('chromium engine unavailable: %s' % exc)  # nothing seeded -> env-unmet SKIP(77)

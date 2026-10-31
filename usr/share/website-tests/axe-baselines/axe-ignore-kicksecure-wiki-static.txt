@@ -1,0 +1,16 @@
+# axe ignore-list: pages EXCLUDED from the a11y gate entirely (not audited, not baselined).
+# Mirrors vnu-baselines/vnu-ignore-kicksecure-wiki-static.txt. For generator demo/test FIXTURES
+# whose job is to DISPLAY rejected/demo states -- auditing them for contrast is a category error,
+# not a baseline. ENUMERATED pages only (never a /wiki/Dev/* glob): a real content page regressing
+# to a violation must still RED the gate. One built-tree-relative path per line.
+# Decision: operator + dev1324 task #16/#18 (gate representativeness), 2026-10-31.
+
+# wikitest: showcases the deliberately-REJECTED brighter link colour (lk-brighter #1f6feb, shown
+#   vs the accepted #1d70b8) + a default-accent pci-style-rounded badge STYLE (real pages use
+#   cs-white at 6.8:1). Its one incidental real bug (decorative-image link-name) was fixed at source.
+wiki/Dev/wikitest.html
+# Dev/website, Dev/mediawiki: outdated generator demo pages (already vnu-ignored, same rationale).
+wiki/Dev/website.html
+wiki/Dev/mediawiki.html
+# TestpageForFlyInNotification: fly-in-notification test fixture (eoy-donate-button test state).
+wiki/TestpageForFlyInNotification.html

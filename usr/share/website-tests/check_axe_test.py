@@ -247,6 +247,21 @@ def run() -> int:
             os.environ.pop("AXE_SOURCE", None)
             os.unlink(_axe_js)
 
+    # axe-ignore: parse skips comments + canonicalises, and a built-tree path matches the audited
+    # URL form (so `wiki/Dev/wikitest.html` excludes the page served at /wiki/Dev/wikitest.html).
+    ig = ax.parse_axe_ignore("# comment\nwiki/Dev/wikitest.html\n\n  wiki/Foo.html  \n")
+    ck(ig == {"wiki/Dev/wikitest", "wiki/Foo"}, "parse_axe_ignore canonicalises + skips comments: %r" % ig)
+    ck(ax._canon_path("/wiki/Dev/wikitest.html").lstrip("/") in ig, "audited URL path matches entry")
+    # guardrail (dev1324 #18): the SHIPPED wiki ignore-lists exclude EXACTLY the enumerated
+    # demo/test fixtures -- a 5th page is a conscious edit (this test reds), never silent growth.
+    _expect = {"wiki/Dev/wikitest", "wiki/Dev/website", "wiki/Dev/mediawiki",
+               "wiki/TestpageForFlyInNotification"}
+    _bdir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "axe-baselines")
+    for _site in ("kicksecure-wiki-static", "whonix-wiki-static"):
+        _got = ax.parse_axe_ignore(
+            Path(os.path.join(_bdir, "axe-ignore-%s.txt" % _site)).read_text(encoding="utf-8"))
+        ck(_got == _expect, "%s axe-ignore == exactly the 4 enumerated fixtures: %r" % (_site, _got))
+
     # redirect-stub hermetic skip (_axe_page): a page whose meta-refresh navigates OFF the local
     # mount (a Moved:/redirect stub -> production) must be SKIPPED, not audited -- else axe reports
     # PRODUCTION's live a11y against our stub (the old-MediaWiki ghosts). The route handler aborts
