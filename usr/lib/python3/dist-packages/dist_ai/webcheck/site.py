@@ -2670,14 +2670,17 @@ def render_robots(host, no_index=False):
     """The canonical robots.txt text for a site (trailing newline included).
     Always allows crawling HTML (a crawler must fetch a page to honor its
     per-page noindex meta) and advertises the sitemap. A no-index build ALSO
-    Disallows PDFs: a PDF carries no noindex meta and GitHub Pages serves no
-    X-Robots-Tag, so a crawl block is the only Pages-compatible lever. It keeps
-    PDF CONTENT out of search (uncrawled -> no snippet/indexed text); it does not
-    guarantee the bare URL never appears if externally linked (a known robots
-    limitation). Users still download it -- robots binds crawlers, not browsers."""
+    Disallows the non-HTML served artifacts (PDF, LaTeX source, .bib): they carry
+    no noindex meta and GitHub Pages serves no X-Robots-Tag, so a crawl block is
+    the only Pages-compatible lever. It keeps their CONTENT out of search
+    (uncrawled -> no snippet/indexed text); it does not guarantee the bare URL
+    never appears if externally linked (a known robots limitation). Users still
+    download them -- robots binds crawlers, not browsers."""
     lines = ['User-agent: *', 'Allow: /']
     if no_index:
         lines.append('Disallow: /*.pdf$')
+        lines.append('Disallow: /*.tex$')
+        lines.append('Disallow: /*.bib$')
     return '\n'.join(lines) + '\n\nSitemap: https://%s/sitemap.xml\n' % host
 
 

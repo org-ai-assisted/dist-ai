@@ -279,6 +279,12 @@ def run():
         check('no-index robots Disallows PDFs (no meta/X-Robots-Tag possible)',
               'Disallow: /*.pdf$' in cs.render_robots(host, no_index=True),
               repr(cs.render_robots(host, no_index=True)))
+        check('no-index robots Disallows the LaTeX source (.tex)',
+              'Disallow: /*.tex$' in cs.render_robots(host, no_index=True),
+              repr(cs.render_robots(host, no_index=True)))
+        check('no-index robots Disallows the .bib bibliography',
+              'Disallow: /*.bib$' in cs.render_robots(host, no_index=True),
+              repr(cs.render_robots(host, no_index=True)))
         # A no-index site whose robots LACKS the PDF Disallow is flagged stale:
         # check_seo detects no-index from the homepage meta and expects it.
         with open(os.path.join(root, 'robots.txt'), 'w', encoding='utf-8') as h:
