@@ -54,6 +54,17 @@ for site_root in "$@"; do
    fi
 done
 
+## Dep preflight FIRST: a clean CI runner missing a Python dep the checkers import must fail with a
+## NAMED apt package, not a bare ImportError deep in a checker (which reads as a generic "exit code 1"
+## and silently blocks the Pages deploy -- exactly how python3-bs4/html5lib lagged behind the CSP-meta
+## parse). check_static_deps.py is the SINGLE enumeration of the lane's deps the install step must provide.
+check_deps="${tests_dir}/check_static_deps.py"
+if [ ! -f "${check_deps}" ]; then
+   printf '%s\n' "FAIL: required dep preflight not found: '${check_deps}'" >&2
+   exit 1
+fi
+"${check_deps}" || exit 1
+
 ## Both checkers are +x with an absolute-path shebang ('#!/usr/bin/python3 -Bsu'),
 ## so direct-exec honours that shebang's isolation (no pyc, no user-site, unbuffered)
 ## and self-resolves dist_ai from the checkout. Run BOTH even if the first finds
