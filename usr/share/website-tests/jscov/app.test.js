@@ -1916,11 +1916,13 @@ test("nav keyboard: a keydown on the bar itself is inert; ArrowDown/ArrowUp(mid)
 // The parity block is the HARD cross-language gate: app.js's OWN tokenizer/hash (window.mwSearch)
 // must reproduce mwstatic/tests/fixtures/search-parity.json byte-for-byte -- the SAME fixture the
 // Python indexer test asserts against. A drift in either language fails its lane.
-const FX_PATH = path.join(__dirname, "fixtures/search-parity.json");   // co-located in dist-ai jscov/fixtures/ (ships with the suite)
-// Symmetry with the APP_JS self-skip: a packaging split that dropped the fixture self-skips the
-// (tail) parity block rather than ENOENT-ing the whole file.
-if (!require("node:fs").existsSync(FX_PATH)) { return; }
-const FX = JSON.parse(readFileSync(FX_PATH, "utf8"));
+// Intentionally UNGUARDED: the fixture co-ships with this suite, so a missing one is a packaging
+// bug that MUST fail loud here (a plain ENOENT) -- do NOT add a top-level `if (!existsSync) return`
+// self-skip: this is NOT the tail (28 test()s follow, ~18 fixture-INDEPENDENT), so a module-top
+// return would silently DROP them -> a fabricated green, worse than a loud ENOENT.
+const FX = JSON.parse(readFileSync(
+  path.join(__dirname, "fixtures/search-parity.json"),   // co-located in dist-ai jscov/fixtures/
+  "utf8"));
 const pad3 = (n) => ("00" + n).slice(-3);
 const bktOf = (() => { const m = {}; FX.hash.forEach(([t, _h, b]) => { m[t] = b; }); return m; })();
 
