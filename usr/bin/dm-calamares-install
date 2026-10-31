@@ -685,25 +685,14 @@ gui_seed_capture_config() {
    local panel="${gui_cfg_dir}/lxqt/panel.conf"
    [ -f "${panel}" ] || cp -- "${DM_STORY_PANEL_CONF_SRC:-/usr/share/kicksecure/lxqt/panel.conf}" "${panel}" 2>/dev/null || true
    if [ -f "${panel}" ]; then
-      ## One awk pass: (a) drop the `volume` plugin by EXACT token match (split the list on commas,
-      ## trim, rebuild without the lone `volume` -- so a 'volumeXXX' plugin is never prefix-mangled),
-      ## and (b) freeze the worldclock to a token-free literal (dropping any pre-existing dup keys).
+      ## One awk pass over the shared freeze-worldclock.awk: drop the `volume` plugin
+      ## (drop_volume=1 -- the headless host has no audio device, so the plugin shows a false
+      ## red "!" badge) AND freeze the worldclock to a token-free literal (dropping dup keys).
+      ## The SAME awk freezes the guest clock (gui_freeze_guest_clock, drop_volume=0), so the
+      ## freeze logic cannot drift between host and guest.
       local tmp="${panel}.dm-new"
-      if awk -v fmt="${DM_STORY_CLOCK_TEXT:-00:00}" '
-            /^plugins=/ {
-               val = substr($0, index($0, "=") + 1); n = split(val, a, ","); out = ""
-               for (i = 1; i <= n; i++) {
-                  t = a[i]; gsub(/^[[:space:]]+|[[:space:]]+$/, "", t)
-                  if (t == "volume") continue
-                  out = (out == "" ? t : out ", " t)
-               }
-               print "plugins=" out; next
-            }
-            /^\[worldclock\]/ { print; print "formatType=custom"; print "customFormat=" fmt; print "timeShowSeconds=false"; inw=1; next }
-            inw && /^\[/ { inw=0 }
-            inw && /^(formatType|customFormat|timeShowSeconds)=/ { next }
-            { print }
-         ' "${panel}" > "${tmp}" 2>/dev/null; then
+      if awk -v fmt="${DM_STORY_CLOCK_TEXT:-00:00}" -v drop_volume=1 \
+            -f "${freeze_worldclock_awk}" "${panel}" > "${tmp}" 2>/dev/null; then
          mv -- "${tmp}" "${panel}" 2>/dev/null || safe-rm --force -- "${tmp}" 2>/dev/null || true
       fi
    fi
@@ -1093,6 +1082,15 @@ usage() {
 ## same gui_scan/gui_ocr/gui_wait_for/gui_locate_word/gui_click_word used by the
 ## Whonix pair orchestrator, so the subtle OCR logic lives in ONE place.
 lib_dir="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")"
+## Shared worldclock-freeze awk, driven by BOTH the host capture-config seeder
+## (gui_seed_capture_config) and the in-guest edit (gui_freeze_guest_clock) -- one
+## source so the freeze logic cannot drift. Checkout-relative, with the installed
+## fallback (mirrors the lib resolutions below).
+if [ -f "${lib_dir}/../libexec/dm-calamares-install/freeze-worldclock.awk" ]; then
+   freeze_worldclock_awk="${lib_dir}/../libexec/dm-calamares-install/freeze-worldclock.awk"
+else
+   freeze_worldclock_awk='/usr/libexec/dm-calamares-install/freeze-worldclock.awk'
+fi
 if [ -f "${lib_dir}/../share/dm-smbios-reader-boot-tests/gui-drive.bsh" ]; then
    gui_drive_lib="${lib_dir}/../share/dm-smbios-reader-boot-tests/gui-drive.bsh"
 else
@@ -1147,6 +1145,56 @@ else
 fi
 # shellcheck source=./usr/libexec/image-test/content-gate.bsh
 source "${content_gate_lib}"
+
+## Build the in-guest snippet that freezes the GUEST LXQt panel worldclock. Separated from
+## gui_freeze_guest_clock so a unit test asserts its shape (mirrors gc_gui_launch_snippet).
+## AWK_DEST is the pushed-in location of freeze-worldclock.awk; FMT is the frozen clock text.
+## ${HOME} expands IN-GUEST; AWK_DEST + FMT are TRUSTED harness literals (single-quoted in the
+## guest shell). drop_volume=0: freeze the clock only, never touch the guest's real tray. A
+## missing panel.conf is a no-op (exit 0) -- the branded image ships one; the frame check is
+## the backstop if it is somehow absent.
+guest_freeze_panel_snippet() {
+   local awk_dest="$1" fmt="$2"
+   ## ${HOME}/${panel} MUST stay single-quoted: they expand IN-GUEST (bash -lc), not on the host.
+   # shellcheck disable=SC2016
+   printf '%s' \
+      'panel="${HOME}/.config/lxqt/panel.conf"; [ -f "${panel}" ] || exit 0; ' \
+      "awk -v fmt='${fmt}' -v drop_volume=0 -f '${awk_dest}' " \
+      '"${panel}" > "${panel}.dm-new" && mv -- "${panel}.dm-new" "${panel}"'
+}
+
+## Freeze the GUEST LXQt panel worldclock so the story frames are REPRODUCIBLE (the guest wall
+## clock is the only tray element that changes run to run). Pushes the shared freeze-worldclock.awk
+## into the guest, edits ACCOUNT's ~/.config/lxqt/panel.conf (worldclock -> frozen literal), then
+## RESTARTS lxqt-panel so the running session re-reads it. ACCOUNT = the live boot role (live
+## session) or the installed user.
+##
+## BEST-EFFORT by design: freezing the clock only improves frame reproducibility, so a hiccup must
+## NEVER fail the install gate (R3/R4) -- each sub-step WARNS loudly and carries on, and the frame
+## review is the backstop. The restart uses SIGKILL, NOT SIGTERM, on purpose: lxqt-session respawns
+## a CRASHED module in the correct session env (so it renders), but treats a clean SIGTERM exit as
+## an intentional quit and does NOT respawn it -- a SIGTERM'd panel stays dead and a frame would
+## show NO panel (worse than a live clock). Proven on a real Kicksecure LXQt session; a single kill
+## is well under lxqt-session's crash-respawn rate limit.
+gui_freeze_guest_clock() {
+   local account="$1"
+   ## In-guest dest under /var/tmp (the repo's in-guest transient-file convention, cf. the
+   ## dmcheck-*.out files and GC_GUI_LAUNCH_LOG) -- NOT a host temp, so ${TMP} does not apply.
+   local awk_dest="${DM_GUEST_FREEZE_AWK_DEST:-/var/tmp/dm-freeze-worldclock.awk}"
+   if ! "${VBOX_EXEC_LOCAL:-vbox-exec-local}" "${vm}" push --role "${account}" -- \
+         "${freeze_worldclock_awk}" "${awk_dest}"; then
+      printf '%s\n' "${me}: WARNING: guest clock freeze: awk push to '${account}' failed; guest frames not frozen" >&2
+      return 0
+   fi
+   if ! gc_run "${account}" "$(guest_freeze_panel_snippet "${awk_dest}" "${DM_STORY_CLOCK_TEXT:-00:00}")" 60; then
+      printf '%s\n' "${me}: WARNING: guest clock freeze: panel.conf edit as '${account}' failed; guest frames not frozen" >&2
+      return 0
+   fi
+   gc_run "${account}" 'pkill --signal KILL --exact lxqt-panel >/dev/null 2>&1; true' 15 >/dev/null 2>&1 || true
+   if ! gc_wait_gui_started "${account}" 'lxqt-panel' 40; then
+      printf '%s\n' "${me}: WARNING: guest clock freeze: lxqt-panel did not respawn after the restart; a frame may lack a panel" >&2
+   fi
+}
 
 ## Wait for the GRUB menu (OCR), then select "UNRESTRICTED Session | ... install"
 ## (entry 3: 2x Down + Enter). A fixed early keypress races the ~14s autoboot and
@@ -2045,6 +2093,9 @@ main() {
    ## Guestcontrol is up -> the live desktop can be quiesced; capture the clean live session.
    snap_account="${live_account}"
    snap 24 live-guestcontrol-ready
+   ## Freeze the GUEST panel clock for the live Calamares frames (31 welcome .. 39 install-done).
+   ## Best-effort (never fails the gate); guestcontrol was just confirmed ready above.
+   gui_freeze_guest_clock "${live_account}"
    ## Pre-install hooks (opt-in; empty -> no-op): guestcontrol is confirmed up, so
    ## push host files into the live guest and/or run setup snippets as live_account
    ## BEFORE Calamares launches. Used to swap in a patched helper or seed a
@@ -2209,6 +2260,16 @@ main() {
    ## Installed first boot is the default 'user' boot role, regardless of the live
    ## install session -- quiesce as 'user', not the live account.
    snap_account="user"
+   ## Freeze the GUEST panel clock for the installed frames. The edit writes to the installed
+   ## DISK, so the later --mok-enroll reboot makes frame 52 (and the check frames) read the
+   ## frozen config FRESH -- only frame 50 needs this restart. Gate on guestcontrol readiness
+   ## (GA may still be coming up right after first boot); a slow GA must NOT fail a passing
+   ## install, so warn-and-continue (the frame check is the backstop), unlike the live site.
+   if wait_guestcontrol_ready user 180; then
+      gui_freeze_guest_clock user
+   else
+      printf '%s\n' "${me}: WARNING: guestcontrol not ready at first boot; installed guest clock not frozen (frames 50/52 may be non-reproducible)" >&2
+   fi
    snap 50 first-boot
 
    ## --mok-enroll: before the checks, read the per-machine MOK cert off the disk on
