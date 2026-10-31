@@ -139,6 +139,14 @@ for arg in "$@"; do
    [ -f "${root}/index.html" ] || die "not a site root (no index.html): ${root}"
    root="$(readlink --canonicalize -- "${root}")"
    [ -n "${site}" ] || site="$(basename -- "${root}")"
+   ## The site becomes a path component of the staging dest (roots/<site>/) AND a covered.txt key.
+   ## Reject anything but a canonical site basename -- a '.'/'..'/traversal identity would resolve
+   ## roots/<site>/ outside roots/ and let rsync overwrite the staged harness.
+   case "${site}" in
+      ''|'.'|'..'|*[!A-Za-z0-9._-]*)
+         die "invalid site identity: '${site}'"
+         ;;
+   esac
    [ -z "${seen_base[${site}]:-}" ] || die "duplicate site identity '${site}'"
    seen_base[${site}]=1
    ## Only the .js files are needed for coverage; rsync them (preserving tree), skip .git.

@@ -76,7 +76,7 @@ if [ "${WEBCHECK_NO_LOCAL:-}" != '1' ] && command -v node >/dev/null 2>&1 \
    node_major="$(node --version 2>/dev/null || true)"
    node_major="${node_major#v}"
    node_major="${node_major%%.*}"
-   groot="$(npm root -g 2>/dev/null)"
+   groot="$(npm root -g 2>/dev/null || true)"   # bare assignment: guard || true, else a non-zero npm aborts under errexit
    if [ -n "${node_major}" ] && [ -z "${node_major//[0-9]/}" ] \
       && [ "${node_major}" -ge 22 ] \
       && [ -e "${groot}/jsdom/package.json" ] \
@@ -145,6 +145,14 @@ for arg in "$@"; do
    [ -f "${root}/index.html" ] || die "not a site root (no index.html): ${root}"
    root="$(readlink --canonicalize -- "${root}")"
    [ -n "${site}" ] || site="$(basename -- "${root}")"
+   ## The site becomes a path component of the staging dest (roots/<site>/) AND a fuzzed.txt key.
+   ## Reject anything but a canonical site basename -- a '.'/'..'/traversal identity would resolve
+   ## roots/<site>/ outside roots/ and let rsync overwrite the staged harness.
+   case "${site}" in
+      ''|'.'|'..'|*[!A-Za-z0-9._-]*)
+         die "invalid site identity: '${site}'"
+         ;;
+   esac
    [ -z "${seen_base[${site}]:-}" ] || die "duplicate site identity '${site}'"
    seen_base[${site}]=1
    rsync --archive --prune-empty-dirs --exclude='.git' --include='*/' --include='*.js' \

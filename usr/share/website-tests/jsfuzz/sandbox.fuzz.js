@@ -17,6 +17,7 @@ const { fc, test, sitePath, adversarialString } = require('./fuzz-harness.js');
 const { loadScript } = require('./harness.js');
 
 const JS = sitePath('output-lies.github.io', 'analyze/sandbox.js');
+if (!require('node:fs').existsSync(JS)) { return; }   // skip when this site is absent (partial checkout)
 const ANALYZER = sitePath('output-lies.github.io', 'analyze/analyzer.js');
 const OL = require(ANALYZER);
 const withOL = function (w) { w.OL = OL; };

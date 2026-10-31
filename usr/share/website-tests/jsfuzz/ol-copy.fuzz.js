@@ -21,13 +21,14 @@ const COPY_PATHS = [
   ['git-diffs-lie', sitePath('output-lies.github.io', 'git-diffs-lie/copy.js')],
   ['paste', sitePath('output-lies.github.io', 'paste/copy.js')],
   ['all', sitePath('output-lies.github.io', 'git-diffs-lie/all/copy.js')],
-];
+].filter(function (p) { return require('node:fs').existsSync(p[1]); });   // drop sites absent in a partial checkout
 const NAV_PATH = sitePath('output-lies.github.io', 'git-diffs-lie/all/copy.js');
 
 const CMD = 'git commit -m ok';
 function box(cmdText) {
+  /* button ships `hidden` like the real page (progressive enhancement); the IIFE reveals it. */
   return '<div class="copybox"><code class="cmd">' + cmdText + '</code>'
-       + '<button class="copybtn">Copy</button></div>';
+       + '<button class="copybtn" hidden>Copy</button></div>';
 }
 const EMPTY_BOX = '<div class="copybox"></div>';
 const tick = function () { return new Promise(function (r) { setImmediate(r); }); };
@@ -38,9 +39,8 @@ function simpleSuite(label, JS) {
   /* !navigator.clipboard TRUE -> IIFE early-returns, no button revealed. */
   test(label + ' copy: no clipboard early-returns', function () {
     const r = loadScript(JS, box(CMD), { clipboard: false });
-    if (!r.win.document.querySelector('.copybtn').hidden) {
-      /* button is left hidden=true (default) because the IIFE bailed before btn.hidden=false. */
-    }
+    /* IIFE bails before btn.hidden=false, so the button stays hidden (not revealed). */
+    if (!r.win.document.querySelector('.copybtn').hidden) { throw new Error('no clipboard must leave the button hidden'); }
     if (r.copied.length !== 0) { throw new Error('nothing should be copied without clipboard'); }
   });
 
@@ -132,4 +132,4 @@ function navSuite(label, JS) {
 }
 
 COPY_PATHS.forEach(function (p) { simpleSuite(p[0], p[1]); });
-navSuite('all', NAV_PATH);
+if (require('node:fs').existsSync(NAV_PATH)) { navSuite('all', NAV_PATH); }   // skip when this site is absent

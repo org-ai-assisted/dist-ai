@@ -12,6 +12,7 @@
 const { fc, test, fuzz, loadScript, sitePath } = require('./fuzz-harness.js');
 
 const APATH = sitePath('output-lies.github.io', 'analyze/analyzer.js');
+if (!require('node:fs').existsSync(APATH)) { return; }   // skip when this site is absent (partial checkout)
 const OL = require(APATH);
 
 /* Cover the UMD BROWSER branch (`else root.OL = factory()` + the `self` ternary arm), which

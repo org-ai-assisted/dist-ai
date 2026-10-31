@@ -17,6 +17,7 @@ const { fc, test, sitePath } = require('./fuzz-harness.js');
 const { loadScript } = require('./harness.js');
 
 const JS = sitePath('secure-terminal.github.io', 'attacks/pastejack.js');
+if (!require('node:fs').existsSync(JS)) { return; }   // skip when this site is absent (partial checkout)
 const Z = String.fromCharCode(0x200b);   /* zero-width space (ASCII-only source) */
 const DOM = '<button id="pd-copy">c</button><button id="pd-reveal">r</button>'
           + '<div id="pd-status"></div><div id="pd-out" hidden></div>';

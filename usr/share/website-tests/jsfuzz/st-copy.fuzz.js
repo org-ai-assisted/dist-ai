@@ -16,10 +16,12 @@ const { fc, test, sitePath, adversarialString } = require('./fuzz-harness.js');
 const { loadScript } = require('./harness.js');
 
 const JS = sitePath('secure-terminal.github.io', 'copy.js');
+if (!require('node:fs').existsSync(JS)) { return; }   // skip when this site is absent (partial checkout)
 const CMD = 'sudo apt update';
 function box(cmdText) {
+  /* button ships `hidden` like the real page (progressive enhancement); the IIFE reveals it. */
   return '<div class="copybox"><code class="cmd">' + cmdText + '</code>'
-       + '<button class="copybtn">Copy</button></div>';
+       + '<button class="copybtn" hidden>Copy</button></div>';
 }
 const tick = function () { return new Promise(function (r) { setImmediate(r); }); };
 /* Freeze restore: a non-null timer id makes the deferred label-restore never fire, so the flashed
@@ -34,6 +36,7 @@ const rejectWrite = function (w) {
 /* !navigator.clipboard TRUE -> IIFE early-returns. */
 test('st copy: no clipboard early-returns', function () {
   const r = loadScript(JS, box(CMD), { clipboard: false });
+  if (!r.win.document.querySelector('.copybtn').hidden) { throw new Error('no clipboard must leave the button hidden'); }
   if (r.copied.length !== 0) { throw new Error('nothing copied without clipboard'); }
 });
 

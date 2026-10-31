@@ -22,7 +22,7 @@ const SHARES = [
   ['output-lies', sitePath('output-lies.github.io', 'share.js')],
   ['org-ai', sitePath('org-ai-assisted.github.io', 'share.js')],
   ['git-diffs-lie', sitePath('output-lies.github.io', 'git-diffs-lie/share.js')],
-];
+].filter(function (s) { return require('node:fs').existsSync(s[1]); });   // drop sites absent in a partial checkout
 
 /* A .fshare container with one anchor per data-net value, plus the optional mastodon/copy/md/msg
    controls and the mobile-nav toggle. `nets` drives the anchor set; flags toggle each control. */
@@ -124,9 +124,15 @@ test(label + ' share: absent controls and absent nav toggle are no-ops', functio
 
 /* --- invariants --- */
 
-/* For ANY data-net string (own keys, prototype names, adversarial), a resolved .sh href never
-   carries a dangerous scheme, and _blank is set only for a non-email truthy lookup. */
-test(label + ' share: no data-net ever yields a dangerous href scheme', function () {
+/* For ANY data-net attribute VALUE (own keys, built-in prototype names, adversarial strings), the
+   resolved .sh href never carries a dangerous scheme, and _blank is set only for a non-email truthy
+   lookup. The value is applied with setAttribute in setup (before the IIFE reads it), NOT
+   interpolated into HTML, so a value with quotes/brackets cannot break out and inject a second
+   attribute -- the predicate always tests the generated value. A built-in prototype NAME (e.g.
+   'constructor') is inherited-truthy and coerces to a harmless non-URL string here. NOTE: this does
+   NOT assert prototype-pollution safety -- a POLLUTED Object.prototype value is a separate, source-
+   side concern tracked outside this lane (share.js reads L[n] without a hasOwnProperty guard). */
+test(label + ' share: no data-net attribute value yields a dangerous href scheme', function () {
   fc.assert(fc.property(
     fc.oneof(
       fc.constantFrom('x', 'facebook', 'telegram', 'reddit', 'whatsapp', 'linkedin', 'hn', 'email'),
@@ -134,10 +140,17 @@ test(label + ' share: no data-net ever yields a dangerous href scheme', function
       fc.string({ maxLength: 20 }),
     ),
     function (net) {
-      /* data-net goes through setAttribute, so a value with quotes/brackets cannot break out of
-         the attribute; still, assert the resulting href is scheme-safe. */
-      const r = loadScript(SHARE, shareBody([net]), { url: 'https://s.example/x', title: 'T' });
+      const r = loadScript(SHARE, '<nav class="fshare"></nav>', {
+        url: 'https://s.example/x', title: 'T',
+        setup: function (w) {
+          const a = w.document.createElement('a');
+          a.className = 'sh';
+          a.setAttribute('data-net', net);   // DOM API: the value cannot break out of the attribute
+          w.document.querySelector('.fshare').appendChild(a);
+        },
+      });
       const el = r.win.document.querySelector('.sh');
+      if (el.getAttribute('data-net') !== net) { return false; }   // the IIFE saw exactly our value
       if (el.hasAttribute('href') && DANGER.test(el.getAttribute('href'))) { return false; }
       if (el.getAttribute('target') === '_blank' && net === 'email') { return false; }
       return true;

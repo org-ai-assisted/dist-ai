@@ -16,6 +16,7 @@ const { fc, test, sitePath, adversarialString } = require('./fuzz-harness.js');
 const { loadScript } = require('./harness.js');
 
 const JS = sitePath('secure-terminal.github.io', 'hero.js');
+if (!require('node:fs').existsSync(JS)) { return; }   // skip when this site is absent (partial checkout)
 
 /* HTML-escape the data-start value so an adversarial string lands in the attribute verbatim
    (and cannot break out of it) -- the test then fuzzes the exact string parseFloat() sees. */

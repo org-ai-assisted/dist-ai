@@ -14,9 +14,14 @@
 ##      and REQUIRE 100% statements/branches/functions/lines over exactly fuzzed.txt. Reproducible,
 ##      so it never flakes in the auto-merge repo. `c8 --all` is MANDATORY (an included-but-
 ##      unexercised module shows 0% and FAILs, not silently absent) -- same rationale as jscov.
-##   2. INVARIANTS sub-gate -- the same *.fuzz.js re-run with a FRESH random seed + more runs and NO
-##      coverage threshold, to explore for a counterexample (no uncaught throw, no prototype
-##      pollution, sanitizer holds). A red here is a genuine finding, never flake.
+##   2. INVARIANTS sub-gate -- the same *.fuzz.js re-run with JSFUZZ_MODE=invariants and NO coverage
+##      threshold, to explore for a counterexample (no uncaught throw, no prototype pollution,
+##      sanitizer holds). A red here is a genuine finding, never flake. TWO tiers of property, by
+##      cost: the cheap VALUE-level properties written via fuzz-harness's fuzz() helper (e.g.
+##      analyzer) honor the mode -- FRESH random seed + more runs -- and do the real exploration;
+##      the DOM-per-run properties (a jsdom window per case) use a bounded FIXED seed in both modes,
+##      because high run counts OOM jsdom -- they are deterministic adversarial corpora, not random
+##      exploration. Both tiers assert real invariants; only the value-level tier rotates the seed.
 ##
 ## A fail-closed self-check (jsfuzz-selftest/) runs BOTH sub-gates first and REQUIRES each to FAIL
 ## as designed (coverage: an unexercised include at 0%; invariants: a deliberately-false property's

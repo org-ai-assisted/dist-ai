@@ -15,6 +15,7 @@ const { fc, test, sitePath } = require('./fuzz-harness.js');
 const { loadScript } = require('./harness.js');
 
 const JS = sitePath('output-lies.github.io', 'analyze/ui.js');
+if (!require('node:fs').existsSync(JS)) { return; }   // skip when this site is absent (partial checkout)
 const ANALYZER = sitePath('output-lies.github.io', 'analyze/analyzer.js');
 const OL = require(ANALYZER);
 const withOL = function (w) { w.OL = OL; };
@@ -116,8 +117,11 @@ test('ui: classifier cls not in CLSMAP -> chip m-other fallback', function () {
 
 /* A prototype-name data-k (SAMPLES[k] is inherited-truthy) must not throw and must leave
    input.value a string -- the `|| ''` + assignment coerce any lookup to text; render() then runs
-   on it. Seeds the pollution keys explicitly (a corpus without a prototype-name token would stay
-   green while the map silently disagreed). */
+   on it. The key is applied with setAttribute (no HTML-attribute parsing) and the samples handler
+   reads it at click time. Seeds the pollution keys explicitly (a corpus without a prototype-name
+   token would stay green while the map silently disagreed). NOTE: tests attribute VALUES, not a
+   POLLUTED Object.prototype value (ui.js reads SAMPLES[k] without a hasOwnProperty guard) -- a
+   source-side concern tracked outside this lane. */
 test('ui: any sample data-k keeps input.value a string, never throws', function () {
   fc.assert(fc.property(
     fc.oneof(
@@ -127,9 +131,9 @@ test('ui: any sample data-k keeps input.value a string, never throws', function 
     ),
     function (k) {
       const r = loadScript(JS, '<textarea id="in"></textarea><div id="out"></div><div id="verdict"></div>'
-        + '<div id="tallies"></div><div id="samples"><button data-k="' + '">s</button></div>', { setup: withOL });
+        + '<div id="tallies"></div><div id="samples"><button>s</button></div>', { setup: withOL });
       const btn = r.win.document.querySelector('button');
-      btn.setAttribute('data-k', k);                  // setAttribute avoids any HTML-attribute parsing concern
+      btn.setAttribute('data-k', k);                  // DOM API: no HTML-attribute parsing of the fuzzed value
       btn.click();
       return typeof r.win.document.getElementById('in').value === 'string';
     },

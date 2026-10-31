@@ -24,9 +24,13 @@ it delegates to the sandbox; else it exits 77 (env-unmet SKIP), never a masked p
    so it never flakes in the auto-merge repo. Each `fuzz()`/property carries an explicit `examples`
    corpus that fast-check always runs first -- the per-branch inputs that reach 100% regardless of
    the random sampling.
-2. **INVARIANTS (rotating seed).** The same `*.fuzz.js` re-run with a FRESH random seed + more
-   runs and NO coverage threshold, exploring for a counterexample. A red here is a genuine finding
-   (an uncaught throw, a prototype-pollution read, a sanitizer escape), never flake.
+2. **INVARIANTS.** The same `*.fuzz.js` re-run with `JSFUZZ_MODE=invariants` and NO coverage
+   threshold, exploring for a counterexample. A red here is a genuine finding (an uncaught throw, a
+   prototype-pollution read, a sanitizer escape), never flake. Two tiers by cost: cheap VALUE-level
+   properties written via the `fuzz()` helper (e.g. `analyzer.fuzz.js`) honor the mode and explore
+   with a FRESH random seed + more runs; DOM-per-run properties (a jsdom window per case) use a
+   bounded FIXED seed in both modes (high counts OOM jsdom), so they are deterministic adversarial
+   corpora rather than random exploration. Both assert real invariants; only the value tier rotates.
 
 `run.sh` selects the mode via `JSFUZZ_MODE`; `fuzz-harness.js` configures fast-check per mode.
 

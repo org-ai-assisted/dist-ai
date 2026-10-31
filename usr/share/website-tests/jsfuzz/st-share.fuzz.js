@@ -17,6 +17,7 @@ const { fc, test, sitePath, adversarialString } = require('./fuzz-harness.js');
 const { loadScript } = require('./harness.js');
 
 const JS = sitePath('secure-terminal.github.io', 'share.js');
+if (!require('node:fs').existsSync(JS)) { return; }   // skip when this site is absent (partial checkout)
 
 const DANGER = /^\s*(javascript|data|vbscript):/i;
 const HOSTCHARS = /^[a-z0-9.-]+$/i;
@@ -120,7 +121,9 @@ test('st-share: navtoggle absent -> nav IIFE returns early', function () {
    plain object literal, so L['constructor'] is the inherited Function, truthy, and its href
    coerces to a harmless "function ..." string), or adversarial -- the resolved .sh href is never a
    dangerous URL scheme, and _blank is only ever set for a non-email truthy lookup. Non-vacuous: an
-   inherited-truthy lookup that coerced to a 'javascript:'/'data:' string would fail here. */
+   inherited-truthy lookup that coerced to a 'javascript:'/'data:' string would fail here. NOTE: this
+   tests attribute VALUES, not a POLLUTED Object.prototype value -- share.js reads L[n] without a
+   hasOwnProperty guard, a source-side concern tracked outside this lane. */
 test('st-share: no data-net ever yields a dangerous href scheme', function () {
   fc.assert(fc.property(
     fc.oneof(

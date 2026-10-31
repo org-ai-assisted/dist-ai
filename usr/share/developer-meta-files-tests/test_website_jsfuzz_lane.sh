@@ -151,5 +151,56 @@ else
    fail 'jsfuzz: the fail-closed selftest wiring is missing -- a sub-gate could regress to a vacuous pass'
 fi
 
+## --- 7. unguarded `npm root -g` must not abort under errexit (a non-zero npm -> 77, not die 1) ---
+## node+c8+npm all resolve (enter the local-first block) but `npm root -g` exits non-zero (bad
+## .npmrc / EACCES on the global prefix). The bare `groot="$(npm root -g ...)"` assignment must be
+## `|| true`-guarded, else errexit aborts the driver with exit 1 before the run_local decision or
+## the env-unmet 77. WEBSITE_TESTS_NO_SANDBOX=1 so a correct run_local=0 settles as 77.
+stub7="${work}/stub7"
+mkdir --parents -- "${stub7}"
+printf '%s\n' '#!/bin/sh' 'echo v22.99.0' 'exit 0' > "${stub7}/node"
+printf '%s\n' '#!/bin/sh' 'exit 0' > "${stub7}/c8"
+printf '%s\n' '#!/bin/sh' 'exit 1' > "${stub7}/npm"   # present on PATH, but `npm root -g` fails
+chmod +x -- "${stub7}/node" "${stub7}/c8" "${stub7}/npm"
+site7="${work}/output-lies.github.io"
+mkdir --parents -- "${site7}"
+touch -- "${site7}/index.html"
+groot_rc=0
+PATH="${stub7}:${PATH}" WEBSITE_TESTS_NO_SANDBOX=1 "${driver}" "${site7}" >/dev/null 2>&1 || groot_rc=$?
+if [ "${groot_rc}" -eq 77 ]; then
+   pass 'webcheck-jsfuzz-sandbox: a non-zero npm-root-g falls through to env-unmet 77, does not abort (errexit) with 1'
+else
+   fail "webcheck-jsfuzz-sandbox: unguarded npm root -g aborted the driver (rc=${groot_rc}, want 77)"
+fi
+
+## --- 8. a '..' / traversal site identity is rejected, never used as a staging path component ---
+## The site becomes roots/<site>/; a '..' identity would resolve outside roots/ and let rsync
+## overwrite the staged harness. The driver must die on it, not stage it.
+trav_rc=0
+trav_err="$("${driver}" "..=${site7}" 2>&1 1>/dev/null)" || trav_rc=$?
+if [ "${trav_rc}" -ne 0 ] && [[ "${trav_err}" == *'invalid site identity'* ]]; then
+   pass 'webcheck-jsfuzz-sandbox: a .. / traversal site identity is rejected (no staging-path escape)'
+else
+   fail "webcheck-jsfuzz-sandbox: traversal site identity not rejected (rc=${trav_rc}, err='${trav_err}')"
+fi
+
+## --- 9. every fuzz test self-skips an absent site (partial-checkout safety) ---
+## run.sh runs EVERY jsfuzz/**/*.fuzz.js; a test whose site was not passed must self-skip (an
+## existsSync guard, like jscov), else its top-level require/loadScript throws -> false RED. Pins
+## the guard across all fuzz files; a parametrized file (share/ol-copy) filters its path list by
+## existsSync, so accept either the guard or the filter form.
+fuzz_files='analyzer sandbox ui xray playback quiz hero mockup pastejack st-copy st-share share ol-copy'
+missing_fguard=''
+for t in ${fuzz_files}; do
+   if ! grep --quiet --fixed-strings 'existsSync' -- "${jsfuzz_dir}/${t}.fuzz.js"; then
+      missing_fguard="${missing_fguard} ${t}"
+   fi
+done
+if [ -z "${missing_fguard}" ]; then
+   pass 'jsfuzz: every fuzz test self-skips an absent site (existsSync guard/filter present)'
+else
+   fail "jsfuzz: fuzz test(s) missing an absent-site self-skip:${missing_fguard}"
+fi
+
 printf '%s\n' "" "test_website_jsfuzz_lane: ${pass_count} pass, ${fail_count} fail, 0 skip"
 [ "${fail_count}" -eq 0 ]
