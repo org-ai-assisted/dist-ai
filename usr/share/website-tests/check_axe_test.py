@@ -301,6 +301,37 @@ def run() -> int:
             Path(os.path.join(_bdir, "axe-ignore-%s.txt" % _site)).read_text(encoding="utf-8"))
         ck(_got == _expect, "%s axe-ignore == exactly the 4 enumerated fixtures: %r" % (_site, _got))
 
+    # curated-sample CLASS COVERAGE contract (dev1324 #16/#18): the per-deploy gate is a
+    # REPRESENTATIVE subset, so each fixed a11y class must keep a representative page in the curated
+    # file. The shipped '# class: <slug>' annotations MUST cover exactly the canonical class set --
+    # dropping a representative (losing coverage) or adding an unlisted class REDs this test, so the
+    # subset can never silently stop exercising a class the full-tree backstop would still catch.
+    _canon_classes = {
+        "table-cell-links", "zebra-table", "nested-info-box", "collapsible-code-select",
+        "linked-image-gallery", "cs-status-badge", "freelink", "share-menu", "about-box-table",
+        "file-page", "content-visibility", "leftrightimagetext", "status-cell", "code-select",
+        "redirect-stub", "link-name"}
+    _curated = os.path.join(os.path.dirname(os.path.realpath(__file__)), "axe-wiki-curated-paths.txt")
+    _lines = Path(_curated).read_text(encoding="utf-8").splitlines()
+    _classes = [ln.strip()[len("# class:"):].strip()
+                for ln in _lines if ln.strip().startswith("# class:")]
+    ck(len(_classes) == len(set(_classes)),
+       "curated '# class:' annotations are unique (no duplicate representative): %r" % (_classes,))
+    ck(set(_classes) == _canon_classes,
+       "curated class representatives cover exactly the canonical set (missing=%r extra=%r)"
+       % (sorted(_canon_classes - set(_classes)), sorted(set(_classes) - _canon_classes)))
+    # Every annotated class' path is a real root-relative audit path (and _load_paths_file yields a
+    # non-empty curated list -- a mangled file that parses to nothing must not read as "covered").
+    _paths = ax._load_paths_file(_curated)
+    ck(_paths and all(p.startswith("/") for p in _paths),
+       "curated paths are all root-relative and the list is non-empty (%d paths)" % len(_paths))
+    # Each '# class:' annotation sits directly above a path line (so a representative is a real
+    # audited page, not a dangling label).
+    _class_targets = [_lines[i + 1].strip() for i, ln in enumerate(_lines)
+                      if ln.strip().startswith("# class:") and i + 1 < len(_lines)]
+    ck(all(t.startswith("/") for t in _class_targets) and len(_class_targets) == len(_classes),
+       "each '# class:' annotation is immediately followed by its representative path")
+
     # redirect-stub hermetic skip (_axe_page): a page whose meta-refresh navigates OFF the local
     # mount (a Moved:/redirect stub -> production) must be SKIPPED, not audited -- else axe reports
     # PRODUCTION's live a11y against our stub (the old-MediaWiki ghosts). The route handler aborts

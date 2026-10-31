@@ -1,12 +1,70 @@
-# Curated axe-core accessibility sample for the Kicksecure/Whonix wikis: representative
-# complex/shared pages (mirrors the wiki browser-gates' curated set). Root-relative FLAT
-# extensionless URLs (the site serves wiki/ISO.html at /wiki/ISO -- a trailing slash 404s).
-# The ALWAYS gate audits these; the whole ~9000-page tree is an occasional OVH-only manual audit.
+# Curated axe-core accessibility sample for the Kicksecure/Whonix wikis.
+#
+# HONESTY: this is a REPRESENTATIVE SUBSET, not comprehensive. The per-deploy gate audits
+# these ~33 pages (fast, both sites); the whole ~9000-page tree is covered by the PERIODIC
+# full-tree backstop (tools/axe-fulltree-gate.sh), not here. A page passing here does NOT
+# certify the whole site -- it certifies that each a11y-fix CLASS below still holds on a
+# page that exercises it, so a regression to a fixed class REDs the per-deploy gate.
+#
+# Root-relative FLAT extensionless URLs (the site serves wiki/ISO.html at /wiki/ISO; a
+# trailing slash 404s). Every path MUST exist on BOTH wikis (one curated file, both deploys).
+# One root-relative path per line; blank / '#' lines skipped (an inline '#' is NOT stripped,
+# so a '# class:' annotation is its OWN line directly above its path).
+#
+# CLASS COVERAGE CONTRACT (enforced by check_axe_test.py): each '# class: <slug>' below names
+# an a11y-fix class from the 0-violations campaign; the test asserts the set of annotated
+# classes == the canonical class set, so dropping a representative (losing coverage) REDs the
+# suite. Decision: operator + dev1324 task #16/#18, 2026-10-31.
+
+# === class representatives (one page per fixed a11y class; both-sites-verified) ===
+# class: table-cell-links
+/wiki/Dev/Strong_Linux_User_Account_Isolation
+# class: zebra-table
+/wiki/System_Requirements
+# class: nested-info-box
+/wiki/AppArmor
+# class: collapsible-code-select
+/wiki/Tor
+# class: linked-image-gallery
+/wiki/Grub
+# class: cs-status-badge
+/wiki/USB_Installation
+# class: freelink
+/wiki/KVM
+# class: share-menu
+/wiki/Privacy_Policy_Technical_Details
+# class: about-box-table
+/wiki/Passwords
+# class: file-page
+/wiki/File:120px-Bitcoin.png
+# class: content-visibility
+/wiki/System_Hardening_Checklist
+# class: leftrightimagetext
+/wiki/About
+# class: status-cell
+/wiki/Hardened_Malloc
+# class: code-select
+/wiki/Download
+# class: redirect-stub
+/wiki/Moved:Documentation_Markup_Format_Converters
+# class: link-name
+/wiki/Template:CustomRepo
+
+# === breadth coverage (common page shapes: homepage, landing, long-form, dev, install) ===
 /
 /wiki/ISO
-/wiki/System_Requirements
 /wiki/Contribute
 /wiki/Warning
 /wiki/Donors
 /wiki/Documentation
-/wiki/Download
+/wiki/Qubes
+/wiki/Comparison_with_Others
+/wiki/Dev
+/wiki/Dev/Build_Documentation
+/wiki/Full_Disk_Encryption
+/wiki/Tor_Browser
+/wiki/Bridges
+/wiki/VirtualBox
+/wiki/Network_Time_Synchronization
+/wiki/Time_Attacks
+/wiki/Verifiable_Builds
