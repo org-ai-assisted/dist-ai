@@ -44,7 +44,7 @@ selftest_dir="$(dirname -- "${jscov_dir}")/jscov-selftest"
 [ -f "${selftest_dir}/covered.txt" ] || die "missing jscov self-check fixture: ${selftest_dir}/covered.txt"
 
 if [ "$#" -eq 0 ]; then
-   die 'usage: webcheck-jscov-sandbox <site-root> [<site-root> ...]'
+   die 'usage: webcheck-jscov-sandbox [<site>=]<site-root> [[<site>=]<site-root> ...]'
 fi
 
 ## Local-first (mirrors webcheck-cspell-sandbox / vnu / axe): run the gate DIRECTLY where node
@@ -120,18 +120,32 @@ mkdir --parents -- "${staging}/jscov" "${staging}/jscov-selftest" "${staging}/ro
 cp --archive -- "${jscov_dir}/." "${staging}/jscov/"
 cp --archive -- "${selftest_dir}/." "${staging}/jscov-selftest/"
 
+## Each arg is a site root, optionally prefixed with its CANONICAL site identity as
+## `<site>=<path>`. website-tests passes the identity EXPLICITLY because covered.txt keys on the
+## canonical site name (roots/<site>/...): deriving identity from the path BASENAME would SILENTLY
+## DROP a site's covered entries when an _REPO override points at a non-canonically-named path (a
+## CI workspace) -- a vacuous pass. A bare path (direct CLI / this package's own tests) falls back
+## to its basename. The prefix applies only when there is a '=' AND the part before it is a plain
+## name (no '/'), so a '=' inside a path is not mistaken for a prefix.
 declare -A seen_base=()
-for root in "$@"; do
+for arg in "$@"; do
+   site=''
+   root="${arg}"
+   pre="${arg%%=*}"
+   if [ "${pre}" != "${arg}" ] && [ -n "${pre}" ] && [ "${pre}" = "${pre%%/*}" ]; then
+      site="${pre}"
+      root="${arg#*=}"
+   fi
    [ -f "${root}/index.html" ] || die "not a site root (no index.html): ${root}"
    root="$(readlink --canonicalize -- "${root}")"
-   base="$(basename -- "${root}")"
-   [ -z "${seen_base[${base}]:-}" ] || die "duplicate site-root basename '${base}'"
-   seen_base[${base}]=1
+   [ -n "${site}" ] || site="$(basename -- "${root}")"
+   [ -z "${seen_base[${site}]:-}" ] || die "duplicate site identity '${site}'"
+   seen_base[${site}]=1
    ## Only the .js files are needed for coverage; rsync them (preserving tree), skip .git.
    ## --exclude='.git' MUST precede --include='*/' (first-matching-rule wins): after '*/' the
    ## .git dir is already included for traversal, so a later .git exclude is dead.
    rsync --archive --prune-empty-dirs --exclude='.git' --include='*/' --include='*.js' \
-      --exclude='*' -- "${root}/" "${staging}/roots/${base}/"
+      --exclude='*' -- "${root}/" "${staging}/roots/${site}/"
 done
 
 ## Scope covered.txt to the sites actually passed. website-tests resolves site roots

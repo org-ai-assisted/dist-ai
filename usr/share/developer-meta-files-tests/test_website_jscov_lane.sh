@@ -143,5 +143,61 @@ else
    fail "webcheck-jscov-sandbox: project-local jsdom wrongly engaged local-first (rc=${shadow_rc}, err='${shadow_err}')"
 fi
 
+## --- 6. website-tests records a non-canonical override under its CANONICAL site identity ---
+
+## The jscov lane keys covered.txt on the site identity; an _REPO override at a non-canonically-
+## named path (a CI workspace) must still be recorded as its canonical site (root_sites), else
+## that site's covered entries key on the wrong name and its JS coverage SILENTLY DROPS (vacuous
+## pass). Extract add_root + add_site from the real runner and drive them. Pre-fix: no add_site.
+wt_fns="${work}/wt_fns.bash"
+sed -n '/^add_root(){/,/^}/p' -- "${runner}" >  "${wt_fns}"
+sed -n '/^add_site(){/,/^}/p' -- "${runner}" >> "${wt_fns}"
+if ! grep --quiet --fixed-strings 'add_site(){' "${wt_fns}"; then
+   fail 'website-tests: no add_site canonical-identity wrapper -- jscov keys covered.txt on the override basename (silent coverage drop)'
+else
+   nonc="${work}/ci-workspace-xyz"          # a NON-canonical basename for an output-lies override
+   mkdir --parents -- "${nonc}"
+   touch -- "${nonc}/index.html"
+   ident_rc=0
+   (
+      declare -a roots=()
+      declare -a root_sites=()
+      # shellcheck disable=SC1090 # dynamic path: add_root/add_site extracted at runtime
+      source "${wt_fns}"
+      add_site output-lies.github.io "${nonc}" '/does/not/exist'
+      [ "${#roots[@]}" -eq 1 ] && [ "${roots[0]}" = "${nonc}" ] \
+         && [ "${#root_sites[@]}" -eq 1 ] && [ "${root_sites[0]}" = 'output-lies.github.io' ]
+   ) || ident_rc=$?
+   if [ "${ident_rc}" -eq 0 ]; then
+      pass 'website-tests: non-canonical override recorded under canonical identity (output-lies.github.io)'
+   else
+      fail 'website-tests: override NOT mapped to its canonical site identity (jscov would key on basename)'
+   fi
+fi
+
+## --- 7. the driver HONORS an explicit <site>=<path> identity (does not basename/reject it) ---
+
+## With run_local engaged (stub node v22 + c8 + npm whose GLOBAL root has jsdom), a covered site
+## tagged `output-lies.github.io=<non-canonical path>` must be PARSED (reach staging), not treated
+## as a bad path. Pre-fix (no <site>= parsing) the driver die'd "not a site root" on the whole arg.
+stub3="${work}/stub3"
+mkdir --parents -- "${stub3}"
+printf '%s\n' '#!/bin/sh' 'echo v22.99.0' 'exit 0' > "${stub3}/node"
+printf '%s\n' '#!/bin/sh' 'exit 0' > "${stub3}/c8"
+fakeg="${work}/fake-global-with-jsdom"
+mkdir --parents -- "${fakeg}/jsdom"
+printf '%s\n' '{"name":"jsdom"}' > "${fakeg}/jsdom/package.json"
+printf '%s\n' '#!/bin/sh' "echo ${fakeg}" 'exit 0' > "${stub3}/npm"
+chmod +x -- "${stub3}/node" "${stub3}/c8" "${stub3}/npm"
+noncov7="${work}/ci-ws-7"
+mkdir --parents -- "${noncov7}"
+touch -- "${noncov7}/index.html"
+id_err="$(PATH="${stub3}:${PATH}" "${driver}" "output-lies.github.io=${noncov7}" 2>&1 1>/dev/null)" || true
+if ! grep --quiet --fixed-strings 'not a site root' <<< "${id_err}"; then
+   pass 'webcheck-jscov-sandbox: parses <site>=<path> identity (did not reject the override path)'
+else
+   fail "webcheck-jscov-sandbox: did not parse <site>=<path> (died 'not a site root'): ${id_err}"
+fi
+
 printf '%s\n' "" "test_website_jscov_lane: ${pass_count} pass, ${fail_count} fail, 0 skip"
 [ "${fail_count}" -eq 0 ]

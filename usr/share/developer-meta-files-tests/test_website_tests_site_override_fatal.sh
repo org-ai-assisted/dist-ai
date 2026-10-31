@@ -52,6 +52,10 @@ if ! grep --quiet --fixed-strings 'add_root(){' "${fn_file}" \
 fi
 declare -a roots=()
 st_site=''
+## add_root / resolve_st_site read ${home_unset} (the real runner sets it before calling them);
+## driving the extracted functions in isolation must supply that precondition, else nounset trips.
+# shellcheck disable=SC2034 # used by the sourced add_root / resolve_st_site, not statically visible
+home_unset=''
 # shellcheck disable=SC1090 # dynamic path: the resolvers are extracted at runtime
 source "${fn_file}"
 

@@ -167,10 +167,26 @@ add_root(){
       roots+=( "${default}" )
    fi
 }
-add_root "${OUTPUT_LIES_REPO}"          "${HOME}/private-sources/output-lies.github.io"
-add_root "${SECURE_TERMINAL_SITE_REPO}" "${HOME}/private-sources/secure-terminal.github.io"
-add_root "${ORG_AI_ASSISTED_REPO}"      "${HOME}/private-sources/org-ai-assisted.github.io"
-add_root "${COMPUTER_SECURITY_RESEARCH_REPO}" "${HOME}/private-sources/computer-security-research.github.io/_site"
+
+## Record each resolved root's CANONICAL site identity alongside it (aligned index). The jscov
+## lane keys covered.txt on this identity, NOT the root's basename: an _REPO override pointed at a
+## non-canonically-named path (a CI workspace) would otherwise mis-key and SILENTLY DROP that
+## site's JS coverage. add_root appends 0 or 1 root, so record the site iff roots grew.
+declare -a root_sites=()
+add_site(){
+   local site count_before
+   site="$1"
+   shift
+   count_before="${#roots[@]}"
+   add_root "$@"
+   if [ "${#roots[@]}" -gt "${count_before}" ]; then
+      root_sites+=( "${site}" )
+   fi
+}
+add_site output-lies.github.io          "${OUTPUT_LIES_REPO}"          "${HOME}/private-sources/output-lies.github.io"
+add_site secure-terminal.github.io      "${SECURE_TERMINAL_SITE_REPO}" "${HOME}/private-sources/secure-terminal.github.io"
+add_site org-ai-assisted.github.io      "${ORG_AI_ASSISTED_REPO}"      "${HOME}/private-sources/org-ai-assisted.github.io"
+add_site computer-security-research.github.io "${COMPUTER_SECURITY_RESEARCH_REPO}" "${HOME}/private-sources/computer-security-research.github.io/_site"
 
 ## The secure-terminal site alone carries the shot galleries, so resolve its root for the
 ## shot-inventory guard below (only that site gets the check). Same explicit-but-invalid
@@ -432,7 +448,13 @@ delegate_sandbox_lane 'website-vnu-tests (vnu conformance)' webcheck-vnu-sandbox
 delegate_sandbox_lane 'website-lighthouse-tests (lighthouse)' webcheck-lighthouse-sandbox "${roots[@]}"
 delegate_sandbox_lane 'website-axe-tests (axe-core)' webcheck-axe-sandbox "${roots[@]}"
 delegate_sandbox_lane 'website-cspell-tests (spell-check)' webcheck-cspell-sandbox "${roots[@]}"
-delegate_sandbox_lane 'website-jscov-tests (JS unit coverage)' webcheck-jscov-sandbox "${roots[@]}"
+## jscov keys covered.txt on the CANONICAL site identity, so pass <site>=<path> pairs -- a bare
+## override path's basename would mis-key and silently drop that site's coverage.
+declare -a jscov_roots=()
+for jscov_i in "${!roots[@]}"; do
+   jscov_roots+=( "${root_sites[${jscov_i}]}=${roots[${jscov_i}]}" )
+done
+delegate_sandbox_lane 'website-jscov-tests (JS unit coverage)' webcheck-jscov-sandbox "${jscov_roots[@]}"
 
 ## Shot-inventory guard (secure-terminal site only): every committed shot is a
 ## page-referenced generator artifact and every gallery reference resolves -- no
