@@ -1,0 +1,6 @@
+# jsfuzz self-check fuzzed-set. Lists BOTH subjects, but cov.fuzz.js exercises only a.js. Under
+# c8 --all the unexercised b.js reports 0% -> the coverage sub-gate MUST FAIL. run.sh asserts
+# that failure (and separately that inv.fuzz.js's false property yields a counterexample) before
+# trusting the real gates; a PASS here means a sub-gate is vacuous (a false green).
+jsfuzz-selftest/a.js
+jsfuzz-selftest/b.js

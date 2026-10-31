@@ -1,0 +1,205 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## style-ok: no-has -- standalone host/sandbox driver; does not source helper-scripts.
+
+## Run the CONFINED JS property/fuzz gate (fast-check driving each first-party module under jsdom,
+## measured by c8) over the first-party JS in each site checkout, inside the review sandbox under
+## bwrap (no network; node + jsdom + c8 + fast-check live there via `provision jstest`). Sibling of
+## webcheck-jscov-sandbox: same local-first + 77 + <site>=<path> staging contract, a DIFFERENT gate
+## (run.sh here runs the two fuzz sub-gates, not the unit-coverage gate). A browser is NOT needed
+## (jsdom is in-process), so a plain sandbox-confine profile.
+##
+##   webcheck-jsfuzz-sandbox [<site>=]<site-root> [[<site>=]<site-root> ...]
+##
+## Exit: 0 every fuzzed module passed both sub-gates; 1 an invariant counterexample or a coverage
+## shortfall; 77 the toolchain is absent locally AND no usable sandbox (env-unmet SKIP, like
+## vnu/axe/cspell -- never a masked pass).
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+readonly SANDBOX_WORKDIR="/home/user/webcheck-jsfuzz-sandbox-run.$$"
+
+die(){
+   printf '%s\n' "webcheck-jsfuzz-sandbox: $1" >&2
+   exit 1
+}
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+if [ -d "${script_dir}/../share/website-tests/jsfuzz" ]; then
+   jsfuzz_dir="${script_dir}/../share/website-tests/jsfuzz"
+else
+   jsfuzz_dir='/usr/share/website-tests/jsfuzz'
+fi
+[ -f "${jsfuzz_dir}/run.sh" ] || die "missing jsfuzz harness: ${jsfuzz_dir}/run.sh"
+## Reuse jscov's jsdom loader (loadScript/sitePath) rather than duplicate it: staged FRESH from
+## the sibling jscov dir each run, so it never drifts (no committed copy).
+jscov_harness="$(dirname -- "${jsfuzz_dir}")/jscov/harness.js"
+[ -f "${jscov_harness}" ] || die "missing jscov harness to reuse: ${jscov_harness}"
+## Sibling fail-closed self-check fixture (run.sh requires it to prove each sub-gate is non-vacuous).
+selftest_dir="$(dirname -- "${jsfuzz_dir}")/jsfuzz-selftest"
+[ -f "${selftest_dir}/fuzzed.txt" ] || die "missing jsfuzz self-check fixture: ${selftest_dir}/fuzzed.txt"
+
+if [ "$#" -eq 0 ]; then
+   die 'usage: webcheck-jsfuzz-sandbox [<site>=]<site-root> [[<site>=]<site-root> ...]'
+fi
+
+## Local-first (mirrors webcheck-jscov-sandbox): run the gate DIRECTLY where node + c8 + jsdom +
+## fast-check resolve (a CI runner provisioned like `provision jstest`, or in-sandbox-direct) --
+## so the lane RUNS in CI, not only ever delegate. On this trusted dev VM node is
+## external-tool-guarded and c8 is not on PATH, so this is naturally inert and we delegate to the
+## sandbox. WEBCHECK_NO_LOCAL=1 forces the sandbox path (regression test / orchestrator). run.sh
+## sets NODE_PATH="$(npm root -g)" so jsdom/c8/fast-check resolve, and its jsfuzz-selftest keeps
+## both sub-gates honest wherever it runs.
+run_local=0
+if [ "${WEBCHECK_NO_LOCAL:-}" != '1' ] && command -v node >/dev/null 2>&1 \
+   && command -v c8 >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
+   ## The local path runs run.sh, whose actual requirements are: Node >= 22 (its
+   ## `node --test <glob>` needs the ** glob Node 20 lacks), c8, npm (run.sh sets
+   ## NODE_PATH="$(npm root -g)"), AND jsdom + fast-check resolvable THERE (harness.js
+   ## require('jsdom'); the *.fuzz.js require('fast-check')). Probe ALL of them so a runner with
+   ## only some FALLS THROUGH to the sandbox instead of a false-RED local run. Check jsdom +
+   ## fast-check in the GLOBAL npm root DIRECTLY -- NOT `node -e require.resolve`, which resolves
+   ## from the probe's OWN cwd first, so a checkout's project-local ./node_modules copy would
+   ## satisfy the probe yet be invisible to run.sh (cwd = the staging tree, NODE_PATH=global only)
+   ## -> every test throws -> false RED. ${//[0-9]/} empties an all-numeric string (else -> 0).
+   node_major="$(node --version 2>/dev/null || true)"
+   node_major="${node_major#v}"
+   node_major="${node_major%%.*}"
+   groot="$(npm root -g 2>/dev/null)"
+   if [ -n "${node_major}" ] && [ -z "${node_major//[0-9]/}" ] \
+      && [ "${node_major}" -ge 22 ] \
+      && [ -e "${groot}/jsdom/package.json" ] \
+      && [ -e "${groot}/fast-check/package.json" ]; then
+      run_local=1
+   fi
+fi
+
+if [ "${run_local}" != '1' ]; then
+   ## No local toolchain. Reach the review sandbox -- unless we are inside it already (cannot nest),
+   ## it is disabled, or there is none: then the lane is genuinely env-unmet, so exit 77 (the
+   ## launcher's delegate_sandbox_lane maps 77 to SKIP) like the vnu/axe/cspell siblings -- NEVER
+   ## die 1, which delegate_sandbox_lane would turn into a FAIL. Never a masked failure: a lane
+   ## that RAN exits 0/non-77.
+   if [ "${DIST_AI_IN_SANDBOX:-}" = '1' ] || [ "${WEBSITE_TESTS_NO_SANDBOX:-}" = '1' ] \
+      || ! command -v sandbox >/dev/null 2>&1; then
+      printf '%s\n' 'webcheck-jsfuzz-sandbox: fuzz toolchain absent locally and no usable sandbox -- SKIP (77)' >&2
+      ## style-ok: allow-skip: env-unmet -- no local node+c8+jsdom+fast-check and no usable sandbox; delegate_sandbox_lane maps 77 to SKIP, never a masked pass (a lane that RAN exits 0/non-77 above)
+      exit 77
+   fi
+   : "${QUBE_CTL_TARGET:=temp-claude}"
+   export QUBE_CTL_TARGET
+   sandbox exec --pid-scope private -- type sandbox-confine >/dev/null 2>&1 \
+      || die 'sandbox is missing sandbox-confine (bwrap confinement)'
+fi
+
+## Stage the jsfuzz harness + each site root (no .git) into one tree, sync it in, run the gate
+## confined. Mirrors webcheck-jscov-sandbox exactly (see that driver for the rsync-ordering +
+## persistent-disk-staging rationale). Override WEBCHECK_JSFUZZ_TMP.
+: "${WEBCHECK_JSFUZZ_TMP:=${XDG_CACHE_HOME:-${HOME}/.cache}/webcheck-jsfuzz-sandbox-tmp}"
+mkdir --parents -- "${WEBCHECK_JSFUZZ_TMP}"
+staging="$(mktemp --directory -- "${WEBCHECK_JSFUZZ_TMP}/webcheck-jsfuzz-sandbox.XXXXXX")"
+synced=0
+cleanup(){
+   # shellcheck disable=SC2317
+   safe-rm --recursive --force -- "${staging}" || true
+   # shellcheck disable=SC2317
+   if [ "${synced}" = '1' ]; then
+      sandbox exec --pid-scope private -- safe-rm --recursive --force -- "${SANDBOX_WORKDIR}" >/dev/null 2>&1 || true
+   fi
+   # shellcheck disable=SC2317
+   return 0
+}
+trap cleanup EXIT
+
+mkdir --parents -- "${staging}/jsfuzz" "${staging}/jsfuzz-selftest" "${staging}/roots"
+cp --archive -- "${jsfuzz_dir}/." "${staging}/jsfuzz/"
+cp --archive -- "${selftest_dir}/." "${staging}/jsfuzz-selftest/"
+## Reuse the jscov jsdom loader (single source) in BOTH the real set and the self-check fixture.
+cp --archive -- "${jscov_harness}" "${staging}/jsfuzz/harness.js"
+cp --archive -- "${jscov_harness}" "${staging}/jsfuzz-selftest/harness.js"
+
+## Each arg is a site root, optionally prefixed with its CANONICAL site identity as
+## `<site>=<path>` (see webcheck-jscov-sandbox for the full rationale: fuzzed.txt keys on the
+## canonical site name, and a bare override path's basename would mis-key and SILENTLY DROP a
+## site's fuzzing -- a vacuous pass). A bare path falls back to its basename.
+declare -A seen_base=()
+for arg in "$@"; do
+   site=''
+   root="${arg}"
+   pre="${arg%%=*}"
+   if [ "${pre}" != "${arg}" ] && [ -n "${pre}" ] && [ "${pre}" = "${pre%%/*}" ]; then
+      site="${pre}"
+      root="${arg#*=}"
+   fi
+   [ -f "${root}/index.html" ] || die "not a site root (no index.html): ${root}"
+   root="$(readlink --canonicalize -- "${root}")"
+   [ -n "${site}" ] || site="$(basename -- "${root}")"
+   [ -z "${seen_base[${site}]:-}" ] || die "duplicate site identity '${site}'"
+   seen_base[${site}]=1
+   rsync --archive --prune-empty-dirs --exclude='.git' --include='*/' --include='*.js' \
+      --exclude='*' -- "${root}/" "${staging}/roots/${site}/"
+done
+
+## Scope fuzzed.txt to the sites actually passed (same dynamic-roots reasoning as jscov's
+## covered.txt scoping: a PARTIAL checkout is supported; a PRESENT site missing a fuzzed file
+## still FATALs in run.sh; an absent site's entries are dropped, never a false RED).
+scoped_fuzzed="${staging}/jsfuzz/fuzzed.txt"
+scoped_tmp="${scoped_fuzzed}.scoped"
+touch -- "${scoped_tmp}"
+kept_entries=0
+while IFS= read -r fz_line || [ -n "${fz_line}" ]; do
+   case "${fz_line}" in
+      ''|'#'*)
+         printf '%s\n' "${fz_line}" >> "${scoped_tmp}"
+         continue
+         ;;
+      roots/*/*)
+         fz_rest="${fz_line#roots/}"
+         fz_base="${fz_rest%%/*}"
+         if [ -n "${seen_base[${fz_base}]:-}" ]; then
+            printf '%s\n' "${fz_line}" >> "${scoped_tmp}"
+            kept_entries=$(( kept_entries + 1 ))
+         fi
+         ## else: this site was not passed as a root -- not under test, so drop it.
+         ;;
+      *)
+         printf '%s\n' "${fz_line}" >> "${scoped_tmp}"
+         kept_entries=$(( kept_entries + 1 ))
+         ;;
+   esac
+done < "${scoped_fuzzed}"
+mv -- "${scoped_tmp}" "${scoped_fuzzed}"
+
+## No fuzzable first-party JS among the passed roots -- nothing to gate this run.
+if [ "${kept_entries}" -eq 0 ]; then
+   printf '%s\n' 'webcheck-jsfuzz-sandbox: no fuzzable first-party JS among the passed roots -- SKIP (77)' >&2
+   ## style-ok: allow-skip: env-unmet -- none of the passed roots carries a fuzzed.txt site; a present site with a missing fuzzed file still FATALs in run.sh, so this is never a masked pass
+   exit 77
+fi
+
+## Run the gate locally where the toolchain resolves, else confined in the sandbox. Both use the
+## SAME staged tree (jsfuzz/ + jsfuzz-selftest/ + roots/<site>/); run.sh needs cwd = the staging
+## root (it references jsfuzz/..., jsfuzz-selftest/... and roots/... as plain relative paths).
+if [ "${run_local}" = '1' ]; then
+   rc=0
+   ( cd -- "${staging}" && ./jsfuzz/run.sh ) || rc="$?"
+   exit "${rc}"
+fi
+
+sandbox sync --delete "${staging}" "$(basename -- "${SANDBOX_WORKDIR}")" >&2 \
+   || die 'failed to sync the staging tree into the sandbox'
+synced=1
+
+sandbox exec --pid-scope private -- sandbox-confine --workdir "${SANDBOX_WORKDIR}" -- \
+   bash jsfuzz/run.sh
