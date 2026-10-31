@@ -795,6 +795,26 @@ test("hovercards: a citation low in the viewport flips the card ABOVE and caps t
   assert.ok(parseFloat(card.style.top) < 700, "card placed above the low citation");
 });
 
+test("hero video: clicking the poster overlay hides it and plays the video", () => {
+  const w = load('<div class="overview-image-and-video-player">' +
+    '<span class="overview-image"><img src="p.jpg" alt=""></span>' +
+    '<video src="v.mp4"></video></div>');
+  const overlay = w.document.querySelector(".overview-image");
+  const video = w.document.querySelector("video");
+  let played = 0;
+  video.play = () => { played++; };
+  overlay.dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
+  assert.equal(overlay.style.display, "none", "poster overlay hidden on click");
+  assert.equal(played, 1, "video.play() called on reveal");
+});
+
+test("hero video: a player missing its <video> is skipped without error", () => {
+  // exercises the !overlay||!video guard: loading + idle-init must not throw on a malformed widget
+  const w = load('<div class="overview-image-and-video-player">' +
+    '<span class="overview-image"><img src="p.jpg" alt=""></span></div>');
+  assert.ok(w.document.querySelector(".overview-image"), "built without throwing");
+});
+
 test("hovercards: reference card has a 'Footnote N' headline, nav on top, arrow + Escape keys", async () => {
   const w = load('<div class="wiki-content">' +
     '<sup class="reference"><a href="#fn1">[1]</a></sup>' +
