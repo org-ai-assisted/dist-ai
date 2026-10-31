@@ -251,7 +251,10 @@ test("hash navigation scrolls the target into view (content-visibility anchor fi
   // no hash -> no scroll (guarded)
   const el2 = w.document.getElementById("Sec");
   let s2 = 0; el2.scrollIntoView = () => { s2++; };
-  try { w.history.replaceState(null, "", location.pathname); } catch (e) {}
+  // w.location (NOT the bare test-realm `location`, which is undefined -> ReferenceError swallowed
+  // by the catch, leaving the hash at '#Deep' so this asserted vacuously). Clear the fragment so
+  // the hashchange genuinely exercises the no-fragment -> no-scroll path.
+  try { w.history.replaceState(null, "", w.location.pathname); } catch (e) {}
   w.dispatchEvent(new w.Event("hashchange"));
   assert.equal(s2, 0, "no fragment -> no scroll");
 });
@@ -1913,9 +1916,11 @@ test("nav keyboard: a keydown on the bar itself is inert; ArrowDown/ArrowUp(mid)
 // The parity block is the HARD cross-language gate: app.js's OWN tokenizer/hash (window.mwSearch)
 // must reproduce mwstatic/tests/fixtures/search-parity.json byte-for-byte -- the SAME fixture the
 // Python indexer test asserts against. A drift in either language fails its lane.
-const FX = JSON.parse(readFileSync(
-  path.join(__dirname, "fixtures/search-parity.json"),   // co-located in dist-ai jscov/fixtures/ (ported with the suite)
-  "utf8"));
+const FX_PATH = path.join(__dirname, "fixtures/search-parity.json");   // co-located in dist-ai jscov/fixtures/ (ships with the suite)
+// Symmetry with the APP_JS self-skip: a packaging split that dropped the fixture self-skips the
+// (tail) parity block rather than ENOENT-ing the whole file.
+if (!require("node:fs").existsSync(FX_PATH)) { return; }
+const FX = JSON.parse(readFileSync(FX_PATH, "utf8"));
 const pad3 = (n) => ("00" + n).slice(-3);
 const bktOf = (() => { const m = {}; FX.hash.forEach(([t, _h, b]) => { m[t] = b; }); return m; })();
 
