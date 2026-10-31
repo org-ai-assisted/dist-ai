@@ -61,12 +61,19 @@ else
    fail "webcheck-jscov-sandbox: env-unmet did not exit 77 (rc=${skip_rc}, err='${skip_err}')"
 fi
 
-## --- 2. the jscov lane is wired into website-tests ---
+## --- 2. the jscov lane is wired into website-tests AND fed CANONICAL identities ---
 
-if grep --quiet --extended-regexp 'delegate_sandbox_lane .*webcheck-jscov-sandbox' -- "${runner}"; then
-   pass 'website-tests: delegates the jscov lane (webcheck-jscov-sandbox)'
+## The lane must delegate to webcheck-jscov-sandbox AND pass canonical <site>=<path> pairs
+## (jscov_roots built from root_sites) -- NOT bare "${roots[@]}", whose basename would mis-key
+## covered.txt for a non-canonical _REPO override and silently drop that site's coverage. This is
+## the WIRING pin for the add_site fix: a revert of the lane to bare roots, or dropping the
+## root_sites build, fails here (closing the "website-tests stops passing identity" gap that the
+## isolated add_site unit test in case 6 cannot see).
+if grep --quiet --extended-regexp 'delegate_sandbox_lane .*webcheck-jscov-sandbox .*jscov_roots' -- "${runner}" \
+   && grep --quiet --fixed-strings 'root_sites[' -- "${runner}"; then
+   pass 'website-tests: jscov lane passes canonical <site>=<path> identities (jscov_roots from root_sites), not bare roots'
 else
-   fail 'website-tests: jscov lane not wired (no delegate_sandbox_lane for webcheck-jscov-sandbox)'
+   fail 'website-tests: jscov lane not fed identity-tagged roots (would key covered.txt on basename -> silent coverage drop)'
 fi
 
 ## --- 3. every real-site test file self-skips an absent site (partial-checkout safety) ---
@@ -175,11 +182,15 @@ else
    fi
 fi
 
-## --- 7. the driver HONORS an explicit <site>=<path> identity (does not basename/reject it) ---
+## --- 7. the driver keys covered-site selection on the explicit <site>=<path> identity ---
 
-## With run_local engaged (stub node v22 + c8 + npm whose GLOBAL root has jsdom), a covered site
-## tagged `output-lies.github.io=<non-canonical path>` must be PARSED (reach staging), not treated
-## as a bad path. Pre-fix (no <site>= parsing) the driver die'd "not a site root" on the whole arg.
+## run_local engaged via stubs (node v22 + c8 + npm whose GLOBAL root has jsdom). POSITIVE test
+## by contrast: a COVERED identity (output-lies.github.io=<non-canonical path>) is parsed AND
+## selected as covered -> reaches the gate (rc != 77); a NON-covered identity (madeup.example=
+## <same path>) is parsed but scoped out -> exit 77. The two outcomes together prove the driver
+## parses <site>=<path> and keys covered.txt on the explicit identity (not the path basename).
+## Pre-fix (no <site>= parsing) the driver die'd 1 on BOTH args, so the non-covered case (want 77)
+## FAILs. rc is captured, never swallowed.
 stub3="${work}/stub3"
 mkdir --parents -- "${stub3}"
 printf '%s\n' '#!/bin/sh' 'echo v22.99.0' 'exit 0' > "${stub3}/node"
@@ -189,14 +200,17 @@ mkdir --parents -- "${fakeg}/jsdom"
 printf '%s\n' '{"name":"jsdom"}' > "${fakeg}/jsdom/package.json"
 printf '%s\n' '#!/bin/sh' "echo ${fakeg}" 'exit 0' > "${stub3}/npm"
 chmod +x -- "${stub3}/node" "${stub3}/c8" "${stub3}/npm"
-noncov7="${work}/ci-ws-7"
-mkdir --parents -- "${noncov7}"
-touch -- "${noncov7}/index.html"
-id_err="$(PATH="${stub3}:${PATH}" "${driver}" "output-lies.github.io=${noncov7}" 2>&1 1>/dev/null)" || true
-if ! grep --quiet --fixed-strings 'not a site root' <<< "${id_err}"; then
-   pass 'webcheck-jscov-sandbox: parses <site>=<path> identity (did not reject the override path)'
+id_root="${work}/ci-ws-7"
+mkdir --parents -- "${id_root}"
+touch -- "${id_root}/index.html"
+cov_rc=0
+PATH="${stub3}:${PATH}" "${driver}" "output-lies.github.io=${id_root}" >/dev/null 2>&1 || cov_rc=$?
+noncov_rc=0
+PATH="${stub3}:${PATH}" "${driver}" "madeup.example=${id_root}" >/dev/null 2>&1 || noncov_rc=$?
+if [ "${cov_rc}" -ne 77 ] && [ "${noncov_rc}" -eq 77 ]; then
+   pass 'webcheck-jscov-sandbox: covered-selection keyed on <site>=<path> identity (covered reaches gate, non-covered -> 77)'
 else
-   fail "webcheck-jscov-sandbox: did not parse <site>=<path> (died 'not a site root'): ${id_err}"
+   fail "webcheck-jscov-sandbox: identity not honored (covered rc=${cov_rc} want !=77; non-covered rc=${noncov_rc} want 77)"
 fi
 
 printf '%s\n' "" "test_website_jscov_lane: ${pass_count} pass, ${fail_count} fail, 0 skip"
