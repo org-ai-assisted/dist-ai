@@ -140,6 +140,20 @@ test('ui: any sample data-k keeps input.value a string, never throws', function 
   ), { seed: 1, numRuns: 40 });
 });
 
+/* ACTUAL prototype-pollution regression guard (F7): Object.prototype polluted + a data-k matching
+   the key -- the own-property-guarded SAMPLES lookup must NOT load the INHERITED value into
+   input.value (it falls back to ''). FAILS on an un-hardened `SAMPLES[k] || ''`. */
+test('ui: a polluted Object.prototype never loads into input.value', function () {
+  const r = loadScript(JS, '<textarea id="in"></textarea><div id="out"></div><div id="verdict"></div>'
+    + '<div id="tallies"></div><div id="samples"><button>s</button></div>',
+    { setup: function (w) { withOL(w); w.Object.prototype.pwn = 'POLLUTED'; } });
+  const btn = r.win.document.querySelector('button');
+  btn.setAttribute('data-k', 'pwn');
+  btn.click();
+  const v = r.win.document.getElementById('in').value;
+  if (v !== '') { throw new Error('polluted data-k loaded into input.value: ' + v); }
+});
+
 /* For ANY input string, render() never throws, injects no markup (chips are built with
    createElement/textContent -- out must contain no element whose tag came from the input), and the
    flagged-chip count equals OL.analyze(str).flagged. */

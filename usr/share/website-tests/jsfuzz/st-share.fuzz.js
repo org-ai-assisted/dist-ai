@@ -147,6 +147,18 @@ test('st-share: no data-net ever yields a dangerous href scheme', function () {
   ), { seed: 1, numRuns: 50 });
 });
 
+/* ACTUAL prototype-pollution regression guard (F7): Object.prototype polluted to a javascript: URL
+   + a data-net matching the key -- the own-property-guarded share.js must NOT resolve the INHERITED
+   value into an href. FAILS on an un-hardened `if (L[n])`; passes with the hasOwnProperty guard. */
+test('st-share: a polluted Object.prototype never lands in an href', function () {
+  const r = loadScript(JS, '<div class="fshare"><a class="sh" data-net="pwn">p</a></div>', {
+    url: 'https://s.example/x', title: 'T',
+    setup: function (w) { w.Object.prototype.pwn = 'javascript:alert(1)'; },
+  });
+  const a = r.win.document.querySelector('.sh');
+  if (a.hasAttribute('href')) { throw new Error('polluted data-net resolved to an href: ' + a.getAttribute('href')); }
+});
+
 /* The mastodon instance sanitizer: for ANY prompt() string, when a window opens it is ALWAYS
    https-schemed, its opener is 'noopener', and the host segment (between 'https://' and '/share')
    contains only host characters [a-z0-9.-] -- the /^[a-z0-9.-]+$/i gate is what prevents a

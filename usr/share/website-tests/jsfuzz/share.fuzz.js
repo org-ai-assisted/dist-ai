@@ -158,6 +158,21 @@ test(label + ' share: no data-net attribute value yields a dangerous href scheme
   ), { seed: 1, numRuns: 40 });
 });
 
+/* ACTUAL prototype-pollution regression guard (F7): with Object.prototype polluted to a javascript:
+   URL and a data-net matching the polluted key, the own-property-guarded share.js must NOT resolve
+   the INHERITED value into an href. FAILS on an un-hardened `if (L[n])` (which read the inherited
+   polluted string and set href='javascript:alert(1)'); passes with the hasOwnProperty guard. */
+test(label + ' share: a polluted Object.prototype never lands in an href', function () {
+  const r = loadScript(SHARE, '<nav class="fshare"><a class="sh" data-net="pwn">p</a></nav>', {
+    url: 'https://s.example/x', title: 'T',
+    setup: function (w) { w.Object.prototype.pwn = 'javascript:alert(1)'; },
+  });
+  const el = r.win.document.querySelector('.sh');
+  if (el.hasAttribute('href')) {
+    throw new Error('polluted data-net resolved to an href: ' + el.getAttribute('href'));
+  }
+});
+
 /* The mastodon instance sanitizer: for ANY prompt() string, the opened URL (when one opens) is
    always https-schemed and never a javascript:/data: payload -- the http(s):// strip + trailing
    -slash trim must not let another scheme through. */
