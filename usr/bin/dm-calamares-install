@@ -666,16 +666,20 @@ gui_seed_capture_config() {
    ## Best-effort faithful copy: an unreadable entry (a root-owned / mode-000 file left by an earlier
    ## root-run tool) must NOT abort the capture lane under errexit -- `|| true` like the siblings below.
    [ -d "${HOME}/.config" ] && { cp -a -- "${HOME}/.config/." "${gui_cfg_dir}/" 2>/dev/null || true; }
-   ## cp -a PRESERVES symlinks, so a copied symlinked dir/file at a WRITE SINK (lxqt/, labwc/,
-   ## panel.conf, rc.xml) would make our writes FOLLOW the link and clobber the account's REAL config
-   ## -- silently defeating the non-destructive guarantee. De-symlink every sink to a real path first
-   ## (rm removes the LINK, never its target); all writes then stay inside gui_cfg_dir.
+   ## cp -a PRESERVES symlinks, so a copied symlinked dir/file at ANY WRITE SINK would make our writes
+   ## FOLLOW the link and clobber the account's REAL config -- silently defeating the non-destructive
+   ## guarantee. The sinks are the dirs (lxqt/, labwc/), the final files (panel.conf, rc.xml) AND the
+   ## private temp files the `>` redirects target (panel.conf.dm-new, rc.xml.dm-new): a `>` into a
+   ## symlink at a temp name clobbers its target too, and the later mv only renames the already-
+   ## clobbered link. De-symlink every one to a real path first (rm removes the LINK, never its
+   ## target); all writes then stay inside gui_cfg_dir.
    local sink
    for sink in "${gui_cfg_dir}/lxqt" "${gui_cfg_dir}/labwc"; do
       [ -L "${sink}" ] && { safe-rm --force -- "${sink}" 2>/dev/null || true; }
    done
    mkdir -p -- "${gui_cfg_dir}/lxqt" "${gui_cfg_dir}/labwc"
-   for sink in "${gui_cfg_dir}/lxqt/panel.conf" "${gui_cfg_dir}/labwc/rc.xml"; do
+   for sink in "${gui_cfg_dir}/lxqt/panel.conf" "${gui_cfg_dir}/labwc/rc.xml" \
+               "${gui_cfg_dir}/lxqt/panel.conf.dm-new" "${gui_cfg_dir}/labwc/rc.xml.dm-new"; do
       [ -L "${sink}" ] && { safe-rm --force -- "${sink}" 2>/dev/null || true; }
    done
    local panel="${gui_cfg_dir}/lxqt/panel.conf"
@@ -704,7 +708,8 @@ gui_seed_capture_config() {
       fi
    fi
    ## maximize the VM window (any toplevel) so it fills below the panel -- never truncated. Write via a
-   ## temp file + rename (never through a symlink, belt-and-suspenders with the de-symlink above).
+   ## temp file + rename; the temp name (rc.xml.dm-new) is de-symlinked above, so the `>` cannot follow
+   ## a copied symlink out of gui_cfg_dir, and the rename then replaces the final rc.xml atomically.
    local rc_tmp="${gui_cfg_dir}/labwc/rc.xml.dm-new"
    printf '%s\n' \
       '<?xml version="1.0"?>' \

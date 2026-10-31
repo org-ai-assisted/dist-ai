@@ -200,6 +200,22 @@ got=0
   && grep --quiet 'Maximize' "${gui_cfg_dir}/labwc/rc.xml"; } || got=1
 check "symlinked ~/.config/labwc/rc.xml NOT followed (real file untouched; copy's rc.xml is real)" "${got}"
 
+## --- case 8: a symlinked *.dm-new TEMP sink must ALSO not be followed (2nd-order, same class) ------
+## The > redirects target private temp names (rc.xml.dm-new); a copied symlink AT that name would be
+## followed by the redirect and clobber the external target (the later mv only renames the link).
+home="$(mktemp --directory "${work}/home-symtmp.XXXXXX")"
+mkdir -p -- "${home}/.config/lxqt" "${home}/.config/labwc"
+write_panel "${home}/.config/lxqt/panel.conf"
+realtmp="$(mktemp "${work}/realtmp.XXXXXX")"; printf '%s\n' 'ACCOUNT-REAL-DMNEW' > "${realtmp}"
+ln --symbolic -- "${realtmp}" "${home}/.config/labwc/rc.xml.dm-new"   ## symlink at the tool's temp name
+gui_xdg_dir="$(mktemp --directory "${work}/xdg-symtmp.XXXXXX")"
+HOME="${home}" gui_seed_capture_config
+got=0
+{ grep --quiet --line-regexp 'ACCOUNT-REAL-DMNEW' "${realtmp}" \
+  && [ ! -L "${gui_cfg_dir}/labwc/rc.xml.dm-new" ] \
+  && grep --quiet 'Maximize' "${gui_cfg_dir}/labwc/rc.xml"; } || got=1
+check "symlinked *.dm-new temp sink NOT followed (real target untouched)" "${got}"
+
 printf '%s\n' "" "$(basename -- "$0"): ${pass} pass, ${fail} fail, 0 skip"
 [ "${fail}" -eq 0 ] || exit 1
 exit 0
