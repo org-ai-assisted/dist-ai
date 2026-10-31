@@ -121,16 +121,25 @@ got=0
   && grep --quiet --line-regexp 'timeShowSeconds=true' "${home}/.config/lxqt/panel.conf"; } || got=1
 check "real ~/.config/lxqt/panel.conf left UNTOUCHED (still has volume + live clock)" "${got}"
 
-## --- case 3: volume removal across no-space, trailing, and leading positions ----------------------
+## --- case 3: volume removal across no-space, trailing, and prefix-collision positions --------------
 seed_case 'fancymenu,desktopswitch,quicklaunch,taskbar,statusnotifier,tray,mount,volume,worldclock,showdesktop'
 pl="$(plugins_line "${gui_cfg_dir}/lxqt/panel.conf")"
-got=0; { [[ "${pl}" != *volume* ]] && [[ "${pl}" == *worldclock,showdesktop* ]]; } || got=1
+got=0; { [[ "${pl}" != *volume* ]] && [[ "${pl}" == *worldclock* ]] && [[ "${pl}" == *showdesktop* ]]; } || got=1
 check "volume dropped from a no-space mid-list plugins line (neighbours intact)" "${got}"
 
 seed_case 'fancymenu2, quicklaunch, taskbar, mount, worldclock, volume'
 pl="$(plugins_line "${gui_cfg_dir}/lxqt/panel.conf")"
 got=0; { [[ "${pl}" != *volume* ]] && [[ "${pl}" == *worldclock* ]]; } || got=1
 check "volume dropped when it is the TRAILING plugin" "${got}"
+
+## EXACT-token removal: a 'volumecontrol' plugin must NOT be prefix-mangled; only the lone 'volume'
+## token is dropped. (reviewer finding 2)
+## 'volumecontrol' placed AFTER the standalone volume so a greedy prefix-matching sed would mangle
+## it (and miss the real volume) -- the exact-token awk must drop only the lone volume.
+seed_case 'fancymenu2, quicklaunch, mount, volume, worldclock, volumecontrol'
+pl="$(plugins_line "${gui_cfg_dir}/lxqt/panel.conf")"
+got=0; { [[ "${pl}" == *volumecontrol* ]] && ! grep --quiet --extended-regexp '(=|, )volume(,|$)' <<< "${pl}"; } || got=1
+check "exact-token removal: standalone volume dropped, 'volumecontrol' preserved" "${got}"
 
 ## --- case 4: DM_STORY_CLOCK_TEXT overrides the frozen literal -------------------------------------
 DM_STORY_CLOCK_TEXT='CI-SNAPSHOT' seed_case
@@ -151,6 +160,45 @@ got=0
   && grep --quiet --line-regexp 'formatType=custom' <<< "${wc}" \
   && grep --quiet 'Maximize' "${gui_cfg_dir}/labwc/rc.xml"; } || got=1
 check "bare account (no ~/.config) seeds from DM_STORY_PANEL_CONF_SRC + still edits/maximizes" "${got}"
+
+## --- case 6: the faithful ~/.config copy must be GUARDED so an unreadable entry cannot abort the
+## capture lane under errexit (finding 1) -- cp is the last cmd of an && list and needs `|| true` like
+## its siblings. The abort path cannot be exercised here without an inline multi-statement `bash -c`
+## (R-192 forbids it), so assert the guard is present in the source (catches a regression removing it).
+got=0; grep --quiet --extended-regexp 'cp -a -- "\$\{HOME\}/\.config/\." .*\|\| true' -- "${subject}" || got=1
+check "the ~/.config copy is guarded with || true (cannot abort the lane on an unreadable entry)" "${got}"
+
+## --- case 7: a symlinked ~/.config sink must NOT be followed + clobber real config (finding 3) -----
+## cp -a preserves symlinks; if ~/.config/labwc is a symlink to the account's real dir, our rc.xml
+## write must stay inside gui_cfg_dir, never follow the link and overwrite the account's real rc.xml.
+home="$(mktemp --directory "${work}/home-symdir.XXXXXX")"
+mkdir -p -- "${home}/.config/lxqt"
+write_panel "${home}/.config/lxqt/panel.conf"
+realdir="$(mktemp --directory "${work}/realacct.XXXXXX")"   ## stands in for the account's REAL labwc dir
+printf '%s\n' 'ACCOUNT-REAL-RCXML' > "${realdir}/rc.xml"
+ln --symbolic -- "${realdir}" "${home}/.config/labwc"       ## ~/.config/labwc -> real dir (absolute)
+gui_xdg_dir="$(mktemp --directory "${work}/xdg-symdir.XXXXXX")"
+HOME="${home}" gui_seed_capture_config
+got=0
+{ grep --quiet --line-regexp 'ACCOUNT-REAL-RCXML' "${realdir}/rc.xml" \
+  && [ ! -L "${gui_cfg_dir}/labwc" ] \
+  && [ ! -L "${gui_cfg_dir}/labwc/rc.xml" ] \
+  && grep --quiet 'Maximize' "${gui_cfg_dir}/labwc/rc.xml"; } || got=1
+check "symlinked ~/.config/labwc NOT followed (real rc.xml untouched; copy's labwc+rc.xml are real)" "${got}"
+
+## variant: rc.xml itself an absolute symlink (labwc a real dir) -- same non-destructive requirement
+home="$(mktemp --directory "${work}/home-symfile.XXXXXX")"
+mkdir -p -- "${home}/.config/lxqt" "${home}/.config/labwc"
+write_panel "${home}/.config/lxqt/panel.conf"
+realrc="$(mktemp "${work}/realrc.XXXXXX")"; printf '%s\n' 'ACCOUNT-REAL-RCXML2' > "${realrc}"
+ln --symbolic -- "${realrc}" "${home}/.config/labwc/rc.xml"
+gui_xdg_dir="$(mktemp --directory "${work}/xdg-symfile.XXXXXX")"
+HOME="${home}" gui_seed_capture_config
+got=0
+{ grep --quiet --line-regexp 'ACCOUNT-REAL-RCXML2' "${realrc}" \
+  && [ ! -L "${gui_cfg_dir}/labwc/rc.xml" ] \
+  && grep --quiet 'Maximize' "${gui_cfg_dir}/labwc/rc.xml"; } || got=1
+check "symlinked ~/.config/labwc/rc.xml NOT followed (real file untouched; copy's rc.xml is real)" "${got}"
 
 printf '%s\n' "" "$(basename -- "$0"): ${pass} pass, ${fail} fail, 0 skip"
 [ "${fail}" -eq 0 ] || exit 1

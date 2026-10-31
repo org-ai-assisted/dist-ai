@@ -663,16 +663,38 @@ clear_host_notifications() {
 gui_seed_capture_config() {
    gui_cfg_dir="${gui_xdg_dir}/xdg-config"
    mkdir -p -- "${gui_cfg_dir}"
-   [ -d "${HOME}/.config" ] && cp -a -- "${HOME}/.config/." "${gui_cfg_dir}/" 2>/dev/null
+   ## Best-effort faithful copy: an unreadable entry (a root-owned / mode-000 file left by an earlier
+   ## root-run tool) must NOT abort the capture lane under errexit -- `|| true` like the siblings below.
+   [ -d "${HOME}/.config" ] && { cp -a -- "${HOME}/.config/." "${gui_cfg_dir}/" 2>/dev/null || true; }
+   ## cp -a PRESERVES symlinks, so a copied symlinked dir/file at a WRITE SINK (lxqt/, labwc/,
+   ## panel.conf, rc.xml) would make our writes FOLLOW the link and clobber the account's REAL config
+   ## -- silently defeating the non-destructive guarantee. De-symlink every sink to a real path first
+   ## (rm removes the LINK, never its target); all writes then stay inside gui_cfg_dir.
+   local sink
+   for sink in "${gui_cfg_dir}/lxqt" "${gui_cfg_dir}/labwc"; do
+      [ -L "${sink}" ] && { safe-rm --force -- "${sink}" 2>/dev/null || true; }
+   done
    mkdir -p -- "${gui_cfg_dir}/lxqt" "${gui_cfg_dir}/labwc"
+   for sink in "${gui_cfg_dir}/lxqt/panel.conf" "${gui_cfg_dir}/labwc/rc.xml"; do
+      [ -L "${sink}" ] && { safe-rm --force -- "${sink}" 2>/dev/null || true; }
+   done
    local panel="${gui_cfg_dir}/lxqt/panel.conf"
    [ -f "${panel}" ] || cp -- "${DM_STORY_PANEL_CONF_SRC:-/usr/share/kicksecure/lxqt/panel.conf}" "${panel}" 2>/dev/null || true
    if [ -f "${panel}" ]; then
-      ## drop the `volume` plugin token (leading / mid / trailing, with optional spaces)
-      sed -i -E 's/(^plugins=.*),[[:space:]]*volume/\1/; s/(^plugins=)volume,[[:space:]]*/\1/; s/(^plugins=)volume$/\1/' -- "${panel}" 2>/dev/null || true
-      ## freeze the clock: rewrite [worldclock] to a custom token-free literal (drop existing dup keys)
+      ## One awk pass: (a) drop the `volume` plugin by EXACT token match (split the list on commas,
+      ## trim, rebuild without the lone `volume` -- so a 'volumeXXX' plugin is never prefix-mangled),
+      ## and (b) freeze the worldclock to a token-free literal (dropping any pre-existing dup keys).
       local tmp="${panel}.dm-new"
       if awk -v fmt="${DM_STORY_CLOCK_TEXT:-00:00}" '
+            /^plugins=/ {
+               val = substr($0, index($0, "=") + 1); n = split(val, a, ","); out = ""
+               for (i = 1; i <= n; i++) {
+                  t = a[i]; gsub(/^[[:space:]]+|[[:space:]]+$/, "", t)
+                  if (t == "volume") continue
+                  out = (out == "" ? t : out ", " t)
+               }
+               print "plugins=" out; next
+            }
             /^\[worldclock\]/ { print; print "formatType=custom"; print "customFormat=" fmt; print "timeShowSeconds=false"; inw=1; next }
             inw && /^\[/ { inw=0 }
             inw && /^(formatType|customFormat|timeShowSeconds)=/ { next }
@@ -681,19 +703,22 @@ gui_seed_capture_config() {
          mv -- "${tmp}" "${panel}" 2>/dev/null || safe-rm --force -- "${tmp}" 2>/dev/null || true
       fi
    fi
-   ## maximize the VM window (any toplevel) so it fills below the panel -- never truncated
+   ## maximize the VM window (any toplevel) so it fills below the panel -- never truncated. Write via a
+   ## temp file + rename (never through a symlink, belt-and-suspenders with the de-symlink above).
+   local rc_tmp="${gui_cfg_dir}/labwc/rc.xml.dm-new"
    printf '%s\n' \
       '<?xml version="1.0"?>' \
       '<labwc_config><windowRules><windowRule identifier="*"><action name="Maximize"/></windowRule></windowRules></labwc_config>' \
-      > "${gui_cfg_dir}/labwc/rc.xml"
+      > "${rc_tmp}"
+   mv -- "${rc_tmp}" "${gui_cfg_dir}/labwc/rc.xml"
    export XDG_CONFIG_HOME="${gui_cfg_dir}"
 }
 
 ## Start a FAITHFUL full Kicksecure LXQt desktop session headless (the real greetd entry
 ## start-lxqt-session -> startlxqtwayland -> labwc -m -S lxqt-session), set WAYLAND_DISPLAY so grim +
-## the launched VM window target it, and wait for the panel. window mode only. The VM window then
-## floats on the real host desktop (wallpaper + icons + lxqt-panel taskbar) -- reproduction as close
-## to real usage as possible. Two things a non-login fleet account needs that a greetd login gives
+## the launched VM window target it, and wait for the panel. window mode only. The VM window is then
+## MAXIMIZED on the real host desktop (the lxqt-panel taskbar stays visible above it) -- reproduction
+## as close to real usage as possible. Two things a non-login fleet account needs that a greetd login gives
 ## for free (both proven on the server): a LOGIN shell (bash -lc) so /etc/profile.d sets the
 ## Kicksecure branding XDG_CONFIG_DIRS, and a D-Bus SESSION bus (dbus-run-session) -- without the bus
 ## lxqt-session starts but none of its modules (panel, pcmanfm-qt desktop) do. FATAL on failure -- a
