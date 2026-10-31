@@ -518,6 +518,11 @@ def check_roots(roots: List[str], baseline_dir: str, settle_ms: int = 1000,
 
     overall = 0
     audited = 0
+    # A DEFINITIVE per-site verdict (a vacuous-audit FAIL) must survive a LATER docroot's env-unmet
+    # SKIP: once any site has definitively FAILED, a subsequent chromium-launch failure is a mid-run
+    # fault, never a clean SKIP(77) that would discard the FAIL. `audited` counts only sites that
+    # actually ran, so it does not capture a vacuous FAIL -- this flag does.
+    definite_fail = False
     for docroot, entry in _docroots(roots).items():
         site = os.path.basename(os.path.normpath(docroot))
         ignore = _load_axe_ignore(baseline_dir, docroot)
@@ -525,10 +530,10 @@ def check_roots(roots: List[str], baseline_dir: str, settle_ms: int = 1000,
             fresh, problems, excluded = _serve_and_audit(docroot, entry, axe_source, settle_ms,
                                                           hard_timeout, restrict, ignore)
         except _EngineUnavailable as exc:
-            if audited == 0:
+            if audited == 0 and not definite_fail:
                 _skip('chromium engine unavailable: %s' % exc)  # nothing ran -> env-unmet SKIP(77)
-            # chromium launched for an earlier docroot but not this one: a mid-run fault, not a
-            # silent SKIP. Fail hard and stop -- the remaining docroots cannot run either.
+            # A docroot already audited, OR a definitive FAIL already stands: a launch failure now is
+            # a mid-run fault, not a silent SKIP. Fail hard and stop -- the rest cannot run either.
             print("%s: FAIL    chromium engine became unavailable mid-run: %s" % (site, exc),
                   file=sys.stderr)
             overall = 1
@@ -536,6 +541,7 @@ def check_roots(roots: List[str], baseline_dir: str, settle_ms: int = 1000,
         except _VacuousAudit as exc:
             print("%s: FAIL    %s" % (site, exc), file=sys.stderr)
             overall = 1
+            definite_fail = True
             continue
         audited += 1
         bpath = _baseline_path(Path(baseline_dir), docroot)
@@ -604,12 +610,17 @@ def write_roots(roots: List[str], baseline_dir: str, settle_ms: int = 1000,
             return 2
         bpath = _baseline_path(Path(baseline_dir), docroot)
         Path(baseline_dir).mkdir(parents=True, exist_ok=True)
-        # A seed needs the old entries only to preserve pages it did NOT audit: a restricted seed
-        # (unvisited pages) or any seed with axe-ignored pages. A plain full seed overwrites
-        # wholesale, so skip parsing -- a malformed existing file must not block replacing it.
+        # A seed needs the old entries only to PRESERVE pages it did NOT audit: a restricted seed
+        # (unvisited pages) or any seed with axe-ignored pages. A plain full seed with no ignore
+        # overwrites wholesale and skips the read entirely. Either way a malformed existing file
+        # must NOT block replacing it (a seed is an overwrite): a parse error degrades to
+        # 'preserve nothing' -- the reseed still writes -- rather than crashing the reseed.
         existing: Set[Key] = set()
         if (restrict is not None or ignore) and bpath.is_file():
-            existing = parse_baseline(bpath.read_text(encoding="utf-8"))
+            try:
+                existing = parse_baseline(bpath.read_text(encoding="utf-8"))
+            except ValueError:
+                existing = set()
         seeded = _merge_seed(existing, fresh, restrict, ignore)
         bpath.write_text(format_baseline(seeded, site=site), encoding="utf-8")
         print("wrote %d accepted violation(s) -> %s" % (len(seeded), bpath), file=sys.stderr)

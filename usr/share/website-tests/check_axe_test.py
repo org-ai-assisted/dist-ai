@@ -281,6 +281,45 @@ def run() -> int:
             _rc = ax.check_roots([_r1, _r2], _bdir)
             ck(_rc == 1,
                "engine down AFTER a docroot audited -> hard overall=1, not SKIP: rc=%r" % _rc)
+
+            # (C) a vacuous-audit FAIL is DURABLE (CodeRabbit/fresh-claude #790 fix-forward): a site
+            # whose whole audit set is axe-ignored FAILs (_VacuousAudit); a LATER docroot's engine
+            # failure (while audited==0) must NOT _skip(77) and discard that FAIL. First root ->
+            # vacuous, second -> engine down -> the run must end rc=1, never SKIP(77).
+            _calls_c = {"n": 0}
+
+            def _sna_vacuous_then_engine(*_a, **_k):
+                _calls_c["n"] += 1
+                if _calls_c["n"] == 1:
+                    raise ax._VacuousAudit("all 1 requested path(s) are axe-ignored -- nothing left")
+                raise ax._EngineUnavailable("simulated post-vacuous launch failure")
+
+            ax._serve_and_audit = _sna_vacuous_then_engine
+            _rc_c = ax.check_roots([_r1, _r2], _bdir)
+            ck(_rc_c == 1,
+               "a vacuous FAIL is durable: a later engine-unavailable does not mask it as "
+               "SKIP(77): rc=%r" % _rc_c)
+
+            # (D) a full re-seed on an ignore-list site must TOLERATE a malformed existing baseline
+            # (CodeRabbit/fresh-claude #790 fix-forward): the new 'or ignore' read of the old file
+            # must not let parse_baseline's ValueError crash the reseed -- a seed overwrites, so a
+            # corrupt existing degrades to 'preserve nothing', never a crash.
+            _ign = Path(_bdir, "axe-ignore-%s.txt" % os.path.basename(_r1))
+            _ign.write_text("wiki/Dev/wikitest\n", encoding="utf-8")   # ignore truthy -> read path
+            _bad = Path(_bdir, "axe-baseline-%s.txt" % os.path.basename(_r1))
+            _bad.write_text("justpath\n", encoding="utf-8")            # malformed (parse_baseline reds)
+            _fresh_d = {("/wiki/Foo", "color-contrast", "a")}
+            ax._serve_and_audit = lambda *_a, **_k: (set(_fresh_d), [], 0)
+            try:
+                _rc_d = ax.write_roots([_r1], _bdir)   # restrict=None -> FULL re-seed, ignore truthy
+                ck(_rc_d == 0, "full re-seed tolerates a malformed existing baseline (rc=%r)" % _rc_d)
+                _reseeded = ax.parse_baseline(_bad.read_text(encoding="utf-8"))
+                ck(_reseeded == _fresh_d,
+                   "re-seed overwrote the corrupt baseline with the fresh set: %r" % (_reseeded,))
+            except ValueError as _exc:
+                ck(False, "full re-seed crashed on a malformed existing baseline: %r" % _exc)
+            finally:
+                _ign.unlink(missing_ok=True)
         finally:
             ax._serve_and_audit = _orig_sna
             os.environ.pop("AXE_SOURCE", None)
