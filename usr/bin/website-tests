@@ -448,13 +448,15 @@ delegate_sandbox_lane 'website-vnu-tests (vnu conformance)' webcheck-vnu-sandbox
 delegate_sandbox_lane 'website-lighthouse-tests (lighthouse)' webcheck-lighthouse-sandbox "${roots[@]}"
 delegate_sandbox_lane 'website-axe-tests (axe-core)' webcheck-axe-sandbox "${roots[@]}"
 delegate_sandbox_lane 'website-cspell-tests (spell-check)' webcheck-cspell-sandbox "${roots[@]}"
-## jscov keys covered.txt on the CANONICAL site identity, so pass <site>=<path> pairs -- a bare
-## override path's basename would mis-key and silently drop that site's coverage.
+## jscov keys covered.txt (and jsfuzz keys fuzzed.txt) on the CANONICAL site identity, so pass
+## <site>=<path> pairs -- a bare override path's basename would mis-key and silently drop that
+## site's coverage/fuzzing. The same tagged-root set feeds both JS lanes.
 declare -a jscov_roots=()
 for jscov_i in "${!roots[@]}"; do
    jscov_roots+=( "${root_sites[${jscov_i}]}=${roots[${jscov_i}]}" )
 done
 delegate_sandbox_lane 'website-jscov-tests (JS unit coverage)' webcheck-jscov-sandbox "${jscov_roots[@]}"
+delegate_sandbox_lane 'website-jsfuzz-tests (JS property/fuzz)' webcheck-jsfuzz-sandbox "${jscov_roots[@]}"
 
 ## Shot-inventory guard (secure-terminal site only): every committed shot is a
 ## page-referenced generator artifact and every gallery reference resolves -- no

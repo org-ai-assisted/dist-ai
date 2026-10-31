@@ -1,1 +1,23 @@
+# JS files the fuzz coverage sub-gate drives to 100% (paths relative to the synced workdir). One
+# per line; '#'/blank skipped. EXPLICIT, GROWING set (mirrors jscov/covered.txt): a file not
+# listed is NOT silently green -- it is simply not yet in the fuzz corpus. Each path is covered by
+# a jsfuzz/<name>.fuzz.js (curated examples for deterministic 100% + >= 1 real invariant). c8
+# attributes coverage per FILE PATH, so every byte-identical copy's path is listed and its suite
+# exercises that path too (share.fuzz.js over 3 paths; ol-copy.fuzz.js over 3).
+roots/output-lies.github.io/share.js
+roots/org-ai-assisted.github.io/share.js
+roots/output-lies.github.io/git-diffs-lie/share.js
+roots/secure-terminal.github.io/share.js
+roots/secure-terminal.github.io/copy.js
+roots/secure-terminal.github.io/chat-view/mockup.js
+roots/secure-terminal.github.io/attacks/pastejack.js
+roots/output-lies.github.io/git-diffs-lie/copy.js
+roots/output-lies.github.io/git-diffs-lie/all/copy.js
+roots/output-lies.github.io/paste/copy.js
 roots/output-lies.github.io/analyze/analyzer.js
+roots/output-lies.github.io/analyze/sandbox.js
+roots/output-lies.github.io/analyze/ui.js
+roots/output-lies.github.io/terminal/xray.js
+roots/output-lies.github.io/terminal/playback.js
+roots/output-lies.github.io/quiz/quiz.js
+roots/secure-terminal.github.io/hero.js

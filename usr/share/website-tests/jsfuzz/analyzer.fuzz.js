@@ -128,13 +128,23 @@ fuzz('toAscii: strips every flagged codepoint, idempotent',
   },
   CORPUS_STRINGS);
 
-/* Robustness: analyze/toAscii accept non-string input (null/undefined/number/object) without
-   throwing -- the `str == null ? '' : String(str)` guard. */
-fuzz('analyze/toAscii: non-string input never throws',
-  fc.oneof(fc.constant(null), fc.constant(undefined), fc.integer(), fc.object(), fc.boolean()),
+/* Contract of the `str == null ? '' : String(str)` guard: null/undefined are treated as the empty
+   string (flagged 0, nothing reconstructed), and any other input is String()-coerced then analyzed.
+   The documented inputs are string|null|undefined (callers pass input.value / sessionStorage), so
+   the arb covers those plus the primitive coercions (number/boolean) and a plain object -- all
+   reliably String-coercible. A pathological object whose `toString`/`valueOf` are overridden to
+   non-callables (e.g. {toString: []}) makes String() itself throw; that is outside the guard's
+   contract and unreachable from any caller, so it is deliberately not generated here. */
+fuzz('analyze/toAscii: documented non-string inputs coerce without throwing',
+  fc.oneof(fc.constant(null), fc.constant(undefined), fc.integer(), fc.double(), fc.boolean(),
+    fc.constant({}), fc.constant([1, 2])),
   function (x) {
-    OL.analyze(x);
-    OL.toAscii(x);
+    const r = OL.analyze(x);
+    if (!Array.isArray(r.items) || typeof r.flagged !== 'number') { return false; }
+    if (typeof OL.toAscii(x) !== 'string') { return false; }
+    if (x == null) {               // the `str == null ? ''` arm: treated as empty -> nothing flagged
+      return r.flagged === 0;
+    }
     return true;
   },
   [[null], [undefined], [0], [{}], [true]]);
