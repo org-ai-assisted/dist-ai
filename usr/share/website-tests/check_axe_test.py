@@ -108,6 +108,45 @@ def run() -> int:
     ck(ax._merge_seed(existing, fresh, ["/"]) == {("/", "new", "c"), ("/wiki/Other", "keep", "b")},
        "_merge_seed restricted keeps unvisited, replaces audited paths")
 
+    # axe-ignore <-> restrict interaction (CodeRabbit #789 fix-forward r4431457774): an ignored page
+    # is in the tree but NOT audited, so its baseline keys must be neither misreported 'resolved'
+    # (check) nor discarded (seed), in curated AND full-tree mode. `ignore` is _canon_path.lstrip('/').
+    ign = {"wiki/Dev/wikitest"}
+    bli = {("/", "x", "a"), ("/wiki/Dev/wikitest", "lk", "img"), ("/wiki/ISO", "cc", "a")}
+    # CHECK: full-tree drops only the ignored page's keys (removed-page 'resolved' behaviour kept).
+    ck(ax._restrict_baseline(bli, None, ign)
+       == {("/", "x", "a"), ("/wiki/ISO", "cc", "a")},
+       "_restrict_baseline full-tree drops ignored page keys only")
+    # CHECK: curated also drops the ignored page even when the curated list names it.
+    ck(ax._restrict_baseline(bli, ["/", "/wiki/Dev/wikitest"], ign) == {("/", "x", "a")},
+       "_restrict_baseline curated drops an ignored page named in the restrict list")
+    # SEED: full-tree preserves the ignored page's existing keys (not re-audited), replaces the rest.
+    exi = {("/", "old", "a"), ("/wiki/Dev/wikitest", "lk", "img")}
+    frh = {("/", "new", "c")}
+    ck(ax._merge_seed(exi, frh, None, ign)
+       == {("/", "new", "c"), ("/wiki/Dev/wikitest", "lk", "img")},
+       "_merge_seed full-tree + ignore preserves the ignored page's accepted keys")
+    # SEED: curated naming the ignored page still preserves it (would otherwise vanish: in restrict,
+    # absent from fresh).
+    ck(ax._merge_seed(exi, frh, ["/", "/wiki/Dev/wikitest"], ign)
+       == {("/", "new", "c"), ("/wiki/Dev/wikitest", "lk", "img")},
+       "_merge_seed curated + ignore preserves the ignored page named in the restrict list")
+
+    # _apply_ignore: the vacuous-audit guard (CodeRabbit #789 fix-forward r4431457699). A curated
+    # --paths-file of ONLY ignored pages empties the audit set -> auditing nothing would PASS
+    # vacuously against an existing baseline. Refuse with _VacuousAudit.
+    ck(ax._apply_ignore(["/", "/wiki/ISO"], None) == (["/", "/wiki/ISO"], 0),
+       "_apply_ignore no ignore-set -> request unchanged")
+    ck(ax._apply_ignore(["/wiki/Dev/wikitest", "/"], ign) == (["/"], 1),
+       "_apply_ignore drops ignored pages, counts them")
+    ck(ax._apply_ignore([], ign) == ([], 0),
+       "_apply_ignore empty request is not vacuous (empty-restrict guarded elsewhere)")
+    try:
+        ax._apply_ignore(["/wiki/Dev/wikitest"], ign)
+        ck(False, "_apply_ignore raises _VacuousAudit when every requested page is ignored")
+    except ax._VacuousAudit:
+        ck(True, "_apply_ignore raises _VacuousAudit when every requested page is ignored")
+
     # An empty --paths-file is REJECTED (never silently falls back to a full-tree audit).
     with tempfile.TemporaryDirectory() as _td2:
         empty = Path(_td2) / "empty.txt"

@@ -64,6 +64,12 @@ class _EngineUnavailable(Exception):
     SKIP(77) is only honest when NOTHING has been audited yet. Once a docroot has
     run, a launch failure is a mid-run fault (overall=1), never a silent SKIP."""
 
+
+class _VacuousAudit(Exception):
+    """Every requested page was axe-ignored, so the audit set is empty. Auditing zero pages would
+    PASS vacuously against an existing baseline (no fresh violations, none resolved) -- a fabricated
+    green. The CALLER refuses: FAIL the site on a check, refuse to seed on a write."""
+
 _CTRL_CHARS = re.compile(r'[\x00-\x1f\x7f-\x9f]')
 
 
@@ -420,23 +426,48 @@ def _load_paths_file(path: str) -> List[str]:
     return out
 
 
-def _restrict_baseline(baseline: Set[Key], restrict: Optional[List[str]]) -> Set[Key]:
-    """For a curated (restricted) CHECK: compare only the AUDITED paths' baseline keys, so an
-    unvisited page's accepted violation is not misreported 'resolved' (its page was never run)."""
+def _restrict_baseline(baseline: Set[Key], restrict: Optional[List[str]],
+                       ignore: Optional[Set[str]] = None) -> Set[Key]:
+    """Baseline keys to COMPARE this run against -- only pages actually AUDITED.
+    - `ignore` (axe-ignored pages): dropped FIRST. They are in the tree but deliberately unaudited,
+      so their keys must not be misreported 'resolved' -- in curated AND full-tree mode alike.
+    - `restrict` (a curated path list): then keep only those paths' keys, so an unvisited page's
+      accepted violation is not misreported 'resolved'. `restrict is None` (full-tree) keeps the
+      rest, so a REMOVED page's key still reports 'resolved' as before."""
+    if ignore:
+        baseline = {k for k in baseline if k[0].lstrip('/') not in ignore}
     if restrict is None:
         return baseline
     paths = {_canon_path(p) for p in restrict}
     return {k for k in baseline if k[0] in paths}
 
 
-def _merge_seed(existing: Set[Key], fresh: Set[Key], restrict: Optional[List[str]]) -> Set[Key]:
-    """For a curated (restricted) SEED: keep accepted entries on pages NOT audited and replace only
-    the audited paths' keys -- a restricted re-seed must never discard an unvisited page's baseline.
-    A full (unrestricted) seed replaces the whole set."""
+def _merge_seed(existing: Set[Key], fresh: Set[Key], restrict: Optional[List[str]],
+                ignore: Optional[Set[str]] = None) -> Set[Key]:
+    """SEED (overwrite) the baseline from the current run, preserving entries on pages NOT audited.
+    - A curated (restricted) seed keeps non-curated pages' accepted entries and replaces only the
+      curated paths' keys. A full (unrestricted) seed replaces the whole set.
+    - `ignore` (axe-ignored pages) are unaudited in BOTH modes, so their existing accepted keys are
+      preserved -- never discarded by a reseed that did not visit them."""
+    kept_ignored = {k for k in existing if ignore and k[0].lstrip('/') in ignore}
     if restrict is None:
-        return fresh
+        return fresh | kept_ignored
     paths = {_canon_path(p) for p in restrict}
-    return {k for k in existing if k[0] not in paths} | fresh
+    return ({k for k in existing if k[0] not in paths} | fresh) | kept_ignored
+
+
+def _apply_ignore(requested: List[str], ignore: Optional[Set[str]]) -> Tuple[List[str], int]:
+    """Drop axe-ignored pages from the requested audit set. Returns (kept, excluded).
+    Raises _VacuousAudit if a NON-EMPTY request is emptied entirely: a gate that audits zero pages
+    proves nothing, so it must refuse rather than pass vacuously."""
+    if not ignore:
+        return requested, 0
+    kept = [p for p in requested if _canon_path(p).lstrip('/') not in ignore]
+    excluded = len(requested) - len(kept)
+    if requested and not kept:
+        raise _VacuousAudit("all %d requested path(s) are axe-ignored -- nothing left to audit"
+                            % len(requested))
+    return kept, excluded
 
 
 def _serve_and_audit(docroot: str, entry: dict, axe_source: str, settle_ms: int,
@@ -455,15 +486,11 @@ def _serve_and_audit(docroot: str, entry: dict, axe_source: str, settle_ms: int,
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     try:
         base = 'http://127.0.0.1:%d' % port
-        paths = sorted(set(entry['urls'])) if restrict is None else list(restrict)
-        excluded = 0
-        if ignore:
-            kept = [p for p in paths if _canon_path(p).lstrip('/') not in ignore]
-            excluded = len(paths) - len(kept)
-            if excluded:
-                print("  ....  excluding %d enumerated demo/test fixture(s) (axe-ignore)" % excluded,
-                      flush=True)
-            paths = kept
+        requested = sorted(set(entry['urls'])) if restrict is None else list(restrict)
+        paths, excluded = _apply_ignore(requested, ignore)
+        if excluded:
+            print("  ....  excluding %d enumerated demo/test fixture(s) (axe-ignore)" % excluded,
+                  flush=True)
         keys, problems = asyncio.run(check(base, paths, axe_source, settle_ms, hard_timeout))
         return keys, problems, excluded
     finally:
@@ -506,11 +533,15 @@ def check_roots(roots: List[str], baseline_dir: str, settle_ms: int = 1000,
                   file=sys.stderr)
             overall = 1
             break
+        except _VacuousAudit as exc:
+            print("%s: FAIL    %s" % (site, exc), file=sys.stderr)
+            overall = 1
+            continue
         audited += 1
         bpath = _baseline_path(Path(baseline_dir), docroot)
         present = bpath.is_file()
         baseline = parse_baseline(bpath.read_text(encoding="utf-8")) if present else set()
-        rc, new, resolved = evaluate(present, _restrict_baseline(baseline, restrict), fresh)
+        rc, new, resolved = evaluate(present, _restrict_baseline(baseline, restrict, ignore), fresh)
         if not present:
             print("%s: MISSING no baseline %s -- seed with "
                   "'webcheck-axe-sandbox --write-baseline'" % (site, bpath), file=sys.stderr)
@@ -563,6 +594,9 @@ def write_roots(roots: List[str], baseline_dir: str, settle_ms: int = 1000,
             print("axe: refusing to seed -- chromium became unavailable mid-run after %d site(s): %s"
                   % (audited, exc), file=sys.stderr)
             return 2
+        except _VacuousAudit as exc:
+            print("axe: refusing to seed %s -- %s" % (site, exc), file=sys.stderr)
+            return 2
         audited += 1
         if problems:
             print("axe: refusing to seed %s -- %d page(s) unauditable: %s"
@@ -570,13 +604,13 @@ def write_roots(roots: List[str], baseline_dir: str, settle_ms: int = 1000,
             return 2
         bpath = _baseline_path(Path(baseline_dir), docroot)
         Path(baseline_dir).mkdir(parents=True, exist_ok=True)
-        # Only a RESTRICTED seed needs the old entries (to keep unvisited pages). An unrestricted
-        # seed overwrites wholesale, so do not parse the old baseline -- a malformed existing file
-        # must not block replacing it.
+        # A seed needs the old entries only to preserve pages it did NOT audit: a restricted seed
+        # (unvisited pages) or any seed with axe-ignored pages. A plain full seed overwrites
+        # wholesale, so skip parsing -- a malformed existing file must not block replacing it.
         existing: Set[Key] = set()
-        if restrict is not None and bpath.is_file():
+        if (restrict is not None or ignore) and bpath.is_file():
             existing = parse_baseline(bpath.read_text(encoding="utf-8"))
-        seeded = _merge_seed(existing, fresh, restrict)
+        seeded = _merge_seed(existing, fresh, restrict, ignore)
         bpath.write_text(format_baseline(seeded, site=site), encoding="utf-8")
         print("wrote %d accepted violation(s) -> %s" % (len(seeded), bpath), file=sys.stderr)
     return 0
