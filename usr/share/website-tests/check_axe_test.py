@@ -235,7 +235,7 @@ def run() -> int:
             def _sna_second_fails(*_a, **_k):
                 _calls["n"] += 1
                 if _calls["n"] == 1:
-                    return (set(), [])          # first docroot: clean audit
+                    return (set(), [], 0)       # first docroot: clean audit, 0 excluded
                 raise ax._EngineUnavailable("simulated mid-run launch failure")
 
             ax._serve_and_audit = _sna_second_fails

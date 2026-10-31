@@ -441,10 +441,12 @@ def _merge_seed(existing: Set[Key], fresh: Set[Key], restrict: Optional[List[str
 
 def _serve_and_audit(docroot: str, entry: dict, axe_source: str, settle_ms: int,
                      hard_timeout: int, restrict: Optional[List[str]] = None,
-                     ignore: Optional[Set[str]] = None) -> Tuple[Set[Key], List[str]]:
+                     ignore: Optional[Set[str]] = None) -> Tuple[Set[Key], List[str], int]:
     """Serve one docroot on a localhost mount (reusing mobile.py's harness) and audit its pages.
     `restrict` (a curated path list) overrides the enumerated tree -- audit only those paths.
-    `ignore` (canonicalised paths) drops enumerated demo/test fixtures from the audit set."""
+    `ignore` (canonicalised paths) drops enumerated demo/test fixtures from the audit set. Returns
+    (keys, problems, excluded) -- excluded is the number ACTUALLY dropped from THIS run's audited
+    set (not the ignore-list size), so the caller reports an honest count."""
     handler = functools.partial(_MountHandler, directory=docroot)
     httpd = _MountingTCPServer(('127.0.0.1', 0), handler)
     httpd.mounts = entry['mounts']
@@ -454,14 +456,16 @@ def _serve_and_audit(docroot: str, entry: dict, axe_source: str, settle_ms: int,
     try:
         base = 'http://127.0.0.1:%d' % port
         paths = sorted(set(entry['urls'])) if restrict is None else list(restrict)
+        excluded = 0
         if ignore:
             kept = [p for p in paths if _canon_path(p).lstrip('/') not in ignore]
-            skipped = len(paths) - len(kept)
-            if skipped:
-                print("  ....  excluding %d enumerated demo/test fixture(s) (axe-ignore)" % skipped,
+            excluded = len(paths) - len(kept)
+            if excluded:
+                print("  ....  excluding %d enumerated demo/test fixture(s) (axe-ignore)" % excluded,
                       flush=True)
             paths = kept
-        return asyncio.run(check(base, paths, axe_source, settle_ms, hard_timeout))
+        keys, problems = asyncio.run(check(base, paths, axe_source, settle_ms, hard_timeout))
+        return keys, problems, excluded
     finally:
         httpd.shutdown()
 
@@ -491,8 +495,8 @@ def check_roots(roots: List[str], baseline_dir: str, settle_ms: int = 1000,
         site = os.path.basename(os.path.normpath(docroot))
         ignore = _load_axe_ignore(baseline_dir, docroot)
         try:
-            fresh, problems = _serve_and_audit(docroot, entry, axe_source, settle_ms,
-                                               hard_timeout, restrict, ignore)
+            fresh, problems, excluded = _serve_and_audit(docroot, entry, axe_source, settle_ms,
+                                                          hard_timeout, restrict, ignore)
         except _EngineUnavailable as exc:
             if audited == 0:
                 _skip('chromium engine unavailable: %s' % exc)  # nothing ran -> env-unmet SKIP(77)
@@ -519,9 +523,9 @@ def check_roots(roots: List[str], baseline_dir: str, settle_ms: int = 1000,
         for problem in problems:
             print("%s: FAIL    %s" % (site, problem), file=sys.stderr)
         print("%s: %d accepted, %d fresh, %d NEW, %d resolved, %d problem(s)"
-              " (excluding %d enumerated demo/test fixture(s))"
+              " (excluded %d enumerated demo/test fixture(s) from this run)"
               % (site, len(baseline), len(fresh), len(new), len(resolved), len(problems),
-                 len(ignore)))
+                 excluded))
         if rc or problems:
             overall = 1
     return overall
@@ -551,8 +555,8 @@ def write_roots(roots: List[str], baseline_dir: str, settle_ms: int = 1000,
         site = os.path.basename(os.path.normpath(docroot))
         ignore = _load_axe_ignore(baseline_dir, docroot)
         try:
-            fresh, problems = _serve_and_audit(docroot, entry, axe_source, settle_ms,
-                                               hard_timeout, restrict, ignore)
+            fresh, problems, excluded = _serve_and_audit(docroot, entry, axe_source, settle_ms,
+                                                          hard_timeout, restrict, ignore)
         except _EngineUnavailable as exc:
             if audited == 0:
                 _skip('chromium engine unavailable: %s' % exc)  # nothing seeded -> env-unmet SKIP(77)
