@@ -2376,3 +2376,90 @@ test("hovercards: a page link whose href is cleared mid-fetch yields no card (hr
   assert.equal(w.document.querySelector(".hovercard .hovercard-page"), null,
     "an anchor that lost its href resolves to no preview card");
 });
+
+// ---- navSafe URL-safety guard: tampered same-origin index/attribute targets are DROPPED --------
+// navSafe(h, allowAbsolute) is the defense-in-depth guard beneath CSP+TT. A tampered index entry
+// or href (non-string, protocol-relative //host, or a javascript:/data: scheme) must never be
+// rendered as a search row or auto-driven by the download-modal nav sink. Each test asserts the
+// real DROP (no <li>, count unchanged, no modal/nav) and fails if the guard were removed.
+
+test("navSafe rejects a non-string target (tampered index entry whose u is not a string)", () => {
+  const navSafe = load("<main>x</main>").mwSearch.navSafe;
+  assert.equal(navSafe(123, false), false, "a number is not a safe target");
+  assert.equal(navSafe(null, false), false, "null is not a safe target");
+  assert.equal(navSafe(undefined, true), false, "undefined is not safe even with allowAbsolute");
+  assert.equal(navSafe({}, true), false, "a non-string object is not a safe target");
+  // control: a plain relative string IS safe, proving the above falses come from the type guard,
+  // not a blanket reject (and that removing the guard would throw on .replace, failing this test).
+  assert.equal(navSafe("wiki/Firewall/", false), true, "a plain relative string is same-origin safe");
+});
+
+test("navSafe rejects a protocol-relative //host target (cross-origin)", () => {
+  const navSafe = load("<main>x</main>").mwSearch.navSafe;
+  assert.equal(navSafe("//evil.com/x", false), false, "//host is cross-origin, dropped");
+  assert.equal(navSafe("//evil.com/x", true), false,
+    "//host stays dropped even with allowAbsolute (it is not an explicit http(s) scheme)");
+  // control: the same host behind an explicit https scheme IS allowed under allowAbsolute, proving
+  // the falses above are the // guard specifically, not the absolute-target path.
+  assert.equal(navSafe("https://evil.com/x", true), true, "explicit https absolute is permitted when allowAbsolute");
+});
+
+test("search drops a title hit whose target fails navSafe (tampered javascript: u -> no row)", async () => {
+  const w = load('<input id="search-input">', {
+    appSrc: "../../vendor-bundle.js",   // rootPrefix "" -> href is e.u verbatim (no relative prefix to neutralise the scheme)
+    searchIndex: [{ t: "Firewall", u: "javascript:alert(1)" }],
+  });
+  const input = w.document.getElementById("search-input");
+  input.value = "firewall";
+  input.dispatchEvent(new w.Event("input"));
+  await tick();
+  const results = w.document.querySelector(".search-results");
+  assert.equal(results.querySelectorAll("li").length, 0, "the tampered javascript: target is dropped: no <li> appended");
+  assert.ok(results.hidden, "with the only hit dropped, the results panel stays hidden");
+});
+
+test("search renders safe title hits but drops the tampered //host one (count = real rows only)", async () => {
+  const w = load('<input id="search-input">', {
+    appSrc: "../../vendor-bundle.js",
+    searchIndex: [{ t: "Firewall Guide", u: "wiki/Firewall_Guide/" },
+                  { t: "Firewall Evil", u: "//evil.com/phish" }],
+  });
+  const input = w.document.getElementById("search-input");
+  input.value = "firewall";
+  input.dispatchEvent(new w.Event("input"));
+  await tick();
+  const links = [...w.document.querySelectorAll(".search-results li a")].map((a) => a.textContent);
+  assert.equal(JSON.stringify(links), JSON.stringify(["Firewall Guide"]),
+    "only the same-origin hit renders; the //evil.com title hit is dropped, not counted");
+});
+
+test("full-text drops a body-only match whose target fails navSafe (tampered //host u -> no append)", async () => {
+  const name = pad3(bktOf.anonymity);
+  const shard = {}; shard[name] = { anonymity: [[0, 0, [2]]] };   // page 0 is a body hit for 'anonymity'
+  const sh = {}; sh[name] = "abc12345";
+  const w = load('<input id="search-input">', {
+    appSrc: "../../vendor-bundle.js",   // rootPrefix "" -> href is e.u verbatim, so //evil.com fails navSafe
+    searchIndex: [{ t: "Networking Guide", u: "//evil.com/phish" }],   // title lacks 'anonymity' -> title pass is empty
+    manifest: { v: 1, buckets: FX.buckets, docs: 1, avgdl: 10, dl: [10], base: "search/ft/", sh },
+    shards: shard,
+  });
+  const input = w.document.getElementById("search-input");
+  input.value = "anonymity";
+  input.dispatchEvent(new w.Event("input"));
+  await tick(); await tick();
+  const results = w.document.querySelector(".search-results");
+  assert.equal(results.querySelectorAll("li a").length, 0,
+    "the BM25-ranked body hit has a tampered target -> appendResult drops it, no row added");
+  assert.ok(results.hidden, "no row added -> the results panel stays hidden");
+});
+
+test("download modal: a tampered javascript: href is not navigated (nav sink dropped, no modal)", () => {
+  const w = load('<a class="download-button-v2 dlbtn-modal" href="javascript:alert(1)">Get</a>');
+  const link = w.document.querySelector("a.dlbtn-modal");
+  const ev = new w.MouseEvent("click", { bubbles: true, cancelable: true });
+  link.dispatchEvent(ev);
+  assert.equal(w.document.getElementById("download-button-modal"), null,
+    "navSafe(href,true) false -> handler returns before building/driving the modal");
+  assert.equal(ev.defaultPrevented, false,
+    "the click is NOT intercepted (no preventDefault), so app.js never auto-drives the javascript: target");
+});
