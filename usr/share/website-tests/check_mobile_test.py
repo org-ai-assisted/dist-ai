@@ -307,6 +307,19 @@ def run():
         check('_MountHandler directory-index served when there is no .html sibling',
               os.path.realpath(diridx) == os.path.realpath(os.path.join(root, 'wiki/Dir/index.html')),
               repr(diridx))
+        # An EXPLICIT trailing slash honors the directory index when BOTH forms coexist (a future
+        # dir-index layout); the slash-less form still serves the flat .html. Matches nginx, which
+        # serves the dir index for a trailing-slash request.
+        _write(root, 'wiki/Both.html', '<h1>flat</h1>')
+        _write(root, 'wiki/Both/index.html', '<h1>idx</h1>')
+        slashless = h.translate_path('/wiki/Both')
+        trailing = h.translate_path('/wiki/Both/')
+        check('_MountHandler slash-less serves the flat .html when both forms exist',
+              os.path.realpath(slashless) == os.path.realpath(os.path.join(root, 'wiki/Both.html')),
+              repr(slashless))
+        check('_MountHandler trailing slash serves the directory index when both forms exist',
+              os.path.realpath(trailing) == os.path.realpath(os.path.join(root, 'wiki/Both/index.html')),
+              repr(trailing))
 
     passed = sum(1 for _n, ok, _d in results if ok)
     failed = len(results) - passed

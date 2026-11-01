@@ -532,6 +532,15 @@ class _MountHandler(http.server.SimpleHTTPRequestHandler):
         real = os.path.realpath(fs)
         if not any(real == a or real.startswith(a + os.sep) for a in allowed):
             return os.path.join(self.directory, '__forbidden__')
+        # An EXPLICIT trailing-slash request (/wiki/KVM/) asks for the directory index, as nginx
+        # serves it; honor <dir>/index.html over the flat <name>.html in that case only. (Our flat
+        # output never ships both, and production 301s a trailing slash to the slash-less URL, so
+        # this only matters for a future directory-index layout -- but it keeps the audit server
+        # faithful either way.)
+        if clean.endswith('/') and os.path.isdir(real):
+            idx = os.path.join(real, 'index.html')
+            if os.path.isfile(idx):
+                return idx
         # Resolve in production nginx's `try_files $uri $uri.html $uri/` ORDER: a regular file
         # wins; else the FLAT clean URL (/wiki/ISO -> wiki/ISO.html) -- which MUST be tried before
         # a same-named subpage directory, since a page with child pages has BOTH wiki/KVM.html AND
