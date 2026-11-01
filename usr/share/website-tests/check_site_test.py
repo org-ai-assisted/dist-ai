@@ -2802,20 +2802,38 @@ def run():
               any('inline <script> body' in f and 'figures/x.xht' in f
                   for f in _markup_fails(root)), _markup_fails(root))
 
-    # PARTITION: a navigable .html is owned by html_files (per-page check), never re-scanned
-    # here; a .xhtml figure is picked up here.
+    # PARTITION: a navigable .html the per-page check already audited (passed as the excluded
+    # set, = all html_files for family/csr) is NOT re-scanned here; a .xhtml figure is.
     with tempfile.TemporaryDirectory() as root:
         _write(root, 'index.html', '<html><body><p>page</p></body></html>')
         _write(root, 'figures/x.xhtml',
                '<html xmlns="http://www.w3.org/1999/xhtml"><body><p>f</p></body></html>')
-        extra = [os.path.relpath(p, root) for p in check_site._served_extra_markup(root)]
-        check('_served_extra_markup excludes the navigable .html (no double scan)',
+        audited = list(check_site.html_files(root))
+        extra = [os.path.relpath(p, root)
+                 for p in check_site._served_extra_markup(root, audited)]
+        check('_served_extra_markup excludes an audited navigable .html (no double scan)',
               'index.html' not in extra, extra)
         check('_served_extra_markup includes the .xhtml figure',
               os.path.join('figures', 'x.xhtml') in extra, extra)
 
-    check('check_served_markup_safety is invoked from main()',
-          'check_served_markup_safety(root' in main_body)
+    # CANARY 8 (wiki uncurated gap): check_no_inline_script audits only the CURATED pages on
+    # a wiki tree, so an UNCURATED .html with an inline <script> must be caught by the belt --
+    # pass the curated page as the only audited one; the uncurated sibling must be flagged and
+    # the curated one must NOT be double-scanned here.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'wiki/Curated.html', '<html><body><p>curated</p></body></html>')
+        _write(root, 'wiki/Uncurated.html',
+               '<html><body><script>steal()</script></body></html>')
+        curated = [os.path.join(root, 'wiki', 'Curated.html')]
+        fails: list[str] = []
+        check_site.check_served_markup_safety(root, fails, curated)
+        check('uncurated wiki .html inline <script> flagged (curated-subset gap)',
+              any('inline <script> body' in f and 'Uncurated.html' in f for f in fails), fails)
+        check('curated wiki .html not re-scanned by the belt (no double scan)',
+              not any('Curated.html' in f for f in fails), fails)
+
+    check('check_served_markup_safety is invoked from main() with the audited pages',
+          'check_served_markup_safety(root, failures, pages)' in main_body)
 
     passed = sum(1 for _n, ok, _d in results if ok)
     failed = len(results) - passed

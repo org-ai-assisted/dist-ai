@@ -32,6 +32,8 @@ import re
 import sys
 import urllib.parse
 
+from defusedxml.ElementTree import fromstring as _safe_fromstring
+
 from dist_ai.webcheck import config
 
 # The generated test-results output tree (test-results-site-generate's
@@ -807,20 +809,25 @@ def _strip_css_comments(text):
         lambda m: ' ' if m.group(1) is not None else m.group(0), text)
 
 
-def _read_css_text(path):
-    """Read a stylesheet the way a browser decodes one -- honoring a leading BOM --
-    so a mis-encoded sheet is TOKENIZED, not read as a false clean pass. A UTF-16
-    (LE/BE) or UTF-8 BOM selects that codec; otherwise UTF-8 with errors='replace'
-    (a stray invalid byte becomes U+FFFD, never an abort). Plain errors='replace' on
-    UTF-16 would turn every char into U+FFFD and silently HIDE a url()/@import the
-    browser still acts on -- the exact silent-green this gate exists to prevent."""
-    with open(path, 'rb') as handle:
-        data = handle.read()
+def _decode_bom(data):
+    """Decode markup/CSS bytes the way a browser does -- honoring a leading BOM, which the
+    encoding sniff treats as AUTHORITATIVE over the HTTP charset. A UTF-16 (LE/BE) or UTF-8
+    BOM selects that codec; otherwise UTF-8 with errors='replace' (a stray invalid byte
+    becomes U+FFFD, never an abort). Plain errors='replace' on UTF-16 would turn every char
+    into U+FFFD and silently HIDE the markup the browser still parses -- the exact
+    silent-green these gates exist to prevent."""
     if data[:3] == b'\xef\xbb\xbf':
         return data[3:].decode('utf-8', errors='replace')
     if data[:2] in (b'\xff\xfe', b'\xfe\xff'):
         return data.decode('utf-16', errors='replace')  # BOM picks endianness, stripped
     return data.decode('utf-8', errors='replace')
+
+
+def _read_css_text(path):
+    """Read a stylesheet the way a browser decodes one (BOM-honoring; see _decode_bom) --
+    so a mis-encoded sheet is TOKENIZED, not read as a false clean pass."""
+    with open(path, 'rb') as handle:
+        return _decode_bom(handle.read())
 
 
 def _css_urls(text):
@@ -1226,6 +1233,17 @@ def _inline_script_hashes(body):
         for algo in ('sha256', 'sha384', 'sha512')}
 
 
+def _first_wins(attrs):
+    """{name: value} keeping the FIRST of any duplicate attribute, matching how a browser
+    resolves a duplicate attribute (HTML parsing spec drops later duplicates). dict(attrs)
+    keeps the LAST, which a crafted `<script src=evil src=ok>` / `type=js type=inert`
+    exploits to evade a last-wins scan."""
+    amap = {}
+    for name, value in attrs:
+        amap.setdefault(name, value)
+    return amap
+
+
 class _InlineJSAudit(html.parser.HTMLParser):
     """Flag anything that needs 'unsafe-inline' to run: an executable inline
     <script> (a body with no src attribute), an inline event-handler attribute
@@ -1273,7 +1291,7 @@ class _InlineJSAudit(html.parser.HTMLParser):
         # alone exempts. Runs for the start-tag and the self-closing <iframe/>.
         if tag != 'iframe':
             return
-        srcdoc = dict(attrs).get('srcdoc')
+        srcdoc = _first_wins(attrs).get('srcdoc')
         if not srcdoc:
             return
         enforced, precedes = _csp_meta_and_order(srcdoc)
@@ -1290,7 +1308,7 @@ class _InlineJSAudit(html.parser.HTMLParser):
         self._recurse_srcdoc(tag, attrs)
         if tag == 'script':
             self._script_depth += 1
-            amap = dict(attrs)
+            amap = _first_wins(attrs)
             # A src attribute (any value) makes the browser ignore the body.
             has_src = 'src' in amap
             stype = (amap.get('type') or '').strip().lower()
@@ -1394,11 +1412,24 @@ _INERT_SCRIPT_TYPES = frozenset((
 ))
 
 
+# The served-markup active-content issues, one message each -- shared by the text/html
+# (html.parser) scan and the application/xhtml+xml (XML) scan so their phrasing never drifts.
+_SM_INLINE = ('inline <script> body in served markup -- move it to an external .js file '
+              '(it runs as active content on the header-less Pages origin)')
+_SM_EXTERNAL = ('served markup loads an external script (%s=%r) -- it runs on the '
+                'header-less Pages origin with no CSP to constrain it')
+_SM_HANDLER = ('inline event handler %s= in served markup -- bind it in an external .js '
+               'file (it runs as active content on the header-less Pages origin)')
+_SM_JSURL = ('javascript: URL in served markup (it runs as active content on the '
+             'header-less Pages origin)')
+
+
 def _external_script_load(amap):
     """A <script> that LOADS executable code cross-origin: an http(s)/protocol-relative/
     data: value in src, href or (SVG) xlink:href, with an executable (non-inert) type. A
     same-origin RELATIVE ref (assets/site.js) is first-party and allowed, exactly as the
-    navigable-page CSP permits script-src 'self'. Returns (attr, value) or None."""
+    navigable-page CSP permits script-src 'self'. `amap` must be first-wins (duplicate-attr
+    safe). Returns (attr, value) or None."""
     if (amap.get('type') or '').strip().lower() in _INERT_SCRIPT_TYPES:
         return None
     for attr in ('src', 'href', 'xlink:href'):
@@ -1408,35 +1439,78 @@ def _external_script_load(amap):
     return None
 
 
-def _served_extra_markup(root):
-    """HTML-family served markup the page audit (html_files) does NOT scan: every
-    .htm/.xhtml/.shtml/.xht, plus every image-shadowed .html (html_files skips those as
-    render sources) and any non-lowercase-'.html' variant html_files' endswith('.html')
-    misses. A clean partition from html_files -- a file html_files yields (a navigable,
-    non-shadowed .html) is never yielded here -- so no file is active-content scanned
-    twice. Discovered with the same os.walk/.git convention as the rest of this module."""
+def _served_extra_markup(root, excluded_pages=()):
+    """HTML-family served markup NOT already active-content scanned by the per-page check:
+    every .htm/.xhtml/.shtml/.xht, every image-shadowed .html (html_files skips those as
+    render sources), every non-lowercase-'.html' variant html_files' endswith('.html')
+    misses, AND every navigable .html that was NOT in `excluded_pages`.
+
+    `excluded_pages` is the set the per-page check_no_inline_script already audited: ALL of
+    html_files for family/csr (so every navigable .html is excluded -> no double scan), but
+    only the CURATED subset for wiki -- so a wiki .html the curated audit skips is still
+    served on the header-less origin and IS yielded here. Without this, an uncurated wiki
+    page with an inline <script>/on*=/javascript: would be scanned by NEITHER gate."""
+    excluded = {os.path.normpath(p) for p in excluded_pages}
     for base, dirs, files in os.walk(root):
         _prune_git(dirs)
         present = set(files)
         for name in files:
             if os.path.splitext(name)[1].lower() not in _HTML_FAMILY_EXTS:
                 continue
-            # html_files OWNS a non-shadowed name ending exactly '.html'; leave those to
-            # it (the per-page active-content check). Everything else HTML-family is here.
-            if name.endswith('.html') and not _image_shadowed(name, present):
+            path = os.path.join(base, name)
+            # A non-shadowed lowercase .html is a navigable page: skip it ONLY when the
+            # per-page check already audited it (it is in excluded_pages). Everything else
+            # HTML-family -- fragments, shadowed templates, uncurated wiki pages -- is here.
+            if name.endswith('.html') and not _image_shadowed(name, present) \
+                    and os.path.normpath(path) in excluded:
                 continue
-            yield os.path.join(base, name)
+            yield path
+
+
+def _xml_markup_issues(raw):
+    """Active content in an application/xhtml+xml document (.xhtml/.xht), parsed AS XML the
+    way a browser parses it -- so a <script> nested in a <style> element, a namespaced
+    <h:script>, and an arbitrary-prefix xlink:href (all invisible to html.parser's text/html
+    model) are seen. defusedxml guards XXE / entity-bomb / external-DTD. Returns a list of
+    issue messages, or None when the bytes are not well-formed XML (a browser then shows an
+    XML parse error and runs nothing, but the caller still falls back to the html.parser
+    scan, fail-closed). No meta-CSP exemption here: a browser ignores meta-CSP in XML."""
+    try:
+        root = _safe_fromstring(raw)
+    except Exception:  # noqa: BLE001 -- any XML parse failure falls back to html.parser
+        return None
+    issues = []
+    for el in root.iter():
+        tag = el.tag
+        if not isinstance(tag, str):
+            continue                                 # a comment / PI node (callable .tag)
+        local = tag.rsplit('}', 1)[-1].lower()       # strip the {namespace}
+        attrs = {name.rsplit('}', 1)[-1].lower(): val
+                 for name, val in (el.attrib or {}).items()}   # ns-strip (xlink:href->href)
+        for aname, aval in attrs.items():
+            if aname.startswith('on'):
+                issues.append(_SM_HANDLER % aname)
+            elif aname in _URL_ATTRS and aval and _url_norm(aval).startswith('javascript:'):
+                issues.append(_SM_JSURL)
+        if local == 'script':
+            if (attrs.get('type') or '').strip().lower() in _INERT_SCRIPT_TYPES:
+                continue                             # an inert data block, never executed
+            ext = _external_script_load(attrs)
+            if ext:
+                issues.append(_SM_EXTERNAL % (ext[0], ext[1][:64]))
+            elif (el.text or '').strip():
+                issues.append(_SM_INLINE)
+    return issues
 
 
 class _FragmentJSAudit(_InlineJSAudit):
     """_InlineJSAudit (inline <script> bodies, on*= handlers, javascript: URLs) PLUS the
     external <script src/href/xlink:href> loads a served fragment must also not carry: on a
-    header-less origin an external/data: script load is unconstrained, and the navigable-
-    page gates that would catch it (check_csp / check_supply_chain) do not run on a non-page
-    fragment. html.parser models text/html; the application/xhtml+xml-ONLY constructs an XML
-    parser would additionally see (a <script> nested in a <style> raw-text element, a
-    prefixed <h:script>) are a documented residual -- a plain <script>/on*=/javascript: in
-    such a file is still caught here, and these generators emit text/html, not XHTML."""
+    header-less origin an external/data: script load is unconstrained, and the navigable-page
+    gates that would catch it (check_csp / check_supply_chain) do not run on a non-page
+    fragment. Models text/html (html.parser); .xhtml/.xht are additionally XML-parsed by
+    check_served_markup_safety (_xml_markup_issues), html.parser being the fail-closed
+    fallback only when that XML is not well-formed."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -1447,54 +1521,84 @@ class _FragmentJSAudit(_InlineJSAudit):
         # so external detection runs once per start, no separate startendtag override.
         super().handle_starttag(tag, attrs)
         if tag.split(':', 1)[-1] == 'script':
-            ext = _external_script_load(dict(attrs))
+            ext = _external_script_load(_first_wins(attrs))
             if ext:
                 self.external_scripts.append(ext)
 
+    def _recurse_srcdoc(self, tag, attrs):
+        # Base recursion covers an inline body / on*= / javascript: inside an <iframe srcdoc>,
+        # but it instantiates a plain _InlineJSAudit and so would miss an EXTERNAL <script src>
+        # in the srcdoc. Recurse with a _FragmentJSAudit and merge external_scripts so all four
+        # classes have srcdoc parity (a srcdoc is parsed as text/html).
+        if tag != 'iframe':
+            return
+        srcdoc = _first_wins(attrs).get('srcdoc')
+        if not srcdoc:
+            return
+        enforced, precedes = _csp_meta_and_order(srcdoc)
+        sub = _FragmentJSAudit(
+            self._inherited_enforced + _own_applied(enforced, precedes),
+            inherited_enforced=self._inherited_enforced + _enforced_sets(enforced))
+        sub.feed(srcdoc)
+        self._flagged_srcdoc += sub.flagged_bodies()
+        self.handlers |= sub.handlers
+        self.js_url = self.js_url or sub.js_url
+        self.external_scripts += sub.external_scripts
 
-def check_served_markup_safety(root, failures):
-    # Belt closing the stored-XSS hole: the per-page active-content check
-    # (check_no_inline_script via html_files) scans only navigable, non-image-shadowed
-    # .html, so a served figures/x.xhtml / x.htm / x.shtml / x.xht, or a sibling-shadowed
-    # foo.html, carrying active content shipped UNSCANNED yet runs on the header-less Pages
-    # origin (no CSP response header possible there). Flag any executable inline <script>,
-    # external/data <script src/href/xlink:href> load, on*= handler, or javascript: URL,
-    # over exactly the served markup html_files does not cover. NOT the chrome battery (a
-    # fragment legitimately has no footer / CSP meta / SEO head, so those must not run).
-    for page in sorted(_served_extra_markup(root)):
-        rel = os.path.relpath(page, root)
-        with open(page, encoding='utf-8', errors='replace') as handle:
-            content = handle.read()
+
+def _fragment_issues(raw, ext):
+    """Active-content issue messages for one served fragment. .xhtml/.xht are parsed AS XML
+    (authoritative; _xml_markup_issues), with html.parser the fail-closed fallback only for
+    not-well-formed XML. The text/html meta-CSP hash exemption is computed LAZILY -- the
+    expensive spec parser (_csp_meta_and_order / html5lib) runs ONLY when a page actually has
+    an inline <script> body, so a clean page (the overwhelming majority, incl. the wiki full
+    tree) costs one html.parser pass, not an html5lib parse."""
+    if ext in _XHTML_EXTS:
+        xml_issues = _xml_markup_issues(raw)
+        if xml_issues is not None:
+            return xml_issues           # XML parse authoritative; a browser ignores meta-CSP
+    content = _decode_bom(raw)          # BOM-honoring, so a UTF-16 page is not read as blank
+    audit = _FragmentJSAudit()          # first pass: NO exemption (cheap html.parser)
+    audit.feed(content)
+    bodies = audit.flagged_bodies()
+    if bodies and ext not in _XHTML_EXTS:
         # text/html honors a head-child meta-CSP, so a fragment that pins its own inline
-        # script by hash is genuinely constrained -> exempt (parity with a real page).
-        # application/xhtml+xml is XML, where the browser IGNORES meta-CSP -> NO exemption,
-        # every inline script flagged fail-closed (see _XHTML_EXTS).
-        if os.path.splitext(page)[1].lower() in _XHTML_EXTS:
-            applied, inherited = (), ()
-        else:
-            enforced, precedes = _csp_meta_and_order(content)
-            applied = _own_applied(enforced, precedes)
-            inherited = _enforced_sets(enforced)
-        audit = _FragmentJSAudit(applied, inherited_enforced=inherited)
+        # script by hash is genuinely constrained -> re-evaluate with the real policy
+        # (parity with a real page). XML ignores meta-CSP, so it is never exempted.
+        enforced, precedes = _csp_meta_and_order(content)
+        audit = _FragmentJSAudit(_own_applied(enforced, precedes),
+                                 inherited_enforced=_enforced_sets(enforced))
         audit.feed(content)
-        for _ in audit.flagged_bodies():
-            failures.append(
-                '%s: inline <script> body in served markup -- move it to an external .js '
-                'file (it runs as active content on the header-less Pages origin)' % rel)
-        for attr, val in audit.external_scripts:
-            failures.append(
-                '%s: served markup loads an external script (%s=%r) -- it runs on the '
-                'header-less Pages origin with no CSP to constrain it'
-                % (rel, attr, val[:64]))
-        for name in sorted(audit.handlers):
-            failures.append(
-                '%s: inline event handler %s= in served markup -- bind it in an external '
-                '.js file (it runs as active content on the header-less Pages origin)'
-                % (rel, name))
-        if audit.js_url:
-            failures.append(
-                '%s: javascript: URL in served markup (it runs as active content on the '
-                'header-less Pages origin)' % rel)
+        bodies = audit.flagged_bodies()
+    issues = [_SM_INLINE for _ in bodies]
+    issues += [_SM_EXTERNAL % (attr, val[:64]) for attr, val in audit.external_scripts]
+    issues += [_SM_HANDLER % name for name in sorted(audit.handlers)]
+    if audit.js_url:
+        issues.append(_SM_JSURL)
+    return issues
+
+
+def check_served_markup_safety(root, failures, pages=()):
+    # Belt closing the stored-XSS hole: the per-page active-content check
+    # (check_no_inline_script) scans only the AUDITED `pages` -- every navigable html_files
+    # page for family/csr, but the CURATED subset for wiki. So served markup it does NOT
+    # cover (.htm/.xhtml/.shtml/.xht, image-shadowed .html, AND any uncurated wiki .html)
+    # still runs on the header-less Pages origin (no CSP response header possible there).
+    # Scan exactly that set (see _served_extra_markup, which excludes `pages` so a page is
+    # never double-scanned) for any executable inline <script>, external/data <script
+    # src/href/xlink:href> load, on*= handler, or javascript: URL. NOT the chrome battery (a
+    # fragment legitimately has no footer / CSP meta / SEO head).
+    #
+    # RESIDUAL (documented scope boundary): an inline <script type="importmap"> that remaps a
+    # bare specifier to an external URL a module script then imports is NOT detected -- that
+    # needs cross-file module-graph resolution (reinventing the module resolver); these
+    # generators emit no import maps and a served figure has no module graph.
+    for page in sorted(_served_extra_markup(root, pages)):
+        rel = os.path.relpath(page, root)
+        with open(page, 'rb') as handle:
+            raw = handle.read()
+        for msg in _fragment_issues(raw, os.path.splitext(page)[1].lower()):
+            failures.append('%s: %s' % (rel, msg))
 
 
 class _FoucAudit(html.parser.HTMLParser):
@@ -3103,10 +3207,10 @@ def main():
         check_footer(root, failures, require_family_links=(policy == 'family'), pages=pages)
         check_csp(root, failures, pages)
         check_no_inline_script(root, failures, pages)
-        # Active content in served markup html_files does not audit (.htm/.xhtml/.shtml,
-        # image-shadowed .html): runs under every policy -- the threat is any header-less
-        # Pages origin, and the extra extensions + shadowed .html are rare, so it is cheap.
-        check_served_markup_safety(root, failures)
+        # Active content in served markup the per-page check does not audit: .htm/.xhtml/
+        # .shtml/.xht, image-shadowed .html, and (wiki) any .html outside the curated `pages`.
+        # `pages` is passed so a page check_no_inline_script already audited is not re-scanned.
+        check_served_markup_safety(root, failures, pages)
         check_fouc(root, failures, pages)
         check_supply_chain(root, failures, pages)
         check_image_format(root, failures, pages)
