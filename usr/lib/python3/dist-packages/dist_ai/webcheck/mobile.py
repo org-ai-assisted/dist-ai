@@ -537,15 +537,21 @@ class _MountHandler(http.server.SimpleHTTPRequestHandler):
             return os.path.join(self.directory, '__forbidden__')
 
         def _dir_index(d):
-            # <d>/index.html, REALPATH-resolved and re-checked for containment: a symlinked
-            # index.html whose TARGET escapes every allowed root must be REFUSED, not followed into
-            # an exfil read -- the containment check on the DIRECTORY alone does not cover the
-            # index.html target. Returns the resolved file, the __forbidden__ sentinel (it exists
-            # but escapes), or None (no index.html -- the caller decides: fall through, or 404).
-            idx = os.path.realpath(os.path.join(d, 'index.html'))
-            if not os.path.isfile(idx):
+            # <d>/index.html as a CONTAINED REGULAR FILE, or a refusal. Judge the candidate by
+            # whether it EXISTS AT ALL (lexists: a symlink counts, even one whose target is a dir or
+            # is dangling) -- a PRESENT index.html that is not a contained regular file is REFUSED:
+            # an escaping symlink (exfil), OR a symlink to a DIRECTORY (which SimpleHTTP would
+            # directory-LIST, leaking the target). `isfile` alone conflated "present but a dir" with
+            # "absent", letting the dir-target slip to the raw fallback. ONLY a genuinely-absent
+            # index.html returns None (caller falls through / 404), so the raw-path fallback can
+            # never serve a present-but-non-regular index.html.
+            cand = os.path.join(d, 'index.html')
+            if not os.path.lexists(cand):
                 return None
-            return idx if _contained(idx) else os.path.join(self.directory, '__forbidden__')
+            idx = os.path.realpath(cand)
+            if os.path.isfile(idx) and _contained(idx):
+                return idx
+            return os.path.join(self.directory, '__forbidden__')
 
         # An EXPLICIT trailing-slash request (/wiki/KVM/) asks for the directory index, as nginx
         # serves it; honor <dir>/index.html over the flat <name>.html in that case only. (Our flat

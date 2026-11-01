@@ -275,6 +275,17 @@ def run():
               '__forbidden__' in ev_slash and 'secret' not in os.path.basename(ev_slash), repr(ev_slash))
         check('_MountHandler REFUSES an escaping symlinked index.html (bare dir)',
               '__forbidden__' in ev_bare and 'secret' not in os.path.basename(ev_bare), repr(ev_bare))
+        # VARIANT: a symlinked index.html whose target is a DIRECTORY (not a file) -- isfile() is
+        # False, so it must NOT be mistaken for "absent" and served raw (SimpleHTTP would
+        # directory-LIST the escaping target). Refuse it for both request forms.
+        os.makedirs(os.path.join(root, 'EvilDir'))
+        os.symlink(outside, os.path.join(root, 'EvilDir', 'index.html'))   # -> the outside DIR
+        ed_slash = handler.translate_path('/EvilDir/')
+        ed_bare = handler.translate_path('/EvilDir')
+        check('_MountHandler REFUSES a symlinked index.html -> escaping DIRECTORY (trailing slash)',
+              '__forbidden__' in ed_slash, repr(ed_slash))
+        check('_MountHandler REFUSES a symlinked index.html -> escaping DIRECTORY (bare dir)',
+              '__forbidden__' in ed_bare, repr(ed_bare))
 
     # Extensionless -> .html fallback (production nginx `try_files $uri $uri.html`): a flat clean
     # URL /wiki/ISO serves wiki/ISO.html, so the curated wiki axe sample (extensionless paths)
