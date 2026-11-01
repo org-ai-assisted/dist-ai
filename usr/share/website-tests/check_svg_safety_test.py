@@ -232,6 +232,22 @@ def run() -> int:
         (outside / "ok.svg").write_text(CLEAN, encoding="utf-8")
         os.symlink(outside / "ok.svg", root / "link.svg")
         ck(svgsafe.main([str(root)]) == 1, "even a symlink to a CLEAN svg is refused (fail-closed breadth)")
+    # The TARGET passed directly can itself be a symlink (file or dir), not only one found while
+    # walking. Both use CLEAN content so pre-fix code returns 0 (scanned-through / walked) -- the
+    # "refuse ANY symlink" policy requires 1.
+    with tempfile.TemporaryDirectory() as dout:
+        outside = Path(dout)
+        (outside / "ok.svg").write_text(CLEAN, encoding="utf-8")
+        os.symlink(outside / "ok.svg", outside / "file-link.svg")
+        ck(svgsafe.main([str(outside / "file-link.svg")]) == 1,
+           "a symlink passed directly as a file target is refused")
+    with tempfile.TemporaryDirectory() as dreal, tempfile.TemporaryDirectory() as dlink:
+        real = Path(dreal)
+        (real / "ok.svg").write_text(CLEAN, encoding="utf-8")
+        dirlink = Path(dlink) / "dirlink"
+        os.symlink(real, dirlink, target_is_directory=True)
+        ck(svgsafe.main([str(dirlink)]) == 1,
+           "a symlinked dir passed directly as target is refused")
 
     # main(): exit 1 on a tree containing a bad SVG, 0 on a clean-only tree, 2 on no args.
     with tempfile.TemporaryDirectory() as d:

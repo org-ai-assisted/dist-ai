@@ -317,13 +317,16 @@ class _SymlinkInScanTree(Exception):
 def _iter_svgs(targets: list[str]):
     """Yield every .svg/.svgz (case-insensitive) under each target dir, or the target file itself.
 
-    Refuse ANY symlink in a walked tree (raise _SymlinkInScanTree): rglob does not descend a
-    symlinked dir, but upload-pages-artifact dereferences it -- so a symlink is a fail-closed error.
-    The check precedes is_file()/suffix so a symlink is refused whether or not it looks like an SVG
-    (and is_file()'s link-following can never mask it).
+    Refuse ANY symlink (raise _SymlinkInScanTree): both a target passed directly and any entry
+    found while walking a directory. rglob does not descend a symlinked dir but upload-pages-artifact
+    dereferences it, so a symlink is a fail-closed error. The check precedes is_dir()/is_file()/suffix
+    so a symlink is refused whether or not it resolves to a dir or looks like an SVG (link-following
+    by is_dir()/is_file() can never mask it).
     """
     for t in targets:
         p = Path(t)
+        if p.is_symlink():
+            raise _SymlinkInScanTree(p)
         if p.is_dir():
             for q in sorted(p.rglob("*")):
                 if q.is_symlink():
