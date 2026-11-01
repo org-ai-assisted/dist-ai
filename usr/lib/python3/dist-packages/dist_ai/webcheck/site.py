@@ -238,6 +238,20 @@ def _prune_git(dirs):
         dirs.remove('.git')
 
 
+# A .html whose basename-stem has a same-directory image sibling (logo.html ->
+# logo.png/.webp, og.html -> og.png) is an image render-source TEMPLATE, not a
+# navigable page. .webp is included because a content render source is converted to
+# webp. html_files skips these for the page/chrome checks; the served-markup safety
+# belt (check_served_markup_safety) still scans them for active content, since the
+# template is served as-is on the header-less Pages origin.
+_RENDER_SOURCE_IMAGE_EXTS = ('.png', '.webp', '.jpg', '.jpeg', '.gif')
+
+
+def _image_shadowed(html_name, present):
+    stem = html_name[:-5]          # strip '.html'
+    return any(stem + ext in present for ext in _RENDER_SOURCE_IMAGE_EXTS)
+
+
 def html_files(root):
     for base, dirs, files in os.walk(root):
         _prune_git(dirs)
@@ -245,13 +259,7 @@ def html_files(root):
         for name in files:
             if not name.endswith('.html'):
                 continue
-            # Skip image-generation templates (logo.html -> logo.png/.webp,
-            # og.html -> og.png, ...): a .html with a same-basename image sibling
-            # is a render source for an image, not a navigable page. .webp is
-            # included because a content render source is converted to webp.
-            stem = name[:-5]
-            if any(stem + ext in present
-                   for ext in ('.png', '.webp', '.jpg', '.jpeg', '.gif')):
+            if _image_shadowed(name, present):
                 continue
             yield os.path.join(base, name)
 
@@ -1354,6 +1362,68 @@ def check_no_inline_script(root, failures, pages=None):
         if audit.js_url:
             failures.append('%s: javascript: URL -- script-src forbids inline'
                             % rel)
+
+
+# Browser-rendered HTML-family markup. A header-less Pages origin serves every one of
+# these as active content when opened directly (it cannot set a CSP response header), so
+# a <script>/on*=/javascript: in ANY of them runs on the origin -- not only in a
+# navigable .html page.
+_HTML_FAMILY_EXTS = ('.html', '.htm', '.xhtml', '.shtml')
+
+
+def _served_extra_markup(root):
+    """HTML-family served markup the page audit (html_files) does NOT scan: every
+    .htm/.xhtml/.shtml, plus every image-shadowed .html (html_files skips those as render
+    sources) and any non-lowercase-'.html' variant html_files' endswith('.html') misses.
+    A clean partition from html_files -- a file html_files yields (a navigable,
+    non-shadowed .html) is never yielded here -- so no file is active-content scanned
+    twice. Discovered with the same os.walk/.git convention as the rest of this module."""
+    for base, dirs, files in os.walk(root):
+        _prune_git(dirs)
+        present = set(files)
+        for name in files:
+            if os.path.splitext(name)[1].lower() not in _HTML_FAMILY_EXTS:
+                continue
+            # html_files OWNS a non-shadowed name ending exactly '.html'; leave those to
+            # it (the per-page active-content check). Everything else HTML-family is here.
+            if name.endswith('.html') and not _image_shadowed(name, present):
+                continue
+            yield os.path.join(base, name)
+
+
+def check_served_markup_safety(root, failures):
+    # Belt closing the stored-XSS hole: the per-page active-content check
+    # (check_no_inline_script via html_files) scans only navigable, non-image-shadowed
+    # .html, so a served figures/x.xhtml / x.htm / x.shtml, or a sibling-shadowed foo.html,
+    # carrying <script>/on*=/javascript: shipped UNSCANNED yet runs on the header-less
+    # Pages origin (no CSP response header possible there). Run the SAME inline-active-
+    # content detection over exactly the served markup html_files does not cover.
+    # Fail-closed: a fragment with no head CSP has every inline <script> flagged; one that
+    # pins its script by its OWN head CSP hash stays exempt (parity with a real page -- no
+    # false positive). NOT the chrome battery (a fragment legitimately has no footer / CSP
+    # meta / SEO head, so those checks must not run on it).
+    for page in sorted(_served_extra_markup(root)):
+        rel = os.path.relpath(page, root)
+        with open(page, encoding='utf-8', errors='replace') as handle:
+            content = handle.read()
+        enforced, precedes = _csp_meta_and_order(content)
+        audit = _InlineJSAudit(_own_applied(enforced, precedes),
+                               inherited_enforced=_enforced_sets(enforced))
+        audit.feed(content)
+        for _ in audit.flagged_bodies():
+            failures.append(
+                '%s: inline <script> body in served markup -- move it to an external .js '
+                'file or pin it with a CSP script-src hash (it runs as active content on '
+                'the header-less Pages origin)' % rel)
+        for name in sorted(audit.handlers):
+            failures.append(
+                '%s: inline event handler %s= in served markup -- bind it in an external '
+                '.js file (it runs as active content on the header-less Pages origin)'
+                % (rel, name))
+        if audit.js_url:
+            failures.append(
+                '%s: javascript: URL in served markup (it runs as active content on the '
+                'header-less Pages origin)' % rel)
 
 
 class _FoucAudit(html.parser.HTMLParser):
@@ -2962,6 +3032,10 @@ def main():
         check_footer(root, failures, require_family_links=(policy == 'family'), pages=pages)
         check_csp(root, failures, pages)
         check_no_inline_script(root, failures, pages)
+        # Active content in served markup html_files does not audit (.htm/.xhtml/.shtml,
+        # image-shadowed .html): runs under every policy -- the threat is any header-less
+        # Pages origin, and the extra extensions + shadowed .html are rare, so it is cheap.
+        check_served_markup_safety(root, failures)
         check_fouc(root, failures, pages)
         check_supply_chain(root, failures, pages)
         check_image_format(root, failures, pages)

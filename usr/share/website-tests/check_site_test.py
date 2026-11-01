@@ -2654,6 +2654,94 @@ def run():
     check('check_duplicate_ids is invoked from main()',
           'check_duplicate_ids(root' in main_body)
 
+    # --- served-markup active-content safety (stored-XSS gap on the header-less Pages
+    # origin). check_served_markup_safety does not exist on the pre-fix core, so these
+    # lines fail to RUN there (AttributeError) -- the guard cannot silently regress away.
+    def _markup_fails(root):
+        fails = []
+        check_site.check_served_markup_safety(root, fails)
+        return fails
+
+    # CANARY 1: a figures/*.xhtml with <script> slipped BOTH gates before (not .svg, not
+    # .html) -> stored XSS. It must now be flagged.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'figures/x.xhtml',
+               '<?xml version="1.0"?>'
+               '<html xmlns="http://www.w3.org/1999/xhtml"><body>'
+               '<script>alert(1)</script></body></html>')
+        fails = _markup_fails(root)
+        check('xhtml figure <script> flagged (stored-XSS canary)',
+              any('inline <script> body' in f and 'figures/x.xhtml' in f for f in fails),
+              fails)
+
+    # CANARY 2: an image-shadowed .html (html_files skips it as a render source) carrying
+    # <script> was audited by nothing. It must now be flagged -- AND html_files must still
+    # skip it (the chrome checks must not fire on a render-source template).
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'logo.html', '<html><body><script>steal()</script></body></html>')
+        _png(root, 'logo.png')
+        fails = _markup_fails(root)
+        check('image-shadowed .html <script> flagged (shadow-skip hole)',
+              any('inline <script> body' in f and 'logo.html' in f for f in fails), fails)
+        check('html_files still skips the shadowed render source (partition intact)',
+              os.path.join(root, 'logo.html') not in list(check_site.html_files(root)),
+              list(check_site.html_files(root)))
+
+    # CANARY 3 / 4: an on*= handler in a .htm and a javascript: URL in a .shtml.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'figures/f.htm',
+               '<html><body onload="x()"><p>hi</p></body></html>')
+        fails = _markup_fails(root)
+        check('htm figure on*= handler flagged',
+              any('event handler onload=' in f and 'figures/f.htm' in f for f in fails),
+              fails)
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'figures/f.shtml',
+               '<html><body><a href="javascript:evil()">x</a></body></html>')
+        fails = _markup_fails(root)
+        check('shtml figure javascript: URL flagged',
+              any('javascript: URL' in f and 'figures/f.shtml' in f for f in fails), fails)
+
+    # CONTROL: benign served markup (an xhtml figure + a script-free shadowed .html) stays
+    # clean -- the gate rejects active content, never ordinary fragments.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'figures/clean.xhtml',
+               '<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml">'
+               '<body><p>just a figure</p></body></html>')
+        _write(root, 'bar.html', '<html><body><p>render source, no script</p></body></html>')
+        _png(root, 'bar.png')
+        check('benign served markup stays clean (control)', _markup_fails(root) == [],
+              _markup_fails(root))
+
+    # EXEMPTION PARITY: a served fragment that pins its inline <script> by its OWN head
+    # CSP hash is allowed to run, exactly like a real page -- no false positive.
+    with tempfile.TemporaryDirectory() as root:
+        body = 'console.log(1)'
+        sha = next(h for h in check_site._inline_script_hashes(body)
+                   if h.startswith('sha256-'))
+        _write(root, 'figures/pinned.htm',
+               '<!doctype html><html><head>'
+               '<meta http-equiv="content-security-policy" '
+               'content="default-src \'none\'; script-src \'%s\'">'
+               '</head><body><script>%s</script></body></html>' % (sha, body))
+        check('a served fragment pinning its inline script by its own head CSP hash is exempt',
+              _markup_fails(root) == [], _markup_fails(root))
+
+    # PARTITION: a navigable .html is owned by html_files (per-page check), never re-scanned
+    # here; a .xhtml figure is picked up here.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', '<html><body><p>page</p></body></html>')
+        _write(root, 'figures/x.xhtml',
+               '<html xmlns="http://www.w3.org/1999/xhtml"><body><p>f</p></body></html>')
+        extra = [os.path.relpath(p, root) for p in check_site._served_extra_markup(root)]
+        check('_served_extra_markup excludes the navigable .html (no double scan)',
+              'index.html' not in extra, extra)
+        check('_served_extra_markup includes the .xhtml figure',
+              os.path.join('figures', 'x.xhtml') in extra, extra)
+
+    check('check_served_markup_safety is invoked from main()',
+          'check_served_markup_safety(root' in main_body)
+
     passed = sum(1 for _n, ok, _d in results if ok)
     failed = len(results) - passed
     for name, ok, detail in results:
