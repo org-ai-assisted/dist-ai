@@ -912,10 +912,12 @@ def render_overview(views, header, footer, generated_utc):
         f = run_fields(view)
         rows.append(
             "<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td>"
-            "<td>%s</td><td>%s</td><td><a href=\"%s/\">details</a></td></tr>"
+            "<td>%s</td><td>%s</td>"
+            "<td><a href=\"%s/\" aria-label=\"details for the %s test run\">details</a></td></tr>"
             % (
                 esc(f["lane"]), esc(f["version"]), esc(f["builder"]), esc(f["origin"]),
-                status_chip(view.status), esc(age_text(view.age)), esc(view.run_id),
+                status_chip(view.status), esc(age_text(view.age)),
+                esc(view.run_id), esc(view.run_id),
             )
         )
     matrix = (
@@ -1158,7 +1160,8 @@ def _shot_html(view, shot, step_status_cls=None):
         parts.append("<p>screenshot missing or unreadable</p>")
     ## Link the OCR sidecar (the recognized text of the frame) as evidence, when published.
     if shot.get("ocr"):
-        parts.append('<p><a href="%s">OCR text</a></p>' % esc(shot["ocr"]))
+        parts.append('<p><a href="%s" aria-label="OCR text for screenshot %s">OCR text</a></p>'
+                     % (esc(shot["ocr"]), esc(shot["sid"])))
     return "".join(parts)
 
 

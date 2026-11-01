@@ -567,6 +567,8 @@ check("run page has exactly one <main> landmark",
 check("overview has exactly one <main> landmark", overview.count("<main>") == 1)
 check("overview matrix details header has text (axe empty-table-header)",
       "<th>details</th>" in overview and "<th></th>" not in overview)
+check("each row's details link is named by its run (axe identical-links-same-purpose)",
+      'aria-label="details for the ' in overview)
 check("header nav is a named landmark", '<nav aria-label="Primary">' in a_page)
 check("footer nav is a named landmark", 'nav class="fcols" aria-label="Footer"' in a_page)
 check("scrollable step-log <pre> is keyboard-focusable",
@@ -646,6 +648,8 @@ check("per-run validation tally line rendered",
 ## OCR sidecar: linked under the welcome image + the text file copied into the page dir.
 v_ocr = "kicksecure-vshow__calamares-install__welcome.ocr.txt"
 check("OCR sidecar link emitted", ('href="%s"' % v_ocr) in v_page and ">OCR text<" in v_page)
+check("each OCR link is named by its screenshot (axe identical-links-same-purpose)",
+      'aria-label="OCR text for screenshot ' in v_page)
 check("OCR sidecar file copied into the page dir",
       os.path.isfile(os.path.join(v_dir_out, v_ocr)))
 ## BiDi/invisible controls in the run-time OCR are STRIPPED from the published sidecar (a served
