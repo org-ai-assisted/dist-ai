@@ -462,6 +462,12 @@ def run() -> int:
     ck("redirect" not in _okpage and _okpage.get("status") == 200,
        "a non-redirecting page audits normally (no false redirect): %r" % _okpage)
 
+    # identical-links-same-purpose (WCAG 2.4.9 AAA) is OFF by default in axe-core; the run options
+    # must keep it explicitly enabled, or the gate silently stops catching two same-name links that
+    # point at different destinations. Guard the explicit enable against an accidental revert.
+    ck("identical-links-same-purpose" in ax._AXE_RUN_JS and "enabled: true" in ax._AXE_RUN_JS,
+       "identical-links-same-purpose rule is explicitly enabled in _AXE_RUN_JS")
+
     # _skip raises SystemExit(77) (the shared env-unmet contract).
     try:
         ax._skip("canary")
