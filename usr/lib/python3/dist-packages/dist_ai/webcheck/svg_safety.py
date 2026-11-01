@@ -323,6 +323,12 @@ def _iter_svgs(targets: list[str]):
     so a symlink is refused whether or not it resolves to a dir or looks like an SVG (link-following
     by is_dir()/is_file() can never mask it).
     """
+    # Scope: a symlink AT the target or BELOW it (the walk) is the content-author-controlled
+    # surface the packer dereferences -- refused. A symlink in a PARENT of the target is the
+    # workspace/mount layout (CI paths like GITHUB_WORKSPACE routinely traverse infra symlinks),
+    # not content, so it is not refused; rejecting it would false-fail legitimate deploys. A
+    # mid-scan repoint of such a parent is TOCTOU between the scan and the packer, not closable
+    # at scan time and out of scope for this gate.
     for t in targets:
         p = Path(t)
         if p.is_symlink():
