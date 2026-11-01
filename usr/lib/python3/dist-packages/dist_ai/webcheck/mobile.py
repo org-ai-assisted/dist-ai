@@ -530,17 +530,32 @@ class _MountHandler(http.server.SimpleHTTPRequestHandler):
         allowed = [os.path.realpath(self.directory)]
         allowed += [os.path.realpath(s) for s in mounts.values()]
         real = os.path.realpath(fs)
-        if not any(real == a or real.startswith(a + os.sep) for a in allowed):
+        def _contained(p):
+            return any(p == a or p.startswith(a + os.sep) for a in allowed)
+
+        if not _contained(real):
             return os.path.join(self.directory, '__forbidden__')
+
+        def _dir_index(d):
+            # <d>/index.html, REALPATH-resolved and re-checked for containment: a symlinked
+            # index.html whose TARGET escapes every allowed root must be REFUSED, not followed into
+            # an exfil read -- the containment check on the DIRECTORY alone does not cover the
+            # index.html target. Returns the resolved file, the __forbidden__ sentinel (it exists
+            # but escapes), or None (no index.html -- the caller decides: fall through, or 404).
+            idx = os.path.realpath(os.path.join(d, 'index.html'))
+            if not os.path.isfile(idx):
+                return None
+            return idx if _contained(idx) else os.path.join(self.directory, '__forbidden__')
+
         # An EXPLICIT trailing-slash request (/wiki/KVM/) asks for the directory index, as nginx
         # serves it; honor <dir>/index.html over the flat <name>.html in that case only. (Our flat
         # output never ships both, and production 301s a trailing slash to the slash-less URL, so
         # this only matters for a future directory-index layout -- but it keeps the audit server
         # faithful either way.)
         if clean.endswith('/') and os.path.isdir(real):
-            idx = os.path.join(real, 'index.html')
-            if os.path.isfile(idx):
-                return idx
+            hit = _dir_index(real)
+            if hit is not None:
+                return hit
         # Resolve in production nginx's `try_files $uri $uri.html $uri/` ORDER: a regular file
         # wins; else the FLAT clean URL (/wiki/ISO -> wiki/ISO.html) -- which MUST be tried before
         # a same-named subpage directory, since a page with child pages has BOTH wiki/KVM.html AND
@@ -551,11 +566,13 @@ class _MountHandler(http.server.SimpleHTTPRequestHandler):
         if os.path.isfile(real):
             return real
         cand = os.path.realpath(real + '.html')
-        if os.path.isfile(cand) and any(cand == a or cand.startswith(a + os.sep)
-                                        for a in allowed):
+        if os.path.isfile(cand) and _contained(cand):
             return cand
         if os.path.isdir(real):
-            return os.path.join(real, 'index.html')
+            hit = _dir_index(real)
+            if hit is not None:
+                return hit
+            return os.path.join(real, 'index.html')   # no index.html -> 404 (preserve old behavior)
         return real
 
 

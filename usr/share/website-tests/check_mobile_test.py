@@ -263,6 +263,18 @@ def run():
               repr(ok_path))
         check('_MountHandler REFUSES an out-of-root symlink (no exfil to the browser)',
               '__forbidden__' in leaked and 'secret' not in os.path.basename(leaked), repr(leaked))
+        # A symlinked directory-INDEX whose target escapes the root must ALSO be refused -- for a
+        # trailing-slash request AND a bare-dir request. The dir-index returns realpath + re-check
+        # the index.html, not just the directory (else an in-tree wiki/Evil/index.html -> /outside
+        # exfils to the network-capable browser). Regression for the #798 dir-index security gap.
+        os.makedirs(os.path.join(root, 'Evil'))
+        os.symlink(secret, os.path.join(root, 'Evil', 'index.html'))
+        ev_slash = handler.translate_path('/Evil/')
+        ev_bare = handler.translate_path('/Evil')
+        check('_MountHandler REFUSES an escaping symlinked index.html (trailing slash)',
+              '__forbidden__' in ev_slash and 'secret' not in os.path.basename(ev_slash), repr(ev_slash))
+        check('_MountHandler REFUSES an escaping symlinked index.html (bare dir)',
+              '__forbidden__' in ev_bare and 'secret' not in os.path.basename(ev_bare), repr(ev_bare))
 
     # Extensionless -> .html fallback (production nginx `try_files $uri $uri.html`): a flat clean
     # URL /wiki/ISO serves wiki/ISO.html, so the curated wiki axe sample (extensionless paths)
