@@ -47,12 +47,28 @@ run_required_unit_test() {
    ## optional skip. A bare `if [ -f ... ]` guard lets a missing required test read as a
    ## green pass (silent green) -- run it (fail-fast on a real regression), FATAL if absent.
    local name="$1" path="${tests_dir}/$1"
-   if [ -f "${path}" ]; then
-      "${path}" || exit 1
-   else
+   if [ ! -f "${path}" ]; then
       printf '%s\n' "website-tests: FATAL: ${name} not found in ${tests_dir} (required test missing)" >&2
       exit 1
    fi
+   ## CAPTURE the self-test's output. These regression tests deliberately drive the checked tools'
+   ## ERROR paths ("FATAL: ...", "refusing ...", "SKIP (canary)") to prove they fail/skip correctly.
+   ## Leaked line-by-line into THIS run's log, that EXPECTED error text is indistinguishable from a
+   ## real failure (output-lies) -- so on GREEN print only the test's own summary line(s) and drop
+   ## the exercised-error noise; on RED replay the FULL output so diagnostics stay intact.
+   local out rc
+   out="$("${path}" 2>&1)"
+   rc=$?
+   if [ "${rc}" -ne 0 ]; then
+      printf '%s\n' "${out}"
+      printf '%s\n' "website-tests: FATAL: ${name} FAILED (rc=${rc})" >&2
+      exit 1
+   fi
+   ## Summary line(s) only: "<name>: N pass, M fail[, K skip]" or "all ... passed/assertions ...".
+   ## The driven-error lines never match these, so they stay out of the log. Fall back to a clean
+   ## one-liner if a test prints no recognizable summary.
+   printf '%s\n' "${out}" | grep -E "[0-9]+ pass,|assertions passed|all .+ (passed|clean)$" \
+      || printf '%s\n' "ok ${name}: passed"
 }
 
 ## Unit regression for check_site's own logic (the image-format gate + the
