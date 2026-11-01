@@ -576,6 +576,27 @@ def _page_urls(root, mount=''):
     return sorted(set(urls))
 
 
+_ARCHIVE_PREFIX = '/automated-test-results/'
+_ARCHIVE_SAMPLE = 3
+
+
+def _sample_bulk_archive(urls):
+    """Cap the auto-generated test-results archive to the archive index plus _ARCHIVE_SAMPLE run
+    pages. Those run pages are dozens of UNIFORM pages from one generator (layout unit-tested in
+    test-results-site-generate's generate_test); rendering all of them in EVERY browser engine
+    dominates the mobile lane's wall-clock for no added coverage -- a regression in the template
+    shows up on any one of them. Non-archive pages (and the archive index) are always kept."""
+    kept, run_pages = [], []
+    for u in sorted(set(urls)):
+        # a run page is exactly /automated-test-results/<run-id>/ (one segment below the archive)
+        if (u.startswith(_ARCHIVE_PREFIX) and u != _ARCHIVE_PREFIX
+                and u.rstrip('/').count('/') == 2):
+            run_pages.append(u)
+        else:
+            kept.append(u)
+    return sorted(set(kept + run_pages[:_ARCHIVE_SAMPLE]))
+
+
 def main():
     roots = [os.path.abspath(r) for r in sys.argv[1:] if os.path.isdir(r)]
     if not roots:
@@ -606,6 +627,11 @@ def main():
         else:
             entry = docroots.setdefault(root, {'mounts': {}, 'urls': []})
             entry['urls'] += _page_urls(root, '')
+
+    # Sample the bulk auto-generated test-results archive so a family deploy does not render dozens
+    # of uniform generated pages in every browser engine (the lane's dominant wall-clock cost).
+    for entry in docroots.values():
+        entry['urls'] = _sample_bulk_archive(entry['urls'])
 
     browsers = _browsers_from_env()
     failures = 0

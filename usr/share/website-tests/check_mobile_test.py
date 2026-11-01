@@ -67,6 +67,20 @@ def run():
         check('real subpage kept', '/paste/' in urls, repr(urls))
         check('index collapses to dir', '/' in urls, repr(urls))
 
+    # 1b. The bulk auto-generated test-results archive is sampled: the archive index + exactly
+    #     _ARCHIVE_SAMPLE run pages are kept; non-archive pages (and the index) are always kept.
+    _bulk = (['/', '/about/', '/automated-test-results/']
+             + ['/automated-test-results/run-%02d/' % i for i in range(10)])
+    _s = cm._sample_bulk_archive(_bulk)
+    _runs = [u for u in _s if u.startswith('/automated-test-results/run-')]
+    check('bulk archive capped to _ARCHIVE_SAMPLE run pages',
+          len(_runs) == cm._ARCHIVE_SAMPLE, repr(_s))
+    check('archive index + every non-archive page kept',
+          {'/', '/about/', '/automated-test-results/'} <= set(_s), repr(_s))
+    check('a deeper archive page is NOT a run page (kept, not sampled)',
+          cm._sample_bulk_archive(['/automated-test-results/run-1/sub/'])
+          == ['/automated-test-results/run-1/sub/'], 'deep kept')
+
     # 2. Constants sane: the phone width is in the overflow set; header budget is
     #    a compact bar; the contrast + header JS are non-empty and self-consistent.
     check('VIEWPORT in OVERFLOW_WIDTHS', cm.VIEWPORT in cm.OVERFLOW_WIDTHS,
