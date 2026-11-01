@@ -2802,6 +2802,23 @@ def run():
               any('inline <script> body' in f and 'figures/x.xht' in f
                   for f in _markup_fails(root)), _markup_fails(root))
 
+    # CANARY 9: an <iframe srcdoc> in an .xhtml runs as a same-origin HTML child document, so
+    # its script executes despite the XHTML parent. The XML scan must scan the srcdoc VALUE
+    # (parity with the text/html path), catching BOTH an inline body and an external load.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'figures/srcdoc.xhtml',
+               '<?xml version="1.0"?>'
+               '<html xmlns="http://www.w3.org/1999/xhtml"><body><iframe srcdoc="'
+               '&lt;script&gt;fetch(String.fromCharCode(47,47)+&apos;evil&apos;)&lt;/script&gt;'
+               '&lt;script src=&apos;https://evil.example/x.js&apos;&gt;&lt;/script&gt;'
+               '"></iframe></body></html>')
+        fails = _markup_fails(root)
+        check('xhtml <iframe srcdoc> inline script flagged (srcdoc parity in XML path)',
+              any('inline <script> body' in f and 'figures/srcdoc.xhtml' in f for f in fails),
+              fails)
+        check('xhtml <iframe srcdoc> external script flagged (srcdoc parity in XML path)',
+              any('external script' in f and 'figures/srcdoc.xhtml' in f for f in fails), fails)
+
     # PARTITION: a navigable .html the per-page check already audited (passed as the excluded
     # set, = all html_files for family/csr) is NOT re-scanned here; a .xhtml figure is.
     with tempfile.TemporaryDirectory() as root:

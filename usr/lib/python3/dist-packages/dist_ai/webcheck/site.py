@@ -1500,6 +1500,11 @@ def _xml_markup_issues(raw):
                 issues.append(_SM_EXTERNAL % (ext[0], ext[1][:64]))
             elif (el.text or '').strip():
                 issues.append(_SM_INLINE)
+        elif local == 'iframe' and attrs.get('srcdoc'):
+            # A browser parses an <iframe srcdoc> as a same-origin text/html CHILD document
+            # and runs its scripts regardless of the XHTML parent, so scan the srcdoc VALUE as
+            # HTML -- parity with the text/html path, which recurses srcdoc via _FragmentJSAudit.
+            issues += _html_fragment_issues(attrs['srcdoc'])
     return issues
 
 
@@ -1546,25 +1551,19 @@ class _FragmentJSAudit(_InlineJSAudit):
         self.external_scripts += sub.external_scripts
 
 
-def _fragment_issues(raw, ext):
-    """Active-content issue messages for one served fragment. .xhtml/.xht are parsed AS XML
-    (authoritative; _xml_markup_issues), with html.parser the fail-closed fallback only for
-    not-well-formed XML. The text/html meta-CSP hash exemption is computed LAZILY -- the
-    expensive spec parser (_csp_meta_and_order / html5lib) runs ONLY when a page actually has
-    an inline <script> body, so a clean page (the overwhelming majority, incl. the wiki full
-    tree) costs one html.parser pass, not an html5lib parse."""
-    if ext in _XHTML_EXTS:
-        xml_issues = _xml_markup_issues(raw)
-        if xml_issues is not None:
-            return xml_issues           # XML parse authoritative; a browser ignores meta-CSP
-    content = _decode_bom(raw)          # BOM-honoring, so a UTF-16 page is not read as blank
+def _html_fragment_issues(content):
+    """Active-content issues for a text/html fragment string (also the HTML child document a
+    browser parses from an <iframe srcdoc>, whatever the parent's type). The meta-CSP hash
+    exemption is computed LAZILY -- the expensive spec parser (_csp_meta_and_order /
+    html5lib) runs ONLY when the page actually has an inline <script> body, so a clean page
+    (the overwhelming majority, incl. the wiki full tree) costs one cheap html.parser pass."""
     audit = _FragmentJSAudit()          # first pass: NO exemption (cheap html.parser)
     audit.feed(content)
     bodies = audit.flagged_bodies()
-    if bodies and ext not in _XHTML_EXTS:
+    if bodies:
         # text/html honors a head-child meta-CSP, so a fragment that pins its own inline
         # script by hash is genuinely constrained -> re-evaluate with the real policy
-        # (parity with a real page). XML ignores meta-CSP, so it is never exempted.
+        # (parity with a real page).
         enforced, precedes = _csp_meta_and_order(content)
         audit = _FragmentJSAudit(_own_applied(enforced, precedes),
                                  inherited_enforced=_enforced_sets(enforced))
@@ -1576,6 +1575,17 @@ def _fragment_issues(raw, ext):
     if audit.js_url:
         issues.append(_SM_JSURL)
     return issues
+
+
+def _fragment_issues(raw, ext):
+    """Active-content issue messages for one served fragment. .xhtml/.xht are parsed AS XML
+    (authoritative; _xml_markup_issues), with html.parser the fail-closed fallback only for
+    not-well-formed XML; everything else is scanned as text/html."""
+    if ext in _XHTML_EXTS:
+        xml_issues = _xml_markup_issues(raw)
+        if xml_issues is not None:
+            return xml_issues           # XML parse authoritative; a browser ignores meta-CSP
+    return _html_fragment_issues(_decode_bom(raw))   # BOM-honoring (UTF-16 not read as blank)
 
 
 def check_served_markup_safety(root, failures, pages=()):
