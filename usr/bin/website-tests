@@ -74,6 +74,94 @@ run_required_unit_test() {
       || printf '%s\n' "ok ${name}: passed"
 }
 
+## Site-set helpers are defined ABOVE the source-able guard so the skip-sites regression can
+## source this file and drive the REAL add_site / exclusion path (no function-body extraction).
+## They reference roots/root_sites/st_site/home_unset/WEBSITE_TESTS_SKIP_SITES, all set in the
+## execution section below (and by the test before it calls them) -- bash binds those at call
+## time, not definition time.
+
+## True (0) if $1 (site name) is in WEBSITE_TESTS_SKIP_SITES (space/comma-separated). Pure
+## predicate: no output, no exit. Exact space-padded token match, never substring, so skipping
+## "ai" cannot drop "org-ai-assisted.github.io".
+site_in_skip_set(){
+   case " ${WEBSITE_TESTS_SKIP_SITES//,/ } " in
+      *" $1 "*)
+         return 0
+         ;;
+   esac
+   return 1
+}
+
+add_root(){
+   local given
+   local default
+
+   given="$1"
+   default="$2"
+   ## An EXPLICIT override (env var set non-empty) that is not a real site checkout
+   ## (no index.html) must FATAL, not silently fall back to the default -- otherwise the
+   ## gate reports PASS on a DIFFERENT site than the operator asked for (silent green).
+   ## An UNSET override legitimately falls back to the default.
+   if [ -n "${given}" ]; then
+      if [ -f "${given}/index.html" ]; then
+         roots+=( "${given}" )
+      else
+         printf '%s\n' "website-tests: FATAL: site override '${given}' has no index.html (explicit-but-invalid checkout; refusing to silently test the default instead)" >&2
+         exit 1
+      fi
+   elif [ -z "${home_unset}" ] && [ -f "${default}/index.html" ]; then
+      ## Default fallback ONLY when HOME is set: under unset HOME the ${HOME}-rooted
+      ## default is a bogus absolute /private-sources/... path; a root-level checkout
+      ## there must NOT silently populate roots and bypass the home_unset FATAL below.
+      roots+=( "${default}" )
+   fi
+}
+
+add_site(){
+   local site count_before
+   site="$1"
+   shift
+   if site_in_skip_set "${site}"; then
+      ## FAIL CLOSED: $1 is this site's explicit _REPO override. site-deploy sets exactly the
+      ## override for the site it PUBLISHES, so excluding an explicitly-targeted site would pass
+      ## GREEN without ever checking the deploy target -- a false green. Refuse it.
+      if [ -n "$1" ]; then
+         printf '%s\n' "website-tests: FATAL: WEBSITE_TESTS_SKIP_SITES names ${site}, which has an explicit checkout override (the publish/test target) -- refusing to skip the site being tested" >&2
+         exit 1
+      fi
+      printf '%s\n' "website-tests: NOTICE: skipping ${site} (WEBSITE_TESTS_SKIP_SITES)" >&2
+      return
+   fi
+   count_before="${#roots[@]}"
+   add_root "$@"
+   if [ "${#roots[@]}" -gt "${count_before}" ]; then
+      root_sites+=( "${site}" )
+   fi
+}
+
+## secure-terminal alone carries the shot galleries; resolve its root for the shot-inventory
+## guard. Same explicit-but-invalid rule as add_root: an EXPLICIT override with no comparison/shots
+## FATALs rather than silently checking the default (silent green). A function so the current-shell
+## `exit 1` aborts the run (an `exit` inside $(...) only exits the subshell).
+resolve_st_site(){
+   local given
+   local default
+
+   given="$1"
+   default="$2"
+   if [ -n "${given}" ]; then
+      if [ -d "${given}/comparison/shots" ]; then
+         st_site="${given}"
+      else
+         printf '%s\n' "website-tests: FATAL: SECURE_TERMINAL_SITE_REPO override '${given}' has no comparison/shots (explicit-but-invalid checkout; refusing to silently test the default instead)" >&2
+         exit 1
+      fi
+   elif [ -z "${home_unset}" ] && [ -d "${default}/comparison/shots" ]; then
+      ## Default ONLY when HOME is set (same bogus /private-sources/... hazard as add_root).
+      st_site="${default}"
+   fi
+}
+
 ## Source-able: the unit regression test_website_tests_required_unit_test_red_diagnostics.sh
 ## sources this file to drive run_required_unit_test directly against a fixture. When sourced,
 ## stop here -- the defined function is all the test needs; the full suite below runs only on
@@ -176,82 +264,24 @@ else
 fi
 
 declare -a roots=()
-add_root(){
-   local given
-   local default
-
-   given="$1"
-   default="$2"
-   ## An EXPLICIT override (env var set non-empty) that is not a real site checkout
-   ## (no index.html) must FATAL, not silently fall back to the default -- otherwise the
-   ## gate reports PASS on a DIFFERENT site than the operator asked for (silent green).
-   ## An UNSET override legitimately falls back to the default.
-   if [ -n "${given}" ]; then
-      if [ -f "${given}/index.html" ]; then
-         roots+=( "${given}" )
-      else
-         printf '%s\n' "website-tests: FATAL: site override '${given}' has no index.html (explicit-but-invalid checkout; refusing to silently test the default instead)" >&2
-         exit 1
-      fi
-   elif [ -z "${home_unset}" ] && [ -f "${default}/index.html" ]; then
-      ## Default fallback ONLY when HOME is set: under unset HOME the ${HOME}-rooted
-      ## default is a bogus absolute /private-sources/... path; a root-level checkout
-      ## there must NOT silently populate roots and bypass the home_unset FATAL below.
-      roots+=( "${default}" )
-   fi
-}
 
 ## Record each resolved root's CANONICAL site identity alongside it (aligned index). The jscov
 ## lane keys covered.txt on this identity, NOT the root's basename: an _REPO override pointed at a
 ## non-canonically-named path (a CI workspace) would otherwise mis-key and SILENTLY DROP that
 ## site's JS coverage. add_root appends 0 or 1 root, so record the site iff roots grew.
 declare -a root_sites=()
-add_site(){
-   local site count_before
-   site="$1"
-   shift
-   case " ${WEBSITE_TESTS_SKIP_SITES//,/ } " in
-      *" ${site} "*)
-         printf '%s\n' "website-tests: NOTICE: skipping ${site} (WEBSITE_TESTS_SKIP_SITES)" >&2
-         return
-         ;;
-   esac
-   count_before="${#roots[@]}"
-   add_root "$@"
-   if [ "${#roots[@]}" -gt "${count_before}" ]; then
-      root_sites+=( "${site}" )
-   fi
-}
 add_site output-lies.github.io          "${OUTPUT_LIES_REPO}"          "${HOME}/private-sources/output-lies.github.io"
 add_site secure-terminal.github.io      "${SECURE_TERMINAL_SITE_REPO}" "${HOME}/private-sources/secure-terminal.github.io"
 add_site org-ai-assisted.github.io      "${ORG_AI_ASSISTED_REPO}"      "${HOME}/private-sources/org-ai-assisted.github.io"
 add_site computer-security-research.github.io "${COMPUTER_SECURITY_RESEARCH_REPO}" "${HOME}/private-sources/computer-security-research.github.io/_site"
 
-## The secure-terminal site alone carries the shot galleries, so resolve its root for the
-## shot-inventory guard below (only that site gets the check). Same explicit-but-invalid
-## rule as add_root: an EXPLICIT SECURE_TERMINAL_SITE_REPO with no comparison/shots FATALs
-## rather than silently checking the default site's shots (silent green). A function so the
-## current-shell `exit 1` aborts the run (an `exit` inside $(...) only exits the subshell).
 st_site=''
-resolve_st_site(){
-   local given
-   local default
-
-   given="$1"
-   default="$2"
-   if [ -n "${given}" ]; then
-      if [ -d "${given}/comparison/shots" ]; then
-         st_site="${given}"
-      else
-         printf '%s\n' "website-tests: FATAL: SECURE_TERMINAL_SITE_REPO override '${given}' has no comparison/shots (explicit-but-invalid checkout; refusing to silently test the default instead)" >&2
-         exit 1
-      fi
-   elif [ -z "${home_unset}" ] && [ -d "${default}/comparison/shots" ]; then
-      ## Default ONLY when HOME is set (same bogus /private-sources/... hazard as add_root).
-      st_site="${default}"
-   fi
-}
-resolve_st_site "${SECURE_TERMINAL_SITE_REPO}" "${HOME}/private-sources/secure-terminal.github.io"
+## Honor the skip set here too: add_site already logged the NOTICE and enforced the deploy-target
+## FATAL for secure-terminal, so if it is skipped leave st_site empty (the shot-inventory guard
+## below is then inert). Otherwise resolve it for that guard.
+if ! site_in_skip_set secure-terminal.github.io; then
+   resolve_st_site "${SECURE_TERMINAL_SITE_REPO}" "${HOME}/private-sources/secure-terminal.github.io"
+fi
 
 if [ "${#roots[@]}" -eq 0 ]; then
    if [ -n "${home_unset}" ]; then

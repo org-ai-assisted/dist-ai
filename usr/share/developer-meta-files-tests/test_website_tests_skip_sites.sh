@@ -5,15 +5,17 @@
 
 ## AI-Assisted
 
-## style-ok: no-has -- standalone structural test; does not source helper-scripts.
+## style-ok: no-has -- standalone test; does not source helper-scripts.
 
-## Pins the WEBSITE_TESTS_SKIP_SITES opt-in exclude in usr/bin/website-tests: a deploy that must
-## not gate on an in-progress sibling (e.g. a journal _site being actively rebuilt) drops the
-## named site from the scanned set. Asserted STRUCTURALLY on add_site: driving root resolution
-## behaviorally needs the full suite preamble (the run_required_unit_test calls run before root
-## resolution, so add_site is not reachable via the source-able guard) -- disproportionate here.
-## The matching MUST be exact-token (space-padded, comma-normalized), never substring, so skipping
-## "ai" cannot drop "org-ai-assisted.github.io". End-to-end behavior is confirmed by site-deploy.
+## Behavioral regression for WEBSITE_TESTS_SKIP_SITES in usr/bin/website-tests. Drives the REAL
+## exclusion path (SOURCE the runner -- its guard returns before the suite -- then call the real
+## site_in_skip_set / add_site / resolve_st_site guard; NO function-body extraction). Asserts:
+##  - opt-in skip of a non-target sibling drops it from roots and logs a loud NOTICE;
+##  - FAIL-CLOSED: skipping a site that has an explicit _REPO override (site-deploy's publish
+##    target) is a FATAL, never a silent green (the false-green this guards);
+##  - exact space-padded token match (skipping "ai" must NOT drop "org-ai-assisted.github.io");
+##  - a non-skipped site is still added normally;
+##  - the secure-terminal shot-inventory path (resolve_st_site) is gated by the same skip set.
 
 set -o errexit
 set -o nounset
@@ -36,29 +38,77 @@ if [ ! -r "${runner}" ]; then
    exit 1
 fi
 
-## (a) the env var is defaulted (unset -> empty, i.e. scan every site).
-if grep --quiet --extended-regexp '^\[ -v WEBSITE_TESTS_SKIP_SITES \] \|\| WEBSITE_TESTS_SKIP_SITES=' "${runner}"; then
-   pass 'WEBSITE_TESTS_SKIP_SITES is defaulted (empty = scan all, the unchanged default)'
+## A real-looking site checkout so add_root would accept the default path (has index.html).
+fixture="$(mktemp --directory)"
+cleanup() { safe-rm --recursive --force -- "${fixture}"; }
+trap cleanup EXIT
+touch "${fixture}/index.html"
+
+## Source the runner: its source-able guard returns before the suite body, leaving the site-set
+## helpers defined. Set the globals they read (the execution section that normally sets them is
+## below the guard, so it did not run).
+# shellcheck disable=SC1090
+source "${runner}"
+## Globals read by the sourced add_root/site_in_skip_set (cross-function; not seen by shellcheck).
+# shellcheck disable=SC2034
+home_unset=''
+
+## 1. site_in_skip_set: exact space-padded token, never substring.
+WEBSITE_TESTS_SKIP_SITES='ai computer-security-research.github.io'
+if ! site_in_skip_set org-ai-assisted.github.io && site_in_skip_set computer-security-research.github.io; then
+   pass 'site_in_skip_set matches whole tokens only (ai does not match org-ai-assisted.github.io)'
 else
-   fail 'WEBSITE_TESTS_SKIP_SITES has no default guard'
+   fail 'site_in_skip_set token matching wrong (substring match or missed an exact token)'
 fi
 
-## (b) add_site honors it: a case over the comma-normalized, space-padded list, a loud NOTICE,
-## and an early return (so a skipped site never reaches add_root / the roots array).
-add_site_body="$(sed -n '/^add_site(){/,/^}/p' -- "${runner}")"
+## 2. Skip a non-target sibling (no override): dropped from roots, loud NOTICE, nothing added.
+WEBSITE_TESTS_SKIP_SITES='computer-security-research.github.io'
+roots=(); root_sites=()
+skip_err="${fixture}/skip.err"
+add_site computer-security-research.github.io '' "${fixture}" 2> "${skip_err}"
+if [ "${#roots[@]}" -eq 0 ] && [ "${#root_sites[@]}" -eq 0 ] \
+      && grep --quiet --fixed-strings 'NOTICE: skipping computer-security-research.github.io' "${skip_err}"; then
+   pass 'skipping a non-target sibling drops it from roots and logs a NOTICE'
+else
+   fail "skip-no-override: roots=${#roots[@]} root_sites=${#root_sites[@]} err=<<$(cat "${skip_err}")>>"
+fi
+
+## 3. FAIL-CLOSED: skipping a site that HAS an explicit override (the publish target) is FATAL.
+## add_site calls `exit 1`, so drive it in a subshell and capture the status + message.
+WEBSITE_TESTS_SKIP_SITES='output-lies.github.io'
+roots=(); root_sites=()
+fc_err="${fixture}/fc.err"
+fc_rc=0
+( add_site output-lies.github.io "${fixture}" "${fixture}" ) 2> "${fc_err}" || fc_rc=$?
+if [ "${fc_rc}" -ne 0 ] \
+      && grep --quiet --fixed-strings 'refusing to skip the site being tested' "${fc_err}"; then
+   pass 'skipping the explicitly-targeted (override-set) site is a FATAL, not a false green'
+else
+   fail "fail-closed: expected FATAL+nonzero, got rc=${fc_rc} err=<<$(cat "${fc_err}")>>"
+fi
+
+## 4. A non-skipped site with no override is still added normally (empty skip set).
+## (read by the sourced site_in_skip_set; shellcheck cannot see the cross-function use)
+# shellcheck disable=SC2034
+WEBSITE_TESTS_SKIP_SITES=''
+roots=(); root_sites=()
+add_site output-lies.github.io '' "${fixture}" 2> /dev/null
+if [ "${#roots[@]}" -eq 1 ] && [ "${roots[0]}" = "${fixture}" ] && [ "${root_sites[0]}" = 'output-lies.github.io' ]; then
+   pass 'a non-skipped site is added normally (default scan unchanged)'
+else
+   fail "normal-add: roots=(${roots[*]:-}) root_sites=(${root_sites[*]:-})"
+fi
+
+## 5. resolve_st_site is gated by the same skip set (finding: secure-terminal had a 2nd entry
+## point). Structural: the call must be guarded by site_in_skip_set (behavior of the predicate
+## itself is covered above; this pins the wiring so the shot-inventory guard honors the skip).
 ## Literal source text to grep for, not shell to expand -- single quotes are intentional.
 # shellcheck disable=SC2016
-if grep --quiet --fixed-strings 'WEBSITE_TESTS_SKIP_SITES//,/ ' <<< "${add_site_body}" \
-      && grep --quiet --fixed-strings '*" ${site} "*' <<< "${add_site_body}"; then
-   pass 'add_site matches skip list by EXACT space-padded token (not substring)'
+if grep --quiet --extended-regexp 'if ! site_in_skip_set secure-terminal\.github\.io; then' "${runner}" \
+      && grep --quiet --fixed-strings 'resolve_st_site "${SECURE_TERMINAL_SITE_REPO}"' "${runner}"; then
+   pass 'resolve_st_site (shot-inventory path) is gated by the skip set'
 else
-   fail 'add_site skip match is missing or not exact-token (substring match would mis-drop sites)'
-fi
-if grep --quiet --fixed-strings 'NOTICE: skipping' <<< "${add_site_body}" \
-      && grep --quiet --extended-regexp '^[[:space:]]*return$' <<< "${add_site_body}"; then
-   pass 'a skipped site logs a loud NOTICE and returns before add_root (never scanned silently)'
-else
-   fail 'skip path lacks a NOTICE log or the early return'
+   fail 'resolve_st_site is not guarded by site_in_skip_set -- secure-terminal skip would be incomplete'
 fi
 
 printf '%s\n' "" "test_website_tests_skip_sites: ${pass_count} pass, ${fail_count} fail, 0 skip"
