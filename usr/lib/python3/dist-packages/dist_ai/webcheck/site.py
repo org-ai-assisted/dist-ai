@@ -1166,11 +1166,19 @@ def check_page_metadata(root, failures):
 
 # A <script> runs its body only when it is a classic or module script (empty
 # type, a JavaScript MIME type, or "module"); any other type (application/ld+json,
-# text/template, ...) is an inert data block the browser never executes.
+# text/template, ...) is an inert data block the browser never executes. The MIME
+# set is the WHATWG "JavaScript MIME type essence match" list IN FULL -- the legacy
+# essences (text/javascript1.0..1.5, text/livescript, text/x-ecmascript,
+# text/x-javascript, application/x-ecmascript, text/jscript) are still executed as
+# classic scripts, so omitting one is a fail-OPEN hole (an inline script typed with it
+# would read as inert and slip the no-inline-script / served-markup gates).
 _JS_SCRIPT_TYPES = frozenset((
-    '', 'module', 'text/javascript', 'application/javascript',
-    'text/ecmascript', 'application/ecmascript', 'application/x-javascript',
-    'text/jscript',
+    '', 'module',
+    'application/ecmascript', 'application/javascript', 'application/x-ecmascript',
+    'application/x-javascript', 'text/ecmascript', 'text/javascript',
+    'text/javascript1.0', 'text/javascript1.1', 'text/javascript1.2',
+    'text/javascript1.3', 'text/javascript1.4', 'text/javascript1.5',
+    'text/jscript', 'text/livescript', 'text/x-ecmascript', 'text/x-javascript',
 ))
 # Attributes whose value is a navigable URL, so a 'javascript:' value executes.
 # (A data-* attribute or a code sample carrying the text does not.)
@@ -1367,15 +1375,44 @@ def check_no_inline_script(root, failures, pages=None):
 # Browser-rendered HTML-family markup. A header-less Pages origin serves every one of
 # these as active content when opened directly (it cannot set a CSP response header), so
 # a <script>/on*=/javascript: in ANY of them runs on the origin -- not only in a
-# navigable .html page.
-_HTML_FAMILY_EXTS = ('.html', '.htm', '.xhtml', '.shtml')
+# navigable .html page. .xhtml/.xht are served as application/xhtml+xml, the rest as
+# text/html; check_served_markup_safety handles that difference.
+_HTML_FAMILY_EXTS = ('.html', '.htm', '.xhtml', '.shtml', '.xht')
+# The application/xhtml+xml subset. A browser parses these as XML, where a
+# <meta http-equiv=Content-Security-Policy> is NOT honored (meta-CSP is a text/html
+# feature) -- so a meta-CSP hash exemption would be a FALSE GREEN: an inline script the
+# meta "pins" still runs unconstrained on the header-less origin.
+_XHTML_EXTS = ('.xhtml', '.xht')
+
+# A <script> type a browser treats as an INERT data block (never executed) -- the
+# complement of _JS_SCRIPT_TYPES. Used to decide whether a <script src>/<script
+# xlink:href> actually LOADS executable code: the served-markup gate is fail-closed on
+# type, so only a recognized inert type is cleared and any unknown type counts executable.
+_INERT_SCRIPT_TYPES = frozenset((
+    'application/ld+json', 'application/json', 'importmap', 'speculationrules',
+    'text/template', 'text/html', 'text/plain',
+))
+
+
+def _external_script_load(amap):
+    """A <script> that LOADS executable code cross-origin: an http(s)/protocol-relative/
+    data: value in src, href or (SVG) xlink:href, with an executable (non-inert) type. A
+    same-origin RELATIVE ref (assets/site.js) is first-party and allowed, exactly as the
+    navigable-page CSP permits script-src 'self'. Returns (attr, value) or None."""
+    if (amap.get('type') or '').strip().lower() in _INERT_SCRIPT_TYPES:
+        return None
+    for attr in ('src', 'href', 'xlink:href'):
+        val = amap.get(attr)
+        if val and _url_norm(val).startswith(('http:', 'https:', '//', 'data:')):
+            return attr, val
+    return None
 
 
 def _served_extra_markup(root):
     """HTML-family served markup the page audit (html_files) does NOT scan: every
-    .htm/.xhtml/.shtml, plus every image-shadowed .html (html_files skips those as render
-    sources) and any non-lowercase-'.html' variant html_files' endswith('.html') misses.
-    A clean partition from html_files -- a file html_files yields (a navigable,
+    .htm/.xhtml/.shtml/.xht, plus every image-shadowed .html (html_files skips those as
+    render sources) and any non-lowercase-'.html' variant html_files' endswith('.html')
+    misses. A clean partition from html_files -- a file html_files yields (a navigable,
     non-shadowed .html) is never yielded here -- so no file is active-content scanned
     twice. Discovered with the same os.walk/.git convention as the rest of this module."""
     for base, dirs, files in os.walk(root):
@@ -1391,30 +1428,64 @@ def _served_extra_markup(root):
             yield os.path.join(base, name)
 
 
+class _FragmentJSAudit(_InlineJSAudit):
+    """_InlineJSAudit (inline <script> bodies, on*= handlers, javascript: URLs) PLUS the
+    external <script src/href/xlink:href> loads a served fragment must also not carry: on a
+    header-less origin an external/data: script load is unconstrained, and the navigable-
+    page gates that would catch it (check_csp / check_supply_chain) do not run on a non-page
+    fragment. html.parser models text/html; the application/xhtml+xml-ONLY constructs an XML
+    parser would additionally see (a <script> nested in a <style> raw-text element, a
+    prefixed <h:script>) are a documented residual -- a plain <script>/on*=/javascript: in
+    such a file is still caught here, and these generators emit text/html, not XHTML."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.external_scripts = []   # (attr, value) external/data: script loads
+
+    def handle_starttag(self, tag, attrs):
+        # The default handle_startendtag routes a self-closing <script/> through here too,
+        # so external detection runs once per start, no separate startendtag override.
+        super().handle_starttag(tag, attrs)
+        if tag.split(':', 1)[-1] == 'script':
+            ext = _external_script_load(dict(attrs))
+            if ext:
+                self.external_scripts.append(ext)
+
+
 def check_served_markup_safety(root, failures):
     # Belt closing the stored-XSS hole: the per-page active-content check
     # (check_no_inline_script via html_files) scans only navigable, non-image-shadowed
-    # .html, so a served figures/x.xhtml / x.htm / x.shtml, or a sibling-shadowed foo.html,
-    # carrying <script>/on*=/javascript: shipped UNSCANNED yet runs on the header-less
-    # Pages origin (no CSP response header possible there). Run the SAME inline-active-
-    # content detection over exactly the served markup html_files does not cover.
-    # Fail-closed: a fragment with no head CSP has every inline <script> flagged; one that
-    # pins its script by its OWN head CSP hash stays exempt (parity with a real page -- no
-    # false positive). NOT the chrome battery (a fragment legitimately has no footer / CSP
-    # meta / SEO head, so those checks must not run on it).
+    # .html, so a served figures/x.xhtml / x.htm / x.shtml / x.xht, or a sibling-shadowed
+    # foo.html, carrying active content shipped UNSCANNED yet runs on the header-less Pages
+    # origin (no CSP response header possible there). Flag any executable inline <script>,
+    # external/data <script src/href/xlink:href> load, on*= handler, or javascript: URL,
+    # over exactly the served markup html_files does not cover. NOT the chrome battery (a
+    # fragment legitimately has no footer / CSP meta / SEO head, so those must not run).
     for page in sorted(_served_extra_markup(root)):
         rel = os.path.relpath(page, root)
         with open(page, encoding='utf-8', errors='replace') as handle:
             content = handle.read()
-        enforced, precedes = _csp_meta_and_order(content)
-        audit = _InlineJSAudit(_own_applied(enforced, precedes),
-                               inherited_enforced=_enforced_sets(enforced))
+        # text/html honors a head-child meta-CSP, so a fragment that pins its own inline
+        # script by hash is genuinely constrained -> exempt (parity with a real page).
+        # application/xhtml+xml is XML, where the browser IGNORES meta-CSP -> NO exemption,
+        # every inline script flagged fail-closed (see _XHTML_EXTS).
+        if os.path.splitext(page)[1].lower() in _XHTML_EXTS:
+            applied, inherited = (), ()
+        else:
+            enforced, precedes = _csp_meta_and_order(content)
+            applied = _own_applied(enforced, precedes)
+            inherited = _enforced_sets(enforced)
+        audit = _FragmentJSAudit(applied, inherited_enforced=inherited)
         audit.feed(content)
         for _ in audit.flagged_bodies():
             failures.append(
                 '%s: inline <script> body in served markup -- move it to an external .js '
-                'file or pin it with a CSP script-src hash (it runs as active content on '
-                'the header-less Pages origin)' % rel)
+                'file (it runs as active content on the header-less Pages origin)' % rel)
+        for attr, val in audit.external_scripts:
+            failures.append(
+                '%s: served markup loads an external script (%s=%r) -- it runs on the '
+                'header-less Pages origin with no CSP to constrain it'
+                % (rel, attr, val[:64]))
         for name in sorted(audit.handlers):
             failures.append(
                 '%s: inline event handler %s= in served markup -- bind it in an external '

@@ -2658,7 +2658,7 @@ def run():
     # origin). check_served_markup_safety does not exist on the pre-fix core, so these
     # lines fail to RUN there (AttributeError) -- the guard cannot silently regress away.
     def _markup_fails(root):
-        fails = []
+        fails: list[str] = []
         check_site.check_served_markup_safety(root, fails)
         return fails
 
@@ -2726,6 +2726,81 @@ def run():
                '</head><body><script>%s</script></body></html>' % (sha, body))
         check('a served fragment pinning its inline script by its own head CSP hash is exempt',
               _markup_fails(root) == [], _markup_fails(root))
+
+    # CANARY 5: an EXTERNAL <script src> (cross-origin load) in served markup. _InlineJSAudit
+    # alone misses it (no inline body); on a header-less origin it runs unconstrained, and the
+    # navigable-page gates (check_csp / check_supply_chain) never see a non-page fragment.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'figures/ext.htm',
+               '<html><body><script src="https://evil.example/xss.js"></script></body></html>')
+        fails = _markup_fails(root)
+        check('external <script src> in served markup flagged',
+              any('external script' in f and 'figures/ext.htm' in f for f in fails), fails)
+    # ...an SVG <script xlink:href> load is the same class (SVG refs code via xlink:href).
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'figures/svg.xhtml',
+               '<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml"><body>'
+               '<svg xmlns="http://www.w3.org/2000/svg" '
+               'xmlns:xlink="http://www.w3.org/1999/xlink">'
+               '<script xlink:href="https://evil.example/e.js"></script></svg></body></html>')
+        fails = _markup_fails(root)
+        check('SVG <script xlink:href> external load in served markup flagged',
+              any('external script' in f and 'figures/svg.xhtml' in f for f in fails), fails)
+    # ...and a data: script URL executes code too.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'figures/data.htm',
+               '<html><body><script src="data:text/javascript,alert(1)"></script></body></html>')
+        check('data: <script src> in served markup flagged',
+              any('external script' in f for f in _markup_fails(root)), _markup_fails(root))
+    # CONTROL: a SAME-ORIGIN relative <script src> is first-party (the site's own reviewed
+    # bundle) -- allowed, exactly as the navigable-page CSP permits script-src 'self'.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'figures/local.htm',
+               '<html><body><script src="assets/site.js"></script></body></html>')
+        check('same-origin relative <script src> in served markup allowed (control)',
+              _markup_fails(root) == [], _markup_fails(root))
+
+    # CANARY 6: a legacy JavaScript MIME essence (text/javascript1.5) still EXECUTES, so an
+    # inline body typed with it must be flagged (it read as inert before the type-set fix).
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'figures/legacy.htm',
+               '<html><body><script type="text/javascript1.5">alert(1)</script></body></html>')
+        fails = _markup_fails(root)
+        check('legacy-MIME inline <script type=text/javascript1.5> flagged',
+              any('inline <script> body' in f and 'figures/legacy.htm' in f for f in fails),
+              fails)
+    # CONTROL: a genuine inert data block (application/ld+json) is never executed.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'figures/ld.htm',
+               '<html><body><script type="application/ld+json">{"a":1}</script></body></html>')
+        check('inert <script type=application/ld+json> not flagged (control)',
+              _markup_fails(root) == [], _markup_fails(root))
+
+    # CANARY 7: a meta-CSP hash exemption is INVALID in application/xhtml+xml (.xhtml/.xht) --
+    # the browser ignores meta-CSP in XML, so the "pinned" inline script runs unconstrained
+    # and MUST still be flagged (no exemption for the XML family).
+    with tempfile.TemporaryDirectory() as root:
+        body = 'console.log(1)'
+        sha = next(h for h in check_site._inline_script_hashes(body)
+                   if h.startswith('sha256-'))
+        for ext in ('xhtml', 'xht'):
+            _write(root, 'figures/pinned.%s' % ext,
+                   '<?xml version="1.0"?>'
+                   '<html xmlns="http://www.w3.org/1999/xhtml"><head>'
+                   '<meta http-equiv="content-security-policy" '
+                   'content="default-src \'none\'; script-src \'%s\'"/>'
+                   '</head><body><script>%s</script></body></html>' % (sha, body))
+        fails = _markup_fails(root)
+        check('meta-CSP hash does NOT exempt inline script in .xhtml/.xht (XML ignores it)',
+              sum('inline <script> body' in f for f in fails) == 2, fails)
+    # ...and a .xht with a plain <script> is discovered + flagged (extension coverage).
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'figures/x.xht',
+               '<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml">'
+               '<body><script>alert(1)</script></body></html>')
+        check('.xht figure <script> flagged (extension coverage)',
+              any('inline <script> body' in f and 'figures/x.xht' in f
+                  for f in _markup_fails(root)), _markup_fails(root))
 
     # PARTITION: a navigable .html is owned by html_files (per-page check), never re-scanned
     # here; a .xhtml figure is picked up here.
