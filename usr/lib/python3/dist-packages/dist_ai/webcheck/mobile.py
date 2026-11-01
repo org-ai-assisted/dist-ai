@@ -532,17 +532,21 @@ class _MountHandler(http.server.SimpleHTTPRequestHandler):
         real = os.path.realpath(fs)
         if not any(real == a or real.startswith(a + os.sep) for a in allowed):
             return os.path.join(self.directory, '__forbidden__')
+        # Resolve in production nginx's `try_files $uri $uri.html $uri/` ORDER: a regular file
+        # wins; else the FLAT clean URL (/wiki/ISO -> wiki/ISO.html) -- which MUST be tried before
+        # a same-named subpage directory, since a page with child pages has BOTH wiki/KVM.html AND
+        # wiki/KVM/ (holding the children, no index.html); directory-index is the LAST resort. The
+        # old dir-first order served wiki/KVM/index.html (absent -> 404) for /wiki/KVM, diverging
+        # from production which serves wiki/KVM.html. The .html candidate stays within an allowed
+        # root (same realpath containment as above -- no symlink escape via the fallback).
+        if os.path.isfile(real):
+            return real
+        cand = os.path.realpath(real + '.html')
+        if os.path.isfile(cand) and any(cand == a or cand.startswith(a + os.sep)
+                                        for a in allowed):
+            return cand
         if os.path.isdir(real):
             return os.path.join(real, 'index.html')
-        # Extensionless -> .html, matching the production nginx `try_files $uri $uri.html`: a
-        # request for a flat clean URL (/wiki/ISO -- no slash, no extension) serves wiki/ISO.html.
-        # Only when the bare path is not itself a file, and the .html candidate stays within an
-        # allowed root (same realpath containment as above -- no symlink escape via the fallback).
-        if not os.path.exists(real):
-            cand = os.path.realpath(real + '.html')
-            if os.path.isfile(cand) and any(cand == a or cand.startswith(a + os.sep)
-                                            for a in allowed):
-                return cand
         return real
 
 

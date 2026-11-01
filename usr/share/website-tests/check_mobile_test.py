@@ -286,6 +286,27 @@ def run():
         missing = h.translate_path('/wiki/Nope')
         check('_MountHandler extensionless miss stays a 404 (no .html for a missing page)',
               not os.path.exists(missing), repr(missing))
+        # Regression: a page that ALSO has child subpages has BOTH wiki/<Page>.html AND a
+        # wiki/<Page>/ directory (the children, no index.html). Production nginx
+        # `try_files $uri $uri.html $uri/` serves the FLAT .html; the old dir-first handler
+        # returned wiki/<Page>/index.html (absent) -> 404, breaking the curated axe gate on
+        # KVM/Qubes/VirtualBox/Dev. The .html must win over the same-named subpage dir, while a
+        # genuine directory-index (no .html sibling) still resolves.
+        _write(root, 'wiki/KVM.html', '<h1>kvm</h1>')
+        _write(root, 'wiki/KVM/Child.html', '<h1>child</h1>')
+        _write(root, 'wiki/Dir/index.html', '<h1>dir</h1>')
+        collide = h.translate_path('/wiki/KVM')
+        check('_MountHandler flat .html wins over a same-named subpage dir (try_files order)',
+              os.path.realpath(collide) == os.path.realpath(os.path.join(root, 'wiki/KVM.html')),
+              repr(collide))
+        child = h.translate_path('/wiki/KVM/Child')
+        check('_MountHandler subpage under a collision dir still resolves',
+              os.path.realpath(child) == os.path.realpath(os.path.join(root, 'wiki/KVM/Child.html')),
+              repr(child))
+        diridx = h.translate_path('/wiki/Dir')
+        check('_MountHandler directory-index served when there is no .html sibling',
+              os.path.realpath(diridx) == os.path.realpath(os.path.join(root, 'wiki/Dir/index.html')),
+              repr(diridx))
 
     passed = sum(1 for _n, ok, _d in results if ok)
     failed = len(results) - passed
