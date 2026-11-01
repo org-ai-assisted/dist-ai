@@ -13,7 +13,7 @@ that passes everything (0 fail) has 0 coverage. Every malicious fixture below is
 and the clean one to pass, so weakening the detector re-fails this test. The fixtures past the
 plain MALICIOUS dict each reproduce a verified fail-open BYPASS (encoding / case / .svgz / CSS
 escape / <style> child-tail / image-set / presentation-attr url() / animate from / xml:base /
-missing-target) so a regression reopening any of them re-fails here."""
+missing-target / symlink) so a regression reopening any of them re-fails here."""
 import gzip
 import os
 import sys
@@ -217,6 +217,21 @@ def run() -> int:
     # Fail-closed: a non-existent scan target is an ERROR (never "0 SVG(s) clean").
     ck(svgsafe.main(["/nonexistent/path/xyz"]) == 1, "missing target fails closed")
     ck(svgsafe.main(["-weird-name.svg"]) == 1, "a '-'-prefixed missing target is NOT dropped")
+
+    # Fail-closed: a symlink in the scan tree is refused. rglob does NOT descend a symlinked dir,
+    # but upload-pages-artifact (tar --dereference) DOES follow it -- so an SVG behind a symlink
+    # would ship UNSCANNED = stored-XSS gate bypass. Both cases below return 0 on the pre-fix
+    # scanner (= RED), proving the bypass; the fix makes them 1.
+    with tempfile.TemporaryDirectory() as droot, tempfile.TemporaryDirectory() as dout:
+        root, outside = Path(droot), Path(dout)
+        (outside / "evil.svg").write_text(f'<svg {_SVG}><script>x</script></svg>', encoding="utf-8")
+        os.symlink(outside, root / "linkdir", target_is_directory=True)
+        ck(svgsafe.main([str(root)]) == 1, "symlinked dir hiding a malicious SVG fails closed")
+    with tempfile.TemporaryDirectory() as droot, tempfile.TemporaryDirectory() as dout:
+        root, outside = Path(droot), Path(dout)
+        (outside / "ok.svg").write_text(CLEAN, encoding="utf-8")
+        os.symlink(outside / "ok.svg", root / "link.svg")
+        ck(svgsafe.main([str(root)]) == 1, "even a symlink to a CLEAN svg is refused (fail-closed breadth)")
 
     # main(): exit 1 on a tree containing a bad SVG, 0 on a clean-only tree, 2 on no args.
     with tempfile.TemporaryDirectory() as d:

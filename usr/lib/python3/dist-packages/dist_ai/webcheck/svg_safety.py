@@ -33,7 +33,14 @@ NORMALIZE-FIRST (fail-closed): .svgz is gunzipped (bounded, so a gzip bomb is re
 NUL bytes (UTF-16/32) or not valid UTF-8 is REJECTED; discovery is case-insensitive and covers
 .svgz; a NON-EXISTENT target is an error.
 
-Exit 0 = all clean; 1 = a dangerous/unparseable SVG or a missing target (each listed); 2 = usage.
+SYMLINK (fail-closed): discovery refuses ANY symlink in the scan tree. rglob does not descend a
+symlinked dir, but the Pages artifact packer (upload-pages-artifact: tar --dereference) DOES follow
+it -- so an SVG behind a symlink would ship UNSCANNED. A generated static tree has no symlinks, so
+one is treated as the anomaly it is rather than reproducing tar's dereference exactly (which would
+be a fresh scan-vs-upload divergence = bypass).
+
+Exit 0 = all clean; 1 = a dangerous/unparseable SVG, a missing target, or a symlink in the scan
+tree (each listed); 2 = usage.
 """
 from __future__ import annotations
 
@@ -299,13 +306,30 @@ def scan_svg(path: Path) -> list[str]:
     return issues
 
 
+class _SymlinkInScanTree(Exception):
+    """A symlink was found while walking a scan target -- fail-closed (see module docstring)."""
+
+    def __init__(self, path: Path):
+        super().__init__(str(path))
+        self.path = path
+
+
 def _iter_svgs(targets: list[str]):
-    """Yield every .svg/.svgz (case-insensitive) under each target dir, or the target file itself."""
+    """Yield every .svg/.svgz (case-insensitive) under each target dir, or the target file itself.
+
+    Refuse ANY symlink in a walked tree (raise _SymlinkInScanTree): rglob does not descend a
+    symlinked dir, but upload-pages-artifact dereferences it -- so a symlink is a fail-closed error.
+    The check precedes is_file()/suffix so a symlink is refused whether or not it looks like an SVG
+    (and is_file()'s link-following can never mask it).
+    """
     for t in targets:
         p = Path(t)
         if p.is_dir():
-            yield from sorted(q for q in p.rglob("*")
-                              if q.is_file() and q.suffix.lower() in (".svg", ".svgz"))
+            for q in sorted(p.rglob("*")):
+                if q.is_symlink():
+                    raise _SymlinkInScanTree(q)
+                if q.is_file() and q.suffix.lower() in (".svg", ".svgz"):
+                    yield q
         elif p.is_file():
             yield p
 
@@ -324,12 +348,18 @@ def main(argv: list[str]) -> int:
         return 1
     bad = 0
     scanned = 0
-    for svg in _iter_svgs(argv):
-        scanned += 1
-        for issue in scan_svg(svg):
-            if issue:
-                bad += 1
-                print(f"UNSAFE-SVG  {svg}: {issue}")
+    try:
+        for svg in _iter_svgs(argv):
+            scanned += 1
+            for issue in scan_svg(svg):
+                if issue:
+                    bad += 1
+                    print(f"UNSAFE-SVG  {svg}: {issue}")
+    except _SymlinkInScanTree as exc:
+        print(f"UNSAFE-SVG  {exc.path}: reachable via symlink "
+              "(fail-closed; upload dereferences, scan does not)", file=sys.stderr)
+        print("\nsvg-safety: FAIL -- symlink in scan tree", file=sys.stderr)
+        return 1
     if bad:
         print(f"\nsvg-safety: FAIL -- {bad} finding(s) across {scanned} SVG(s)", file=sys.stderr)
         return 1
