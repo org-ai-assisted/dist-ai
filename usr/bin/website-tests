@@ -56,9 +56,12 @@ run_required_unit_test() {
    ## Leaked line-by-line into THIS run's log, that EXPECTED error text is indistinguishable from a
    ## real failure (output-lies) -- so on GREEN print only the test's own summary line(s) and drop
    ## the exercised-error noise; on RED replay the FULL output so diagnostics stay intact.
-   local out rc
-   out="$("${path}" 2>&1)"
-   rc=$?
+   local out rc=0
+   ## errexit+inherit_errexit are on: a bare `out="$(...)"` that exits non-zero is itself a
+   ## failing simple command and ABORTS the shell HERE, before rc=$? and the replay/FATAL block
+   ## below ever run -- so a failing required unit test would print ZERO diagnostics. Capture the
+   ## rc without tripping errexit.
+   out="$("${path}" 2>&1)" || rc=$?
    if [ "${rc}" -ne 0 ]; then
       printf '%s\n' "${out}"
       printf '%s\n' "website-tests: FATAL: ${name} FAILED (rc=${rc})" >&2
@@ -70,6 +73,15 @@ run_required_unit_test() {
    printf '%s\n' "${out}" | grep -E "[0-9]+ pass,|assertions passed|all .+ (passed|clean)$" \
       || printf '%s\n' "ok ${name}: passed"
 }
+
+## Source-able: the unit regression test_website_tests_required_unit_test_red_diagnostics.sh
+## sources this file to drive run_required_unit_test directly against a fixture. When sourced,
+## stop here -- the defined function is all the test needs; the full suite below runs only on
+## direct execution. `return` is valid only in a sourced context, so the subshell probe is a
+## no-op (false, stderr suppressed) when the script is executed normally.
+if (return 0 2>/dev/null); then
+   return 0
+fi
 
 ## Unit regression for check_site's own logic (the image-format gate + the
 ## render-source recognition it depends on). Fixture-based, no site checkout or
@@ -146,6 +158,11 @@ run_required_unit_test ../domsnap-engine/tests/test_host_scrub.py
 ## override must point at a BUILT tree. The journal deploys via its own CI, so site-deploy does
 ## NOT publish it -- this lane only gates the local build.
 [ -v COMPUTER_SECURITY_RESEARCH_REPO ] || COMPUTER_SECURITY_RESEARCH_REPO=''
+## Opt-in exclude: space/comma-separated site names to DROP from the scanned set, for a deploy
+## that must not gate on an in-progress sibling (e.g. a journal _site being actively rebuilt,
+## adding bibliography words that race the spelling baseline). Logged loudly per skip; empty
+## (the default) scans every resolved site, so the full family gate is unchanged by default.
+[ -v WEBSITE_TESTS_SKIP_SITES ] || WEBSITE_TESTS_SKIP_SITES=''
 ## The defaults below are rooted at ${HOME}. An unset HOME is an UNEXPECTED, scrubbed
 ## environment -- NOT the normal "no site checkout on this host" case -- so it must FAIL,
 ## never be papered over as a SKIP (no unauthorized skips). Record it, then empty HOME so
@@ -193,6 +210,12 @@ add_site(){
    local site count_before
    site="$1"
    shift
+   case " ${WEBSITE_TESTS_SKIP_SITES//,/ } " in
+      *" ${site} "*)
+         printf '%s\n' "website-tests: NOTICE: skipping ${site} (WEBSITE_TESTS_SKIP_SITES)" >&2
+         return
+         ;;
+   esac
    count_before="${#roots[@]}"
    add_root "$@"
    if [ "${#roots[@]}" -gt "${count_before}" ]; then
