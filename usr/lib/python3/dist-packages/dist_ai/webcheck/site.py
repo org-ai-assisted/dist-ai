@@ -2921,21 +2921,27 @@ def _site_no_index(root):
         return False
 
 
-def render_robots(host, no_index=False):
+def render_robots(host, no_index=False, artifact_exts=('pdf', 'tex', 'bib')):
     """The canonical robots.txt text for a site (trailing newline included).
     Always allows crawling HTML (a crawler must fetch a page to honor its
     per-page noindex meta) and advertises the sitemap. A no-index build ALSO
-    Disallows the non-HTML served artifacts (PDF, LaTeX source, .bib): they carry
-    no noindex meta and GitHub Pages serves no X-Robots-Tag, so a crawl block is
-    the only Pages-compatible lever. It keeps their CONTENT out of search
-    (uncrawled -> no snippet/indexed text); it does not guarantee the bare URL
-    never appears if externally linked (a known robots limitation). Users still
-    download them -- robots binds crawlers, not browsers."""
+    Disallows the non-HTML served artifacts: they carry no noindex meta and GitHub
+    Pages serves no X-Robots-Tag, so a crawl block is the only Pages-compatible
+    lever. It keeps their CONTENT out of search (uncrawled -> no snippet/indexed
+    text); it does not guarantee the bare URL never appears if externally linked (a
+    known robots limitation). Users still download them -- robots binds crawlers,
+    not browsers.
+
+    `artifact_exts` is the set of POTENTIAL served non-HTML artifacts (not files
+    present at render time: a PDF/Word are deploy-rendered + gitignored, so absent
+    from the committed tree check_seo runs on, yet still Disallowed). The default
+    pdf/tex/bib covers the family/wiki sites; the csr previews policy passes docx
+    too (its journal-maker generator serves a Word manuscript). Order is
+    significant -- it must match the generator's write_robots byte-for-byte."""
     lines = ['User-agent: *', 'Allow: /']
     if no_index:
-        lines.append('Disallow: /*.pdf$')
-        lines.append('Disallow: /*.tex$')
-        lines.append('Disallow: /*.bib$')
+        for ext in artifact_exts:
+            lines.append('Disallow: /*.%s$' % ext)
     return '\n'.join(lines) + '\n\nSitemap: https://%s/sitemap.xml\n' % host
 
 
@@ -2966,9 +2972,13 @@ def _png_complete(path):
         return False
 
 
-def check_seo(root):
+def check_seo(root, policy=None):
     """SEO drift/structural problems for one site root, or [] when current. A
-    directory with no index.html is not a site root and is skipped."""
+    directory with no index.html is not a site root and is skipped.
+
+    `policy` selects the robots artifact-ext set: the csr previews site serves a
+    Word manuscript, so its robots.txt Disallows docx on top of pdf/tex/bib; every
+    other policy keeps the default set (byte-identical robots.txt)."""
     problems: list[str] = []
     if not os.path.isfile(os.path.join(root, 'index.html')):
         return problems
@@ -2978,8 +2988,10 @@ def check_seo(root):
                         'generation needs it to derive the host')
         return problems
     no_index = _site_no_index(root)
+    robots_exts = (('pdf', 'tex', 'bib', 'docx') if policy == 'csr'
+                   else ('pdf', 'tex', 'bib'))
     for name, want in (('sitemap.xml', render_sitemap(root, host)),
-                       ('robots.txt', render_robots(host, no_index))):
+                       ('robots.txt', render_robots(host, no_index, robots_exts))):
         try:
             with open(os.path.join(root, name), encoding='utf-8') as handle:
                 have = handle.read()
@@ -3002,8 +3014,8 @@ def check_seo(root):
     return problems
 
 
-def check_seo_current(root, failures):
-    failures.extend(check_seo(root))
+def check_seo_current(root, failures, policy=None):
+    failures.extend(check_seo(root, policy))
 
 
 # MediaWiki-generated pages (the kicksecure/whonix stage sites) carry MediaWiki's own CSS
@@ -3237,7 +3249,7 @@ def main():
         check_duplicate_ids(root, failures, pages)
         check_contrast(root, failures, pages)
         check_toc_complete(root, failures, pages)
-        check_seo_current(root, failures)
+        check_seo_current(root, failures, policy)
         # Hand-authored family/CSR chrome -- NOT the MediaWiki-generated wiki trees,
         # whose chrome is mw-* classes with a different footer/nav + its own class
         # vocabulary, so these would misfire wholesale. check_freshness / check_banner

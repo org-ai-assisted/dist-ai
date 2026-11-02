@@ -292,13 +292,34 @@ def run():
         check('a no-index site without the PDF Disallow is flagged stale',
               any('robots.txt' in p for p in cs.check_seo(root)),
               repr(cs.check_seo(root)))
+        # The csr previews policy serves a Word manuscript, so its robots adds a
+        # docx Disallow on top of pdf/tex/bib; the default (family/wiki) set does
+        # NOT -- keeping those sites' robots.txt byte-identical.
+        csr_exts = ('pdf', 'tex', 'bib', 'docx')
+        check('csr robots Disallows the Word manuscript (.docx)',
+              'Disallow: /*.docx$' in cs.render_robots(
+                  host, no_index=True, artifact_exts=csr_exts),
+              repr(cs.render_robots(host, no_index=True, artifact_exts=csr_exts)))
+        check('default (family/wiki) robots does NOT Disallow .docx',
+              'Disallow: /*.docx$' not in cs.render_robots(host, no_index=True),
+              repr(cs.render_robots(host, no_index=True)))
+        # The exact divergence that broke csr-build: a no-index csr site whose
+        # robots Disallows docx is ACCEPTED under the csr policy but flagged stale
+        # under the default policy (which does not expect docx).
+        with open(os.path.join(root, 'robots.txt'), 'w', encoding='utf-8') as h:
+            h.write(cs.render_robots(host, no_index=True, artifact_exts=csr_exts))
+        check('check_seo(root, "csr") accepts a docx-Disallow robots',
+              cs.check_seo(root, 'csr') == [], repr(cs.check_seo(root, 'csr')))
+        check('check_seo(root) default policy flags the docx robots stale',
+              any('robots.txt' in p for p in cs.check_seo(root)),
+              repr(cs.check_seo(root)))
 
     # the gate must be wired into main() -- read the real function source wherever
     # it lives (the core module), not a fixed file path, so the CLI-shim split does
     # not blind this guard.
     main_src = inspect.getsource(cs.main)
-    check('check_seo_current invoked from main()',
-          'check_seo_current(root, failures)' in main_src)
+    check('check_seo_current invoked from main() with the per-root policy',
+          'check_seo_current(root, failures, policy)' in main_src)
 
     passed = sum(1 for _n, ok, _d in results if ok)
     failed = len(results) - passed
