@@ -136,8 +136,12 @@ def run():
                "    return 'example.github.io'\n"
                'def render_sitemap(root, host):\n'
                "    return 'COLOCATED-SITEMAP\\n'\n"
-               'def render_robots(host, no_index=False):\n'
+               'def render_robots(host, no_index=False, artifact_exts=()):\n'
                "    return 'COLOCATED-ROBOTS\\n'\n"
+               'def robots_artifact_exts(policy):\n'
+               '    return ()\n'
+               'def _policy_for(root):\n'
+               "    return None, ''\n"
                'def _site_no_index(root):\n'
                '    return False\n')
         linkdir = os.path.join(base, 'linkdir')
@@ -163,6 +167,29 @@ def run():
               proc.returncode == 0 and got_sm == 'COLOCATED-SITEMAP\n'
               and got_rb == 'COLOCATED-ROBOTS\n',
               'rc=%r sitemap=%r robots=%r' % (proc.returncode, got_sm, got_rb))
+
+    # 5. a csr-policy no-index site: site-generate must WRITE the docx Disallow
+    #    AND --check must accept it. The policy is resolved from .github/web-tests.yml
+    #    (policies: csr) on BOTH paths. Canary: the pre-fix site-generate ignored the
+    #    policy, so _generate wrote robots WITHOUT the docx rule -- diverging from the
+    #    journal-maker-generated csr robots the gate compares against.
+    with tempfile.TemporaryDirectory() as root:
+        _repo(root)
+        _write(os.path.join(root, 'index.html'),
+               _INDEX + '<meta name="robots" content="noindex">\n')
+        os.makedirs(os.path.join(root, '.github'))
+        _write(os.path.join(root, '.github', 'web-tests.yml'), 'policies: csr\n')
+        _git(root, 'add', '-A')
+        _git(root, 'commit', '-qm', 'init')
+        rc = sg._generate(root, False, cs)
+        with open(os.path.join(root, 'robots.txt'), encoding='utf-8') as handle:
+            robots = handle.read()
+        check('csr site-generate writes the docx Disallow',
+              rc == 0 and 'Disallow: /*.docx$' in robots, repr(robots))
+        _git(root, 'add', '-A')
+        _git(root, 'commit', '-qm', 'gen')
+        check('csr site-generate --check accepts its own docx robots',
+              sg.main(['--check', root]) == 0)
 
     passed = sum(1 for _n, ok, _d in results if ok)
     failed = len(results) - passed

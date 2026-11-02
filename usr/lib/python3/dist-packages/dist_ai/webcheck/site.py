@@ -2972,6 +2972,16 @@ def _png_complete(path):
         return False
 
 
+def robots_artifact_exts(policy):
+    """The no-index robots Disallow artifact set for a site policy. The csr
+    previews site serves a deploy-rendered Word manuscript, so csr adds docx
+    (LAST, matching journal-maker write_robots byte order) on top of the
+    pdf/tex/bib default; every other policy keeps the default set so its robots.txt
+    stays byte-identical. One source of truth for both the check_seo expectation
+    and the site-generate writer."""
+    return ('pdf', 'tex', 'bib', 'docx') if policy == 'csr' else ('pdf', 'tex', 'bib')
+
+
 def check_seo(root, policy=None):
     """SEO drift/structural problems for one site root, or [] when current. A
     directory with no index.html is not a site root and is skipped.
@@ -2988,8 +2998,7 @@ def check_seo(root, policy=None):
                         'generation needs it to derive the host')
         return problems
     no_index = _site_no_index(root)
-    robots_exts = (('pdf', 'tex', 'bib', 'docx') if policy == 'csr'
-                   else ('pdf', 'tex', 'bib'))
+    robots_exts = robots_artifact_exts(policy)
     for name, want in (('sitemap.xml', render_sitemap(root, host)),
                        ('robots.txt', render_robots(host, no_index, robots_exts))):
         try:
