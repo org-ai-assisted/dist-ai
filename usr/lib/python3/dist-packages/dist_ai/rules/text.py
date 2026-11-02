@@ -417,9 +417,39 @@ class PythonShellGuard(Rule):
         yield Edit(offset, offset, SHELL_GUARD_BLOCK, "python-shell-guard")
 
 
+class LibexecExecutableNeedsShebang(Rule):
+    """A file under usr/libexec/ ships EXECUTABLE (the dh/genmkfile install mode), so
+    one that is neither ELF nor a script (no '#!') trips lintian
+    executable-not-elf-or-script and BREAKS the .deb build. The local gate otherwise
+    passes it: check-executables-have-shebangs keys on the GIT exec bit (a
+    0644-in-git / 0755-installed data file carries none) and runs only in git mode.
+    Key on the PATH, not the exec bit. Fix: add a shebang, or install the file 0644; a
+    file that is genuinely a non-exec data payload opts out with the waiver. ELF binaries
+    are already exempt (ctx.is_binary)."""
+
+    id = "libexec-shebang"
+    waiver_tag = "allow-libexec-no-shebang"
+
+    def applies(self, ctx):
+        return (super().applies(ctx) and ctx.data is not None
+                and not ctx.is_binary
+                and re.search(r"(?:^|/)usr/libexec/", ctx.path) is not None)
+
+    def detect(self, ctx):
+        if not ctx.shebang:
+            yield model.fail(
+                "libexec-shebang",
+                "libexec-shebang: usr/libexec file ships executable but is neither ELF "
+                "nor a script (no '#!') -- lintian executable-not-elf-or-script breaks "
+                "the .deb. Add a shebang, install it 0644, or waive with "
+                "'## style-ok: allow-libexec-no-shebang'.",
+                ctx.path, 1)
+
+
 RULES = (
     Confusables(),
     TrailingWhitespace(),
     PythonShebang(),
     PythonShellGuard(),
+    LibexecExecutableNeedsShebang(),
 )
