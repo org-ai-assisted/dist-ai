@@ -2026,14 +2026,32 @@ class TmpHardcode(Rule):
         r"(?:TMP|TMPDIR|TEMP|TEMPDIR)=['\"]?/tmp['\"]?(?:[ \t;&|)]|$)"
         r"|--setenv[ \t]+(?:TMP|TMPDIR|TEMP|TEMPDIR)[ \t]+"
         r"['\"]?/tmp['\"]?(?:[ \t;&|)]|$)")
+    ## Per-LINE waiver: a TRAILING inline '## style-ok: R-170' (or 'no-tmp-hardcode')
+    ## on the flagged line ITSELF. Distinct from the file-wide waiver, which base
+    ## applies() matches only LINE-LEADING -- so an inline trailing tag clears ONE
+    ## legitimate /tmp (e.g. a literal /tmp HOME in a test) without freezing the file
+    ## against NEW /tmp debt. SAME line only: a standalone tag on the line above is
+    ## already line-leading -> file-wide (applies suppresses the whole file), and
+    ## honoring 'line above' would let line N's trailing waiver also clear line N+1.
+    ## Matched against the shfmt comment TEXT (spoof-proof), as R-220's allow-skip is.
+    _LINE_WAIVER = re.compile(
+        r'^#+[ \t]*style-ok:[ \t]*(?:R-170|no-tmp-hardcode)(?:[ \t\r]|$)')
 
     def applies(self, ctx):
         return super().applies(ctx)
 
     def detect(self, ctx):
+        comment_by_line = {}
+        for comment in bash_ast.comments(ctx.tree):
+            number = comment.get("Hash", {}).get("Line")
+            if number:
+                comment_by_line[number] = "#" + comment.get("Text", "")
         for number, line in enumerate(
                 h.code_only_lines(ctx.source, ctx.tree), 1):
             if self._MATCH.search(line) and not self._SPARE.search(line):
+                waiver = comment_by_line.get(number)
+                if waiver is not None and self._LINE_WAIVER.match(waiver):
+                    continue
                 yield model.fail(
                     "R-170", "R-170 hardcoded /tmp (use ${TMP})", ctx.path,
                     number)
