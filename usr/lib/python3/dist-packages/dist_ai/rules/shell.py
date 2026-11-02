@@ -2033,9 +2033,11 @@ class TmpHardcode(Rule):
     ## against NEW /tmp debt. SAME line only: a standalone tag on the line above is
     ## already line-leading -> file-wide (applies suppresses the whole file), and
     ## honoring 'line above' would let line N's trailing waiver also clear line N+1.
-    ## Matched against the shfmt comment TEXT (spoof-proof), as R-220's allow-skip is.
+    ## Matched against the shfmt comment TEXT (spoof-proof), as R-220's allow-skip is. Require
+    ## exactly '##' (the shell waiver grammar has_waiver enforces) -- a single '#' is NOT a valid
+    ## 'no-tmp-hardcode'/'R-170' waiver and must not clear the line.
     _LINE_WAIVER = re.compile(
-        r'^#+[ \t]*style-ok:[ \t]*(?:R-170|no-tmp-hardcode)(?:[ \t\r]|$)')
+        r'^##[ \t]*style-ok:[ \t]*(?:R-170|no-tmp-hardcode)(?:[ \t\r]|$)')
 
     def applies(self, ctx):
         return super().applies(ctx)

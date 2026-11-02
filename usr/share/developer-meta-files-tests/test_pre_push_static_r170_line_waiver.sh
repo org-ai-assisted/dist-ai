@@ -44,9 +44,14 @@ fi
 ## Resolve the gate RELATIVE to this test file; PRE_PUSH_STATIC_BIN overrides for
 ## a canary run against an alternate (pre-fix) gate copy.
 gate_test_dir="$(cd -- "$(dirname -- "$(readlink --canonicalize -- "$0")")" && pwd)"
-GATE="${PRE_PUSH_STATIC_BIN:-${gate_test_dir}/../../bin/dist-ai-style}"
-if [ ! -x "${GATE}" ]; then
-   GATE='/usr/bin/dist-ai-style'
+## An EXPLICIT override is honored exactly -- never silently fall back to the installed gate (a
+## canary pointed at a missing/non-exec binary would otherwise pass without testing what it named).
+## Only an UNSET override falls back from the in-tree copy to the installed one.
+if [ -n "${PRE_PUSH_STATIC_BIN:-}" ]; then
+   GATE="${PRE_PUSH_STATIC_BIN}"
+else
+   GATE="${gate_test_dir}/../../bin/dist-ai-style"
+   [ -x "${GATE}" ] || GATE='/usr/bin/dist-ai-style'
 fi
 [ -x "${GATE}" ] \
    || { printf '%s\n' "FATAL: gate not executable at '${GATE}'." >&2; exit 1; }
@@ -159,6 +164,14 @@ run_gate \
    "b=\"${tmpp}/bbb\""
 assert_r170_line 'file-wide waiver spares line 3' 3 'absent'
 assert_r170_line 'file-wide waiver spares line 4' 4 'absent'
+
+## A SINGLE '#' is NOT a valid waiver (the shell grammar requires '##'), so a trailing
+## '# style-ok: R-170' must NOT clear its line -- both lines stay flagged.
+run_gate \
+   "c=\"${tmpp}/ccc\"  # style-ok: ${r170}" \
+   "d=\"${tmpp}/ddd\""
+assert_r170_line 'single-# trailing waiver does NOT spare its line' 1 'present'
+assert_r170_line 'the following unwaived temp-path line is still flagged' 2 'present'
 
 printf '%s\n' "" "${pass_count} pass, ${fail_count} fail, 0 skip"
 if [ "${fail_count}" -ne 0 ]; then
