@@ -615,6 +615,18 @@ else
    pass 'option forwarding: an attached-value option is forwarded verbatim ahead of the --end-of-options-marked range (attached form not over-rejected)'
 fi
 
+## A SUPPRESS/REDIRECT option (e.g. --no-patch) must be REJECTED (exit 2): forwarded to the review
+## tools it silently empties the review while the tool still exits 0. The option loop dies before
+## the unicode scans, so this holds with or without the scan deps on PATH.
+rc=0
+( cd -- "${repo}" && PATH="${DEVELOPER_META_FILES_DIR}/usr/bin:${PATH}" setsid dm-review-branch --no-patch feature ) \
+   </dev/null >/dev/null 2>&1 || rc="$?"
+if [ "${rc}" = 2 ]; then
+   pass 'option forwarding: a suppress option (--no-patch) is rejected (exit 2), not silently forwarded'
+else
+   fail "option forwarding: '--no-patch' should be rejected with exit 2, got ${rc}"
+fi
+
 if [ "${fail_count}" -gt 0 ]; then
    printf '%s\n' "test_dm_review_branch: ${fail_count} assertion(s) failed." >&2
    exit 1
