@@ -42,8 +42,14 @@ fi
 ## usr/bin/), so editing the in-tree runner tests THAT copy, not the packaged
 ## one. DIST_AI_TESTS_ALL_BIN overrides for a canary run against a pre-fix copy.
 test_dir="$(cd -- "$(dirname -- "$(readlink --canonicalize -- "$0")")" && pwd)"
-ORCH="${DIST_AI_TESTS_ALL_BIN:-${test_dir}/../../bin/dist-ai-tests-all}"
-if [ ! -x "${ORCH}" ]; then
+## An EXPLICIT override is honored exactly -- never silently fall back to the installed orchestrator
+## (a canary pointed at a missing/non-exec binary would otherwise pass without testing what it
+## named). Only an UNSET override falls back from the in-tree copy to the installed one.
+if [ -n "${DIST_AI_TESTS_ALL_BIN:-}" ]; then
+   ORCH="${DIST_AI_TESTS_ALL_BIN}"
+elif [ -x "${test_dir}/../../bin/dist-ai-tests-all" ]; then
+   ORCH="${test_dir}/../../bin/dist-ai-tests-all"
+else
    ORCH='/usr/bin/dist-ai-tests-all'
 fi
 [ -x "${ORCH}" ] \
