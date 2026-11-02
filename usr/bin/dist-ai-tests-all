@@ -1753,6 +1753,14 @@ if [ -n "${helper_scripts_root}" ] && [ -z "${repo_root}" ] && [ -z "${component
    printf '%s\n' 'dist-ai-tests-all: WARNING: --helper-scripts-root has no effect without --repo-root or --component-root; it was ignored.' >&2
 fi
 
+## Neither --repo-root nor --component-root: every suite resolves its subject from the INSTALLED
+## /usr copy, NOT a checkout. For a local AI run that SILENTLY tests a stale installed package and
+## reports false version-skew failures. Warn loudly -- not fatal, since a packaged-install smoke
+## test is a legitimate no-root run (CI passes a root to test the checkout). Pass --repo-root.
+if [ -z "${repo_root}" ] && [ -z "${component_root}" ]; then
+   printf '%s\n' 'dist-ai-tests-all: WARNING: no --repo-root/--component-root -- suites run against the INSTALLED /usr copy, not a checkout; a stale install yields FALSE version-skew failures. Pass --repo-root <checkout> to test your working tree.' >&2
+fi
+
 ## An ISOLATED, throwaway context: a GitHub runner or the confined sandbox. This is the
 ## ONLY set where the PRIVILEGED CI re-exec (useradd + NOPASSWD sudoers + chown) is
 ## appropriate -- both are disposable, so creating a build user + passwordless sudoers
