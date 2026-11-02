@@ -1758,7 +1758,7 @@ fi
 ## reports false version-skew failures. Warn loudly -- not fatal, since a packaged-install smoke
 ## test is a legitimate no-root run (CI passes a root to test the checkout). Pass --repo-root.
 if [ -z "${repo_root}" ] && [ -z "${component_root}" ]; then
-   printf '%s\n' 'dist-ai-tests-all: WARNING: no --repo-root/--component-root -- suites run against the INSTALLED /usr copy, not a checkout; a stale install yields FALSE version-skew failures. Pass --repo-root <checkout> to test your working tree.' >&2
+   printf '%s\n' 'dist-ai-tests-all: WARNING: no --repo-root/--component-root -- suites run against the INSTALLED /usr copy, not a checkout; a stale install yields FALSE version-skew failures. Pass --repo-root <derivative-maker checkout>, or --component NAME --component-root DIR for a standalone component (not a monorepo), to test your working tree.' >&2
 fi
 
 ## An ISOLATED, throwaway context: a GitHub runner or the confined sandbox. This is the
