@@ -50,9 +50,14 @@ fi
 ## PRE_PUSH_STATIC_BIN aims the suite at an alternate gate copy (the pre-fix
 ## version for a canary run); otherwise the in-tree copy, then the packaged.
 gate_test_dir="$(cd -- "$(dirname -- "$(readlink --canonicalize -- "$0")")" && pwd)"
-GATE="${PRE_PUSH_STATIC_BIN:-${gate_test_dir}/../../bin/dist-ai-style}"
-if [ ! -x "${GATE}" ]; then
-   GATE='/usr/bin/dist-ai-style'
+## An EXPLICIT override is honored exactly -- never silently fall back to the installed gate (a
+## canary pointed at a missing/non-exec binary would otherwise pass without testing what it named).
+## Only an UNSET override falls back from the in-tree copy to the installed one.
+if [ -n "${PRE_PUSH_STATIC_BIN:-}" ]; then
+   GATE="${PRE_PUSH_STATIC_BIN}"
+else
+   GATE="${gate_test_dir}/../../bin/dist-ai-style"
+   [ -x "${GATE}" ] || GATE='/usr/bin/dist-ai-style'
 fi
 [ -x "${GATE}" ] \
    || { printf '%s\n' "FATAL: gate not executable at '${GATE}'." >&2; exit 1; }
@@ -158,6 +163,32 @@ assert_tag 'a real shebang spares it' 'absent'
 ## rule is path-keyed, not a blanket no-shebang check.
 run_gate 'usr/share/foo/prog.awk' 0 '{ print }'
 assert_tag 'a non-libexec file is not flagged' 'absent'
+
+## (e) a NESTED usr/libexec under another usr/ subtree (e.g. a test fixture) is NOT installed to
+## /usr/libexec, so it must NOT be flagged -- the path predicate anchors on the FIRST usr/ being
+## immediately followed by libexec, not any usr/libexec substring.
+run_gate 'usr/share/foo-tests/fixtures/usr/libexec/sample.dat' 0 'fixture data'
+assert_tag 'a nested usr/libexec under usr/share is NOT flagged' 'absent'
+
+## (f) a NUL-containing, non-ELF payload under usr/libexec is STILL flagged: ctx.is_binary (a NUL
+## byte) must NOT exempt it -- dh forces +x and lintian flags a non-ELF/non-script. run_gate is
+## line-based (no NUL), so write the byte directly and run the gate in per-file mode.
+nuldir="$(mktemp --directory)"
+mkdir --parents -- "${nuldir}/usr/libexec/foo"
+printf '%s\0' 'not-elf' > "${nuldir}/usr/libexec/foo/nul.dat"
+printf '%s\n' 'payload' >> "${nuldir}/usr/libexec/foo/nul.dat"
+nul_output="$( "${GATE}" "${nuldir}/usr/libexec/foo/nul.dat" 2>&1 )" || true
+safe-rm --recursive --force -- "${nuldir}" || true
+case "${nul_output}" in
+   *libexec-shebang*)
+      printf '%s\n' "PASS: a NUL-containing non-ELF usr/libexec file is flagged"
+      pass_count=$(( pass_count + 1 ))
+      ;;
+   *)
+      printf '%s\n' "FAIL: a NUL-containing non-ELF usr/libexec file was NOT flagged" >&2
+      fail_count=$(( fail_count + 1 ))
+      ;;
+esac
 
 printf '%s\n' "" "${pass_count} pass, ${fail_count} fail, 0 skip"
 if [ "${fail_count}" -ne 0 ]; then

@@ -418,32 +418,47 @@ class PythonShellGuard(Rule):
 
 
 class LibexecExecutableNeedsShebang(Rule):
-    """A file under usr/libexec/ ships EXECUTABLE (the dh/genmkfile install mode), so
-    one that is neither ELF nor a script (no '#!') trips lintian
-    executable-not-elf-or-script and BREAKS the .deb build. The local gate otherwise
-    passes it: check-executables-have-shebangs keys on the GIT exec bit (a
-    0644-in-git / 0755-installed data file carries none) and runs only in git mode.
-    Key on the PATH, not the exec bit. Fix: add a shebang, or install the file 0644; a
-    file that is genuinely a non-exec data payload opts out with the waiver. ELF binaries
-    are already exempt (ctx.is_binary)."""
+    """A file shipped under usr/libexec/ is installed EXECUTABLE -- dh_fixperms / genmkfile force
+    a+x on every regular file there, regardless of its committed mode -- so one that is neither an
+    ELF binary nor a script (no '#!') trips lintian executable-not-elf-or-script and BREAKS the
+    .deb build. The local gate otherwise passes it: check-executables-have-shebangs keys on the GIT
+    exec bit (which a 0644-in-git file does not carry) and runs only in git mode. This rule is
+    mode-agnostic, keyed on the install PATH + the file's leading BYTES. Fix: add a shebang, or move
+    the file out of usr/libexec (installing it 0644 does NOT help -- dh forces +x there); a genuine
+    non-exec payload that MUST live there opts out with the waiver."""
 
     id = "libexec-shebang"
     waiver_tag = "allow-libexec-no-shebang"
 
     def applies(self, ctx):
-        return (super().applies(ctx) and ctx.data is not None
-                and not ctx.is_binary
-                and re.search(r"(?:^|/)usr/libexec/", ctx.path) is not None)
+        ## Only a file whose FIRST 'usr' path component is immediately followed by 'libexec' ships
+        ## to /usr/libexec: a NESTED usr/libexec (e.g. usr/share/<pkg>/fixtures/usr/libexec/...) is
+        ## installed elsewhere and must NOT be flagged. data (not source) must be present, so a
+        ## non-UTF-8 or NUL-containing payload is still inspected in detect() -- do NOT exempt
+        ## ctx.is_binary (a NUL-containing non-ELF payload is exactly a case lintian flags).
+        if not super().applies(ctx) or ctx.data is None:
+            return False
+        parts = ctx.path.split("/")
+        try:
+            i = parts.index("usr")
+        except ValueError:
+            return False
+        return i + 1 < len(parts) and parts[i + 1] == "libexec"
 
     def detect(self, ctx):
-        if not ctx.shebang:
-            yield model.fail(
-                "libexec-shebang",
-                "libexec-shebang: usr/libexec file ships executable but is neither ELF "
-                "nor a script (no '#!') -- lintian executable-not-elf-or-script breaks "
-                "the .deb. Add a shebang, install it 0644, or waive with "
-                "'## style-ok: allow-libexec-no-shebang'.",
-                ctx.path, 1)
+        ## lintian executable-not-elf-or-script fires unless the file starts with ELF magic or a
+        ## '#!' shebang. Test the RAW leading bytes: ctx.shebang is decoded (UTF-8-only) and would
+        ## miss a non-UTF-8 script's real '#!', while ctx.is_binary (NUL/attr) is not an ELF test.
+        data = ctx.data
+        if data[:4] == b"\x7fELF" or data[:2] == b"#!":
+            return
+        yield model.fail(
+            "libexec-shebang",
+            "libexec-shebang: a file under usr/libexec is installed executable but is neither ELF "
+            "nor a script (no '#!') -- lintian executable-not-elf-or-script breaks the .deb. Add a "
+            "shebang, or move it out of usr/libexec (installing 0644 does NOT help; dh forces +x "
+            "there), or waive with '## style-ok: allow-libexec-no-shebang'.",
+            ctx.path, 1)
 
 
 RULES = (
