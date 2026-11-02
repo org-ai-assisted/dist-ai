@@ -95,7 +95,7 @@ def run():
         os.symlink(victim, os.path.join(root, 'sitemap.xml'))
         _git(root, 'add', '-A')
         _git(root, 'commit', '-qm', 'init')
-        rc = sg._generate(root, False, cs)
+        rc = sg._generate(root, False, cs, cs._policy_for(root)[0])
         check('symlink output refused (returns 1)', rc == 1, repr(rc))
         with open(victim, encoding='utf-8') as handle:
             check('symlink victim not overwritten',
@@ -181,7 +181,7 @@ def run():
         _write(os.path.join(root, '.github', 'web-tests.yml'), 'policies: csr\n')
         _git(root, 'add', '-A')
         _git(root, 'commit', '-qm', 'init')
-        rc = sg._generate(root, False, cs)
+        rc = sg._generate(root, False, cs, cs._policy_for(root)[0])
         with open(os.path.join(root, 'robots.txt'), encoding='utf-8') as handle:
             robots = handle.read()
         check('csr site-generate writes the docx Disallow',
@@ -190,6 +190,30 @@ def run():
         _git(root, 'commit', '-qm', 'gen')
         check('csr site-generate --check accepts its own docx robots',
               sg.main(['--check', root]) == 0)
+
+    # 6. a present-but-malformed .github/web-tests.yml raises config.ConfigError in
+    #    _policy_for; site-generate must catch it and print a CLEAN one-line error
+    #    (like site.py main()), never let a raw traceback escape. Canary: the
+    #    pre-fix code called _policy_for uncaught on both paths.
+    import contextlib
+    import io
+    with tempfile.TemporaryDirectory() as root:
+        _write(os.path.join(root, 'index.html'), _INDEX)
+        os.makedirs(os.path.join(root, '.github'))
+        _write(os.path.join(root, '.github', 'web-tests.yml'), 'name: foo\n')
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rc = sg.main(['--check', root])
+        msg = err.getvalue()
+        check('malformed web-tests.yml --check -> clean error, no traceback',
+              rc == 1 and 'web-tests.yml' in msg and 'Traceback' not in msg,
+              'rc=%r msg=%r' % (rc, msg))
+        err2 = io.StringIO()
+        with contextlib.redirect_stderr(err2):
+            rc2 = sg.main([root])          # the generate path, same guard
+        check('malformed web-tests.yml generate -> clean error, no traceback',
+              rc2 == 1 and 'Traceback' not in err2.getvalue(),
+              'rc=%r msg=%r' % (rc2, err2.getvalue()))
 
     passed = sum(1 for _n, ok, _d in results if ok)
     failed = len(results) - passed

@@ -149,18 +149,15 @@ def _render_favicon(root, check_site):
             os.remove(tmp)
 
 
-def _generate(root, force, check_site):
+def _generate(root, force, check_site, policy):
     host = check_site.seo_host(root)
     if not host:
         sys.stderr.write('site-generate: %s/index.html has no <link '
                          'rel="canonical">; cannot derive the host.\n' % root)
         return 1
-    ## The robots artifact-Disallow set is per-policy (csr serves a Word .docx);
-    ## resolve it with the SAME selector check_seo/main use so the written
-    ## robots.txt matches what the gate expects. _policy_for returns
-    ## (policy, reason); take the policy string (None for a no-policy site ->
-    ## default artifact set).
-    policy = check_site._policy_for(root)[0]
+    ## `policy` (resolved once by main(), None for a no-policy site) selects the
+    ## per-policy robots artifact-Disallow set via the SAME selector check_seo
+    ## uses, so the written robots.txt matches what the gate expects.
     ## Refuse to write THROUGH a symlink: a tracked or planted link could
     ## redirect a write outside the checkout. Mirrors site-image-optimize's
     ## symlink stance. Covers the outputs and the temp names they write via.
@@ -230,15 +227,23 @@ def main(argv):
                          "'%s/../share/website-tests' and "
                          '/usr/share/website-tests)\n' % _SELF_DIR)
         return 1
+    ## Resolve the per-site policy ONCE (both the --check and generate paths need
+    ## it). Mirrors site.py main(): a present-but-malformed .github/web-tests.yml
+    ## raises config.ConfigError -- print a clean one-line error, not a raw
+    ## traceback. _policy_for returns (policy, reason); keep the policy string.
+    try:
+        policy = check_site._policy_for(root)[0]
+    except check_site.config.ConfigError as exc:
+        sys.stderr.write('site-generate: %s\n' % exc)
+        return 1
     if check:
-        ## _policy_for returns (policy, reason); check_seo wants the policy string.
-        problems = check_site.check_seo(root, check_site._policy_for(root)[0])
+        problems = check_site.check_seo(root, policy)
         for problem in problems:
             sys.stderr.write('site-generate: %s\n' % problem)
         if not problems:
             sys.stdout.write('site-generate: derived artifacts are current\n')
         return 1 if problems else 0
-    return _generate(root, force, check_site)
+    return _generate(root, force, check_site, policy)
 
 
 if __name__ == '__main__':

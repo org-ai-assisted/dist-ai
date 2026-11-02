@@ -1238,7 +1238,7 @@ def _first_wins(attrs):
     resolves a duplicate attribute (HTML parsing spec drops later duplicates). dict(attrs)
     keeps the LAST, which a crafted `<script src=evil src=ok>` / `type=js type=inert`
     exploits to evade a last-wins scan."""
-    amap = {}
+    amap: dict[str, str | None] = {}
     for name, value in attrs:
         amap.setdefault(name, value)
     return amap
