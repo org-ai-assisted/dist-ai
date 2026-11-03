@@ -22,6 +22,11 @@ export LC_ALL=C
 ## usr/bin from a checkout and /usr/bin when installed. Overridable for tests.
 payload_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 runner="${ONION_TESTER_RUN_BIN:-${payload_dir}/../../bin/onion-tester-run}"
+## These cases test the retry POLICY, not Tor setup, so satisfy the runner's
+## control-port preflight with a stub "reachable" check (a real TCP probe of
+## 9051 would otherwise trigger the self-heal). The dedicated preflight behavior
+## is covered by onion_tester_control_preflight_test.sh.
+export ONION_TESTER_CONTROL_CHECK=true
 work_dir=""
 passed=0
 failed=0

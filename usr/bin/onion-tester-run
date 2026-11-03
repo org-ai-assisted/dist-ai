@@ -69,6 +69,15 @@ newnym="${ONION_TESTER_NEWNYM_BIN:-${script_dir}/onion-tester-newnym}"
 ## Cheap descriptor-cache warm-up (a parallel curl --head sweep), NOT the full
 ## probe. Overridable so the suite can drive a mock.
 warmup="${ONION_TESTER_WARMUP_BIN:-${script_dir}/onion-tester-warmup}"
+## Self-heal bins for the control-port preflight (below). Overridable so the
+## mocked suite can satisfy the preflight without a real Tor.
+configure_tor="${ONION_TESTER_CONFIGURE_TOR_BIN:-${script_dir}/onion-tester-configure-tor}"
+wait_bootstrap="${ONION_TESTER_WAIT_BOOTSTRAP_BIN:-${script_dir}/onion-tester-wait-bootstrap}"
+## Tor control port the time-sanity check needs. ONION_TESTER_CONTROL_CHECK, when
+## set, is a command whose exit status stands in for "control port reachable"
+## (the mocked suite sets it to true/false); unset -> a real TCP probe of the port.
+control_port="${ONION_TESTER_CONTROL_PORT:-9051}"
+control_check="${ONION_TESTER_CONTROL_CHECK:-}"
 attempts="${ONION_TESTER_ATTEMPTS:-3}"
 ## Long enough for Tor's NEWNYM rate limit to clear and for the purged
 ## descriptor/intro-point state to be re-fetched from a different HSDir set.
@@ -98,6 +107,7 @@ declare -rA rc_meaning=(
    [0]="all up"
    [1]="URL offline"
    [3]="NEWNYM failed"
+   [4]="Tor control port unreachable"
    [124]="out of budget"
 )
 
@@ -120,9 +130,52 @@ rc_legend() {
    fi
 }
 
+## True when Tor's control port is reachable. The time-sanity check (stem) needs
+## it; without it EVERY probed URL falls back to REACHABLE-but-INVALID and the run
+## reports a bogus "0 ONLINE" that reads as "all onions dead". ONION_TESTER_CONTROL_CHECK
+## overrides the probe (tests); unset -> a real TCP connect to the control port.
+control_port_up() {
+   if [ -n "${control_check}" ]; then
+      "${control_check}"
+      return
+   fi
+   ## bash /dev/tcp: a refused connect (no ControlPort configured) is the exact
+   ## failure that silently produced the false "all offline".
+   (exec 3<>"/dev/tcp/127.0.0.1/${control_port}") 2>/dev/null || return 1
+   exec 3>&-
+   return 0
+}
+
+## Preflight: the measured attempts are meaningless without the control port, so
+## refuse to probe without it rather than emit a bogus verdict. Locally, set Tor
+## up here (safe path by default -- nothing for the operator to recall); in CI the
+## workflow runs configure-tor/wait-bootstrap explicitly, so a still-down port is a
+## real infrastructure failure to surface loudly, not auto-mutate.
+ensure_control_port() {
+   if control_port_up; then
+      return 0
+   fi
+   if [ "${CI:-}" = "true" ]; then
+      printf '%s\n' "onion-tester: Tor control port ${control_port} unreachable in CI -- the configure-tor/wait-bootstrap steps must run first; refusing to probe (every URL would misreport as REACHABLE-but-INVALID)" >&2
+      exit 4
+   fi
+   printf '%s\n' "onion-tester: Tor control port ${control_port} unreachable; running configure-tor + wait-bootstrap (local self-heal, needs sudo)" >&2
+   if ! "${configure_tor}" || ! "${wait_bootstrap}"; then
+      printf '%s\n' "onion-tester: self-heal failed (configure-tor/wait-bootstrap) -- set Tor up manually, then re-run; refusing to probe without the control port" >&2
+      exit 4
+   fi
+   if ! control_port_up; then
+      printf '%s\n' "onion-tester: Tor control port ${control_port} STILL unreachable after self-heal; refusing to probe (every URL would misreport as REACHABLE-but-INVALID)" >&2
+      exit 4
+   fi
+   printf '%s\n' "onion-tester: control port ${control_port} reachable after self-heal"
+}
+
 main() {
    local start now elapsed remaining attempt rc final_attempt=0 tmp warmup_budget
    local -a probe_args=()
+
+   ensure_control_port
 
    start="$(date +%s)"
    tmp="$(mktemp)"
@@ -180,11 +233,15 @@ main() {
       fi
 
       ## Bound the single attempt by the remaining budget; --kill-after reaps curl
-      ## stragglers. Capture to ${tmp} to parse FAILED_URL markers, and cat it so the
-      ## CI log still shows the full probe output.
+      ## stragglers. tee STREAMS the probe's output live (the probe is python3 -u,
+      ## unbuffered) while capturing it to ${tmp} for FAILED_URL parsing -- so a
+      ## supervisor watching progress sees per-URL lines during the attempt instead
+      ## of a 300-800s silent gap that reads as a stall. PIPESTATUS[0] is the probe's
+      ## status (timeout's exit), read inside the failure branch before anything else.
       rc=0
-      timeout --kill-after=10s "${remaining}s" "${onion_tester}" "${probe_args[@]}" > "${tmp}" 2>&1 || rc=$?
-      cat -- "${tmp}"
+      if ! timeout --kill-after=10s "${remaining}s" "${onion_tester}" "${probe_args[@]}" 2>&1 | tee -- "${tmp}"; then
+         rc="${PIPESTATUS[0]}"
+      fi
       final_attempt="${attempt}"
 
       if [ "${rc}" -eq 0 ]; then

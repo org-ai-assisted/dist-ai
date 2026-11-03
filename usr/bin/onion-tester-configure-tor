@@ -13,6 +13,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 if [ "${CI:-}" != "true" ] && [ "${ALLOW_LOCAL:-}" != "true" ]; then
    printf '%s\n' \
@@ -27,7 +28,14 @@ main() {
    ## REACHABLE-but-INVALID. Cookie group-readable + chmod o+r in
    ## wait-bootstrap.sh make it usable by the non-debian-tor runner.
    ## Log notice file is read by wait-bootstrap.sh's grep.
-   sudo tee --append /etc/tor/torrc > /dev/null <<'TORRC_EOF'
+   ## Idempotent: append only once. The onion-tester-run preflight may call this
+   ## to self-heal a missing control port, and an operator may re-run it; a second
+   ## append would duplicate ControlPort etc. and tor would refuse to start. Keyed
+   ## on the marker line below appearing anywhere in torrc.
+   if sudo grep --quiet --fixed-strings -- 'Added by local-onion-tester.yml' /etc/tor/torrc 2>/dev/null; then
+      printf '%s\n' "torrc already has the onion-tester directives; not appending again"
+   else
+      sudo tee --append /etc/tor/torrc > /dev/null <<'TORRC_EOF'
 
 ## Added by local-onion-tester.yml
 ControlPort 9051
@@ -42,8 +50,13 @@ Log notice file /var/log/tor/notice.log
 ## fresh entry.
 UseEntryGuards 0
 TORRC_EOF
+      printf '%s\n' "torrc appended"
+   fi
+   ## Always (re)start: the preflight calls this precisely when the control port
+   ## is unreachable, which a restart heals whether torrc was just written or a
+   ## prior tor died.
    sudo systemctl restart tor@default
-   printf '%s\n' "torrc appended; tor@default restarted"
+   printf '%s\n' "tor@default restarted"
 }
 
 main "${@}"
