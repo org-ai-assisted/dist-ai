@@ -170,6 +170,55 @@ class KloakVerification(unittest.TestCase):
                     'CBMC did not verify %s:\n%s'
                     % (function, result.stdout[-2000:]))
 
+    def test_fuzzer_build_wraps_signed_overflow(self) -> None:
+        ## Production hardens with -ftrapv (signed overflow TRAPS -> kloak
+        ## crashes and restarts). The fuzzer must NOT crash on a mere wrap, so
+        ## ci/cfuzz-build.sh appends -fwrapv (signed overflow becomes defined
+        ## two's-complement wrap, no UBSan false positive). Two halves: the
+        ## build script actually applies the flag, AND the flag has the claimed
+        ## effect with the real toolchain.
+        build_sh = os.path.join(_repo(), 'ci', 'cfuzz-build.sh')
+        if not os.path.exists(build_sh):
+            ## style-ok: allow-skip: kloak ci/ absent (not a --component run)
+            raise unittest.SkipTest('ci/cfuzz-build.sh not found under KLOAK_REPO')
+        with open(build_sh, encoding='utf-8') as handle:
+            script = handle.read()
+        self.assertIn(
+            'CFLAGS="${CFLAGS} -fwrapv"', script,
+            'ci/cfuzz-build.sh no longer appends -fwrapv to the fuzzer CFLAGS')
+
+        ## Semantic canary: a signed-overflow program aborts under UBSan with
+        ## -fno-sanitize-recover, and -fwrapv turns that into a clean run.
+        prog = ('#include <limits.h>\n'
+                'int main(void) {\n'
+                '  volatile int a = INT_MAX;\n'
+                '  volatile int b = 1;\n'
+                '  volatile int c = a + b;\n'
+                '  (void)c;\n'
+                '  return 0;\n'
+                '}\n')
+        base = ['-fsanitize=signed-integer-overflow', '-fno-sanitize-recover=all']
+        with tempfile.TemporaryDirectory() as workdir:
+            src = os.path.join(workdir, 'overflow.c')
+            with open(src, 'w', encoding='utf-8') as handle:
+                handle.write(prog)
+            for label, extra, want_zero in (
+                    ('with -fwrapv', ['-fwrapv'], True),
+                    ('without -fwrapv', [], False)):
+                with self.subTest(case=label):
+                    binary = os.path.join(workdir, 'overflow')
+                    subprocess.run(
+                        [self.gcc, *base, *extra, src, '-o', binary],
+                        check=True, capture_output=True, text=True)
+                    rc = subprocess.run(
+                        [binary], capture_output=True, text=True).returncode
+                    if want_zero:
+                        self.assertEqual(
+                            rc, 0, '-fwrapv must define signed overflow (ran clean)')
+                    else:
+                        self.assertNotEqual(
+                            rc, 0, 'UBSan must flag signed overflow without -fwrapv')
+
 
 if __name__ == '__main__':
     unittest.main()
