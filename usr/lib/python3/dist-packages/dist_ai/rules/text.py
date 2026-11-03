@@ -13,8 +13,10 @@ byte; fix() rewrites only the KNOWN confusable table (an intentional UTF-8
 fixture is never silently mangled), so a residual non-ASCII still blocks."""
 
 import ast
+import os
 import re
 
+from dist_ai import gitdiff
 from dist_ai import model
 from dist_ai.model import Edit, Rule
 
@@ -438,12 +440,30 @@ class LibexecExecutableNeedsShebang(Rule):
         ## ctx.is_binary (a NUL-containing non-ELF payload is exactly a case lintian flags).
         if not super().applies(ctx) or ctx.data is None:
             return False
-        parts = ctx.path.split("/")
+        parts = self._install_parts(ctx)
         try:
             i = parts.index("usr")
         except ValueError:
             return False
         return i + 1 < len(parts) and parts[i + 1] == "libexec"
+
+    @staticmethod
+    def _install_parts(ctx):
+        ## The install path decides this rule, and that is the REPO-RELATIVE path:
+        ## a gate/range run already names it that way, so parts[0] == 'usr'. An
+        ## absolute command-line path (given_pairs) instead carries the on-disk
+        ## prefix, which may itself contain a 'usr' component (e.g. a checkout
+        ## under /usr/src: /usr/src/<repo>/usr/libexec/x) -- index('usr') would
+        ## then anchor on the PREFIX 'usr' and skip the file. Re-anchor such a
+        ## path to its git top-level. Outside a work tree, keep ctx.path: the
+        ## first 'usr' is still the install root's when no spurious prefix exists
+        ## (a /tmp/... scan of a bare usr/libexec file).
+        path = ctx.path
+        if os.path.isabs(path):
+            root = gitdiff.repo_toplevel(os.path.dirname(ctx.abspath))
+            if root is not None:
+                path = os.path.relpath(ctx.abspath, root)
+        return path.split("/")
 
     def detect(self, ctx):
         ## lintian executable-not-elf-or-script fires unless the file starts with ELF magic or a

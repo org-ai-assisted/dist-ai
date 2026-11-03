@@ -42,18 +42,20 @@ fi
 ## usr/bin/), so editing the in-tree runner tests THAT copy, not the packaged
 ## one. DIST_AI_TESTS_ALL_BIN overrides for a canary run against a pre-fix copy.
 test_dir="$(cd -- "$(dirname -- "$(readlink --canonicalize -- "$0")")" && pwd)"
-## An EXPLICIT override is honored exactly -- never silently fall back to the installed orchestrator
-## (a canary pointed at a missing/non-exec binary would otherwise pass without testing what it
-## named). Only an UNSET override falls back from the in-tree copy to the installed one.
-if [ -n "${DIST_AI_TESTS_ALL_BIN:-}" ]; then
-   ORCH="${DIST_AI_TESTS_ALL_BIN}"
-elif [ -x "${test_dir}/../../bin/dist-ai-tests-all" ]; then
-   ORCH="${test_dir}/../../bin/dist-ai-tests-all"
-else
-   ORCH='/usr/bin/dist-ai-tests-all'
+subject_resolve="${test_dir}/../dist-ai-tests-common/subject-resolve.bash"
+if [ ! -r "${subject_resolve}" ]; then
+   subject_resolve='/usr/share/dist-ai-tests-common/subject-resolve.bash'
 fi
-[ -x "${ORCH}" ] \
-   || { printf '%s\n' "FATAL: dist-ai-tests-all not executable at '${ORCH}'." >&2; exit 1; }
+if [ ! -r "${subject_resolve}" ]; then
+   printf '%s\n' "FATAL: subject-resolve.bash not found (checkout or installed)" >&2
+   exit 1
+fi
+# shellcheck source=../dist-ai-tests-common/subject-resolve.bash
+source "${subject_resolve}"
+## SET (even empty) override honored exactly; only UNSET falls back in-tree then
+## installed; result is absolute so a slash-free value is not PATH-searched at
+## invocation (which would silently run the installed orchestrator).
+ORCH="$(resolve_test_subject DIST_AI_TESTS_ALL_BIN dist-ai-tests-all "${test_dir}")" || exit 1
 
 scratch="$(mktemp --directory)"
 cleanup_handler() {

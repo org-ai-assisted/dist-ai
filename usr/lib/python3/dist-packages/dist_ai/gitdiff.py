@@ -36,6 +36,24 @@ def _repo_root():
     return os.fsdecode(out.stdout.strip())
 
 
+def repo_toplevel(start_dir):
+    """The git work-tree top-level at or above START_DIR, or None when START_DIR
+    is not inside one. A pure upward walk for a '.git' entry -- os.path.exists
+    matches a '.git' FILE too, so a submodule / worktree gitlink resolves (the
+    same non-standard '.git' gate.py tolerates). No subprocess + no CWD
+    dependency (unlike _repo_root), so a rule may call it per file to re-anchor an
+    absolute command-line path to its repo-relative spelling before an
+    install-path test."""
+    cur = os.path.abspath(start_dir)
+    while True:
+        if os.path.exists(os.path.join(cur, ".git")):
+            return cur
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return None
+        cur = parent
+
+
 def _head_exists():
     """True if HEAD resolves -- false in a repo with no commit yet, where a
     diff against HEAD would error."""

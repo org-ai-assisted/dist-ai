@@ -44,17 +44,19 @@ fi
 ## Resolve the gate RELATIVE to this test file; PRE_PUSH_STATIC_BIN overrides for
 ## a canary run against an alternate (pre-fix) gate copy.
 gate_test_dir="$(cd -- "$(dirname -- "$(readlink --canonicalize -- "$0")")" && pwd)"
-## An EXPLICIT override is honored exactly -- never silently fall back to the installed gate (a
-## canary pointed at a missing/non-exec binary would otherwise pass without testing what it named).
-## Only an UNSET override falls back from the in-tree copy to the installed one.
-if [ -n "${PRE_PUSH_STATIC_BIN:-}" ]; then
-   GATE="${PRE_PUSH_STATIC_BIN}"
-else
-   GATE="${gate_test_dir}/../../bin/dist-ai-style"
-   [ -x "${GATE}" ] || GATE='/usr/bin/dist-ai-style'
+subject_resolve="${gate_test_dir}/../dist-ai-tests-common/subject-resolve.bash"
+if [ ! -r "${subject_resolve}" ]; then
+   subject_resolve='/usr/share/dist-ai-tests-common/subject-resolve.bash'
 fi
-[ -x "${GATE}" ] \
-   || { printf '%s\n' "FATAL: gate not executable at '${GATE}'." >&2; exit 1; }
+if [ ! -r "${subject_resolve}" ]; then
+   printf '%s\n' "FATAL: subject-resolve.bash not found (checkout or installed)" >&2
+   exit 1
+fi
+# shellcheck source=../dist-ai-tests-common/subject-resolve.bash
+source "${subject_resolve}"
+## SET (even empty) override honored exactly; only UNSET falls back in-tree then
+## installed; result is absolute so it survives run_gate's cd into a temp repo.
+GATE="$(resolve_test_subject PRE_PUSH_STATIC_BIN dist-ai-style "${gate_test_dir}")" || exit 1
 
 test_dir="$(mktemp --directory)"
 cleanup_handler() {

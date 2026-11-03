@@ -50,17 +50,19 @@ fi
 ## PRE_PUSH_STATIC_BIN aims the suite at an alternate gate copy (the pre-fix
 ## version for a canary run); otherwise the in-tree copy, then the packaged.
 gate_test_dir="$(cd -- "$(dirname -- "$(readlink --canonicalize -- "$0")")" && pwd)"
-## An EXPLICIT override is honored exactly -- never silently fall back to the installed gate (a
-## canary pointed at a missing/non-exec binary would otherwise pass without testing what it named).
-## Only an UNSET override falls back from the in-tree copy to the installed one.
-if [ -n "${PRE_PUSH_STATIC_BIN:-}" ]; then
-   GATE="${PRE_PUSH_STATIC_BIN}"
-else
-   GATE="${gate_test_dir}/../../bin/dist-ai-style"
-   [ -x "${GATE}" ] || GATE='/usr/bin/dist-ai-style'
+subject_resolve="${gate_test_dir}/../dist-ai-tests-common/subject-resolve.bash"
+if [ ! -r "${subject_resolve}" ]; then
+   subject_resolve='/usr/share/dist-ai-tests-common/subject-resolve.bash'
 fi
-[ -x "${GATE}" ] \
-   || { printf '%s\n' "FATAL: gate not executable at '${GATE}'." >&2; exit 1; }
+if [ ! -r "${subject_resolve}" ]; then
+   printf '%s\n' "FATAL: subject-resolve.bash not found (checkout or installed)" >&2
+   exit 1
+fi
+# shellcheck source=../dist-ai-tests-common/subject-resolve.bash
+source "${subject_resolve}"
+## SET (even empty) override honored exactly; only UNSET falls back in-tree then
+## installed; result is absolute so it survives run_gate's cd into a temp repo.
+GATE="$(resolve_test_subject PRE_PUSH_STATIC_BIN dist-ai-style "${gate_test_dir}")" || exit 1
 
 test_dir="$(mktemp --directory)"
 cleanup_handler() {
@@ -186,6 +188,29 @@ case "${nul_output}" in
       ;;
    *)
       printf '%s\n' "FAIL: a NUL-containing non-ELF usr/libexec file was NOT flagged" >&2
+      fail_count=$(( fail_count + 1 ))
+      ;;
+esac
+
+## (g) Regression: an ABSOLUTE command-line path whose on-disk PREFIX itself contains a 'usr'
+## component (a checkout under /usr/src, or any path with a 'usr' segment) must still flag a real
+## usr/libexec file. The rule re-anchors such a path to its git top-level; the pre-fix code
+## anchored index('usr') on the PREFIX 'usr' and SKIPPED the file -- a gate false-pass. A '.git'
+## (here a plain 'git init', no commit) is what marks the top-level the path is relative to.
+pfxdir="$(mktemp --directory)"
+pfxrepo="${pfxdir}/usr/pfx/repo"
+mkdir --parents -- "${pfxrepo}/usr/libexec/foo"
+git -C "${pfxrepo}" -c init.defaultBranch=master -c core.hooksPath=/dev/null init --quiet
+printf '%s\n' 'plain payload, no shebang' > "${pfxrepo}/usr/libexec/foo/tool.dat"
+pfx_output="$( "${GATE}" "${pfxrepo}/usr/libexec/foo/tool.dat" 2>&1 )" || true
+safe-rm --recursive --force -- "${pfxdir}" || true
+case "${pfx_output}" in
+   *libexec-shebang*)
+      printf '%s\n' "PASS: an absolute usr-prefixed path flags a real usr/libexec file"
+      pass_count=$(( pass_count + 1 ))
+      ;;
+   *)
+      printf '%s\n' "FAIL: an absolute usr-prefixed path did NOT flag the usr/libexec file" >&2
       fail_count=$(( fail_count + 1 ))
       ;;
 esac
