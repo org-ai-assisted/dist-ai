@@ -190,7 +190,9 @@ class KloakVerification(unittest.TestCase):
             raise unittest.SkipTest('ci/cfuzz-build.sh not found under KLOAK_REPO')
         with open(build_sh, encoding='utf-8') as handle:
             script = handle.read()
-        match = re.search(r'^CFLAGS="\$\{CFLAGS\} ([^"]+)"[ \t]*$',
+        ## Capture is quote-bounded, so indentation or a trailing inline comment
+        ## on the append line does not leak into the flags or miss the match.
+        match = re.search(r'^[ \t]*CFLAGS="\$\{CFLAGS\} ([^"]+)"',
                           script, re.MULTILINE)
         self.assertIsNotNone(
             match, 'ci/cfuzz-build.sh no longer appends to the fuzzer CFLAGS')
