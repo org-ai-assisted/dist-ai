@@ -39,6 +39,7 @@ an environment bug (FATAL), not a skip. Only a missing subject skips.
 """
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -113,6 +114,7 @@ class KloakVerification(unittest.TestCase):
                 'kloak.c not found under %s -- set KLOAK_REPO or install the '
                 'kloak source' % cls.src_dir)
         cls.gcc = _require('gcc')
+        cls.clang = _require('clang')
         cls.cbmc = _require('cbmc')
         scanner = _require('wayland-scanner')
         cls.cflags = _pkg_config('--cflags')
@@ -170,25 +172,30 @@ class KloakVerification(unittest.TestCase):
                     'CBMC did not verify %s:\n%s'
                     % (function, result.stdout[-2000:]))
 
-    def test_fuzzer_build_wraps_signed_overflow(self) -> None:
+    def test_fuzzer_build_suppresses_signed_overflow(self) -> None:
         ## Production hardens with -ftrapv (signed overflow TRAPS -> kloak
-        ## crashes and restarts). The fuzzer must NOT crash on a mere wrap, so
-        ## ci/cfuzz-build.sh appends -fwrapv (signed overflow becomes defined
-        ## two's-complement wrap, no UBSan false positive). Two halves: the
-        ## build script actually applies the flag, AND the flag has the claimed
-        ## effect with the real toolchain.
+        ## crashes and restarts). The fuzzer must NOT abort on a mere wrap, so
+        ## ci/cfuzz-build.sh appends flags that drop the signed-integer-overflow
+        ## check (the realistic envelope is overflow-free; the CBMC suite proves
+        ## it). clang -- the fuzzer compiler -- KEEPS an explicitly-listed
+        ## signed-integer-overflow under -fwrapv, so the suppressor must hold for
+        ## BOTH the -fsanitize=undefined GROUP (local-dev CFLAGS) and an explicit
+        ## signed-integer-overflow (OSS-Fuzz base-builder). Drive the REAL
+        ## appended flags against clang in both forms; a no-append control proves
+        ## each base otherwise aborts (so the suppression, not a toothless base,
+        ## is what the pass measures).
         build_sh = os.path.join(_repo(), 'ci', 'cfuzz-build.sh')
         if not os.path.exists(build_sh):
             ## style-ok: allow-skip: kloak ci/ absent (not a --component run)
             raise unittest.SkipTest('ci/cfuzz-build.sh not found under KLOAK_REPO')
         with open(build_sh, encoding='utf-8') as handle:
             script = handle.read()
-        self.assertIn(
-            'CFLAGS="${CFLAGS} -fwrapv"', script,
-            'ci/cfuzz-build.sh no longer appends -fwrapv to the fuzzer CFLAGS')
+        match = re.search(r'^CFLAGS="\$\{CFLAGS\} ([^"]+)"[ \t]*$',
+                          script, re.MULTILINE)
+        self.assertIsNotNone(
+            match, 'ci/cfuzz-build.sh no longer appends to the fuzzer CFLAGS')
+        appended = match.group(1).split()
 
-        ## Semantic canary: a signed-overflow program aborts under UBSan with
-        ## -fno-sanitize-recover, and -fwrapv turns that into a clean run.
         prog = ('#include <limits.h>\n'
                 'int main(void) {\n'
                 '  volatile int a = INT_MAX;\n'
@@ -197,27 +204,35 @@ class KloakVerification(unittest.TestCase):
                 '  (void)c;\n'
                 '  return 0;\n'
                 '}\n')
-        base = ['-fsanitize=signed-integer-overflow', '-fno-sanitize-recover=all']
+        ## Both ways the signed-overflow check reaches the fuzzer build.
+        bases = {
+            'undefined-group': ['-fsanitize=undefined'],
+            'explicit-sio': ['-fsanitize=signed-integer-overflow'],
+        }
         with tempfile.TemporaryDirectory() as workdir:
             src = os.path.join(workdir, 'overflow.c')
             with open(src, 'w', encoding='utf-8') as handle:
                 handle.write(prog)
-            for label, extra, want_zero in (
-                    ('with -fwrapv', ['-fwrapv'], True),
-                    ('without -fwrapv', [], False)):
-                with self.subTest(case=label):
-                    binary = os.path.join(workdir, 'overflow')
-                    subprocess.run(
-                        [self.gcc, *base, *extra, src, '-o', binary],
-                        check=True, capture_output=True, text=True)
-                    rc = subprocess.run(
-                        [binary], capture_output=True, text=True).returncode
-                    if want_zero:
-                        self.assertEqual(
-                            rc, 0, '-fwrapv must define signed overflow (ran clean)')
-                    else:
-                        self.assertNotEqual(
-                            rc, 0, 'UBSan must flag signed overflow without -fwrapv')
+
+            def run(flags: list) -> int:
+                binary = os.path.join(workdir, 'overflow')
+                subprocess.run([self.clang, *flags, src, '-o', binary],
+                               check=True, capture_output=True, text=True)
+                return subprocess.run(
+                    [binary], capture_output=True, text=True).returncode
+
+            for name, base in bases.items():
+                common = [*base, '-fno-sanitize-recover=all']
+                with self.subTest(case='%s/control' % name):
+                    self.assertNotEqual(
+                        run(common), 0,
+                        '%s must abort on signed overflow without the '
+                        'suppressor' % name)
+                with self.subTest(case='%s/suppressed' % name):
+                    self.assertEqual(
+                        run([*common, *appended]), 0,
+                        "cfuzz-build.sh's appended flags must suppress the "
+                        '%s signed-overflow abort under clang' % name)
 
 
 if __name__ == '__main__':
