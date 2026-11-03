@@ -11,15 +11,16 @@ privileged C clock setter (threat-model high-severity target: memory/format/
 bounds correctness of a time setter fed numbers derived from untrusted network
 time).
 
-Drives three artefacts against the REAL usr/src/sdwdate/sclockadj.c (resolved
-via SDWDATE_REPO), compiling its pure arithmetic with -DSCLOCKADJ_TEST (main and
-the clock syscalls excluded):
-  * sclockadj_harness.c -- C unit tests (known values, Euclidean/negative edges,
-    overflow rejection, LLONG_MIN) + a 2e6-iteration randomized fuzz asserting
-    the invariants (tv_nsec in [0,1e9), bounded remainder, no crash).
-  * sclockadj_cbmc.c -- CBMC proofs that, for ALL 64-bit inputs (the pure
-    functions are loop-free, so this is exhaustive), there is no signed-overflow
-    UB and tv_nsec is always normalised to [0,1e9).
+Drives two artefacts against the REAL usr/src/sdwdate/sclockadj.c (resolved via
+SDWDATE_REPO), compiling its pure arithmetic with -DSCLOCKADJ_TEST (main excluded):
+  * sclockadj_harness.c -- C unit tests (bounded step, nsec carry/borrow, sec
+    overflow rejection, NULL, parse_int edges) + a randomized fuzz asserting the
+    per-step invariants (tv_nsec in [0,1e9), bounded step, strict progress) and
+    full-loop conservation for bounded budgets.
+  * sclockadj_cbmc.c -- a CBMC proof that, for ALL 64-bit inputs (step_timestamp
+    is loop-free, so this is exhaustive), there is no signed-overflow/conversion
+    UB, the result tv_nsec is always normalised to [0,1e9), and the remaining
+    shift moves strictly toward zero (the slew loop terminates).
 
 gcc and cbmc are REQUIRED (declare in dm-consumer.yml apt-packages); their
 absence is an environment bug (FATAL), not a skip. Only a missing subject skips.
@@ -35,9 +36,7 @@ import unittest
 HERE = os.path.dirname(os.path.realpath(__file__))
 
 CBMC_FUNCTIONS = (
-    'verify_split_ns_since_epoch',
-    'verify_timespec_add_ns',
-    'verify_compute_jumps',
+    'verify_step_timestamp',
 )
 
 

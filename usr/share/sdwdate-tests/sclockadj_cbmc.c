@@ -5,50 +5,57 @@ See the file COPYING for copying conditions.
 AI-Assisted
 
 CBMC proof harness for sdwdate's sclockadj pure arithmetic. Compiled/checked by
-test_sclockadj_verification.py with -I pointed at usr/src/sdwdate. The subject's
-pure functions have no loops, so CBMC proves the properties for ALL 64-bit
-inputs (exhaustive, not sampled).
+test_sclockadj_verification.py with -I pointed at usr/src/sdwdate. step_timestamp
+is loop-free, so CBMC proves the properties for ALL 64-bit inputs (exhaustive,
+not sampled) -- the function is fed numbers derived from untrusted network time.
 */
 #define SCLOCKADJ_TEST
 #include "sclockadj.c"
 
-/* split_ns_since_epoch: on success the normalised nanoseconds are in [0, 1e9). */
-void verify_split_ns_since_epoch(void)
+/* step_timestamp applies ONE bounded slew step to a valid timespec. Proven for
+ * every input:
+ *   - no signed-overflow / conversion UB in the ns/sec arithmetic (the sec
+ *     carry/borrow is guarded at INT64_MAX/MIN, returning false instead);
+ *   - on success the result tv_nsec is normalised to [0, NS_IN_SEC) -- the value
+ *     handed to clock_settime;
+ *   - the amount removed from the remaining shift is bounded by the fixed step
+ *     size, and the remaining shift moves strictly toward zero, so the
+ *     slew_system_time loop that calls this always terminates. */
+void verify_step_timestamp(void)
 {
-    long long total_ns;
-    time_t sec;
-    long nsec;
-    if (split_ns_since_epoch(total_ns, &sec, &nsec) == 0)
-    {
-        __CPROVER_assert(nsec >= 0, "normalised tv_nsec is non-negative");
-        __CPROVER_assert(nsec < 1000000000L, "normalised tv_nsec is < 1e9");
-    }
-}
+    struct timespec ts;
+    int64_t shift;
+    int64_t in_shift;
+    int64_t applied;
 
-/* timespec_add_ns: no signed-overflow UB (via --signed-overflow-check), and on
- * success the result tv_nsec is a valid [0, 1e9) value for clock_settime. */
-void verify_timespec_add_ns(void)
-{
-    struct timespec cur;
-    long long add_ns;
-    struct timespec out;
-    __CPROVER_assume(cur.tv_nsec >= 0);
-    __CPROVER_assume(cur.tv_nsec < 1000000000L);
-    if (timespec_add_ns(&cur, add_ns, &out) == 0)
-    {
-        __CPROVER_assert(out.tv_nsec >= 0, "result tv_nsec is non-negative");
-        __CPROVER_assert(out.tv_nsec < 1000000000L, "result tv_nsec is < 1e9");
-    }
-}
+    /* Precondition the subject documents and asserts: a normalised timespec. */
+    __CPROVER_assume(ts.tv_nsec >= 0);
+    __CPROVER_assume(ts.tv_nsec < NS_IN_SEC);
 
-/* compute_jumps: remainder strictly below the jump size; no UB even for
- * LLONG_MIN (the old llabs(LLONG_MIN) UB is gone). */
-void verify_compute_jumps(void)
-{
-    long long ns;
-    unsigned long long full_jumps;
-    unsigned long long remainder;
-    compute_jumps(ns, &full_jumps, &remainder);
-    __CPROVER_assert(remainder < (unsigned long long)FULL_JUMP,
-                     "remainder is below the fixed jump size");
+    in_shift = shift;
+
+    if (step_timestamp(&ts, &shift))
+    {
+        __CPROVER_assert(ts.tv_nsec >= 0,
+                         "result tv_nsec is non-negative");
+        __CPROVER_assert(ts.tv_nsec < NS_IN_SEC,
+                         "result tv_nsec is < NS_IN_SEC");
+
+        /* Amount the clock moved == amount removed from the budget, bounded. */
+        applied = in_shift - shift;
+        __CPROVER_assert(applied <= POSITIVE_STEP_NS,
+                         "applied step is <= +POSITIVE_STEP_NS");
+        __CPROVER_assert(applied >= NEGATIVE_STEP_NS,
+                         "applied step is >= NEGATIVE_STEP_NS");
+
+        /* Termination: a non-zero budget strictly shrinks toward zero. */
+        if (in_shift > 0)
+            __CPROVER_assert(shift >= 0 && shift < in_shift,
+                             "positive budget strictly decreases toward zero");
+        else if (in_shift < 0)
+            __CPROVER_assert(shift <= 0 && shift > in_shift,
+                             "negative budget strictly increases toward zero");
+        else
+            __CPROVER_assert(shift == 0, "zero budget stays zero");
+    }
 }

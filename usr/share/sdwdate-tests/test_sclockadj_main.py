@@ -7,15 +7,15 @@
 
 """
 Unit tests for sclockadj's IMPURE main() -- the part compiled OUT of the
-CBMC/unit harness by -DSCLOCKADJ_TEST, so previously unverified: the sign
-reconstruction for a NEGATIVE nanosecond argument, the full-jump loop, and the
-always-executed final partial step.
+CBMC/unit harness by -DSCLOCKADJ_TEST: argument parsing/validation and the
+slew_system_time loop that steps the clock in bounded +-FULL_JUMP increments
+until the signed nanosecond budget is exhausted.
 
 The real usr/src/sdwdate/sclockadj.c is built WITHOUT SCLOCKADJ_TEST and linked
 with sclockadj_main_shim.c under -Wl,--wrap so clock_gettime/clock_settime/sleep
 are intercepted (no root, no clock, no waiting). The shim prints the applied
-delta per step; the asserts are that the deltas sum to exactly the signed input,
-each full step is +-FULL_JUMP, and the final partial step always runs.
+delta per step; the asserts are that the deltas sum to exactly the signed input
+and each full step is +-FULL_JUMP.
 
 gcc is REQUIRED (an absent compiler is an environment bug, FATAL, not a skip);
 only a missing subject source skips, matching test_sclockadj_verification.py.
@@ -102,41 +102,53 @@ class SclockadjMain(unittest.TestCase):
         for step in deltas[:-1]:
             self.assertEqual(step, FULL_JUMP, 'full step not +FULL_JUMP')
 
-    def test_negative_sign_reconstruction(self) -> None:
-        ## -5000001 -> the magnitude is split unsigned then re-signed: a
-        ## -FULL_JUMP full step and a -1 remainder step.
+    def test_negative_sum_and_steps(self) -> None:
+        ## -5000001 -> a -FULL_JUMP full step then a -1 remainder step; the
+        ## signed budget is stepped directly, staying negative.
         deltas = self._deltas('-5000001')
         self.assertEqual(sum(deltas), -5000001)
         self.assertEqual(deltas[-1], -1, 'final partial step wrong sign')
         for step in deltas[:-1]:
             self.assertEqual(step, -FULL_JUMP, 'full step not -FULL_JUMP')
 
-    def test_final_partial_step_always_runs_on_exact_multiple(self) -> None:
-        ## An exact multiple of FULL_JUMP still does one final (zero) step.
+    def test_exact_multiple_no_trailing_zero_step(self) -> None:
+        ## An exact multiple of FULL_JUMP exhausts the budget on the last full
+        ## step; the loop stops with no extra zero step.
         deltas = self._deltas(str(FULL_JUMP))
-        self.assertEqual(sum(deltas), FULL_JUMP)
-        self.assertEqual(deltas[-1], 0, 'final partial step did not run')
+        self.assertEqual(deltas, [FULL_JUMP])
 
     def test_too_few_args_fails(self) -> None:
         result = subprocess.run([self.binary], capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('Too few args', result.stderr)
+        self.assertIn('Incorrect number of arguments', result.stderr)
 
     def test_too_many_args_fails(self) -> None:
         result = subprocess.run(
             [self.binary, '1', '2'], capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('Too many args', result.stderr)
+        self.assertIn('Incorrect number of arguments', result.stderr)
+
+    def test_empty_arg_rejected(self) -> None:
+        result = self._run('')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Empty argument', result.stderr)
 
     def test_unparseable_arg_fails(self) -> None:
         result = self._run('not-a-number')
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('Failed to parse', result.stderr)
+        self.assertIn('not an integer or is out of range', result.stderr)
 
-    def test_zero_arg_rejected(self) -> None:
+    def test_help_exits_zero(self) -> None:
+        result = self._run('--help')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Usage', result.stderr)
+        self.assertNotIn('DELTA', result.stdout)
+
+    def test_zero_arg_is_noop(self) -> None:
+        ## 0 is a valid no-op: parsed, nothing to slew, clean exit, no steps.
         result = self._run('0')
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('nothing to do', result.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('DELTA', result.stdout)
 
 
 if __name__ == '__main__':

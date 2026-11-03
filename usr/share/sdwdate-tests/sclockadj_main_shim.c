@@ -11,9 +11,9 @@ privileged clock syscalls and the 1s inter-step waits are intercepted -- no
 root, no real clock, no waiting.
 
 A software CLOCK_REALTIME is kept in memory; every clock_settime records the
-applied delta (new - current) on stdout as "DELTA <ns>". main()'s sign
-reconstruction, full-jump loop and final partial step are thereby observable
-and assertable by test_sclockadj_main.py.
+applied delta (new - current) on stdout as "DELTA <ns>". main()'s bounded
+per-step slew and loop termination are thereby observable and assertable by
+test_sclockadj_main.py.
 */
 #define _GNU_SOURCE
 
