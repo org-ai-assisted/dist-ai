@@ -168,10 +168,31 @@ class TimeConsensusSanityCheckTest(TimeSanityCheckBase):
             self.AFTER_EPOCH + 10)
         self.assertEqual(status, 'ok')
 
-    def test_after_valid_until_is_fast(self) -> None:
+    def test_fast_grace_is_eight_hours(self) -> None:
+        ## Lock the policy: the consensus "fast" bound is graced by 8h so a
+        ## consensus-generation gap (expired but still-correct consensus) does
+        ## not reject correct remote times. Rationale in the subject's constant.
+        self.assertEqual(self.mod.CONSENSUS_FAST_GRACE_SECONDS, 8 * 60 * 60)
+
+    def test_just_after_valid_until_is_ok_within_grace(self) -> None:
+        ## Past valid-until but within grace: accepted, NOT "fast". On the
+        ## pre-grace code this returned "fast" -- the regression this guards.
         self._connect_ok()
         status, _error, _a, _u = self.mod.time_consensus_sanity_check(
             self.UNTIL_EPOCH + 10)
+        self.assertEqual(status, 'ok')
+
+    def test_at_fast_grace_edge_is_ok_strict_greater_than(self) -> None:
+        ## The compare is strict '>', so exactly valid-until + grace is NOT fast.
+        self._connect_ok()
+        status, _error, _a, _u = self.mod.time_consensus_sanity_check(
+            self.UNTIL_EPOCH + self.mod.CONSENSUS_FAST_GRACE_SECONDS)
+        self.assertEqual(status, 'ok')
+
+    def test_beyond_fast_grace_is_fast(self) -> None:
+        self._connect_ok()
+        status, _error, _a, _u = self.mod.time_consensus_sanity_check(
+            self.UNTIL_EPOCH + self.mod.CONSENSUS_FAST_GRACE_SECONDS + 1)
         self.assertEqual(status, 'fast')
 
     def test_connect_failure_is_error(self) -> None:
