@@ -33,9 +33,9 @@ the real kloak.c / kloak.h beside them (no source copy):
     operating envelope. The loop-free geometry/time proofs are exhaustive; the
     bounded loops (random_between, sleep_ms, traverse_line) run under --unwind.
 
-gcc, cbmc, wayland-scanner and the wayland/libinput/libevdev/xkbcommon dev
-headers are REQUIRED (declare in dm-consumer.yml apt-packages); their absence is
-an environment bug (FATAL), not a skip. Only a missing subject skips.
+gcc, clang, cbmc, wayland-scanner and the wayland/libinput/libevdev/xkbcommon
+dev headers are REQUIRED (declare in dm-consumer.yml apt-packages); their absence
+is an environment bug (FATAL), not a skip. Only a missing subject skips.
 """
 
 import os
@@ -103,6 +103,17 @@ def _pkg_config(flag: str) -> list:
 
 
 class KloakVerification(unittest.TestCase):
+    ## Set in setUpClass; declared so mypy sees them as class attributes.
+    src_dir: str
+    protocol_dir: str
+    gcc: str
+    clang: str
+    cbmc: str
+    cflags: list[str]
+    libs: list[str]
+    _work: str
+    proto_sources: list[str]
+
     @classmethod
     def setUpClass(cls) -> None:
         repo = _repo()
@@ -177,11 +188,19 @@ class KloakVerification(unittest.TestCase):
         ## crashes and restarts). The fuzzer must NOT abort on a mere wrap, so
         ## ci/cfuzz-build.sh appends flags that drop the signed-integer-overflow
         ## check (the realistic envelope is overflow-free; the CBMC suite proves
-        ## it). clang -- the fuzzer compiler -- KEEPS an explicitly-listed
-        ## signed-integer-overflow under -fwrapv, so the suppressor must hold for
-        ## BOTH the -fsanitize=undefined GROUP (local-dev CFLAGS) and an explicit
-        ## signed-integer-overflow (OSS-Fuzz base-builder). Drive the REAL
-        ## appended flags against clang in both forms; a no-append control proves
+        ## it). Two properties are REQUIRED of the append and both are checked:
+        ##   * -fwrapv is present, so signed overflow stays DEFINED (two's-
+        ##     complement wrap). Without it the -O1 fuzzer build leaves overflow
+        ##     UB and the optimiser deletes overflow-guard branches -- suppressing
+        ##     the abort alone (just -fno-sanitize=signed-integer-overflow) must
+        ##     NOT satisfy this test.
+        ##   * ONLY signed-integer-overflow is dropped: a blanket -fno-sanitize=
+        ##     all / =undefined would also blind ASan and the rest of UBSan.
+        ## Then the REAL appended flags are driven against clang -- the fuzzer
+        ## compiler, which KEEPS an explicitly-listed signed-integer-overflow
+        ## under -fwrapv -- in BOTH the -fsanitize=undefined GROUP (local-dev
+        ## CFLAGS) and the explicit signed-integer-overflow (OSS-Fuzz base-
+        ## builder) form, at the fuzzer's real -O1. A no-append control proves
         ## each base otherwise aborts (so the suppression, not a toothless base,
         ## is what the pass measures).
         build_sh = os.path.join(_repo(), 'ci', 'cfuzz-build.sh')
@@ -190,13 +209,26 @@ class KloakVerification(unittest.TestCase):
             raise unittest.SkipTest('ci/cfuzz-build.sh not found under KLOAK_REPO')
         with open(build_sh, encoding='utf-8') as handle:
             script = handle.read()
-        ## Capture is quote-bounded, so indentation or a trailing inline comment
-        ## on the append line does not leak into the flags or miss the match.
-        match = re.search(r'^[ \t]*CFLAGS="\$\{CFLAGS\} ([^"]+)"',
-                          script, re.MULTILINE)
-        self.assertIsNotNone(
-            match, 'ci/cfuzz-build.sh no longer appends to the fuzzer CFLAGS')
-        appended = match.group(1).split()
+        ## Union EVERY `CFLAGS="${CFLAGS} ..."` append (findall, not just the
+        ## first), so splitting the suffix across lines does not capture a
+        ## partial set and fail a correct build. Capture is quote-bounded:
+        ## indentation or a trailing inline comment cannot leak into the flags.
+        appended = [flag
+                    for chunk in re.findall(
+                        r'^[ \t]*CFLAGS="\$\{CFLAGS\} ([^"]+)"',
+                        script, re.MULTILINE)
+                    for flag in chunk.split()]
+        self.assertTrue(
+            appended, 'ci/cfuzz-build.sh no longer appends to the fuzzer CFLAGS')
+        self.assertIn(
+            '-fwrapv', appended,
+            'fuzzer CFLAGS must keep signed overflow DEFINED (-fwrapv); '
+            'suppressing the sanitizer abort alone leaves it UB at -O1')
+        for blanket in ('-fno-sanitize=all', '-fno-sanitize=undefined'):
+            self.assertNotIn(
+                blanket, appended,
+                '%s disables far more than signed-integer-overflow (ASan and '
+                'the rest of UBSan)' % blanket)
 
         prog = ('#include <limits.h>\n'
                 'int main(void) {\n'
@@ -206,10 +238,11 @@ class KloakVerification(unittest.TestCase):
                 '  (void)c;\n'
                 '  return 0;\n'
                 '}\n')
-        ## Both ways the signed-overflow check reaches the fuzzer build.
+        ## Both ways the signed-overflow check reaches the fuzzer build, at the
+        ## -O1 cfuzz-build.sh compiles with.
         bases = {
-            'undefined-group': ['-fsanitize=undefined'],
-            'explicit-sio': ['-fsanitize=signed-integer-overflow'],
+            'undefined-group': ['-O1', '-fsanitize=undefined'],
+            'explicit-sio': ['-O1', '-fsanitize=signed-integer-overflow'],
         }
         with tempfile.TemporaryDirectory() as workdir:
             src = os.path.join(workdir, 'overflow.c')
