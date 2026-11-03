@@ -50,12 +50,20 @@ assert_prerequisite 'safe-rm not on PATH' has safe-rm
 ## packaged CLI. PRE_PUSH_STATIC_BIN aims the suite at an alternate copy (e.g. a
 ## pre-fix canary run).
 gate_test_dir="$(cd -- "$(dirname -- "$(readlink --canonicalize -- "$0")")" && pwd)"
-STYLE="${PRE_PUSH_STATIC_BIN:-${gate_test_dir}/../../bin/dist-ai-style}"
-if [ ! -x "${STYLE}" ]; then
-   STYLE='/usr/bin/dist-ai-style'
+subject_resolve="${gate_test_dir}/../dist-ai-tests-common/subject-resolve.bash"
+if [ ! -r "${subject_resolve}" ]; then
+   subject_resolve='/usr/share/dist-ai-tests-common/subject-resolve.bash'
 fi
-[ -x "${STYLE}" ] \
-   || { printf '%s\n' "error: gate not executable at '${STYLE}'." >&2; exit 1; }
+if [ ! -r "${subject_resolve}" ]; then
+   printf '%s\n' "FATAL: subject-resolve.bash not found (checkout or installed)" >&2
+   exit 1
+fi
+# shellcheck source=../dist-ai-tests-common/subject-resolve.bash
+source "${subject_resolve}"
+## SET (even empty) override honored exactly; only UNSET falls back in-tree then
+## installed; result is absolute so a relative/slash-free value is not lost after
+## a cd and not PATH-searched.
+STYLE="$(resolve_test_subject PRE_PUSH_STATIC_BIN dist-ai-style "${gate_test_dir}")" || exit 1
 
 tmp_root="$(mktemp --directory)"
 cleanup() {

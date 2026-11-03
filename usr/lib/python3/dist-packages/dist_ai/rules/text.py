@@ -440,6 +440,11 @@ class LibexecExecutableNeedsShebang(Rule):
         ## ctx.is_binary (a NUL-containing non-ELF payload is exactly a case lintian flags).
         if not super().applies(ctx) or ctx.data is None:
             return False
+        ## Cheap reject BEFORE any git call: a file installed to /usr/libexec has
+        ## 'libexec' as a path component. The overwhelming majority of scanned
+        ## files do not, so the repo-root lookup below runs only for candidates.
+        if "libexec" not in ctx.abspath.split("/"):
+            return False
         parts = self._install_parts(ctx)
         try:
             i = parts.index("usr")
@@ -449,21 +454,21 @@ class LibexecExecutableNeedsShebang(Rule):
 
     @staticmethod
     def _install_parts(ctx):
-        ## The install path decides this rule, and that is the REPO-RELATIVE path:
-        ## a gate/range run already names it that way, so parts[0] == 'usr'. An
-        ## absolute command-line path (given_pairs) instead carries the on-disk
-        ## prefix, which may itself contain a 'usr' component (e.g. a checkout
-        ## under /usr/src: /usr/src/<repo>/usr/libexec/x) -- index('usr') would
-        ## then anchor on the PREFIX 'usr' and skip the file. Re-anchor such a
-        ## path to its git top-level. Outside a work tree, keep ctx.path: the
-        ## first 'usr' is still the install root's when no spurious prefix exists
-        ## (a /tmp/... scan of a bare usr/libexec file).
-        path = ctx.path
-        if os.path.isabs(path):
-            root = gitdiff.repo_toplevel(os.path.dirname(ctx.abspath))
-            if root is not None:
-                path = os.path.relpath(ctx.abspath, root)
-        return path.split("/")
+        ## The install path decides this rule, and that is the REPO-RELATIVE path.
+        ## ctx.path is the caller's spelling -- repo-relative in a gate/range run,
+        ## but a command-line path (given_pairs) is the verbatim argument: an
+        ## absolute path carrying an on-disk prefix that may itself contain a
+        ## spurious 'usr' (a checkout under /usr/src), or a cwd-relative path run
+        ## from inside usr/ that HIDES the leading 'usr'. ctx.abspath is always
+        ## absolute, so re-anchor IT to the git top-level: the result is the true
+        ## repo-relative install path in every mode. Outside a work tree the
+        ## package root is unknowable -- fall back to the caller's spelling (the
+        ## first 'usr' is correct when it carries no spurious prefix; a non-git
+        ## tree with one -- a tarball extract -- is a documented best-effort gap).
+        root = gitdiff.repo_toplevel(os.path.dirname(ctx.abspath))
+        if root is not None:
+            return os.path.relpath(ctx.abspath, root).split("/")
+        return ctx.path.split("/")
 
     def detect(self, ctx):
         ## lintian executable-not-elf-or-script fires unless the file starts with ELF magic or a

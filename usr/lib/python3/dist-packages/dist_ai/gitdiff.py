@@ -38,20 +38,22 @@ def _repo_root():
 
 def repo_toplevel(start_dir):
     """The git work-tree top-level at or above START_DIR, or None when START_DIR
-    is not inside one. A pure upward walk for a '.git' entry -- os.path.exists
-    matches a '.git' FILE too, so a submodule / worktree gitlink resolves (the
-    same non-standard '.git' gate.py tolerates). No subprocess + no CWD
-    dependency (unlike _repo_root), so a rule may call it per file to re-anchor an
-    absolute command-line path to its repo-relative spelling before an
-    install-path test."""
-    cur = os.path.abspath(start_dir)
-    while True:
-        if os.path.exists(os.path.join(cur, ".git")):
-            return cur
-        parent = os.path.dirname(cur)
-        if parent == cur:
-            return None
-        cur = parent
+    is not inside one. Delegates to git itself (`git -C START_DIR rev-parse
+    --show-toplevel`) rather than a hand-rolled '.git' probe: git is the
+    AUTHORITY on what a work tree is, so a bogus '.git' (an empty file, a dangling
+    symlink) is rejected and a submodule / worktree gitfile is resolved exactly as
+    git sees it -- a lexical `.git`-exists walk mis-anchors on all of those.
+    START_DIR must exist (a rule passes the file's own directory). Used to
+    re-anchor a command-line path to its repo-relative spelling before an
+    install-path test. Unlike _repo_root it takes the directory explicitly (no CWD
+    dependency)."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", start_dir, "rev-parse", "--show-toplevel"],
+            capture_output=True, check=True)
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return os.fsdecode(out.stdout.strip()) or None
 
 
 def _head_exists():

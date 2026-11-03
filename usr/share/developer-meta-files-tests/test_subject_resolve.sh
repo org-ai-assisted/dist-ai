@@ -129,6 +129,21 @@ else
    fail 'unset override -> in-tree fallback'
 fi
 
+## (5) A caller variable whose name collides with a function-internal local must
+## still be honored (it is read by INDIRECT expansion). 'subject' was the pre-fix
+## local name; a caller var named 'subject' was shadowed (unset inside) and the
+## SET override silently fell back to the in-tree copy. The '_rts_'-prefixed
+## locals fix it. This case FAILS on the pre-fix helper.
+# shellcheck disable=SC2034  # read BY NAME via resolve_test_subject's indirect expansion
+subject="${alt}"
+got="$( resolve_test_subject subject mybin "${suite_dir}" )"
+if [ "${got}" = "$(readlink --canonicalize -- "${alt}")" ]; then
+   pass 'override var named like an internal local is honored (no shadow)'
+else
+   fail 'override var named like an internal local is honored (no shadow)'
+fi
+unset subject 2>/dev/null || true
+
 printf '%s\n' "" "${pass_count} pass, ${fail_count} fail, 0 skip"
 if [ "${fail_count}" -ne 0 ]; then
    printf '%s\n' "FAILED"
