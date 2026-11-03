@@ -46,14 +46,20 @@ def repo_toplevel(start_dir):
     START_DIR must exist (a rule passes the file's own directory). Used to
     re-anchor a command-line path to its repo-relative spelling before an
     install-path test. Unlike _repo_root it takes the directory explicitly (no CWD
-    dependency)."""
+    dependency). GIT_DIR / GIT_WORK_TREE are dropped from the child environment:
+    the gate runs inside git hooks that export them, and an inherited GIT_DIR
+    makes `rev-parse --show-toplevel` report the -C directory instead of
+    discovering the real work tree. Only a trailing newline is stripped, so a work
+    tree whose path ends in a space survives."""
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("GIT_DIR", "GIT_WORK_TREE")}
     try:
         out = subprocess.run(
             ["git", "-C", start_dir, "rev-parse", "--show-toplevel"],
-            capture_output=True, check=True)
+            capture_output=True, check=True, env=env)
     except (OSError, subprocess.CalledProcessError):
         return None
-    return os.fsdecode(out.stdout.strip()) or None
+    return os.fsdecode(out.stdout.rstrip(b"\n")) or None
 
 
 def _head_exists():

@@ -465,9 +465,15 @@ class LibexecExecutableNeedsShebang(Rule):
         ## package root is unknowable -- fall back to the caller's spelling (the
         ## first 'usr' is correct when it carries no spurious prefix; a non-git
         ## tree with one -- a tarball extract -- is a documented best-effort gap).
-        root = gitdiff.repo_toplevel(os.path.dirname(ctx.abspath))
+        ## REALPATH the file: git's top-level is physically symlink-resolved, so a
+        ## purely lexical abspath (os.path.abspath keeps symlinks) spelled through
+        ## a symlinked checkout would diverge and os.path.relpath would emit a
+        ## '../'-laden path, re-introducing a spurious 'usr'. Resolving both sides
+        ## keeps the suffix clean.
+        real = os.path.realpath(ctx.abspath)
+        root = gitdiff.repo_toplevel(os.path.dirname(real))
         if root is not None:
-            return os.path.relpath(ctx.abspath, root).split("/")
+            return os.path.relpath(real, root).split("/")
         return ctx.path.split("/")
 
     def detect(self, ctx):

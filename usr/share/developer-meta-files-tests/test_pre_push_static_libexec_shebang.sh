@@ -215,6 +215,50 @@ case "${pfx_output}" in
       ;;
 esac
 
+## (h) Regression: an absolute path spelled THROUGH a symlink whose git top-level
+## resolves to a different PHYSICAL tree (and whose lexical prefix carries a
+## spurious 'usr') must still flag. The rule realpath's the file so git's
+## physically-resolved top-level and the file agree; a lexical abspath would make
+## os.path.relpath emit a '../'-laden path and mis-anchor on the prefix 'usr'.
+symbase="$(mktemp --directory)"
+mkdir --parents -- "${symbase}/phys/usr/libexec/foo" "${symbase}/usr/src"
+git -C "${symbase}/phys" -c init.defaultBranch=master -c core.hooksPath=/dev/null init --quiet
+printf '%s\n' 'no shebang' > "${symbase}/phys/usr/libexec/foo/tool.dat"
+ln -s -- "${symbase}/phys" "${symbase}/usr/src/repo"
+sym_output="$( "${GATE}" "${symbase}/usr/src/repo/usr/libexec/foo/tool.dat" 2>&1 )" || true
+safe-rm --recursive --force -- "${symbase}" || true
+case "${sym_output}" in
+   *libexec-shebang*)
+      printf '%s\n' "PASS: an absolute path through a symlinked checkout flags its usr/libexec file"
+      pass_count=$(( pass_count + 1 ))
+      ;;
+   *)
+      printf '%s\n' "FAIL: a symlinked-checkout absolute path did NOT flag the usr/libexec file" >&2
+      fail_count=$(( fail_count + 1 ))
+      ;;
+esac
+
+## (i) Regression: the gate runs inside git hooks, which export GIT_DIR. The
+## repo-root lookup must ignore an inherited GIT_DIR (fresh discovery) rather than
+## report the file's own directory as the top-level and skip a real usr/libexec
+## file.
+gdbase="$(mktemp --directory)"
+mkdir --parents -- "${gdbase}/usr/libexec/foo"
+git -C "${gdbase}" -c init.defaultBranch=master -c core.hooksPath=/dev/null init --quiet
+printf '%s\n' 'no shebang' > "${gdbase}/usr/libexec/foo/tool.dat"
+gd_output="$( GIT_DIR="${gdbase}/.git" "${GATE}" "${gdbase}/usr/libexec/foo/tool.dat" 2>&1 )" || true
+safe-rm --recursive --force -- "${gdbase}" || true
+case "${gd_output}" in
+   *libexec-shebang*)
+      printf '%s\n' "PASS: an inherited GIT_DIR does not hide a usr/libexec file"
+      pass_count=$(( pass_count + 1 ))
+      ;;
+   *)
+      printf '%s\n' "FAIL: an inherited GIT_DIR hid the usr/libexec file" >&2
+      fail_count=$(( fail_count + 1 ))
+      ;;
+esac
+
 printf '%s\n' "" "${pass_count} pass, ${fail_count} fail, 0 skip"
 if [ "${fail_count}" -ne 0 ]; then
    printf '%s\n' "FAILED"
