@@ -5,16 +5,21 @@
 
 ## AI-Assisted
 
-## Regression suite for onion-tester-configure-tor's torrc idempotency + its
-## concurrency lock. The REAL script is driven OFFLINE via its overridable bases
-## (ONION_TESTER_TORRC / _PRIV_CMD / _TOR_RESTART_BIN / _CONFIGURE_LOCK) -- no sudo,
-## no systemd, no tor -- so it runs in the dist-ai container in seconds.
-##   1. empty torrc            -> appends the block, ControlPort present once, restarts.
-##   2. ControlPort present     -> skips the append (no duplicate), still restarts.
-##   3. marker kept, ControlPort DROPPED -> RE-heals (ControlPort back). Canary: the
-##      marker-keyed old code skipped, leaving the port missing -> runner exit 4.
-##   4. two concurrent runs vs an empty torrc -> exactly ONE ControlPort. Canary:
-##      without the flock the grep/append TOCTOU double-appends -> two.
+## Regression suite for onion-tester-configure-tor's torrc idempotency, its
+## never-duplicate-ControlPort rule, and its concurrency lock. The REAL script is
+## driven OFFLINE via its overridable bases (ONION_TESTER_TORRC / _PRIV_CMD /
+## _TOR_RESTART_BIN / _CONFIGURE_LOCK) -- no sudo, no systemd, no tor -- so it runs
+## in the dist-ai container in seconds.
+##   1. empty torrc                 -> appends the full block (ControlPort + cookie), restarts.
+##   2. fully configured            -> skips the append (no change), still restarts.
+##   3. ControlPort present, cookie MISSING -> adds cookie WITHOUT a 2nd ControlPort.
+##      (A duplicate ControlPort parses but fails tor's runtime bind, so the port
+##      would be down after the restart.) Canary: ControlPort-only-keyed code skips
+##      and leaves cookie auth missing -> stem auth fails.
+##   4. marker kept, ControlPort DROPPED -> re-adds exactly one ControlPort. Canary:
+##      marker-keyed code skips, leaving the port missing -> runner exit 4.
+##   5. two concurrent runs vs an empty torrc -> exactly ONE ControlPort. Canary:
+##      without the flock both add ControlPort -> two -> tor fails to bind.
 
 set -o errexit
 set -o nounset
@@ -49,10 +54,10 @@ restart_log="${work_dir}/restart-log"
 ## without a real systemctl.
 cat > "${work_dir}/mock-restart" <<EOF
 #!/bin/bash
-printf 'restart\n' >> "${restart_log}"
+printf '%s\n' restart >> "${restart_log}"
 EOF
 ## priv wrapper that SLOWS the torrc ops (grep, tee) to widen the check->append
-## window, so case 4 deterministically exposes a missing lock. execs the real
+## window, so case 5 deterministically exposes a missing lock. execs the real
 ## command otherwise (no sudo).
 cat > "${work_dir}/slow-priv" <<'EOF'
 #!/bin/bash
@@ -77,43 +82,65 @@ control_port_count() {
       '^[[:space:]]*ControlPort[[:space:]]+9051([[:space:]]|$)' "${torrc}" 2>/dev/null || true
 }
 
+cookie_present() {
+   if grep --quiet --extended-regexp -- \
+      '^[[:space:]]*CookieAuthentication[[:space:]]+1([[:space:]]|$)' "${torrc}" 2>/dev/null; then
+      printf '%s' y
+   else
+      printf '%s' n
+   fi
+}
+
 restarted() { if [ -s "${restart_log}" ]; then printf '%s' y; else printf '%s' n; fi; }
 
-# 1. empty torrc -> appends, ControlPort present once, restart recorded.
+# 1. empty/absent torrc -> appends full block (ControlPort once + cookie), restarts.
 ## torrc absent after safe-rm; configure-tor's grep tolerates that and tee creates it.
 safe-rm --force -- "${torrc}" "${restart_log}"
 rc=0
 out="$(run_configure 2>&1)" || rc=$?
-if [ "${rc}" = 0 ] && [ "$(control_port_count)" = 1 ] && [ "$(restarted)" = y ]; then
-   pass 'empty torrc: appends ControlPort once and restarts'
+if [ "${rc}" = 0 ] && [ "$(control_port_count)" = 1 ] && [ "$(cookie_present)" = y ] && [ "$(restarted)" = y ]; then
+   pass 'empty torrc: appends ControlPort + cookie once, restarts'
 else
-   fail "empty torrc: rc=${rc} count=$(control_port_count) restart=$(restarted); out: ${out}"
+   fail "empty torrc: rc=${rc} cp=$(control_port_count) cookie=$(cookie_present) restart=$(restarted); out: ${out}"
 fi
 
-# 2. ControlPort already present -> skip append (still exactly one), still restarts.
+# 2. fully configured -> skip (no change), still restarts.
 safe-rm --force -- "${restart_log}"
 rc=0
 out="$(run_configure 2>&1)" || rc=$?
-saw_already=0
-case "${out}" in *'already has'*) saw_already=1 ;; esac
-if [ "${rc}" = 0 ] && [ "$(control_port_count)" = 1 ] && [ "${saw_already}" = 1 ] && [ "$(restarted)" = y ]; then
-   pass 're-run with ControlPort present: no duplicate, still restarts'
+saw_skip=0
+case "${out}" in *'not appending again'*) saw_skip=1 ;; esac
+if [ "${rc}" = 0 ] && [ "$(control_port_count)" = 1 ] && [ "$(cookie_present)" = y ] \
+   && [ "${saw_skip}" = 1 ] && [ "$(restarted)" = y ]; then
+   pass 're-run fully configured: no change, still restarts'
 else
-   fail "idempotent re-run: rc=${rc} count=$(control_port_count) restart=$(restarted); out: ${out}"
+   fail "idempotent re-run: rc=${rc} cp=$(control_port_count) cookie=$(cookie_present) skip=${saw_skip}; out: ${out}"
 fi
 
-# 3. marker kept but ControlPort DROPPED -> must RE-heal (Finding 1).
+# 3. ControlPort present but cookie MISSING -> add cookie, NO duplicate ControlPort.
 safe-rm --force -- "${torrc}" "${restart_log}"
-printf '%s\n' '## Added by local-onion-tester.yml' 'CookieAuthentication 1' > "${torrc}"
+printf '%s\n' 'ControlPort 9051' > "${torrc}"
 rc=0
 out="$(run_configure 2>&1)" || rc=$?
-if [ "${rc}" = 0 ] && [ "$(control_port_count)" -ge 1 ]; then
-   pass 'marker kept, ControlPort dropped: re-heals (ControlPort restored)'
+if [ "${rc}" = 0 ] && [ "$(control_port_count)" = 1 ] && [ "$(cookie_present)" = y ] && [ "$(restarted)" = y ]; then
+   pass 'ControlPort present, cookie missing: adds cookie without a 2nd ControlPort'
 else
-   fail "re-heal on dropped ControlPort: rc=${rc} count=$(control_port_count); out: ${out}"
+   fail "cookie-heal: rc=${rc} cp=$(control_port_count) cookie=$(cookie_present); out: ${out}"
 fi
 
-# 4. two concurrent runs vs an empty torrc -> exactly one ControlPort (Finding 2).
+# 4. marker kept but ControlPort DROPPED -> re-adds exactly one ControlPort.
+safe-rm --force -- "${torrc}" "${restart_log}"
+printf '%s\n' '## Added by local-onion-tester.yml' 'CookieAuthentication 1' \
+   'CookieAuthFileGroupReadable 1' > "${torrc}"
+rc=0
+out="$(run_configure 2>&1)" || rc=$?
+if [ "${rc}" = 0 ] && [ "$(control_port_count)" = 1 ] && [ "$(cookie_present)" = y ]; then
+   pass 'marker kept, ControlPort dropped: re-adds exactly one ControlPort'
+else
+   fail "controlport-heal: rc=${rc} cp=$(control_port_count) cookie=$(cookie_present); out: ${out}"
+fi
+
+# 5. two concurrent runs vs an empty torrc -> exactly one ControlPort (flock).
 safe-rm --force -- "${torrc}" "${restart_log}" "${lock}"
 rc_a=0
 rc_b=0
