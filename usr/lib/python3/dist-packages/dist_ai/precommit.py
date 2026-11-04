@@ -339,14 +339,30 @@ def _added(paths, base_ref, base_cwd, content_cwd):
     return out
 
 
+def _large_ok(base_cwd, path, source_rev):
+    """True when .gitattributes marks PATH 'dist-ai-large-ok' (a bare set or
+    =true): the repo DELIBERATELY commits this large generated / deploy artifact
+    -- e.g. a static site's inlined-asset HTML that CANNOT use git-lfs because the
+    host serves the raw committed bytes (GitHub Pages' build_type=workflow deploy,
+    no CI rebuild). Opt-in PER PATH in the repo's own .gitattributes, so the
+    default-deny ADD size check still guards every other path; an =false re-arms
+    it. Distinct from linguist-generated ON PURPOSE: that marker keeps the size
+    check (a generated file can still be accidentally huge), so exemption is a
+    separate, explicit statement, never implied by 'generated'."""
+    attrs = context.check_attrs(base_cwd, path, source_rev, ("dist-ai-large-ok",))
+    return attrs.get("dist-ai-large-ok") in ("set", "true")
+
+
 def _large_blobs(paths, base_ref, source_rev, base_cwd):
     """FAIL each newly-ADDED blob larger than check-added-large-files' default
     (500 KiB). The blob-mode counterpart of that hook, which stats the working
     tree (so a large file hidden behind a small working copy passed) and cannot
     run in the non-git mirror (it shells out to 'git check-attr'). 'cat-file -s'
     is the blob's real size -- and naturally the tiny POINTER size for a git-lfs
-    file, so lfs stays exempt with no extra logic. Existence keys on the tree,
-    not disk, so a large file staged then removed from the working copy is caught."""
+    file, so lfs stays exempt with no extra logic. A path the repo marks
+    'dist-ai-large-ok' is a deliberately-committed large artifact, so it is skipped
+    (see _large_ok). Existence keys on the tree, not disk, so a large file staged
+    then removed from the working copy is caught."""
     from dist_ai import gitdiff
     entries = gitdiff._tree_entries(
         None if source_rev == "" else source_rev, base_cwd)
@@ -354,6 +370,8 @@ def _large_blobs(paths, base_ref, source_rev, base_cwd):
         mode, sha = entries.get(path, (None, None))
         if sha is None or mode in ("120000", "160000"):
             continue
+        if _large_ok(base_cwd, path, source_rev):
+            continue  ## repo-declared deliberately-committed large artifact
         if base_ref and subprocess.run(
                 ["git", "cat-file", "-e", "%s:%s" % (base_ref, path)],
                 capture_output=True, cwd=base_cwd).returncode == 0:
@@ -368,7 +386,9 @@ def _large_blobs(paths, base_ref, source_rev, base_cwd):
             yield model.fail(
                 "check-added-large-files",
                 "check-added-large-files: '%s' blob is %d KiB (> 500 KiB); "
-                "reduce it or track it with git-lfs" % (path, size // 1024),
+                "reduce it, track it with git-lfs, or -- if it is a "
+                "deliberately-committed generated/deploy artifact -- mark its path "
+                "'dist-ai-large-ok' in .gitattributes" % (path, size // 1024),
                 path)
 
 
@@ -495,7 +515,10 @@ def _run_batch(paths, base_ref, staged_mode, base_cwd, content_cwd, source_rev,
     ## not fail every commit that appends to it.
     if source_rev is None:
         ## working-tree mode: the real hook stats the tree (which IS the content).
-        added = _added(paths, base_ref, base_cwd, base_cwd)
+        ## Drop repo-declared large-ok artifacts first, matching the blob-mode
+        ## skip, so the exemption holds in both modes.
+        added = [p for p in _added(paths, base_ref, base_cwd, base_cwd)
+                 if not _large_ok(base_cwd, p, source_rev)]
         yield from _run_hook("check-added-large-files", ["--enforce-all"],
                              added, base_cwd)
     else:

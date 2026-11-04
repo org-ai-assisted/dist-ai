@@ -204,6 +204,22 @@ printf '%s\n' "more" >> "${repo}/big.dat"
 git -C "${repo}" add big.dat
 assert "appending to a tracked large file passes" 0 "" --check --staged --all
 
+## --- 10b. a NEW big file the repo marks dist-ai-large-ok passes (opt-in exempt) -
+## A deliberately-committed large generated/deploy artifact (e.g. a static site's
+## inlined-asset HTML that cannot use git-lfs because the host serves the raw
+## committed bytes) is exempted PER PATH via .gitattributes. Default-deny stays:
+## an unmarked large file in the same repo still FAILs.
+repo="$(new_repo)"
+printf '%s\n' '_site/** dist-ai-large-ok' > "${repo}/.gitattributes"
+mkdir -p "${repo}/_site"
+{ head -c 600000 /dev/zero | tr '\0' 'a'; printf '%s\n' ''; } > "${repo}/_site/big.html"
+git -C "${repo}" add .gitattributes _site/big.html
+assert "large file marked dist-ai-large-ok passes" 0 "" --check --staged
+{ head -c 600000 /dev/zero | tr '\0' 'a'; printf '%s\n' ''; } > "${repo}/unmarked.dat"
+git -C "${repo}" add unmarked.dat
+assert "unmarked large file still FAILs beside an exempt one" 1 \
+   "check-added-large-files" --check --staged
+
 ## --- 11. bare --staged NOTEs when the working tree diverges from the index --
 ## The gate judges the staged INDEX blob (the exact committed bytes); a staged
 ## path edited (not re-staged) afterward is still checked on its blob, so an
