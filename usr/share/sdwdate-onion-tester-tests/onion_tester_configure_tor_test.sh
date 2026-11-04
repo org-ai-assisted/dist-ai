@@ -47,7 +47,8 @@ work_dir="$(mktemp --directory)"
 trap cleanup EXIT
 
 torrc="${work_dir}/torrc"
-lock="${work_dir}/lock"
+lock_dir="${work_dir}/lockdir"
+mkdir --parents -- "${lock_dir}"
 restart_log="${work_dir}/restart-log"
 
 ## restart mock: records each (re)start so a case can assert tor was restarted,
@@ -72,7 +73,7 @@ run_configure() {
    ONION_TESTER_TORRC="${torrc}" \
    ONION_TESTER_PRIV_CMD="${1-}" \
    ONION_TESTER_TOR_RESTART_BIN="${work_dir}/mock-restart" \
-   ONION_TESTER_CONFIGURE_LOCK="${lock}" \
+   ONION_TESTER_CONFIGURE_LOCK_DIR="${lock_dir}" \
    "${subject}"
 }
 
@@ -141,7 +142,7 @@ else
 fi
 
 # 5. two concurrent runs vs an empty torrc -> exactly one ControlPort (flock).
-safe-rm --force -- "${torrc}" "${restart_log}" "${lock}"
+safe-rm --force -- "${torrc}" "${restart_log}"
 rc_a=0
 rc_b=0
 run_configure "${work_dir}/slow-priv" > /dev/null 2>&1 &
