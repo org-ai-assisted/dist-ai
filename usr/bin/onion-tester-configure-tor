@@ -21,21 +21,50 @@ if [ "${CI:-}" != "true" ] && [ "${ALLOW_LOCAL:-}" != "true" ]; then
    exit 1
 fi
 
-main() {
-   ## ControlPort + CookieAuth* are load-bearing: sdwdate's
-   ## timesanitycheck uses stem.connection.connect(); without a
-   ## reachable control connection every probed URL falls back to
-   ## REACHABLE-but-INVALID. Cookie group-readable + chmod o+r in
-   ## wait-bootstrap.sh make it usable by the non-debian-tor runner.
-   ## Log notice file is read by wait-bootstrap.sh's grep.
-   ## Idempotent: append only once. The onion-tester-run preflight may call this
-   ## to self-heal a missing control port, and an operator may re-run it; a second
-   ## append would duplicate ControlPort etc. and tor would refuse to start. Keyed
-   ## on the marker line below appearing anywhere in torrc.
-   if sudo grep --quiet --fixed-strings -- 'Added by local-onion-tester.yml' /etc/tor/torrc 2>/dev/null; then
-      printf '%s\n' "torrc already has the onion-tester directives; not appending again"
+## Overridable so the regression suite drives the REAL script offline -- no sudo, no
+## systemd, no tor: the torrc path, the privilege prefix for the torrc ops, the tor
+## restart, and the serialization lock. Unset -> production (sudo, /etc/tor/torrc,
+## systemctl restart tor@default, /run/lock).
+torrc="${ONION_TESTER_TORRC:-/etc/tor/torrc}"
+# shellcheck disable=SC2206  ## intentional word-split of an optional multi-word priv prefix; empty -> none
+priv=( ${ONION_TESTER_PRIV_CMD-sudo} )
+restart_bin="${ONION_TESTER_TOR_RESTART_BIN:-}"
+lock_file="${ONION_TESTER_CONFIGURE_LOCK:-/run/lock/onion-tester-configure-tor.lock}"
+
+restart_tor() {
+   if [ -n "${restart_bin}" ]; then
+      "${restart_bin}"
    else
-      sudo tee --append /etc/tor/torrc > /dev/null <<'TORRC_EOF'
+      "${priv[@]}" systemctl restart tor@default
+   fi
+}
+
+main() {
+   ## ControlPort + CookieAuth* are load-bearing: sdwdate's timesanitycheck uses
+   ## stem.connection.connect(); without a reachable control connection every
+   ## probed URL falls back to REACHABLE-but-INVALID. Cookie group-readable +
+   ## chmod o+r in onion-tester-wait-bootstrap make it usable by the
+   ## non-debian-tor runner. Log notice file is read by that script's grep.
+   ##
+   ## Idempotent + concurrency-safe. Key the skip on the load-bearing
+   ## `ControlPort 9051` directive, NOT the marker comment: a torrc that kept the
+   ## marker but lost ControlPort (a hand edit) must RE-heal, not read as already
+   ## configured and then restart tor without the port. A re-append is safe -- tor
+   ## accepts repeated directives (it does NOT refuse to start on a duplicate
+   ## ControlPort). The flock serializes two overlapping runs (the onion-tester-run
+   ## self-heal racing an operator re-run) so the grep-check and the append cannot
+   ## interleave into a doubled block.
+   local lock_fd
+   exec {lock_fd}>"${lock_file}" \
+      || { printf '%s\n' "onion-tester-configure-tor: cannot open lock ${lock_file}" >&2; exit 1; }
+   flock --timeout 60 "${lock_fd}" \
+      || { printf '%s\n' "onion-tester-configure-tor: another run holds ${lock_file} (waited 60s)" >&2; exit 1; }
+
+   if "${priv[@]}" grep --quiet --extended-regexp -- \
+      '^[[:space:]]*ControlPort[[:space:]]+9051([[:space:]]|$)' "${torrc}" 2>/dev/null; then
+      printf '%s\n' "torrc already has ControlPort 9051; not appending again"
+   else
+      "${priv[@]}" tee --append "${torrc}" > /dev/null <<'TORRC_EOF'
 
 ## Added by local-onion-tester.yml
 ControlPort 9051
@@ -55,7 +84,7 @@ TORRC_EOF
    ## Always (re)start: the preflight calls this precisely when the control port
    ## is unreachable, which a restart heals whether torrc was just written or a
    ## prior tor died.
-   sudo systemctl restart tor@default
+   restart_tor
    printf '%s\n' "tor@default restarted"
 }
 

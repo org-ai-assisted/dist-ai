@@ -5,21 +5,23 @@
 
 ## AI-Assisted
 
-## Offline regression suite for sdwdate's onion-tester CI wrappers (ci/*.sh in
-## the sdwdate checkout): the retry/backoff policy of onion-tester-run.sh, and
-## the scratch-file handling of onion-tester-verify-evidence.sh. Everything is
-## mocked -- no Tor, no network, no wayback, no privleap, no root -- so it runs
-## in the dist-ai container in seconds.
+## Offline regression suite for dist-ai's own onion-tester CI wrappers in usr/bin:
+## onion-tester-run's retry/backoff policy and its control-port preflight,
+## onion-tester-configure-tor's torrc idempotency + concurrency lock, and
+## onion-tester-verify-evidence's scratch-file handling. Everything is mocked --
+## no Tor, no network, no wayback, no privleap, no root -- so it runs in the
+## dist-ai container in seconds; configure-tor is driven through its overridable
+## bases (torrc path, priv prefix, restart, lock), so even its torrc logic needs
+## no sudo/systemd/tor here.
 ##
-## Deliberately NOT covering the live Tor probe, onion-tester-configure-tor.sh
-## or onion-tester-wait-bootstrap.sh: those need sudo, systemd and a real tor on
-## the runner, which this container does not have. They stay in sdwdate's own
-## workflow.
+## Still out of scope (need a real tor on the runner, so they stay in sdwdate's
+## own workflow): the live Tor probe, and onion-tester-wait-bootstrap's actual
+## bootstrap wait.
 ##
-## The subject is resolved by each payload:
-##   * SDWDATE_REPO=/path/to/sdwdate -> that checkout's ci/ scripts, OR
-##   * ONION_TESTER_RUN_BIN / VERIFY_EVIDENCE_BIN -> a specific file.
-## An absent subject exits 77 (SKIP), never FAIL.
+## Each payload resolves its subject payload-relative to usr/bin (../../bin from
+## the suite dir; /usr/bin when installed), overridable via ONION_TESTER_RUN_BIN /
+## ONION_TESTER_CONFIGURE_TOR_BIN / VERIFY_EVIDENCE_BIN. A missing subject is a
+## FATAL environment bug (exit 1), never a silent skip.
 
 set -o errexit
 set -o nounset

@@ -159,6 +159,14 @@ ensure_control_port() {
       printf '%s\n' "onion-tester: Tor control port ${control_port} unreachable in CI -- the configure-tor/wait-bootstrap steps must run first; refusing to probe (every URL would misreport as REACHABLE-but-INVALID)" >&2
       exit 4
    fi
+   ## The local self-heal (onion-tester-configure-tor) hardcodes ControlPort 9051,
+   ## so it can only heal the default port. For an overridden port it would restart
+   ## tor on 9051, re-probe the still-dead ${control_port}, and exit 4 anyway --
+   ## refuse up front (no pointless restart) with an actionable message.
+   if [ "${control_port}" != "9051" ]; then
+      printf '%s\n' "onion-tester: Tor control port ${control_port} unreachable, and the local self-heal only configures the default 9051 (onion-tester-configure-tor hardcodes it). Configure Tor for port ${control_port} manually, then re-run; refusing to probe." >&2
+      exit 4
+   fi
    printf '%s\n' "onion-tester: Tor control port ${control_port} unreachable; running configure-tor + wait-bootstrap (local self-heal, needs sudo)" >&2
    if ! "${configure_tor}" || ! "${wait_bootstrap}"; then
       printf '%s\n' "onion-tester: self-heal failed (configure-tor/wait-bootstrap) -- set Tor up manually, then re-run; refusing to probe without the control port" >&2
@@ -264,7 +272,7 @@ main() {
       fi
       if [ "${attempt}" -lt "${attempts}" ]; then
          ## Stop rather than retry on stale circuits: the control port is set up by
-         ## our own onion-tester-configure-tor.sh, so an unreachable one is an
+         ## our own onion-tester-configure-tor, so an unreachable one is an
          ## infrastructure bug, and a retry without NEWNYM cannot tell a dead onion
          ## from a cached client-side failure. rc=3 marks a harness failure so it is
          ## not read as a probe verdict.
