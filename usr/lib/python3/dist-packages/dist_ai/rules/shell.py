@@ -2029,7 +2029,11 @@ def _discards_stdout_and_stderr(stmt):
             fds[1] = fds[2] = dest  ## '>&FILE' is the '&>FILE' spelling
         else:
             source_fd = int(target) if target and target.isdigit() else None
-            fds[int(number) if number else 1] = fds.get(source_fd, "other")
+            ## source_fd None (a non-numeric dup target) is not an fd we track, so
+            ## it resolves to "other" -- the same value fds.get(None, ...) returned,
+            ## now without handing dict.get an int|None key (mypy arg-type).
+            fds[int(number) if number else 1] = (
+                fds.get(source_fd, "other") if source_fd is not None else "other")
     return fds[1] == "null" and fds[2] == "null"
 
 
