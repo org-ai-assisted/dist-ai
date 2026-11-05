@@ -72,15 +72,27 @@ case "${export_ext}" in
       ;;
 esac
 
-## It must ship 4400's qcow2 output (${binary_image_qcow2_file}) -- mv for a
-## utm-only build, cp when --target qcow2 also wants the standalone -- not a raw.
+## The SAME cp/mv operation must read ${binary_image_qcow2_file} (4400's output)
+## AND write the bundle disk. A split check (source somewhere, a .qcow2-named
+## destination somewhere) would pass a 4600 that copies a raw to the bundle disk
+## while copying the qcow2 elsewhere -- so assert source and destination on one op.
 # shellcheck disable=SC2016
-case "$(grep -E -- '(cp|mv) .*\$\{binary_image_qcow2_file\}' "${export_step}")" in
+case "$(grep -E -- '(cp|mv) -- "\$\{binary_image_qcow2_file\}" "\$\{bundle_qcow2_file\}"' "${export_step}")" in
    '')
-      fail "4600 no longer ships \${binary_image_qcow2_file} into the bundle; the exported disk may be an unconverted raw"
+      fail "4600 does not ship \${binary_image_qcow2_file} -> \${bundle_qcow2_file} in one op; the bundle disk may be an unconverted raw"
       ;;
    *)
-      pass "4600 ships 4400's qcow2 output (\${binary_image_qcow2_file})"
+      pass "4600 ships 4400's qcow2 output into the bundle disk in one cp/mv op"
+      ;;
+esac
+## ...and that single destination resolves to Data/${VMNAME}.qcow2.
+# shellcheck disable=SC2016
+case "$(grep -E -- 'bundle_qcow2_file=.*Data/\$\{VMNAME\}\.qcow2' "${export_step}")" in
+   '')
+      fail "4600's \${bundle_qcow2_file} target is not Data/\${VMNAME}.qcow2"
+      ;;
+   *)
+      pass "4600 bundle disk target resolves to Data/\${VMNAME}.qcow2"
       ;;
 esac
 # shellcheck disable=SC2016
@@ -92,17 +104,33 @@ fi
 
 ## --- Part 2: 4400 runs for the utm target ----------------------------------
 ## 4600 copies ${binary_image_qcow2_file}, which only exists if 4400 ran. 4400
-## self-gates, so its guard MUST fire for dist_build_utm, not qcow2 alone.
+## self-gates, so the guard that CONTROLS conversion -- not a mere mention of
+## dist_build_utm in a comment -- MUST test dist_build_utm, or a utm-only build
+## produces no qcow2.
 convert_step="${DM_CONVERT_QCOW2:-${dm_checkout}/build-steps.d/4400_convert-raw-to-qcow2}"
 if [ ! -r "${convert_step}" ]; then
    fail "4400_convert-raw-to-qcow2 not found (set DM_CONVERT_QCOW2 or DERIVATIVE_MAKER_DIR)"
 else
-   case "$(grep -E -- 'dist_build_utm' "${convert_step}")" in
+   guard_fn="$(sed -n '/^qcow2_build_requested() {$/,/^}$/p' -- "${convert_step}")"
+   # shellcheck disable=SC2016
+   case "${guard_fn}" in
       '')
-         fail "4400 does not gate on dist_build_utm; it would skip a utm build and 4600 would copy a missing qcow2"
+         fail "canary: could not extract qcow2_build_requested() from 4400; the assertions below would prove nothing"
+         ;;
+      *'"${dist_build_utm:-}" = "true"'*)
+         pass "4400's qcow2_build_requested() tests dist_build_utm"
          ;;
       *)
-         pass "4400 runs for the utm target (gates on dist_build_utm)"
+         fail "4400's qcow2_build_requested() does not test dist_build_utm; a utm-only build would skip conversion"
+         ;;
+   esac
+   ## ...and conversion is actually gated on that predicate, not dead code.
+   case "$(grep -E -- 'if qcow2_build_requested' "${convert_step}")" in
+      '')
+         fail "4400 does not gate conversion on qcow2_build_requested(); the dist_build_utm test would be dead code"
+         ;;
+      *)
+         pass "4400 gates conversion on qcow2_build_requested()"
          ;;
    esac
 fi
