@@ -1003,7 +1003,7 @@ fi
 ## (whose End includes the trailing ';'); otherwise 'mkdir a; chmod M a; CMD'
 ## would glue CMD onto the 'install -d' operand list and silently drop it.
 f="${test_dir}/mkdirchmodtrail.sh"
-printf '%s\n' "#!/bin/bash" "mkdir a; chmod 700 a; echo done" >"${f}"
+printf '%s\n' "#!/bin/bash" "mkdir -p a; chmod 700 a; echo done" >"${f}"
 run_fix "${f}" >/dev/null 2>&1
 if grep --quiet --fixed-strings -- 'install -d -m 700 -- a' "${f}" \
    && grep --quiet --extended-regexp -- '(^|;[[:space:]]*)echo done' "${f}" ; then
@@ -1012,14 +1012,30 @@ else
    note_fail "R-173 swallowed the command after the chmod"
 fi
 
+## --- 7q: a PLAIN 'mkdir' (no -p) is detect-only ----------------------------
+## 'mkdir DIR' fails if DIR exists (the lock-dir idiom); 'install -d' reuses it,
+## so collapsing a plain mkdir is NOT behavior-preserving. Only '-p'/'--parents'
+## (already idempotent) is auto-fixed; a plain mkdir is left for the human.
+f="${test_dir}/mkdirchmodplain.sh"
+printf '%s\n' "#!/bin/bash" "mkdir d; chmod 700 d" >"${f}"
+before="$(cksum < "${f}")"
+run_fix "${f}" >/dev/null 2>&1
+if [ "$(cksum < "${f}")" = "${before}" ] ; then
+   note_pass "R-173 leaves a plain (no -p) mkdir for the gate (not auto-fixed)"
+else
+   note_fail "R-173 collapsed a plain mkdir, dropping its fail-on-exists semantics"
+fi
+
 ## --- 7p: statement-level modifiers ('&' background, '!' negation) detect-only -
 ## shfmt attaches these to the STATEMENT; collapsing would background the WHOLE
 ## create (a race), DROP a job-control '&', or DROP the '!'. Each is left
 ## byte-identical for the gate, never auto-rewritten.
+## '-p' on the mkdir so the ONLY reason the pair is detect-only is the modifier
+## (else the no-'-p' gate would also decline it and mask a background-check regression).
 for name_body in \
-   "bg-chmod__mkdir a; chmod 700 a &" \
-   "bg-mkdir__mkdir a & chmod 700 a" \
-   "negated__! mkdir a; chmod 700 a" ; do
+   "bg-chmod__mkdir -p a; chmod 700 a &" \
+   "bg-mkdir__mkdir -p a & chmod 700 a" \
+   "negated__! mkdir -p a; chmod 700 a" ; do
    name="${name_body%%__*}"
    body="${name_body#*__}"
    f="${test_dir}/mkdirchmod_${name}.sh"
@@ -1034,7 +1050,7 @@ for name_body in \
 done
 ## ... but a '&' that backgrounds the WHOLE '&&' pair still collapses (equivalent).
 f="${test_dir}/mkdirchmod_wholebg.sh"
-printf '%s\n' "#!/bin/bash" "mkdir a && chmod 700 a &" >"${f}"
+printf '%s\n' "#!/bin/bash" "mkdir -p a && chmod 700 a &" >"${f}"
 run_fix "${f}" >/dev/null 2>&1
 if grep --quiet --fixed-strings -- 'install -d -m 700 -- a &' "${f}" ; then
    note_pass "R-173 collapses a whole-pair-backgrounded && pair (equivalent)"

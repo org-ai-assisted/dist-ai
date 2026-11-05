@@ -567,6 +567,27 @@ def _mkdir_has_mode_opt(call, source):
     return False
 
 
+def _mkdir_has_parents(call, source):
+    """True if the mkdir CALL carries -p/--parents. The autofix collapses ONLY a
+    '-p' mkdir: 'mkdir -p DIR' is idempotent (succeeds when DIR already exists),
+    matching 'install -d', so the rewrite is behavior-preserving. A PLAIN
+    'mkdir DIR' FAILS when DIR exists -- the lock-dir idiom ('mkdir "$lock"' under
+    errexit) relies on that, and 'install -d' does not -- so it stays detect-only
+    (flagged, the human decides), per fix()'s provably-structure-preserving
+    contract."""
+    for kind, _word, text in bash_ast.command_tokens(
+            call, source, frozenset("m"), frozenset({"mode"})):
+        if kind != "opt":
+            continue
+        name = _long_name(text)
+        if name is not None:
+            if bash_ast.resolve_long(name, MKDIR_LONG) == "parents":
+                return True
+        elif not text.startswith("--") and "p" in text[1:]:
+            return True
+    return False
+
+
 def _chmod_is_recursive(call, source):
     """True if the chmod CALL is recursive ('-R'/'--recursive'): 'install -d -m'
     modes only the directory itself, so a recursive chmod is NOT equivalent and
@@ -672,6 +693,7 @@ def _mkdir_then_chmod_pairs(ctx):
             and between in ("", ";", "&&")
             and bool(mode_lit) and bool(NUMERIC_MODE.fullmatch(mode_lit))
             and not _mkdir_has_mode_opt(eff1, source)
+            and _mkdir_has_parents(eff1, source)
             and not any(a <= s1_start < b for a, b in heredocs))
         return {
             "mkdir_offset": (c1.get("Pos") or {}).get("Offset"),
