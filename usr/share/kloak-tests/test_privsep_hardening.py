@@ -23,10 +23,21 @@ transition, several invariants must hold together or the daemon dies at startup:
     crash loop. A bare hand-list is the regression this guards against.
   * RestrictNamespaces must PERMIT the namespaces kloakwl unshares; the former
     RestrictNamespaces=true denied all of them and killed the sandbox.
+  * NoNewPrivileges must be OFF: kloak execs kloakwl under a SEPARATE, broader
+    AppArmor profile (Px), and no_new_privs forbids an exec transition to a
+    non-subset profile, so the spawn is denied ("info=no new privs"). The unit
+    SystemCallFilter still installs (root executor) and is inherited by kloakwl.
+  * CapabilityBoundingSet must grant CAP_SETUID/CAP_SETGID: kloakwl drops to an
+    unprivileged uid BEFORE it unshares, while its effective set is masked to the
+    bounding set, so the drop fails EPERM without them. sys_admin/sys_chroot are
+    NOT needed -- kloakwl's mount/pivot_root run inside its own new user namespace.
   * usr.bin.kloak must AUTHORIZE the exec of /usr/bin/kloakwl, or AppArmor denies
     the spawn.
-  * a usr.bin.kloakwl profile must exist and grant the sandbox operations
-    (user namespace creation, mount, pivot_root).
+  * a usr.bin.kloakwl profile must exist and grant the sandbox operations (user
+    namespace creation, mount, pivot_root), capability dac_override (to traverse
+    the user-owned /run/user/<uid> to the Wayland socket), the numeric-pid
+    uid/gid map writes (AppArmor mediates the resolved pid path, not /proc/self),
+    and /tmp for the pivot_root tmpfs tree.
   * the unprivileged kloakwl user/group must be created, or kloakwl FATALs when
     it looks them up to drop privileges.
 
@@ -140,6 +151,24 @@ class PrivsepHardening(unittest.TestCase):
                 "kloakwl's self_sandbox unshares. Value: %r"
                 % (namespace, tokens))
 
+    def test_no_new_privileges_off_for_profile_transition(self) -> None:
+        tokens = self._directive_tokens(self.service_text, 'NoNewPrivileges')
+        self.assertTrue(tokens, 'kloak.service has no NoNewPrivileges')
+        self.assertNotIn(
+            tokens[-1].lower(), ('true', 'yes', '1', 'on'),
+            "NoNewPrivileges=%s blocks the kloak->kloakwl AppArmor Px transition: "
+            "no_new_privs forbids a transition to kloakwl's broader (non-subset) "
+            "profile, so kloak restart-loops" % tokens[-1])
+
+    def test_bounding_set_permits_privilege_drop(self) -> None:
+        tokens = self._directive_tokens(self.service_text, 'CapabilityBoundingSet')
+        self.assertTrue(tokens, 'kloak.service has no CapabilityBoundingSet')
+        for cap in ('CAP_SETUID', 'CAP_SETGID'):
+            self.assertIn(
+                cap, tokens,
+                "CapabilityBoundingSet lacks %s; kloakwl's pre-unshare privilege "
+                "drop (setgroups/setresuid) fails EPERM. Value: %r" % (cap, tokens))
+
     def test_kloak_apparmor_authorizes_kloakwl_exec(self) -> None:
         ## A discrete-profile (Px/Pix), inherit (ix) or unconfined (ux/Ux)
         ## transition on the kloakwl path -- any of these authorizes the execve;
@@ -161,6 +190,23 @@ class PrivsepHardening(unittest.TestCase):
                 self.kloakwl_aa, r'(?m)^\s*%s\b' % rule,
                 "usr.bin.kloakwl is missing the '%s' rule kloakwl's sandbox "
                 "needs; AppArmor would deny it" % rule)
+
+    def test_kloakwl_apparmor_profile_privdrop_and_mapping(self) -> None:
+        self.assertRegex(
+            self.kloakwl_aa, r'(?m)^\s*capability\s+dac_override\b',
+            'usr.bin.kloakwl lacks capability dac_override; as root (pre-drop) it '
+            'cannot traverse the user-owned /run/user/<uid> to the Wayland socket')
+        for mapfile in ('uid_map', 'gid_map', 'setgroups'):
+            self.assertRegex(
+                self.kloakwl_aa,
+                r'(?m)^\s*@\{PROC\}/@\{pid\}/%s\s+\S*w' % mapfile,
+                "usr.bin.kloakwl lacks a writable @{PROC}/@{pid}/%s rule; AppArmor "
+                "mediates the resolved numeric-pid path, not the /proc/self magic "
+                "symlink, so a @{PROC}/self rule never matches" % mapfile)
+        self.assertRegex(
+            self.kloakwl_aa, r'(?m)^\s*/tmp/\S*\s+\S*w',
+            'usr.bin.kloakwl lacks /tmp write; kloakwl cannot build the tmpfs tree '
+            'it pivot_roots into')
 
     def test_kloakwl_system_user_created(self) -> None:
         ## sysusers 'u' line creates the user and its matching group; kloakwl
