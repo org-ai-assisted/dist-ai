@@ -998,4 +998,18 @@ else
    note_fail "R-173 rewrote a wrapped pair unsafely"
 fi
 
+## --- 7o: a command FOLLOWING the chmod is NOT swallowed ---------------------
+## The collapse span ends at the chmod's target operand, not the chmod STATEMENT
+## (whose End includes the trailing ';'); otherwise 'mkdir a; chmod M a; CMD'
+## would glue CMD onto the 'install -d' operand list and silently drop it.
+f="${test_dir}/mkdirchmodtrail.sh"
+printf '%s\n' "#!/bin/bash" "mkdir a; chmod 700 a; echo done" >"${f}"
+run_fix "${f}" >/dev/null 2>&1
+if grep --quiet --fixed-strings -- 'install -d -m 700 -- a' "${f}" \
+   && grep --quiet --extended-regexp -- '(^|;[[:space:]]*)echo done' "${f}" ; then
+   note_pass "R-173 preserves a command following the chmod (not swallowed)"
+else
+   note_fail "R-173 swallowed the command after the chmod"
+fi
+
 exit_gate

@@ -639,8 +639,13 @@ def _mkdir_then_chmod_pairs(ctx):
         s1_start = (s1.get("Pos") or {}).get("Offset")
         s1_end = (s1.get("End") or {}).get("Offset")
         s2_start = (s2.get("Pos") or {}).get("Offset")
-        s2_end = (s2.get("End") or {}).get("Offset")
-        if None in (s1_start, s1_end, s2_start, s2_end):
+        ## End the collapse span at the chmod's LAST operand (the target dir), NOT
+        ## the chmod STATEMENT: a Stmt.End includes the trailing ';' separator, so
+        ## a following command ('mkdir d; chmod M d; echo x') would be swallowed
+        ## into the 'install -d' operand list and silently never run. The target
+        ## word's End stops before any separator, keeping what follows intact.
+        span_end = (target_word.get("End") or {}).get("Offset")
+        if None in (s1_start, s1_end, s2_start, span_end):
             return None
         ## Only a plain separator (newline, ';', '&&') may sit between the two
         ## commands -- a trailing comment or a line-continuation would be
@@ -658,7 +663,7 @@ def _mkdir_then_chmod_pairs(ctx):
             "mkdir_offset": (c1.get("Pos") or {}).get("Offset"),
             "mkdir_call": c1,
             "span_start": s1_start,
-            "span_end": s2_end,
+            "span_end": span_end,
             "mode_lit": mode_lit,
             "dir_source": bash_ast.word_source(dir_word, source),
             "fixable": fixable,
@@ -670,9 +675,22 @@ def _mkdir_then_chmod_pairs(ctx):
             if record is not None:
                 yield record
     and_ops = bash_ast.and_op()
+
+    def last_and_leaf(stmt):
+        """The RIGHTMOST leaf command of an '&&' chain. Bash '&&' is
+        left-associative, so 'A && B && C' parses as '(A && B) && C': the pair
+        'B && C' is never a single BinaryCmd's X/Y. For the node whose Y is C,
+        X is '(A && B)', whose own Y is the leaf B that actually precedes C --
+        so pair THAT with C, else a later mkdir/chmod pair in the chain is
+        missed."""
+        cmd = (stmt or {}).get("Cmd") or {}
+        if cmd.get("Type") == "BinaryCmd" and cmd.get("Op") in and_ops:
+            return cmd.get("Y")
+        return stmt
+
     for node in bash_ast.nodes_of_type(tree, "BinaryCmd"):
         if node.get("Op") in and_ops:
-            record = match(node.get("X"), node.get("Y"))
+            record = match(last_and_leaf(node.get("X")), node.get("Y"))
             if record is not None:
                 yield record
 

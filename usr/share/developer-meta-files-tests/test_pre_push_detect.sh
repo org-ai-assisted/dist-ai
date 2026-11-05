@@ -174,6 +174,18 @@ assert_not_at "R-173 is not reported on the chmod line"          "R-173" 3
 assert_not_at "R-173 spares a mkdir whose next chmod is another dir" "R-173" 4
 assert_at     "R-173 detects the '&&' form on the mkdir line"    "R-173" 6
 
+## Every pair in a left-associative '&&' chain, not just the first: 'A && B && C
+## && D' parses as '((A && B) && C) && D', so the later 'mkdir b && chmod b' pair
+## is never one BinaryCmd's X/Y. Line-continuation puts the second mkdir on line 3.
+## 'bs' (a literal backslash, defined above) spells the line-continuation so the
+## source carries no "\\'" (SC1003); the generated fixture gets a real trailing '\'.
+run_det "$(printf '%s\n' \
+   '#!/bin/bash' \
+   "mkdir a && chmod 700 a ${bs}" \
+   '   && mkdir b && chmod 700 b')"
+assert_at "R-173 flags the first pair in an && chain"       "R-173" 2
+assert_at "R-173 flags a later pair in the same && chain"   "R-173" 3
+
 ## --- R-130 spares no-op stubs + condition pipelines, keeps bare/redirect ------
 run_det "$(printf '%s\n' \
    '#!/bin/bash' \
