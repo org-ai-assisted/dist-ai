@@ -268,6 +268,55 @@ def statements(tree):
     return out
 
 
+def statement_lists(tree):
+    """Yield each STATEMENT-LIST (the list of Stmt dicts bash runs in sequence) in
+    TREE: the top level, each subshell/brace-group/command-or-process-substitution
+    body, and each if/loop/case BRANCH. A rule reasoning about ADJACENCY -- 'this
+    command immediately followed by that one' -- consumes consecutive entries of
+    one list; two commands in DIFFERENT lists (an if's then vs its else, a
+    command-substitution vs its enclosing code) are not adjacent, so they must not
+    be paired. Mirrors _statement_list_spans' traversal (same lists, yielding the
+    lists themselves rather than their byte spans). Empty lists are skipped."""
+    def nonempty(stmts):
+        return [s for s in (stmts or []) if isinstance(s, dict)]
+
+    top = nonempty(tree.get("Stmts"))
+    if top:
+        yield top
+    for node in bash_ast.iter_nodes(tree):
+        if not isinstance(node, dict):
+            continue
+        kind = node.get("Type")
+        lists = []
+        if kind in ("Block", "Subshell", "CmdSubst", "ProcSubst"):
+            lists.append(node.get("Stmts"))
+        elif kind == "IfClause":
+            lists.append(node.get("Cond"))
+            lists.append(node.get("Then"))
+            ## Walk the WHOLE elif/else chain: shfmt nests each 'elif' as an Else
+            ## dict with NO Type, so iter_nodes never dispatches on it and a later
+            ## elif/else list would otherwise be missed (same reason as
+            ## _statement_list_spans).
+            els = node.get("Else")
+            while isinstance(els, dict):
+                lists.append(els.get("Cond"))
+                lists.append(els.get("Then"))
+                lists.append(els.get("Stmts"))
+                els = els.get("Else")
+        elif kind in ("WhileClause", "UntilClause"):
+            lists.append(node.get("Cond"))
+            lists.append(node.get("Do"))
+        elif kind == "ForClause":
+            lists.append(node.get("Do"))
+        elif kind == "CaseClause":
+            for item in node.get("Items") or []:
+                lists.append(item.get("Stmts"))
+        for stmts in lists:
+            group = nonempty(stmts)
+            if group:
+                yield group
+
+
 def line_is_bare_colon(source, node):
     """True if NODE's physical line is just ':' (optional surrounding
     whitespace) -- the 'bare colon alone on a line' form for R-130."""

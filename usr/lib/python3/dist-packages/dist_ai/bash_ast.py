@@ -224,6 +224,22 @@ def or_op():
     return _OR_OPS
 
 
+_AND_OPS = None
+
+
+def and_op():
+    """The BinaryCmd Op code(s) for '&&' -- DERIVED by parsing rather than
+    hardcoded (shfmt numbers Op and may renumber between versions), like or_op /
+    pipe_ops. Cached."""
+    global _AND_OPS
+    if _AND_OPS is None:
+        codes = set()
+        for node in nodes_of_type(parse("a && b"), "BinaryCmd"):
+            codes.add(node.get("Op"))
+        _AND_OPS = codes
+    return _AND_OPS
+
+
 _CASE_DBLSEMI_OPS = None
 
 

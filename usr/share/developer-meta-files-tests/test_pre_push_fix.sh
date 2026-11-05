@@ -913,4 +913,89 @@ else
    note_fail "batch trailing-ws wrong (diff flag='${ws_diff_flag}', control flag='${ws_ctrl_flag}')"
 fi
 
+## --- 7k: R-173 mkdir-then-chmod -> one atomic 'install -d -m' ---------------
+## 'mkdir' and 'chmod' are SEPARATE printf arguments here, so no real
+## command-position pair appears in THIS tracked test file; the temp fixture
+## gets the two adjacent commands the fixer must collapse.
+f="${test_dir}/mkdirchmod.sh"
+printf '%s\n' "#!/bin/bash" "mkdir -p -- \"\$dir\"" "chmod 0755 -- \"\$dir\"" >"${f}"
+## Canary: the fixture must genuinely trip R-173 BEFORE the fix, else a no-op
+## fixer would "pass". Capture first, THEN grep: '--check' exits 1 on findings
+## and 'set -o pipefail' would otherwise propagate that 1 through 'gate | grep'
+## even when grep matched, mis-reading a flagged fixture as unflagged.
+r173_pre="$("${GATE}" --check -- "${f}" 2>&1)" || true
+if grep --quiet --fixed-strings -- 'R-173' <<< "${r173_pre}" ; then
+   note_pass "R-173 fixture is genuinely dirty (canary)"
+else
+   note_fail "R-173 fixture not flagged pre-fix -- canary would let a no-op fixer pass"
+fi
+run_fix "${f}" >/dev/null 2>&1
+if grep --quiet --fixed-strings -- 'install -d -m 0755 -- "$dir"' "${f}" \
+   && ! grep --quiet --extended-regexp -- '(^|[[:space:]])(mkdir|chmod)([[:space:]]|$)' "${f}" ; then
+   note_pass "R-173 collapses mkdir+chmod into one 'install -d -m'"
+else
+   note_fail "R-173 did not collapse mkdir+chmod correctly"
+fi
+## SC2174-clean: 'install -d' is NOT 'mkdir --parents --mode=', so the atomic
+## form needs no '# shellcheck disable=SC2174' and shellcheck raises none.
+## Capture shellcheck's output first, then grep the string (a 'shellcheck |
+## grep -q' pipe would itself trip R-161).
+sc_out="$(shellcheck --severity=style "${f}" 2>&1)" || true
+if ! grep --quiet --fixed-strings -- 'disable=SC2174' "${f}" \
+   && ! grep --quiet --fixed-strings -- 'SC2174' <<< "${sc_out}" ; then
+   note_pass "R-173 autofix output is SC2174-clean (no disable, no warning)"
+else
+   note_fail "R-173 autofix output is not SC2174-clean"
+fi
+## GATE PARITY: the fixed file now PASSES R-173 (re-detect is clean). Capture
+## first, THEN grep (the pipefail-vs-exit-1 reason above).
+r173_post="$("${GATE}" --check -- "${f}" 2>&1)" || true
+if grep --quiet --fixed-strings -- 'R-173' <<< "${r173_post}" ; then
+   note_fail "R-173 still flagged after the fix (round-trip broken)"
+else
+   note_pass "R-173 clears after the fix (fix-then-verify round-trip)"
+fi
+r173_first="$(cksum < "${f}")"
+run_fix "${f}" >/dev/null 2>&1
+if [ "$(cksum < "${f}")" = "${r173_first}" ] ; then
+   note_pass "R-173 collapse is idempotent"
+else
+   note_fail "R-173 collapse not idempotent"
+fi
+
+## --- 7l: the '&&' form collapses too ---------------------------------------
+f="${test_dir}/mkdirchmodand.sh"
+printf '%s\n' "#!/bin/bash" "mkdir -p d && chmod 700 d" >"${f}"
+run_fix "${f}" >/dev/null 2>&1
+if grep --quiet --fixed-strings -- 'install -d -m 700 -- d' "${f}" \
+   && ! grep --quiet --fixed-strings -- '&&' "${f}" ; then
+   note_pass "R-173 collapses the '&&' form"
+else
+   note_fail "R-173 did not collapse the '&&' form"
+fi
+
+## --- 7m: a SYMBOLIC mode is detect-only, left byte-identical for the gate --
+## chmod applies a symbolic mode relative to the existing bits; 'install -m'
+## sets absolute bits, so the rewrite is not equivalent and must not happen.
+f="${test_dir}/mkdirchmodsym.sh"
+printf '%s\n' "#!/bin/bash" "mkdir d" "chmod u+rwx d" >"${f}"
+before="$(cksum < "${f}")"
+run_fix "${f}" >/dev/null 2>&1
+if [ "$(cksum < "${f}")" = "${before}" ] ; then
+   note_pass "R-173 leaves a symbolic-mode pair for the gate (not auto-fixed)"
+else
+   note_fail "R-173 rewrote a symbolic-mode pair unsafely"
+fi
+
+## --- 7n: a WRAPPED pair ('sudo mkdir; sudo chmod') is detect-only ----------
+f="${test_dir}/mkdirchmodsudo.sh"
+printf '%s\n' "#!/bin/bash" "sudo mkdir -p d" "sudo chmod 700 d" >"${f}"
+before="$(cksum < "${f}")"
+run_fix "${f}" >/dev/null 2>&1
+if [ "$(cksum < "${f}")" = "${before}" ] ; then
+   note_pass "R-173 leaves a wrapped pair for the gate (not auto-fixed)"
+else
+   note_fail "R-173 rewrote a wrapped pair unsafely"
+fi
+
 exit_gate

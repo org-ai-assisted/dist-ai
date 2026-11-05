@@ -835,10 +835,13 @@ mkd='mkdir'
 tv="${dollar}TMPDIR"
 tvbrace="${dollar}{TMP}"
 tvalias="${dollar}TMP"
-## The missing-mode form -- the exact regression: perms dropped, or split into
-## a following 'chmod' (a TOCTOU window). Both FLAG the mkdir line.
+## The missing-mode form -- the exact regression: perms dropped entirely FLAGS
+## the mkdir line. The split-into-a-following-'chmod' form is now R-173's domain
+## (it carries a concrete 'install -d -m' fix); R-172 DEFERS it so the two do not
+## double-report, so there R-172 is ABSENT and R-173 PRESENT (see the R-173 block).
 expect_rule "R-172" "${mkd}${sp}--parents${sp}--${sp}${dq}${tv}${dq}"                                  "present"
-expect_rule "R-172" "${mkd}${sp}--parents${sp}--${sp}${dq}${tv}${dq}${nlreal}chmod${sp}700${sp}--${sp}${dq}${tv}${dq}" "present"
+expect_rule "R-172" "${mkd}${sp}--parents${sp}--${sp}${dq}${tv}${dq}${nlreal}chmod${sp}700${sp}--${sp}${dq}${tv}${dq}" "absent"
+expect_rule "R-173" "${mkd}${sp}--parents${sp}--${sp}${dq}${tv}${dq}${nlreal}chmod${sp}700${sp}--${sp}${dq}${tv}${dq}" "present"
 ## The '$TMP' alias operand (e.g. 'TMP=\"\$TMPDIR\"; mkdir ... \"\$TMP\"').
 expect_rule "R-172" "${mkd}${sp}--parents${sp}--${sp}${dq}${tvalias}${dq}"                             "present"
 ## The short '-m' is atomic but must be the long '--mode=' -- standalone,
@@ -886,6 +889,39 @@ expect_rule "R-172" "${mkd}${sp}--parents${sp}--mode=700${sp}--${sp}${dq}${tv}${
 btick='`'
 expect_rule "R-172" "foo=${btick}${mkd}${sp}--parents${sp}--${sp}${dq}${tv}${dq}${btick}"    "present"
 expect_rule "R-172" "${mkd}${sp}--parents${sp}--${sp}${dq}${dollar}TMPDIR_SUFFIX${dq}"        "absent"
+
+## R-173: 'mkdir DIR' immediately followed by a same-dir 'chmod MODE DIR' must be
+## one atomic 'install -d -m MODE -- DIR'. 'mkdir'/'chmod' and the operand are
+## assembled from fragments so no real command-position 'mkdir ...; chmod ...'
+## ever appears in THIS tracked file (which the gate would, correctly, flag).
+chm='chmod'
+## 'dir173' not 'dd' -- 'dd' is the file-wide '--' fragment (R-062/R-192 cases);
+## reusing it here would shadow it below this point and break those.
+dir173="${dollar}d"
+## PRESENT -- the anti-pattern, all adjacency spellings:
+## newline-separated, ';'-separated on one line, and the '&&' form.
+expect_rule "R-173" "${mkd}${sp}-p${sp}${dir173}${nlreal}${chm}${sp}0755${sp}${dir173}"                "present"
+expect_rule "R-173" "${mkd}${sp}${dir173}${sc}${sp}${chm}${sp}700${sp}${dir173}"                       "present"
+expect_rule "R-173" "${mkd}${sp}-p${sp}${dir173}${sp}&&${sp}${chm}${sp}700${sp}${dir173}"              "present"
+## A quoted-expansion operand matched textually on both sides.
+expect_rule "R-173" "${mkd}${sp}--parents${sp}--${sp}${dq}${dir173}${dq}${nlreal}${chm}${sp}0700${sp}--${sp}${dq}${dir173}${dq}" "present"
+## Detect-only (fires, but the fixer leaves them -- see the fix suite): a
+## symbolic mode, and a wrapped 'sudo mkdir; sudo chmod'.
+expect_rule "R-173" "${mkd}${sp}${dir173}${nlreal}${chm}${sp}u+rwx${sp}${dir173}"                      "present"
+expect_rule "R-173" "sudo${sp}${mkd}${sp}-p${sp}${dir173}${nlreal}sudo${sp}${chm}${sp}700${sp}${dir173}" "present"
+## ABSENT -- not the anti-pattern:
+## the compliant atomic form itself.
+expect_rule "R-173" "install${sp}-d${sp}-m${sp}0755${sp}--${sp}${dq}${dir173}${dq}"                "absent"
+## different directories (textually not the same operand).
+expect_rule "R-173" "${mkd}${sp}a${nlreal}${chm}${sp}700${sp}b"                                "absent"
+## a command between the two -- not 'immediately followed'.
+expect_rule "R-173" "${mkd}${sp}${dir173}${nlreal}echo${sp}x${nlreal}${chm}${sp}700${sp}${dir173}"     "absent"
+## a RECURSIVE chmod -- 'install -d -m' modes only the dir, so not equivalent.
+expect_rule "R-173" "${mkd}${sp}${dir173}${nlreal}${chm}${sp}-R${sp}700${sp}${dir173}"                 "absent"
+## mkdir with no following chmod is not a pair.
+expect_rule "R-173" "${mkd}${sp}-p${sp}${dir173}"                                                  "absent"
+## a script-wide waiver disables the rule for the whole file.
+expect_rule "R-173" "## style-ok: allow-mkdir-then-chmod${nlreal}${mkd}${sp}-p${sp}${dir173}${nlreal}${chm}${sp}700${sp}${dir173}" "absent"
 
 ## R-010: seven COPIES of one directive must NOT satisfy the block (DISTINCT
 ## directives are counted); the seven distinct directives pass.

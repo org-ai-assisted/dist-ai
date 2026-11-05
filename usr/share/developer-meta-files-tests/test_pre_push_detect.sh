@@ -161,6 +161,19 @@ run_det "$(printf '%s\n' \
 assert_not_at "R-172 spares an atomic --mode with an expanded value"  "R-172" 2
 assert_not_at "R-200 spares --kill-after with an expanded value"      "R-200" 3
 
+## --- R-173 mkdir-then-chmod: anchor line, same-dir match, '&&' form -----------
+run_det "$(printf '%s\n' \
+   '#!/bin/bash' \
+   'mkdir -p -- "$d"' \
+   'chmod 0755 -- "$d"' \
+   'mkdir a' \
+   'chmod 700 b' \
+   'mkdir e && chmod 700 e')"
+assert_at     "R-173 anchors on the mkdir line, not the chmod"   "R-173" 2
+assert_not_at "R-173 is not reported on the chmod line"          "R-173" 3
+assert_not_at "R-173 spares a mkdir whose next chmod is another dir" "R-173" 4
+assert_at     "R-173 detects the '&&' form on the mkdir line"    "R-173" 6
+
 ## --- R-130 spares no-op stubs + condition pipelines, keeps bare/redirect ------
 run_det "$(printf '%s\n' \
    '#!/bin/bash' \

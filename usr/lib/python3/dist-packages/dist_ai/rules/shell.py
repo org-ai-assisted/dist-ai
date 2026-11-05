@@ -377,6 +377,13 @@ class MkdirTmpMode(Rule):
         return super().applies(ctx)
 
     def detect(self, ctx):
+        ## A temp mkdir whose mode is supplied by an immediately-following same-dir
+        ## chmod is R-173's domain: that rule carries a concrete 'install -d -m'
+        ## fix, so defer the weaker "cannot guess the mode" finding to it rather
+        ## than double-report. Keyed on the raw mkdir CallExpr offset, which is the
+        ## same node R-173 pairs on.
+        deferred = {record["mkdir_offset"]
+                    for record in _mkdir_then_chmod_pairs(ctx)}
         for raw_call in bash_ast.call_exprs(ctx.tree):
             ## Rebase past a leading exec wrapper so 'sudo mkdir ...' is read as
             ## 'mkdir ...' (else the wrapper basename bypasses R-172).
@@ -405,7 +412,7 @@ class MkdirTmpMode(Rule):
             if has_short_m:
                 yield _fail(ctx, "R-172",
                             "R-172 mkdir temp dir: use --mode not -m", call)
-            else:
+            elif (raw_call.get("Pos") or {}).get("Offset") not in deferred:
                 yield _fail(
                     ctx, "R-172",
                     "R-172 mkdir temp dir missing --mode (TOCTOU; set perms "
@@ -511,6 +518,198 @@ class MkdirTmpMode(Rule):
         disabled_lines.add(line_start)
         return Edit(line_start, line_start,
                     indent + SC2174_DIRECTIVE + "\n", "R-172")
+
+
+## --- mkdir-then-chmod: one atomic 'install -d -m' (detect; fix the clean form) -
+
+## GNU 'chmod' long options -- the KNOWN set resolve_long disambiguates a prefix
+## against, so '--rec' resolves to '--recursive'. Only 'recursive' matters to the
+## rule (it makes 'install -d' non-equivalent); the rest are listed so an
+## abbreviation is resolved exactly as getopt_long does, not misread.
+CHMOD_LONG = frozenset({
+    "changes", "silent", "quiet", "verbose", "no-preserve-root",
+    "preserve-root", "reference", "recursive", "help", "version",
+    "dereference", "no-dereference"})
+
+## A plain numeric octal mode ('700', '0755', '1777') -- the only chmod mode the
+## autofix carries into 'install -m'. A symbolic mode ('u+rwx', '+x') is detected
+## but NOT auto-fixed: chmod applies it relative to the EXISTING bits while
+## 'install -m' sets ABSOLUTE bits, so the rewrite would not be equivalent.
+NUMERIC_MODE = re.compile(r'[0-7]{3,4}')
+
+
+def _command_operands(call, source, value_short=frozenset(),
+                      value_long=frozenset()):
+    """The operand WORDS of CALL (everything past its options and any '--'), the
+    bare '--' marker dropped. value_short/value_long declare the call's
+    value-taking options so a separate value ('mkdir -m 700' -> '700' with
+    value_short={'m'}) is consumed as that option's value, not mis-read as an
+    operand."""
+    return [word for kind, word, text
+            in bash_ast.command_tokens(call, source, value_short, value_long)
+            if kind == "operand" and text != "--"]
+
+
+def _mkdir_has_mode_opt(call, source):
+    """True if the mkdir CALL already carries a mode option ('-m'/'--mode'). When
+    it does, R-173 declines the auto-fix: R-172's '-m'->'--mode' fixer may ALSO
+    edit this mkdir, and bash_ast.apply_edits cannot splice overlapping spans."""
+    for kind, _word, text in bash_ast.command_tokens(
+            call, source, frozenset("m"), frozenset({"mode"})):
+        if kind != "opt":
+            continue
+        name = _long_name(text)
+        if name is not None:
+            if bash_ast.resolve_long(name, MKDIR_LONG) == "mode":
+                return True
+        elif not text.startswith("--") and "m" in text[1:]:
+            return True
+    return False
+
+
+def _chmod_is_recursive(call, source):
+    """True if the chmod CALL is recursive ('-R'/'--recursive'): 'install -d -m'
+    modes only the directory itself, so a recursive chmod is NOT equivalent and
+    the pair is not matched at all."""
+    for kind, _word, text in bash_ast.command_tokens(call, source):
+        if kind != "opt":
+            continue
+        name = _long_name(text)
+        if name is not None:
+            if bash_ast.resolve_long(name, CHMOD_LONG) == "recursive":
+                return True
+        elif not text.startswith("--") and "R" in text[1:]:
+            return True
+    return False
+
+
+def _mkdir_then_chmod_pairs(ctx):
+    """Yield a record dict per 'mkdir DIR' IMMEDIATELY followed by a same-dir
+    'chmod MODE DIR' -- both the sibling-statement form ('mkdir ...; chmod ...' or
+    on two lines) and the '&&' form ('mkdir ... && chmod ...'). Adjacency is
+    STRICT: the chmod must be the very next command in the SAME statement list (an
+    intervening command breaks the pair, and an if-branch cannot pair with its
+    sibling branch), and the two operands must be the TEXTUALLY same directory.
+
+    Shared by R-173 (detect + fix) and R-172 (which defers its missing-mode
+    finding to R-173 for this shape), so the three readings cannot drift.
+
+    Each record carries: mkdir_offset (the raw mkdir CallExpr's byte offset, for
+    R-172 correlation and the finding line), mkdir_call (for the finding),
+    span_start/span_end (the collapse span), mode_lit, dir_source, and fixable
+    (the mechanical subset: unwrapped, no redirection, numeric mode, the mkdir has
+    no mode option of its own, nothing but a plain separator between the two, and
+    not inside a here-document body)."""
+    source = ctx.source
+    tree = ctx.tree
+    data = source.encode("utf-8")
+    heredocs = list(bash_ast.heredoc_spans(tree))
+
+    def match(s1, s2):
+        if not isinstance(s1, dict) or not isinstance(s2, dict):
+            return None
+        c1 = s1.get("Cmd")
+        c2 = s2.get("Cmd")
+        if not isinstance(c1, dict) or c1.get("Type") != "CallExpr":
+            return None
+        if not isinstance(c2, dict) or c2.get("Type") != "CallExpr":
+            return None
+        eff1 = h.effective_call(c1, source)
+        eff2 = h.effective_call(c2, source)
+        if eff1 is None or eff2 is None:
+            return None
+        if bash_ast.command_basename(eff1) != "mkdir" \
+                or bash_ast.command_basename(eff2) != "chmod":
+            return None
+        dirs = _command_operands(eff1, source, frozenset("m"),
+                                 frozenset({"mode"}))
+        if len(dirs) != 1 or _chmod_is_recursive(eff2, source):
+            return None
+        chmod_operands = _command_operands(eff2, source)
+        ## chmod's operands are exactly [mode, target]; anything else (no target,
+        ## a second target, a '--reference=' form with no mode operand) is not the
+        ## one-dir shape 'install -d' replaces.
+        if len(chmod_operands) != 2:
+            return None
+        dir_word = dirs[0]
+        mode_word, target_word = chmod_operands
+        if bash_ast.word_source(dir_word, source) \
+                != bash_ast.word_source(target_word, source):
+            return None
+        s1_start = (s1.get("Pos") or {}).get("Offset")
+        s1_end = (s1.get("End") or {}).get("Offset")
+        s2_start = (s2.get("Pos") or {}).get("Offset")
+        s2_end = (s2.get("End") or {}).get("Offset")
+        if None in (s1_start, s1_end, s2_start, s2_end):
+            return None
+        ## Only a plain separator (newline, ';', '&&') may sit between the two
+        ## commands -- a trailing comment or a line-continuation would be
+        ## swallowed by the collapse, so that leaves the pair detect-only.
+        between = data[s1_end:s2_start].decode("utf-8", "replace").strip()
+        mode_lit = bash_ast.word_string(mode_word)
+        fixable = (
+            eff1 is c1 and eff2 is c2
+            and not s1.get("Redirs") and not s2.get("Redirs")
+            and between in ("", ";", "&&")
+            and bool(mode_lit) and bool(NUMERIC_MODE.fullmatch(mode_lit))
+            and not _mkdir_has_mode_opt(eff1, source)
+            and not any(a <= s1_start < b for a, b in heredocs))
+        return {
+            "mkdir_offset": (c1.get("Pos") or {}).get("Offset"),
+            "mkdir_call": c1,
+            "span_start": s1_start,
+            "span_end": s2_end,
+            "mode_lit": mode_lit,
+            "dir_source": bash_ast.word_source(dir_word, source),
+            "fixable": fixable,
+        }
+
+    for group in h.statement_lists(tree):
+        for prev, cur in zip(group, group[1:]):
+            record = match(prev, cur)
+            if record is not None:
+                yield record
+    and_ops = bash_ast.and_op()
+    for node in bash_ast.nodes_of_type(tree, "BinaryCmd"):
+        if node.get("Op") in and_ops:
+            record = match(node.get("X"), node.get("Y"))
+            if record is not None:
+                yield record
+
+
+class MkdirThenChmod(Rule):
+    """R-173: a 'mkdir DIR' immediately followed by a same-dir 'chmod MODE DIR'
+    must be one atomic 'install -d -m MODE -- DIR'. The split leaves a TOCTOU
+    window (the directory exists with the umask-default, potentially
+    world-traversable mode until the chmod lands) and takes two processes;
+    'install -d -m' creates and modes in one call, re-modes an existing directory
+    (fixing messed-up perms), and -- being 'install', not 'mkdir --parents
+    --mode=' -- never trips SC2174, so no '# shellcheck disable' is needed. The
+    unwrapped, numeric-mode, cleanly-adjacent subset is auto-fixed; a symbolic
+    mode, a wrapper ('sudo mkdir; sudo chmod'), a redirection, an intervening
+    comment, or a mkdir that already carries its own mode leaves the pair for a
+    human."""
+
+    id = "R-173"
+    waiver_tag = "allow-mkdir-then-chmod"
+
+    def detect(self, ctx):
+        for record in _mkdir_then_chmod_pairs(ctx):
+            yield _fail(
+                ctx, "R-173",
+                "R-173 mkdir then chmod of the same dir: create and set the mode "
+                "atomically with 'install -d -m MODE -- DIR' (install -d is "
+                "SC2174-free and re-modes an existing dir)",
+                record["mkdir_call"])
+
+    def fix(self, ctx):
+        for record in _mkdir_then_chmod_pairs(ctx):
+            if not record["fixable"]:
+                continue
+            replacement = "install -d -m %s -- %s" % (
+                record["mode_lit"], record["dir_source"])
+            yield Edit(record["span_start"], record["span_end"],
+                       replacement, "R-173")
 
 
 ## --- timeout kill-after (detect; fix the bare literal-duration form) --------
@@ -2412,6 +2611,7 @@ RULES = (
     NullCommand(),
     GrepQuiet(),
     MkdirTmpMode(),
+    MkdirThenChmod(),
     InlineInterpreter(),
     PythonInterpreter(),
     TimeoutKillAfter(),
