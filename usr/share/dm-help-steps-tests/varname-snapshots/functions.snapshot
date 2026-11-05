@@ -79,6 +79,28 @@ derive_unified_image_paths ()
         default_if_empty binary_image_qcow2_file_for_unified "${dist_binary_build_folder}/${vm_name_item_to_be_exported}-${dist_build_version}.${target_architecture_pretty_name}.qcow2";
     done
 }
+determine_build_user ()
+{
+    local euid="${1:-${EUID}}";
+    local candidate="";
+    if [ "${euid}" != "0" ]; then
+        id --user --name;
+        return;
+    fi;
+    if [ -n "${SUDO_USER:-}" ]; then
+        candidate="${SUDO_USER}";
+    else
+        candidate="$(logname 2> /dev/null || true)";
+    fi;
+    case "${candidate#+}" in
+        '' | *[!0-9]*)
+            printf '%s\n' "${candidate}"
+        ;;
+        *)
+            printf '%s\n' "determine_build_user: refusing numeric build user '${candidate}' (a UID key to getent -> wrong home); pass a real user name." 1>&2
+        ;;
+    esac
+}
 dist_build_arch_to_qemu_machine ()
 {
     case "${1}" in
@@ -591,6 +613,20 @@ dist_build_one_parse_cmd ()
                         export dist_build_skip_prepare_build_machine="false";
                     else
                         printf '%s\n' "${red}${bold}ERROR: supported options for --skip-prepare-build-machine are 'true' or 'false'.${reset}";
+                        exit 1;
+                    fi;
+                fi;
+                shift 2
+            ;;
+            --skip-sanity-tests)
+                if [ "${2:-}" = "true" ]; then
+                    export dist_build_skip_sanity_tests="true";
+                    true "${cyan}INFO: --skip-sanity-tests: not running sanity-tests.${reset}";
+                else
+                    if [ "${2:-}" = "false" ]; then
+                        export dist_build_skip_sanity_tests="false";
+                    else
+                        printf '%s\n' "${red}${bold}ERROR: supported options for --skip-sanity-tests are 'true' or 'false'.${reset}";
                         exit 1;
                     fi;
                 fi;
@@ -1316,6 +1352,7 @@ Advanced Options:
   --skip-published-packages [true|false] : Rebuild only packages that changed since the last build, reusing unchanged packages from the prior build (default: true).
   --package-jobs N                : Build up to N derivative packages concurrently. Default: 1.
   --skip-prepare-build-machine [true|false] : Skip build-steps.d/*_prepare-build-machine. Only safe when the build machine was already prepared by an earlier run in the same session.
+  --skip-sanity-tests [true|false] : Skip build-steps.d/*_sanity-tests (incl. git_sanity_test). Only safe when sanity was already verified by an earlier run in the same session (e.g. dm-build-official-one's per-flavor rebuilds).
   --skip-cowbuilder-setup [true|false] : Skip build-steps.d/*_cowbuilder-setup. Only safe when the cowbuilder chroot was already created by an earlier run in the same session.
   --reproducible-dist-build-version [true|false] : DANGEROUS, DO NOT USE. Drops the '-<n>-g<commit>' version suffix on builds from untagged commits. This will result in the built image carrying a misleading version number! Only useful for AI agents, for reproducing CI-built images outside of CI. Humans should tolerate the version suffix or create a release tag.
   --reuse-cowbuilder-base [true|false] : Reuse an already-present cowbuilder base chroot instead of rebuilding it, if one exists.
@@ -1397,6 +1434,74 @@ dist_build_source_config_dir ()
         true "${cyan}INFO: Skipping '${config_dir}' because it does not exist.${reset}";
     fi
 }
+dm_map_mounted ()
+{
+    findmnt --noheadings > /dev/null 2>&1 || return 0;
+    findmnt --noheadings --source "/dev/mapper/$1" > /dev/null 2>&1
+}
+dm_map_neutralized ()
+{
+    local map_name dm_table_output dm_table_rc;
+    map_name="$1";
+    dm_table_rc=0;
+    dm_table_output="$(${SUDO_TO_ROOT} dmsetup table "${map_name}" 2> /dev/null)" || dm_table_rc="$?";
+    if [ "${dm_table_rc}" != "0" ] || [ -z "${dm_table_output:-}" ]; then
+        return 1;
+    fi;
+    printf '%s\n' "${dm_table_output}" | awk '{ if ($3 != "error") bad = 1 } END { exit (bad ? 1 : 0) }'
+}
+dm_map_owned_by ()
+{
+    local base_name map_name map_deps map_dev;
+    base_name="$1";
+    map_name="$2";
+    map_deps="$(${SUDO_TO_ROOT} dmsetup deps --noheadings -o blkdevname "${map_name}" 2> /dev/null || true)";
+    map_dev="${map_deps#*\(}";
+    map_dev="${map_dev%\)*}";
+    [ "${map_dev}" = "${map_deps}" ] && map_dev="";
+    case " ${map_dev//[^a-zA-Z0-9]/ } " in
+        *" ${base_name} "*)
+            return 0
+        ;;
+        *)
+            return 1
+        ;;
+    esac
+}
+dm_partition_maps ()
+{
+    local base_name dm_ls_output dm_ls_rc matched map_item map_deps;
+    base_name="$1";
+    dm_ls_rc=0;
+    dm_ls_output="$(${SUDO_TO_ROOT} dmsetup ls --noheadings 2> /dev/null)" || dm_ls_rc="$?";
+    if [ "${dm_ls_rc}" != "0" ]; then
+        return "${dm_ls_rc}";
+    fi;
+    matched="$(printf '%s\n' "${dm_ls_output}" | awk '{ print $1 }' | grep -E "^${base_name}p[0-9]+$" || true)";
+    [ -n "${matched}" ] || return 0;
+    local map_dev;
+    while read -r map_item; do
+        [ -n "${map_item:-}" ] || continue;
+        map_deps="$(${SUDO_TO_ROOT} dmsetup deps --noheadings -o blkdevname "${map_item}" 2> /dev/null || true)";
+        map_dev="${map_deps#*\(}";
+        map_dev="${map_dev%\)*}";
+        [ "${map_dev}" = "${map_deps}" ] && map_dev="";
+        case " ${map_dev//[^a-zA-Z0-9]/ } " in
+            *" ${base_name} "*)
+                true "owned: ${map_item} backed by ${base_name}"
+            ;;
+            *[a-zA-Z]*)
+                true "INFO: ${map_item} backed by a different named device; skipping foreign map.";
+                continue
+            ;;
+            *)
+                true "unknown: ${map_item} deps empty/numeric; cannot confirm owner -- gate, never force."
+            ;;
+        esac;
+        printf '%s\n' "${map_item}";
+    done <<< "${matched}";
+    return 0
+}
 error_dangerous_option_maybe ()
 {
     if [ "${dist_build_unlock_dangerous_options:-}" = 'true' ]; then
@@ -1430,7 +1535,7 @@ implicit_dist_type ()
 }
 loop_teardown_verify ()
 {
-    local image loop_devices_output loop_devices_item attempt losetup_rc;
+    local image loop_devices_output loop_devices_item attempt losetup_rc base maps maps_rc map_item still_live;
     image="$1";
     if [ "${image:-}" = "" ]; then
         return 1;
@@ -1445,12 +1550,66 @@ loop_teardown_verify ()
         if [ "${loop_devices_output:-}" = "" ]; then
             return 0;
         fi;
+        ${SUDO_TO_ROOT} udevadm settle --timeout 5 || true;
         while read -r loop_devices_item; do
             if [ "${loop_devices_item:-}" = "" ]; then
                 continue;
             fi;
+            base="${loop_devices_item##*/}";
             ${SUDO_TO_ROOT} kpartx -d -s -v -- "${loop_devices_item}" || true "INFO: kpartx non-zero exit code.";
-            ${SUDO_TO_ROOT} losetup --detach "${loop_devices_item}" || true "INFO: losetup non-zero exit code.";
+            maps_rc=0;
+            maps="$(dm_partition_maps "${base}")" || maps_rc="$?";
+            if [ "${maps_rc}" != "0" ]; then
+                true "INFO: dmsetup ls failed; cannot confirm ${base} maps gone -- leaving loop attached, will retry.";
+                continue;
+            fi;
+            if [ -n "${maps:-}" ]; then
+                while read -r map_item; do
+                    [ -n "${map_item:-}" ] || continue;
+                    dm_map_owned_by "${base}" "${map_item}" || continue;
+                    ${SUDO_TO_ROOT} dmsetup remove --retry "${map_item}" || true "INFO: dmsetup remove --retry non-zero exit code.";
+                done <<< "${maps}";
+                maps_rc=0;
+                maps="$(dm_partition_maps "${base}")" || maps_rc="$?";
+                if [ "${maps_rc}" != "0" ]; then
+                    true "INFO: dmsetup ls failed after --retry -- leaving loop attached, will retry.";
+                    continue;
+                fi;
+            fi;
+            if [ -n "${maps:-}" ]; then
+                while read -r map_item; do
+                    [ -n "${map_item:-}" ] || continue;
+                    if ! dm_map_owned_by "${base}" "${map_item}"; then
+                        true "INFO: ${map_item} ownership unconfirmed (unknown deps); refusing --force -- gating detach.";
+                        continue;
+                    fi;
+                    if dm_map_mounted "${map_item}"; then
+                        true "INFO: ${map_item} is MOUNTED; refusing to force -- leaving loop attached.";
+                        continue;
+                    fi;
+                    ${SUDO_TO_ROOT} dmsetup remove --force "${map_item}" || true "INFO: dmsetup remove --force non-zero exit code.";
+                done <<< "${maps}";
+            fi;
+            maps_rc=0;
+            maps="$(dm_partition_maps "${base}")" || maps_rc="$?";
+            if [ "${maps_rc}" != "0" ]; then
+                true "INFO: dmsetup ls failed at the detach gate -- leaving loop attached, will retry.";
+                continue;
+            fi;
+            still_live="no";
+            if [ -n "${maps:-}" ]; then
+                while read -r map_item; do
+                    [ -n "${map_item:-}" ] || continue;
+                    if ! dm_map_neutralized "${map_item}"; then
+                        still_live="yes";
+                    fi;
+                done <<< "${maps}";
+            fi;
+            if [ "${still_live}" = "no" ]; then
+                ${SUDO_TO_ROOT} losetup --detach "${loop_devices_item}" || true "INFO: losetup non-zero exit code.";
+            else
+                true "INFO: ${base} partition map(s) still live; leaving loop attached, will retry.";
+            fi;
         done <<< "${loop_devices_output}";
         ${SUDO_TO_ROOT} udevadm settle --timeout 5 || true;
         sleep 1;
@@ -1589,7 +1748,7 @@ set_cowbuilder_folders ()
 }
 set_dist_build_reprepro_folder_options ()
 {
-    local derivative_name_item valid_repository_name;
+    local derivative_name_item valid_repository_name apt_repo_output_base;
     valid_repository_name=false;
     if [ "${derivative_repository_name:-}" = "" ]; then
         error "derivative_repository_name is empty!";
@@ -1609,12 +1768,14 @@ set_dist_build_reprepro_folder_options ()
     true "make_reprepro_codename_item: ${make_reprepro_codename_item}";
     if [ "${make_reprepro_codename_item:-}" = "local" ]; then
         apt_repo_sub_folder="aptrepo_local/${derivative_repository_name}";
+        apt_repo_output_base="${local_apt_repository_base}";
     else
         apt_repo_sub_folder="aptrepo_remote/${derivative_repository_name}";
+        apt_repo_output_base="${binary_build_folder_dist}";
     fi;
-    dist_apt_repository_folder="${binary_build_folder_dist}/${apt_repo_sub_folder}";
+    dist_apt_repository_folder="${apt_repo_output_base}/${apt_repo_sub_folder}";
     export dist_apt_repository_folder;
-    dist_build_reprepro_folder_options=(--basedir "${source_code_folder_dist}/${apt_repo_sub_folder}" --outdir "${binary_build_folder_dist}/${apt_repo_sub_folder}" --dbdir "${binary_build_folder_dist}/${apt_repo_sub_folder}/db" --logdir "${binary_build_folder_dist}/${apt_repo_sub_folder}/log")
+    dist_build_reprepro_folder_options=(--basedir "${source_code_folder_dist}/${apt_repo_sub_folder}" --outdir "${apt_repo_output_base}/${apt_repo_sub_folder}" --dbdir "${apt_repo_output_base}/${apt_repo_sub_folder}/db" --logdir "${apt_repo_output_base}/${apt_repo_sub_folder}/log")
 }
 source_date_epoch_valid ()
 {

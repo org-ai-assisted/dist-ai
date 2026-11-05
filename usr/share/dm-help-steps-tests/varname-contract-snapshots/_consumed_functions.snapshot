@@ -39,7 +39,7 @@ dist_build_arch_to_qemu_machine ()
 }
 loop_teardown_verify ()
 {
-    local image loop_devices_output loop_devices_item attempt losetup_rc;
+    local image loop_devices_output loop_devices_item attempt losetup_rc base maps maps_rc map_item still_live;
     image="$1";
     if [ "${image:-}" = "" ]; then
         return 1;
@@ -54,12 +54,66 @@ loop_teardown_verify ()
         if [ "${loop_devices_output:-}" = "" ]; then
             return 0;
         fi;
+        ${SUDO_TO_ROOT} udevadm settle --timeout 5 || true;
         while read -r loop_devices_item; do
             if [ "${loop_devices_item:-}" = "" ]; then
                 continue;
             fi;
+            base="${loop_devices_item##*/}";
             ${SUDO_TO_ROOT} kpartx -d -s -v -- "${loop_devices_item}" || true "INFO: kpartx non-zero exit code.";
-            ${SUDO_TO_ROOT} losetup --detach "${loop_devices_item}" || true "INFO: losetup non-zero exit code.";
+            maps_rc=0;
+            maps="$(dm_partition_maps "${base}")" || maps_rc="$?";
+            if [ "${maps_rc}" != "0" ]; then
+                true "INFO: dmsetup ls failed; cannot confirm ${base} maps gone -- leaving loop attached, will retry.";
+                continue;
+            fi;
+            if [ -n "${maps:-}" ]; then
+                while read -r map_item; do
+                    [ -n "${map_item:-}" ] || continue;
+                    dm_map_owned_by "${base}" "${map_item}" || continue;
+                    ${SUDO_TO_ROOT} dmsetup remove --retry "${map_item}" || true "INFO: dmsetup remove --retry non-zero exit code.";
+                done <<< "${maps}";
+                maps_rc=0;
+                maps="$(dm_partition_maps "${base}")" || maps_rc="$?";
+                if [ "${maps_rc}" != "0" ]; then
+                    true "INFO: dmsetup ls failed after --retry -- leaving loop attached, will retry.";
+                    continue;
+                fi;
+            fi;
+            if [ -n "${maps:-}" ]; then
+                while read -r map_item; do
+                    [ -n "${map_item:-}" ] || continue;
+                    if ! dm_map_owned_by "${base}" "${map_item}"; then
+                        true "INFO: ${map_item} ownership unconfirmed (unknown deps); refusing --force -- gating detach.";
+                        continue;
+                    fi;
+                    if dm_map_mounted "${map_item}"; then
+                        true "INFO: ${map_item} is MOUNTED; refusing to force -- leaving loop attached.";
+                        continue;
+                    fi;
+                    ${SUDO_TO_ROOT} dmsetup remove --force "${map_item}" || true "INFO: dmsetup remove --force non-zero exit code.";
+                done <<< "${maps}";
+            fi;
+            maps_rc=0;
+            maps="$(dm_partition_maps "${base}")" || maps_rc="$?";
+            if [ "${maps_rc}" != "0" ]; then
+                true "INFO: dmsetup ls failed at the detach gate -- leaving loop attached, will retry.";
+                continue;
+            fi;
+            still_live="no";
+            if [ -n "${maps:-}" ]; then
+                while read -r map_item; do
+                    [ -n "${map_item:-}" ] || continue;
+                    if ! dm_map_neutralized "${map_item}"; then
+                        still_live="yes";
+                    fi;
+                done <<< "${maps}";
+            fi;
+            if [ "${still_live}" = "no" ]; then
+                ${SUDO_TO_ROOT} losetup --detach "${loop_devices_item}" || true "INFO: losetup non-zero exit code.";
+            else
+                true "INFO: ${base} partition map(s) still live; leaving loop attached, will retry.";
+            fi;
         done <<< "${loop_devices_output}";
         ${SUDO_TO_ROOT} udevadm settle --timeout 5 || true;
         sleep 1;
@@ -105,7 +159,7 @@ set_cowbuilder_folders ()
 }
 set_dist_build_reprepro_folder_options ()
 {
-    local derivative_name_item valid_repository_name;
+    local derivative_name_item valid_repository_name apt_repo_output_base;
     valid_repository_name=false;
     if [ "${derivative_repository_name:-}" = "" ]; then
         error "derivative_repository_name is empty!";
@@ -125,12 +179,14 @@ set_dist_build_reprepro_folder_options ()
     true "make_reprepro_codename_item: ${make_reprepro_codename_item}";
     if [ "${make_reprepro_codename_item:-}" = "local" ]; then
         apt_repo_sub_folder="aptrepo_local/${derivative_repository_name}";
+        apt_repo_output_base="${local_apt_repository_base}";
     else
         apt_repo_sub_folder="aptrepo_remote/${derivative_repository_name}";
+        apt_repo_output_base="${binary_build_folder_dist}";
     fi;
-    dist_apt_repository_folder="${binary_build_folder_dist}/${apt_repo_sub_folder}";
+    dist_apt_repository_folder="${apt_repo_output_base}/${apt_repo_sub_folder}";
     export dist_apt_repository_folder;
-    dist_build_reprepro_folder_options=(--basedir "${source_code_folder_dist}/${apt_repo_sub_folder}" --outdir "${binary_build_folder_dist}/${apt_repo_sub_folder}" --dbdir "${binary_build_folder_dist}/${apt_repo_sub_folder}/db" --logdir "${binary_build_folder_dist}/${apt_repo_sub_folder}/log")
+    dist_build_reprepro_folder_options=(--basedir "${source_code_folder_dist}/${apt_repo_sub_folder}" --outdir "${apt_repo_output_base}/${apt_repo_sub_folder}" --dbdir "${apt_repo_output_base}/${apt_repo_sub_folder}/db" --logdir "${apt_repo_output_base}/${apt_repo_sub_folder}/log")
 }
 unmount_if_mounted ()
 {
