@@ -842,6 +842,11 @@ tvalias="${dollar}TMP"
 expect_rule "R-172" "${mkd}${sp}--parents${sp}--${sp}${dq}${tv}${dq}"                                  "present"
 expect_rule "R-172" "${mkd}${sp}--parents${sp}--${sp}${dq}${tv}${dq}${nlreal}chmod${sp}700${sp}--${sp}${dq}${tv}${dq}" "absent"
 expect_rule "R-173" "${mkd}${sp}--parents${sp}--${sp}${dq}${tv}${dq}${nlreal}chmod${sp}700${sp}--${sp}${dq}${tv}${dq}" "present"
+## ...but WAIVING R-173 must NOT also disable R-172's TOCTOU finding (the deferral
+## is gated on R-173 actually applying): with the R-173 waiver, R-173 is absent yet
+## R-172 fires -- else the security check is silently dropped by a style waiver.
+expect_rule "R-173" "## style-ok: allow-mkdir-then-chmod${nlreal}${mkd}${sp}--parents${sp}--${sp}${dq}${tv}${dq}${nlreal}chmod${sp}700${sp}--${sp}${dq}${tv}${dq}" "absent"
+expect_rule "R-172" "## style-ok: allow-mkdir-then-chmod${nlreal}${mkd}${sp}--parents${sp}--${sp}${dq}${tv}${dq}${nlreal}chmod${sp}700${sp}--${sp}${dq}${tv}${dq}" "present"
 ## The '$TMP' alias operand (e.g. 'TMP=\"\$TMPDIR\"; mkdir ... \"\$TMP\"').
 expect_rule "R-172" "${mkd}${sp}--parents${sp}--${sp}${dq}${tvalias}${dq}"                             "present"
 ## The short '-m' is atomic but must be the long '--mode=' -- standalone,

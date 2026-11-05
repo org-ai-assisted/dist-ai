@@ -380,10 +380,15 @@ class MkdirTmpMode(Rule):
         ## A temp mkdir whose mode is supplied by an immediately-following same-dir
         ## chmod is R-173's domain: that rule carries a concrete 'install -d -m'
         ## fix, so defer the weaker "cannot guess the mode" finding to it rather
-        ## than double-report. Keyed on the raw mkdir CallExpr offset, which is the
-        ## same node R-173 pairs on.
-        deferred = {record["mkdir_offset"]
-                    for record in _mkdir_then_chmod_pairs(ctx)}
+        ## than double-report. Keyed on the raw mkdir CallExpr offset, the same node
+        ## R-173 pairs on. Defer ONLY when R-173 will actually report: if R-173 is
+        ## waived ('## style-ok: allow-mkdir-then-chmod' or '## style-ok: R-173'),
+        ## suppressing R-172 too would silently drop the TOCTOU finding -- strictly
+        ## worse than before R-173 existed. MkdirThenChmod.applies() is the single
+        ## source of truth for that suppression.
+        deferred = (
+            {record["mkdir_offset"] for record in _mkdir_then_chmod_pairs(ctx)}
+            if MkdirThenChmod().applies(ctx) else set())
         for raw_call in bash_ast.call_exprs(ctx.tree):
             ## Rebase past a leading exec wrapper so 'sudo mkdir ...' is read as
             ## 'mkdir ...' (else the wrapper basename bypasses R-172).
