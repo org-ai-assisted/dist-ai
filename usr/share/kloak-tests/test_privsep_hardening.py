@@ -1,0 +1,165 @@
+#!/usr/bin/python3 -Bsu
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+"""
+Regression tests for kloak's privilege-separation hardening.
+
+kloak was split into a libinput proxy (/usr/bin/kloak) that fork+execve's a
+sandboxed Wayland adapter (/usr/bin/kloakwl). kloakwl builds an in-process
+sandbox: an unprivileged user namespace plus mnt/net/ipc/pid/uts/cgroup
+namespaces, pivot_root into an empty root, a drop of all capabilities, and a
+drop to the unprivileged kloakwl uid/gid. Because kloakwl inherits the systemd
+unit's seccomp filter and namespace policy, and is launched via an AppArmor
+transition, several invariants must hold together or the daemon dies at startup:
+
+  * kloak.service SystemCallFilter must be GROUP-based, not a hand-maintained
+    list of individual syscall names. Groups are arch-neutral (systemd expands
+    each to the syscalls that exist on the running arch), so no x86-only name can
+    be silently omitted on arm64 -- the root cause of the original arm64 SIGSYS
+    crash loop. A bare hand-list is the regression this guards against.
+  * RestrictNamespaces must PERMIT the namespaces kloakwl unshares; the former
+    RestrictNamespaces=true denied all of them and killed the sandbox.
+  * usr.bin.kloak must AUTHORIZE the exec of /usr/bin/kloakwl, or AppArmor denies
+    the spawn.
+  * a usr.bin.kloakwl profile must exist and grant the sandbox operations
+    (user namespace creation, mount, pivot_root).
+  * the unprivileged kloakwl user/group must be created, or kloakwl FATALs when
+    it looks them up to drop privileges.
+
+All files are read from the REAL kloak checkout (resolved via KLOAK_REPO); no
+copy, no body-cut.
+"""
+
+import os
+import re
+import unittest
+
+## systemd syscall groups the unit must grant for kloak's proxy work plus
+## kloakwl's sandbox setup (unshare, mount/pivot_root, capset, uid/gid drop,
+## rlimit). Their presence is the arch-neutral replacement for the old hand-list.
+REQUIRED_SYSCALL_GROUPS = (
+    '@system-service',
+    '@sandbox',
+    '@mount',
+    '@privileged',
+    '@setuid',
+)
+
+## Namespaces kloakwl's self_sandbox unshares that RestrictNamespaces must allow.
+REQUIRED_NAMESPACES = ('user', 'mnt')
+
+
+def _repo() -> str:
+    return os.path.abspath(os.environ.get('KLOAK_REPO', '').strip() or '/')
+
+
+def _read(rel_path: str) -> str:
+    with open(os.path.join(_repo(), rel_path), encoding='utf-8') as handle:
+        return handle.read()
+
+
+def _require_source() -> None:
+    service = os.path.join(
+        _repo(), 'usr', 'lib', 'systemd', 'system', 'kloak.service')
+    if not os.path.exists(service):
+        ## style-ok: allow-skip: kloak source absent (not a --component run)
+        raise unittest.SkipTest(
+            'kloak.service not found under %s -- set KLOAK_REPO or install the '
+            'kloak source' % service)
+
+
+class PrivsepHardening(unittest.TestCase):
+    service_text: str
+    kloak_aa: str
+    kloakwl_aa: str
+    sysusers_text: str
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        _require_source()
+        cls.service_text = _read('usr/lib/systemd/system/kloak.service')
+        cls.kloak_aa = _read('etc/apparmor.d/usr.bin.kloak')
+        cls.kloakwl_aa = _read('etc/apparmor.d/usr.bin.kloakwl')
+        cls.sysusers_text = _read('debian/kloak.sysusers')
+
+    def _directive(self, text: str, name: str) -> str:
+        ## Last assignment wins, matching systemd's own override semantics.
+        value = ''
+        for line in text.splitlines():
+            match = re.match(r'\s*%s=(.*)' % re.escape(name), line)
+            if match is not None:
+                value = match.group(1).strip()
+        return value
+
+    def test_syscall_filter_is_group_based(self) -> None:
+        value = self._directive(self.service_text, 'SystemCallFilter')
+        self.assertTrue(value, 'kloak.service has no SystemCallFilter')
+        self.assertFalse(
+            value.startswith('~'),
+            'SystemCallFilter is a deny-list (%r); kloak uses an allow-list of '
+            'groups' % value)
+        tokens = value.split()
+        for group in REQUIRED_SYSCALL_GROUPS:
+            self.assertIn(
+                group, tokens,
+                "SystemCallFilter is missing the %s syscall group. A bare "
+                "individual-syscall allow-list is the arm64 SIGSYS trap this "
+                "guards against -- arch-neutral groups must cover kloak's proxy "
+                "work and kloakwl's sandbox setup. Filter: %r" % (group, value))
+
+    def test_restrictnamespaces_permits_sandbox(self) -> None:
+        value = self._directive(self.service_text, 'RestrictNamespaces')
+        self.assertTrue(value, 'kloak.service has no RestrictNamespaces')
+        ## A boolean true (deny all) or a '~' deny-list blocks kloakwl's unshare.
+        self.assertNotIn(
+            value.lower(), ('true', 'yes', '1', 'on'),
+            'RestrictNamespaces=%s denies ALL namespaces; kloakwl cannot build '
+            'its sandbox' % value)
+        self.assertFalse(
+            value.startswith('~'),
+            'RestrictNamespaces is a deny-list (%r); kloakwl needs its '
+            'namespaces allowed' % value)
+        tokens = value.split()
+        for namespace in REQUIRED_NAMESPACES:
+            self.assertIn(
+                namespace, tokens,
+                "RestrictNamespaces does not allow the '%s' namespace that "
+                "kloakwl's self_sandbox unshares. Value: %r"
+                % (namespace, value))
+
+    def test_kloak_apparmor_authorizes_kloakwl_exec(self) -> None:
+        ## A discrete-profile (Px/Pix), inherit (ix) or unconfined (ux/Ux)
+        ## transition on the kloakwl path -- any of these authorizes the execve;
+        ## absence means AppArmor denies the spawn.
+        match = re.search(
+            r'^\s*/usr/bin/kloakwl\s+[^,]*\b([PpCU]?[iux]x?|ux|Ux)\b',
+            self.kloak_aa, re.MULTILINE)
+        self.assertIsNotNone(
+            match,
+            'usr.bin.kloak has no exec rule for /usr/bin/kloakwl, so AppArmor '
+            'denies the kloak->kloakwl execve')
+
+    def test_kloakwl_apparmor_profile_grants_sandbox(self) -> None:
+        self.assertIn(
+            '/usr/bin/kloakwl', self.kloakwl_aa,
+            'usr.bin.kloakwl does not attach to /usr/bin/kloakwl')
+        for rule in ('userns', 'mount', 'pivot_root'):
+            self.assertRegex(
+                self.kloakwl_aa, r'(?m)^\s*%s\b' % rule,
+                "usr.bin.kloakwl is missing the '%s' rule kloakwl's sandbox "
+                "needs; AppArmor would deny it" % rule)
+
+    def test_kloakwl_system_user_created(self) -> None:
+        ## sysusers 'u' line creates the user and its matching group; kloakwl
+        ## getpwnam/getgrnam("kloakwl") and FATALs if either is absent.
+        self.assertRegex(
+            self.sysusers_text, r'(?m)^\s*u\s+kloakwl\b',
+            'debian/kloak.sysusers does not create the kloakwl system user')
+
+
+if __name__ == '__main__':
+    unittest.main()
