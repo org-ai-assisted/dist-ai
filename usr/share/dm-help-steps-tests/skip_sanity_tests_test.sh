@@ -48,9 +48,16 @@ case "${reuse_block}" in
       fail "could not extract reuse_shared_args; the assertion below would prove nothing"
       ;;
 esac
+## The flag and its value must be TWO separate array elements. A combined single
+## argument -- quoted '--skip-sanity-tests true', or '--skip-sanity-tests=true' --
+## would satisfy a bare substring check yet not reach derivative-maker as the
+## intended switch, so reject those forms explicitly.
 case "${reuse_block}" in
-   *'--skip-sanity-tests true'*)
-      pass "reuse_shared_args skips sanity-tests on per-flavor rebuilds"
+   *"'--skip-sanity-tests true'"*|*'"--skip-sanity-tests true"'*|*'--skip-sanity-tests=true'*)
+      fail "reuse_shared_args passes the flag and value as ONE argument; they must be two separate array elements"
+      ;;
+   *'--skip-sanity-tests'*)
+      pass "reuse_shared_args skips sanity-tests on per-flavor rebuilds (flag and value as separate elements)"
       ;;
    *)
       fail "reuse_shared_args no longer passes '--skip-sanity-tests true'; per-flavor rebuilds re-verify unchanged git state"
@@ -58,18 +65,19 @@ case "${reuse_block}" in
 esac
 
 ## --- Part 2: 1100_sanity-tests honors dist_build_skip_sanity_tests ----------
+## An explicit DM_SANITY_TESTS override must be usable; never silently fall back
+## to the checkout copy (that would test a DIFFERENT script than requested).
 sanity=""
-for candidate in "${DM_SANITY_TESTS:-}" "${dm_checkout}/build-steps.d/1100_sanity-tests"; do
-   case "${candidate}" in
-      ''|'/build-steps.d/1100_sanity-tests')
-         continue
-         ;;
-   esac
-   if [ -r "${candidate}" ]; then
-      sanity="${candidate}"
-      break
+if [ -n "${DM_SANITY_TESTS:-}" ]; then
+   if [ ! -r "${DM_SANITY_TESTS}" ]; then
+      fail "DM_SANITY_TESTS override is set but not readable: ${DM_SANITY_TESTS}"
+      printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
+      exit 1
    fi
-done
+   sanity="${DM_SANITY_TESTS}"
+elif [ -r "${dm_checkout}/build-steps.d/1100_sanity-tests" ]; then
+   sanity="${dm_checkout}/build-steps.d/1100_sanity-tests"
+fi
 if [ -z "${sanity}" ]; then
    fail "1100_sanity-tests not found (set DM_SANITY_TESTS or DERIVATIVE_MAKER_DIR)"
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
@@ -98,7 +106,11 @@ esac
 run_guard() {
    (
       bold='' cyan='' reset=''
-      if [ "$1" != unset ]; then
+      ## Clear any inherited value so the 'unset' case is genuinely unset even if
+      ## the caller exported dist_build_skip_sanity_tests=true.
+      if [ "$1" = unset ]; then
+         unset dist_build_skip_sanity_tests
+      else
          dist_build_skip_sanity_tests="$1"
       fi
       eval "guard_fn() { ${guard}
@@ -108,22 +120,49 @@ run_guard() {
    )
 }
 
-case "$(run_guard true)" in
-   *FELL_THROUGH*)
-      fail "1100 main() did NOT short-circuit on dist_build_skip_sanity_tests=true"
-      ;;
-   *)
-      pass "1100 main() returns early when dist_build_skip_sanity_tests=true"
-      ;;
-esac
-case "$(run_guard unset)" in
-   *FELL_THROUGH*)
-      pass "1100 main() runs the checks when the flag is unset"
-      ;;
-   *)
-      fail "1100 main() short-circuited with the flag UNSET -- it would always skip"
-      ;;
-esac
+## Capture status too: if run_guard exits nonzero BEFORE printing the sentinel,
+## the command substitution is empty and the bare '*' branch would misread a
+## broken skip path as a pass. '|| rc=$?' keeps errexit from aborting the test.
+guard_true_rc=0
+guard_true_out="$(run_guard true)" || guard_true_rc=$?
+if [ "${guard_true_rc}" -ne 0 ]; then
+   fail "run_guard true exited ${guard_true_rc} before completing; cannot judge the skip path"
+else
+   case "${guard_true_out}" in
+      *FELL_THROUGH*)
+         fail "1100 main() did NOT short-circuit on dist_build_skip_sanity_tests=true"
+         ;;
+      *)
+         pass "1100 main() returns early when dist_build_skip_sanity_tests=true"
+         ;;
+   esac
+fi
+guard_unset_rc=0
+guard_unset_out="$(run_guard unset)" || guard_unset_rc=$?
+if [ "${guard_unset_rc}" -ne 0 ]; then
+   fail "run_guard unset exited ${guard_unset_rc} before completing; cannot judge the run path"
+else
+   case "${guard_unset_out}" in
+      *FELL_THROUGH*)
+         pass "1100 main() runs the checks when the flag is unset"
+         ;;
+      *)
+         fail "1100 main() short-circuited with the flag UNSET -- it would always skip"
+         ;;
+   esac
+fi
+
+## --- Part 3: the guard is main()'s FIRST action, ahead of any check ---------
+## Executing the extracted guard proves its LOGIC; this proves the WIRING -- a
+## correct guard placed AFTER an expensive check would not save the work.
+main_body="$(sed -n '/^main() {/,/^}$/p' -- "${sanity}")"
+guard_line="$(printf '%s\n' "${main_body}" | grep -n 'dist_build_skip_sanity_tests' | head -n 1 | cut -d: -f1)"
+check_line="$(printf '%s\n' "${main_body}" | grep -nE '^[[:space:]]*(test-wc|check-)' | head -n 1 | cut -d: -f1)"
+if [ -n "${guard_line}" ] && [ -n "${check_line}" ] && [ "${guard_line}" -lt "${check_line}" ]; then
+   pass "1100 main() checks dist_build_skip_sanity_tests before running any check"
+else
+   fail "1100 main() does not short-circuit before its checks (guard_line='${guard_line}', first_check_line='${check_line}')"
+fi
 
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2

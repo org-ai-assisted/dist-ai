@@ -35,26 +35,38 @@ test_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./help_steps_test_lib.bsh
 source "${test_dir}/help_steps_test_lib.bsh"
 
+## An explicit DERIVATIVE_UPDATE override must be usable; never silently fall
+## back to the checkout (that would test a DIFFERENT script than requested).
 subject=""
-for candidate in "${DERIVATIVE_UPDATE:-}" "${dm_checkout}/derivative-update"; do
-   case "${candidate}" in
-      ''|'/derivative-update')
-         continue
-         ;;
-   esac
-   if [ -r "${candidate}" ]; then
-      subject="${candidate}"
-      break
+if [ -n "${DERIVATIVE_UPDATE:-}" ]; then
+   if [ ! -r "${DERIVATIVE_UPDATE}" ]; then
+      fail "DERIVATIVE_UPDATE override is set but not readable: ${DERIVATIVE_UPDATE}"
+      printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
+      exit 1
    fi
-done
-## check_runtime.bsh (the 'was_executed' provider the subject sources) rides the
-## helper-scripts submodule; its absence means an incomplete checkout, not a
-## defect under test.
-runtime_lib="${subject%/derivative-update}/packages/kicksecure/helper-scripts/usr/libexec/helper-scripts/check_runtime.bsh"
-if [ -z "${subject}" ] || [ ! -r "${runtime_lib}" ]; then
-   printf '%s\n' "SKIP: derivative-update / helper-scripts checkout absent (set DERIVATIVE_UPDATE or DERIVATIVE_MAKER_DIR)." >&2
+   subject="${DERIVATIVE_UPDATE}"
+elif [ -r "${dm_checkout}/derivative-update" ]; then
+   subject="${dm_checkout}/derivative-update"
+fi
+
+## derivative-update absent entirely -> the optional derivative-maker checkout is
+## not present in this environment (the standard dist-ai-tests CI job): a genuine
+## optional-target skip.
+if [ -z "${subject}" ]; then
+   printf '%s\n' "SKIP: derivative-update checkout absent (set DERIVATIVE_UPDATE or DERIVATIVE_MAKER_DIR)." >&2
    ## style-ok: allow-skip: the derivative-maker checkout is absent in the standard dist-ai-tests CI job
    exit 77
+fi
+
+## The subject IS present, so check_runtime.bsh (the 'was_executed' provider it
+## sources, riding the helper-scripts submodule) MUST be present too. Its absence
+## is an INCOMPLETE checkout (uninitialized submodule) -- a hard failure, NOT an
+## optional-target skip that would silently stop gating.
+runtime_lib="${subject%/derivative-update}/packages/kicksecure/helper-scripts/usr/libexec/helper-scripts/check_runtime.bsh"
+if [ ! -r "${runtime_lib}" ]; then
+   fail "check_runtime.bsh missing (incomplete checkout / uninitialized submodule): ${runtime_lib}"
+   printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
+   exit 1
 fi
 
 ## Source the real script: 'was_executed' keeps 'main' from running, so this

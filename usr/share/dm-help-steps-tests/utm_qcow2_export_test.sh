@@ -48,9 +48,13 @@ if [ ! -r "${export_step}" ]; then
 fi
 
 ## The disk path 4600 writes into the bundle: Data/${VMNAME}.<ext>. The '{'/'}'
-## are literal shell text, so the ERE single-quotes them.
+## are literal shell text, so the ERE single-quotes them. Capture THROUGH the
+## closing quote and strip it, so a 'Data/${VMNAME}.qcow2.bak' destination reads
+## as extension '.bak' (a mismatch that fails) rather than being silently
+## truncated to '.qcow2' -- the extension must be the COMPLETE basename.
 # shellcheck disable=SC2016
-export_disk="$(grep -oE 'Data/\$\{VMNAME\}\.[A-Za-z0-9]+' -- "${export_step}" | head -n 1)"
+export_disk="$(grep -oE 'Data/\$\{VMNAME\}\.[A-Za-z0-9.]+"' -- "${export_step}" | head -n 1)"
+export_disk="${export_disk%\"}"
 case "${export_disk}" in
    '')
       fail "canary: could not find the Data/\${VMNAME}.<ext> disk 4600 writes; later assertions would prove nothing"
@@ -85,9 +89,10 @@ case "$(grep -E -- '(cp|mv) -- "\$\{binary_image_qcow2_file\}" "\$\{bundle_qcow2
       pass "4600 ships 4400's qcow2 output into the bundle disk in one cp/mv op"
       ;;
 esac
-## ...and that single destination resolves to Data/${VMNAME}.qcow2.
+## ...and that single destination resolves to the COMPLETE basename
+## Data/${VMNAME}.qcow2 (trailing quote required, so a '.qcow2.bak' target fails).
 # shellcheck disable=SC2016
-case "$(grep -E -- 'bundle_qcow2_file=.*Data/\$\{VMNAME\}\.qcow2' "${export_step}")" in
+case "$(grep -E -- 'bundle_qcow2_file=.*Data/\$\{VMNAME\}\.qcow2"' "${export_step}")" in
    '')
       fail "4600's \${bundle_qcow2_file} target is not Data/\${VMNAME}.qcow2"
       ;;
@@ -112,18 +117,42 @@ if [ ! -r "${convert_step}" ]; then
    fail "4400_convert-raw-to-qcow2 not found (set DM_CONVERT_QCOW2 or DERIVATIVE_MAKER_DIR)"
 else
    guard_fn="$(sed -n '/^qcow2_build_requested() {$/,/^}$/p' -- "${convert_step}")"
-   # shellcheck disable=SC2016
    case "${guard_fn}" in
       '')
          fail "canary: could not extract qcow2_build_requested() from 4400; the assertions below would prove nothing"
          ;;
-      *'"${dist_build_utm:-}" = "true"'*)
-         pass "4400's qcow2_build_requested() tests dist_build_utm"
-         ;;
       *)
-         fail "4400's qcow2_build_requested() does not test dist_build_utm; a utm-only build would skip conversion"
+         pass "canary: qcow2_build_requested() extracted from 4400"
          ;;
    esac
+
+   ## Execute the REAL predicate (not merely grep its text): a predicate that
+   ## CONTAINS the dist_build_utm equality yet is wired to return the wrong
+   ## result for a utm-only build would satisfy a text check while still skipping
+   ## conversion. Define it in a clean subshell and drive it with each flag.
+   run_predicate() {
+      (
+         unset dist_build_qcow2 dist_build_utm
+         [ "$1" = none ] || export "$1=true"
+         eval "${guard_fn}"
+         qcow2_build_requested
+      )
+   }
+   if run_predicate dist_build_utm; then
+      pass "4400's qcow2_build_requested() is TRUE for a utm-only build"
+   else
+      fail "4400's qcow2_build_requested() is FALSE for dist_build_utm=true; a utm-only build would skip conversion"
+   fi
+   if run_predicate dist_build_qcow2; then
+      pass "4400's qcow2_build_requested() is TRUE for dist_build_qcow2=true"
+   else
+      fail "4400's qcow2_build_requested() is FALSE for dist_build_qcow2=true"
+   fi
+   if run_predicate none; then
+      fail "4400's qcow2_build_requested() is TRUE with neither flag set; conversion would always run"
+   else
+      pass "4400's qcow2_build_requested() is FALSE when neither flag is set"
+   fi
    ## ...and conversion is actually gated on that predicate, not dead code.
    case "$(grep -E -- 'if qcow2_build_requested' "${convert_step}")" in
       '')
