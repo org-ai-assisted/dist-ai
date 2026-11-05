@@ -452,14 +452,16 @@ test("nav toggle: Escape handler closes an open menu", () => {
 
 test("back-to-top: static anchor is wired hidden and reveals past the scroll threshold", () => {
   // Back-to-top is STATIC HTML now (page.py: <a class="back-to-top" href="#top">) so it works
-  // with no JS; initBackToTop ENHANCES the existing element (sets hidden + wires scroll), it
-  // no longer appends one -- so the test must provide the static anchor.
+  // with no JS; initBackToTop ENHANCES the existing element -- it marks the root js-capable
+  // (floor steps aside) and fades the control via the .btt-hidden class instead of [hidden].
   const w = load('<main>x</main><a class="back-to-top" href="#top">Top</a>');
   const btn = w.document.querySelector(".back-to-top");
-  assert.ok(btn && btn.hidden, "present and hidden at top");
+  assert.ok(btn && btn.classList.contains("btt-hidden"), "present and hidden at top");
+  assert.ok(w.document.documentElement.classList.contains("js"), "root marked js-capable");
+  assert.ok(btn.classList.contains("btt-anim"), "fade transitions enabled after the initial hide");
   Object.defineProperty(w, "scrollY", { value: 800, configurable: true });
   w.dispatchEvent(new w.Event("scroll"));
-  assert.equal(btn.hidden, false, "revealed after scrolling down");
+  assert.equal(btn.classList.contains("btt-hidden"), false, "revealed after scrolling down");
 });
 
 test("search filters the prebuilt index and renders result links", async () => {
@@ -1212,20 +1214,65 @@ test("tools supermenu toggle: inside stays open; tools-item link, outside tap an
 });
 
 test("back-to-top: click smooth-scrolls to top; scrolling near the top re-hides it", () => {
-  let scrolledTop = 0;
+  let scrolledTop = 0, lastBehavior = null;
   const w = load('<main>x</main><a class="back-to-top" href="#top">Top</a>');
-  w.scrollTo = (o) => { if (o && o.top === 0) scrolledTop++; };
+  w.scrollTo = (o) => { if (o && o.top === 0) { scrolledTop++; lastBehavior = o.behavior; } };
   const btn = w.document.querySelector(".back-to-top");
   Object.defineProperty(w, "scrollY", { value: 800, configurable: true });
   w.dispatchEvent(new w.Event("scroll"));
-  assert.equal(btn.hidden, false, "revealed past the threshold");
+  assert.equal(btn.classList.contains("btt-hidden"), false, "revealed past the threshold");
   const ev = new w.MouseEvent("click", { bubbles: true, cancelable: true });
   btn.dispatchEvent(ev);
   assert.ok(ev.defaultPrevented, "click is intercepted");
   assert.equal(scrolledTop, 1, "click smooth-scrolls to the top");
+  assert.equal(lastBehavior, "smooth", "smooth scroll by default (no reduced-motion)");
   Object.defineProperty(w, "scrollY", { value: 100, configurable: true });
   w.dispatchEvent(new w.Event("scroll"));
-  assert.equal(btn.hidden, true, "re-hidden when scrolled back near the top");
+  assert.equal(btn.classList.contains("btt-hidden"), true, "re-hidden when scrolled back near the top");
+});
+
+test("back-to-top: reduced-motion makes the scroll-to-top instant (behavior auto)", () => {
+  // Covers the reduced-motion branch of the click handler: matchMedia present AND matching ->
+  // behavior "auto" instead of "smooth" (the default test above has no matchMedia -> smooth).
+  let lastBehavior = null;
+  const w = load('<main>x</main><a class="back-to-top" href="#top">Top</a>');
+  w.matchMedia = (q) => ({ matches: /prefers-reduced-motion/.test(q) });
+  w.scrollTo = (o) => { lastBehavior = o && o.behavior; };
+  const btn = w.document.querySelector(".back-to-top");
+  const ev = new w.MouseEvent("click", { bubbles: true, cancelable: true });
+  btn.dispatchEvent(ev);
+  assert.ok(ev.defaultPrevented, "click is intercepted");
+  assert.equal(lastBehavior, "auto", "reduced-motion -> instant scroll (behavior auto)");
+});
+
+test("back-to-top: a focused control is not hidden by the threshold/idle hide", () => {
+  // Covers the focus-guard in hide(): while the control holds keyboard focus, a hide (idle
+  // timer or scroll-below-threshold) is a no-op, so focus is never yanked mid-activation.
+  const w = load('<main>x</main><a class="back-to-top" href="#top">Top</a>');
+  const btn = w.document.querySelector(".back-to-top");
+  Object.defineProperty(w, "scrollY", { value: 800, configurable: true });
+  w.dispatchEvent(new w.Event("scroll"));
+  assert.equal(btn.classList.contains("btt-hidden"), false, "shown past the threshold");
+  btn.focus();
+  assert.equal(w.document.activeElement, btn, "control holds focus");
+  Object.defineProperty(w, "scrollY", { value: 100, configurable: true });
+  w.dispatchEvent(new w.Event("scroll"));
+  assert.equal(btn.classList.contains("btt-hidden"), false, "focused control stays shown");
+});
+
+test("back-to-top: blur near the top re-hides it; blur while scrolled down does not", () => {
+  // Covers both sides of the blur handler's threshold check.
+  const w = load('<main>x</main><a class="back-to-top" href="#top">Top</a>');
+  const btn = w.document.querySelector(".back-to-top");
+  Object.defineProperty(w, "scrollY", { value: 800, configurable: true });
+  w.dispatchEvent(new w.Event("scroll"));
+  btn.focus();
+  btn.blur();
+  assert.equal(btn.classList.contains("btt-hidden"), false, "blur while scrolled down keeps it shown");
+  btn.focus();
+  Object.defineProperty(w, "scrollY", { value: 100, configurable: true });
+  btn.blur();
+  assert.equal(btn.classList.contains("btt-hidden"), true, "blur near the top re-hides it");
 });
 
 // ---- search: root prefix, degradation, Enter/best-match -------------------------------------
