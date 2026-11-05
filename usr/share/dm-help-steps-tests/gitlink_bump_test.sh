@@ -84,10 +84,6 @@ printf '%s\n' "v3" > "${sub_src}/file"
 gitq -C "${sub_src}" add file
 gitq -C "${sub_src}" commit --quiet -m "sub v3"
 sub_tip="$(gitq -C "${sub_src}" rev-parse HEAD)"
-## file:// (a URL scheme), not a bare path: dm-gitlink-bump only trusts a
-## remote-tracking 'ai' tip from a NETWORK remote (scheme or user@host:), the
-## same *://*|*@*:* classification dm-preflight uses. A bare-path scratch remote
-## is deliberately NOT accepted as published.
 gitq -C "${sub_src}" remote add fork "file://${fork}"
 gitq -C "${sub_src}" push --quiet fork ai
 
@@ -100,19 +96,23 @@ printf '%s\n' "x" > "${super}/help-steps/keep"
 gitq -C "${super}" add build-steps.d help-steps
 gitq -C "${super}" commit --quiet -m "super base"
 gitq -C "${super}" -c protocol.file.allow=always submodule --quiet add -b ai "file://${fork}" sub
+## Name the submodule's fork remote 'org-ai-assisted': dm-gitlink-bump trusts a
+## published 'ai' tip ONLY from that remote (the CI-fetched org, dm-git-sync's
+## publish target). A tip under any other remote name (a mirror) is not pinnable.
+gitq -C "${super}/sub" remote rename origin org-ai-assisted
 ## Force the recorded gitlink to PIN (submodule add records the tip; we want stale).
 gitq -C "${super}/sub" checkout --quiet "${sub_pin}"
 gitq -C "${super}" update-index --cacheinfo "160000,${sub_pin},sub"
 gitq -C "${super}" commit --quiet -m "pin sub at v1" -- sub
 ## Put the submodule working tree on 'ai' at the published TIP, mirroring "I
 ## committed + pushed the submodule, forgot to bump the parent". The submodule's
-## remote (created by 'submodule add') is 'origin' -> the bare fork; its
-## remote-tracking origin/ai tip is what the tool treats as published (no
-## network: local bare fork).
-gitq -C "${super}/sub" fetch --quiet origin ai
+## org-ai-assisted remote -> the bare fork; its remote-tracking
+## org-ai-assisted/ai tip is what the tool treats as published (no network: local
+## bare fork).
+gitq -C "${super}/sub" fetch --quiet org-ai-assisted ai
 gitq -C "${super}/sub" checkout --quiet ai
 gitq -C "${super}/sub" reset --quiet --hard "${sub_tip}"
-gitq -C "${super}/sub" branch --quiet --set-upstream-to=origin/ai ai 2>/dev/null || true
+gitq -C "${super}/sub" branch --quiet --set-upstream-to=org-ai-assisted/ai ai 2>/dev/null || true
 
 pin_now() { git -C "${super}" rev-parse "HEAD:sub"; }
 
@@ -171,19 +171,20 @@ else
    fail "pin unexpectedly changed to '$(pin_now)'"
 fi
 
-## --- Assertion 5: a bare-PATH remote tip is NOT "published" (CI can't fetch) --
-## HEAD at the published TIP and ahead of the pin, but the only remote carrying
-## that ai tip is a bare filesystem path -- a fresh CI checkout using the URL
-## could never fetch it, so it must not be pinned.
+## --- Assertion 5: a tip only on a MIRROR remote is NOT "published" (CI can't fetch) --
+## HEAD at the published TIP and ahead of the pin, but the ai tip lives under a
+## mirror remote name (assisted-by-ai), not the CI-fetched org (org-ai-assisted) --
+## CI fetches only org-ai-assisted, so it must not be pinned. 'remote rename' also
+## moves the remote-tracking refs, so org-ai-assisted/ai ceases to exist.
 gitq -C "${super}/sub" checkout --quiet ai
 gitq -C "${super}/sub" reset --quiet --hard "${sub_tip}"
-gitq -C "${super}/sub" remote set-url origin "${fork}"   ## bare path, not file://
+gitq -C "${super}/sub" remote rename org-ai-assisted assisted-by-ai
 if "${tool}" --check --dir "${super}" >/dev/null 2>&1; then
-   pass "--check exits 0 when the ai tip is only on a bare-path remote (not CI-fetchable)"
+   pass "--check exits 0 when the ai tip is only on a mirror remote (not the CI org)"
 else
-   fail "a bare-path remote tip must not count as published (--check exited $?)"
+   fail "a mirror-only remote tip must not count as published (--check exited $?)"
 fi
-gitq -C "${super}/sub" remote set-url origin "file://${fork}"   ## restore network remote
+gitq -C "${super}/sub" remote rename assisted-by-ai org-ai-assisted   ## restore the org remote
 
 ## --- Assertion 6: a DETACHED submodule HEAD is never bumped ---------------------
 gitq -C "${super}/sub" checkout --quiet ai

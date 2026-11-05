@@ -53,10 +53,10 @@ shopt -s shift_verbose
 export LC_ALL=C
 
 AI_BRANCH="ai"
-## The ONE remote CI/builds fetch (directly, or via the Kicksecure/Whonix->org
-## insteadOf rewrite). A pin at a mirror-only tip (assisted-by-ai,
-## gitlab-adrelanos) is unfetchable there -> 'not our ref'.
-AI_OWNER="org-ai-assisted"
+## The ONE remote CI/builds fetch and dm-git-sync publishes to (its PUBLISH_REMOTE
+## / dm-submodule-ai-sync's FORK_REMOTE). A tip only on a mirror (assisted-by-ai,
+## gitlab-adrelanos) or upstream lives under another remote name -> not pinnable.
+AI_REMOTE="org-ai-assisted"
 
 source_dir=""
 dry_run="false"
@@ -172,29 +172,17 @@ for path in "${sub_paths[@]}"; do
    git -C "${sub}" merge-base --is-ancestor "${pin_sha}" "${head_sha}" 2>/dev/null || continue
 
    ## Published AT a tip: HEAD must EQUAL the remote-tracking 'ai' tip of the
-   ## CI-fetched org remote -- not merely be contained in one (a stale local ai
-   ## behind the fork tip would pin an intermediate commit), and ONLY that org:
-   ## a mirror (assisted-by-ai, gitlab-adrelanos), upstream, or a local-path
-   ## scratch remote is unfetchable by CI, so a pin there breaks the build's
-   ## recurse fetch. Local refs only, no network.
+   ## CI-fetched org remote (AI_REMOTE) -- the ONE remote dm-git-sync publishes to
+   ## and builds fetch. NOT merely contained in that tip (a stale local ai behind
+   ## the fork would pin an intermediate commit). A tip only on a mirror
+   ## (assisted-by-ai, gitlab-adrelanos) or upstream lives under a DIFFERENT
+   ## remote name, so its tracking ref is not consulted and the pin is refused --
+   ## CI cannot fetch it ('not our ref'). Local ref only, no network.
    at_published_tip="false"
-   while IFS= read -r remote; do
-      [ -n "${remote}" ] || continue
-      ## Accept only the CI-fetched org. ls-remote --get-url applies insteadOf
-      ## (no network), so a rewritten Kicksecure/Whonix url resolves to the org.
-      case "$( git -C "${sub}" ls-remote --get-url "${remote}" 2>/dev/null )" in
-         *"github.com/${AI_OWNER}/"* | *"github.com:${AI_OWNER}/"*)
-            ;;
-         *)
-            continue
-            ;;
-      esac
-      rt_tip="$( git -C "${sub}" rev-parse --verify --quiet "refs/remotes/${remote}/${AI_BRANCH}" 2>/dev/null || true )"
-      if [ "${rt_tip}" = "${head_sha}" ]; then
-         at_published_tip="true"
-         break
-      fi
-   done < <( git -C "${sub}" remote 2>/dev/null )
+   rt_tip="$( git -C "${sub}" rev-parse --verify --quiet "refs/remotes/${AI_REMOTE}/${AI_BRANCH}" 2>/dev/null || true )"
+   if [ "${rt_tip}" = "${head_sha}" ]; then
+      at_published_tip="true"
+   fi
 
    if [ "${at_published_tip}" = "true" ]; then
       to_bump_paths+=( "${path}" )

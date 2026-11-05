@@ -81,10 +81,9 @@ git_fx() { git -c core.hooksPath=/dev/null -c commit.gpgsign=false "$@"; }
 ## pins the NAME to 'claude', which is what this suite asserts.
 set_identity() { git -C "$1" config user.email fx@example.invalid && git -C "$1" config user.name fx; }
 
-## Submodule: two commits on 'ai'; HEAD (c1) ahead of the pin (c0). An
-## org-ai-assisted (CI-fetched org) remote whose tracking ref equals HEAD makes
-## the tool treat c1 as a published ai tip (it reads the tracking ref only --
-## never fetches, so the url need not resolve).
+## Submodule: two commits on 'ai'; HEAD (c1) ahead of the pin (c0). A file://
+## remote whose tracking ref equals HEAD makes the tool treat c1 as a published
+## ai tip (it reads the tracking ref only -- never fetches).
 mkdir -p -- "${sub}"
 git_fx -C "${sub}" init -q -b ai
 set_identity "${sub}"
@@ -92,7 +91,7 @@ git_fx -C "${sub}" commit -q --allow-empty -m c0
 c0="$(git -C "${sub}" rev-parse HEAD)"
 git_fx -C "${sub}" commit -q --allow-empty -m c1
 c1="$(git -C "${sub}" rev-parse HEAD)"
-git_fx -C "${sub}" remote add org-ai-assisted "git@github.com:org-ai-assisted/sub.git"
+git_fx -C "${sub}" remote add org-ai-assisted "file://${test_root}/subrem.git"
 git_fx -C "${sub}" update-ref "refs/remotes/org-ai-assisted/ai" "${c1}"
 
 ## Superproject: a derivative-maker-shaped checkout (build-steps.d + help-steps
