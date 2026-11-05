@@ -10,18 +10,20 @@
 ##
 ## '--target utm' previously shipped a RAW image. A raw image on an APFS host
 ## triggers an unaligned-discard error via VirtIO TRIM on Apple Silicon; qcow2
-## (UTM's own default drive format) lets QEMU own sparsity instead. The export
-## step converts raw -> qcow2 into Data/${VMNAME}.qcow2 via the shared
-## 'convert_raw_to_qcow2_image' helper, and each plist template references
-## '_FLAVOR_.qcow2' (4600 substitutes _FLAVOR_ -> ${VMNAME}). The plist filename
-## and the exported filename MUST agree or UTM cannot find the disk.
+## (UTM's own default drive format) lets QEMU own sparsity instead.
+##
+## The build reuses 4400_convert-raw-to-qcow2 (which now runs for '--target utm'
+## too) to produce ${binary_image_qcow2_file}; 4600 copies that into
+## Data/${VMNAME}.qcow2, and each plist template references '_FLAVOR_.qcow2'
+## (4600 substitutes _FLAVOR_ -> ${VMNAME}). The plist filename and the exported
+## filename MUST agree or UTM cannot find the disk.
 ##
 ## THE BUGS IT GUARDS:
 ##   1. 4600 reverting to shipping a raw image (or any non-qcow2 copy), and
 ##   2. a plist ImageName whose extension no longer matches the exported file,
 ##      and
-##   3. the shared convert helper losing its real qemu-img qcow2 recipe (a
-##      dangling call that converts nothing).
+##   3. 4400 no longer running for the utm target (its guard dropping
+##      dist_build_utm), so the qcow2 4600 copies would never be produced.
 ##
 ## Reads the REAL shipped files (no drift). No root, no network, no build.
 
@@ -70,36 +72,37 @@ case "${export_ext}" in
       ;;
 esac
 
-## It must CONVERT via the shared helper, not 'cp' a raw image into the bundle.
-case "$(grep -E -- 'convert_raw_to_qcow2_image[[:space:]]' "${export_step}")" in
+## It must ship 4400's qcow2 output (${binary_image_qcow2_file}) -- mv for a
+## utm-only build, cp when --target qcow2 also wants the standalone -- not a raw.
+# shellcheck disable=SC2016
+case "$(grep -E -- '(cp|mv) .*\$\{binary_image_qcow2_file\}' "${export_step}")" in
    '')
-      fail "4600 no longer calls 'convert_raw_to_qcow2_image'; the exported disk may be an unconverted raw copy"
+      fail "4600 no longer ships \${binary_image_qcow2_file} into the bundle; the exported disk may be an unconverted raw"
       ;;
    *)
-      pass "4600 converts the raw image via the shared 'convert_raw_to_qcow2_image' helper"
+      pass "4600 ships 4400's qcow2 output (\${binary_image_qcow2_file})"
       ;;
 esac
+# shellcheck disable=SC2016
 if grep --quiet -E 'Data/\$\{VMNAME\}\.raw' -- "${export_step}"; then
    fail "4600 still copies a raw image (Data/\${VMNAME}.raw) into the UTM bundle"
 else
    pass "4600 no longer ships a raw disk in the UTM bundle"
 fi
 
-## --- Part 2: the shared helper carries a real qemu-img qcow2 recipe ---------
-helpers="${DM_MISC_HELPERS:-${dm_checkout}/help-steps/misc-helpers.bsh}"
-if [ ! -r "${helpers}" ]; then
-   fail "misc-helpers.bsh not found (set DM_MISC_HELPERS or DERIVATIVE_MAKER_DIR)"
+## --- Part 2: 4400 runs for the utm target ----------------------------------
+## 4600 copies ${binary_image_qcow2_file}, which only exists if 4400 ran. 4400
+## self-gates, so its guard MUST fire for dist_build_utm, not qcow2 alone.
+convert_step="${DM_CONVERT_QCOW2:-${dm_checkout}/build-steps.d/4400_convert-raw-to-qcow2}"
+if [ ! -r "${convert_step}" ]; then
+   fail "4400_convert-raw-to-qcow2 not found (set DM_CONVERT_QCOW2 or DERIVATIVE_MAKER_DIR)"
 else
-   recipe="$(sed -n '/^convert_raw_to_qcow2_image() {$/,/^}$/p' -- "${helpers}")"
-   case "${recipe}" in
+   case "$(grep -E -- 'dist_build_utm' "${convert_step}")" in
       '')
-         fail "canary: could not extract convert_raw_to_qcow2_image() from misc-helpers.bsh; the assertion below would prove nothing"
-         ;;
-      *'-O qcow2'*)
-         pass "convert_raw_to_qcow2_image() runs 'qemu-img ... -O qcow2'"
+         fail "4400 does not gate on dist_build_utm; it would skip a utm build and 4600 would copy a missing qcow2"
          ;;
       *)
-         fail "convert_raw_to_qcow2_image() no longer runs 'qemu-img ... -O qcow2'; the call in 4600/4400 converts nothing"
+         pass "4400 runs for the utm target (gates on dist_build_utm)"
          ;;
    esac
 fi
