@@ -1245,9 +1245,10 @@ test("back-to-top: reduced-motion makes the scroll-to-top instant (behavior auto
   assert.equal(lastBehavior, "instant", "reduced-motion -> forced instant jump (behavior instant, not auto)");
 });
 
-test("back-to-top: a click releases focus so the control does not linger at the top", () => {
-  // The click focuses the <a>; without releasing it, the focus-guard would suppress the
+test("back-to-top: a POINTER click releases focus so the control does not linger at the top", () => {
+  // A pointer click focuses the <a>; without releasing it, the focus-guard would suppress the
   // scroll-to-top's own hide(), leaving the control sitting (and catching clicks) at the top.
+  // detail > 0 marks a pointer click (keyboard-activated clicks report detail 0).
   const w = load('<main>x</main><a class="back-to-top" href="#top">Top</a>');
   w.scrollTo = () => {};
   const btn = w.document.querySelector(".back-to-top");
@@ -1255,11 +1256,24 @@ test("back-to-top: a click releases focus so the control does not linger at the 
   w.dispatchEvent(new w.Event("scroll"));
   btn.focus();
   assert.equal(w.document.activeElement, btn, "focused before the click");
-  btn.dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true }));
-  assert.notEqual(w.document.activeElement, btn, "click released focus");
+  btn.dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
+  assert.notEqual(w.document.activeElement, btn, "pointer click released focus");
   Object.defineProperty(w, "scrollY", { value: 100, configurable: true });
   w.dispatchEvent(new w.Event("scroll"));
   assert.equal(btn.classList.contains("btt-hidden"), true, "hidden once near the top after the click");
+});
+
+test("back-to-top: a KEYBOARD activation keeps focus (not discarded to the body)", () => {
+  // Keyboard-activated clicks report detail 0, so the control keeps focus -- blurring a keyboard
+  // user mid-navigation would discard their place rather than move it to a sensible target.
+  const w = load('<main>x</main><a class="back-to-top" href="#top">Top</a>');
+  w.scrollTo = () => {};
+  const btn = w.document.querySelector(".back-to-top");
+  Object.defineProperty(w, "scrollY", { value: 800, configurable: true });
+  w.dispatchEvent(new w.Event("scroll"));
+  btn.focus();
+  btn.dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true, detail: 0 }));
+  assert.equal(w.document.activeElement, btn, "keyboard activation kept focus on the control");
 });
 
 test("back-to-top: a focused control is not hidden by the threshold/idle hide", () => {
