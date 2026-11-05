@@ -36,6 +36,9 @@ import unittest
 LEGACY_TO_MODERN = {
     'open': 'openat',
     'access': 'faccessat',
+    'poll': 'ppoll',
+    'unlink': 'unlinkat',
+    'epoll_wait': 'epoll_pwait',
     'stat': 'newfstatat',
     'lstat': 'newfstatat',
 }
