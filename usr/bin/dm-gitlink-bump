@@ -53,6 +53,10 @@ shopt -s shift_verbose
 export LC_ALL=C
 
 AI_BRANCH="ai"
+## The ONE remote CI/builds fetch (directly, or via the Kicksecure/Whonix->org
+## insteadOf rewrite). A pin at a mirror-only tip (assisted-by-ai,
+## gitlab-adrelanos) is unfetchable there -> 'not our ref'.
+AI_OWNER="org-ai-assisted"
 
 source_dir=""
 dry_run="false"
@@ -167,17 +171,19 @@ for path in "${sub_paths[@]}"; do
    ## Strictly AHEAD: the pin is an ancestor of HEAD. Behind or diverged -> skip.
    git -C "${sub}" merge-base --is-ancestor "${pin_sha}" "${head_sha}" 2>/dev/null || continue
 
-   ## Published AT a tip: HEAD must EQUAL the remote-tracking 'ai' tip of a
-   ## NETWORK remote -- not merely be contained in one (a stale local ai behind
-   ## the fork tip would pin an intermediate commit), and not a local-path
-   ## scratch remote that a fresh CI checkout could never fetch. Local refs
-   ## only, no network.
+   ## Published AT a tip: HEAD must EQUAL the remote-tracking 'ai' tip of the
+   ## CI-fetched org remote -- not merely be contained in one (a stale local ai
+   ## behind the fork tip would pin an intermediate commit), and ONLY that org:
+   ## a mirror (assisted-by-ai, gitlab-adrelanos), upstream, or a local-path
+   ## scratch remote is unfetchable by CI, so a pin there breaks the build's
+   ## recurse fetch. Local refs only, no network.
    at_published_tip="false"
    while IFS= read -r remote; do
       [ -n "${remote}" ] || continue
-      ## Skip a non-network remote (bare local path): CI cannot fetch from it.
-      case "$( git -C "${sub}" remote get-url "${remote}" 2>/dev/null )" in
-         *://* | *@*:*)
+      ## Accept only the CI-fetched org. ls-remote --get-url applies insteadOf
+      ## (no network), so a rewritten Kicksecure/Whonix url resolves to the org.
+      case "$( git -C "${sub}" ls-remote --get-url "${remote}" 2>/dev/null )" in
+         *"github.com/${AI_OWNER}/"* | *"github.com:${AI_OWNER}/"*)
             ;;
          *)
             continue
