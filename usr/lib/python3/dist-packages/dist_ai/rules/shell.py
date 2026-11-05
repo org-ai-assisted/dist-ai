@@ -583,6 +583,20 @@ def _chmod_is_recursive(call, source):
     return False
 
 
+def _plain_stmt(stmt):
+    """True if STMT carries no modifier that the collapse would silently drop or
+    mis-scope. shfmt attaches each of these to the STATEMENT (not the command),
+    and the fix rewrites only the command text between the two offsets, so any of
+    them would be lost or wrongly re-applied to the combined 'install':
+      - Background ('&'): 'mkdir a; chmod M a &' would background the WHOLE create
+        (a race), and 'mkdir a & chmod M a' would DROP the '&' (job-control change).
+      - Negated ('!'): the '!' sits before the command and would be dropped.
+      - Coprocess ('coproc'), Redirs ('>f'): likewise statement-scoped.
+    Any of these leaves the pair detect-only (still reported, not auto-fixed)."""
+    return not (stmt.get("Background") or stmt.get("Negated")
+                or stmt.get("Coprocess") or stmt.get("Redirs"))
+
+
 def _mkdir_then_chmod_pairs(ctx):
     """Yield a record dict per 'mkdir DIR' IMMEDIATELY followed by a same-dir
     'chmod MODE DIR' -- both the sibling-statement form ('mkdir ...; chmod ...' or
@@ -654,7 +668,7 @@ def _mkdir_then_chmod_pairs(ctx):
         mode_lit = bash_ast.word_string(mode_word)
         fixable = (
             eff1 is c1 and eff2 is c2
-            and not s1.get("Redirs") and not s2.get("Redirs")
+            and _plain_stmt(s1) and _plain_stmt(s2)
             and between in ("", ";", "&&")
             and bool(mode_lit) and bool(NUMERIC_MODE.fullmatch(mode_lit))
             and not _mkdir_has_mode_opt(eff1, source)

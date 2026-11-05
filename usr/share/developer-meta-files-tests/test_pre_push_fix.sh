@@ -1012,4 +1012,34 @@ else
    note_fail "R-173 swallowed the command after the chmod"
 fi
 
+## --- 7p: statement-level modifiers ('&' background, '!' negation) detect-only -
+## shfmt attaches these to the STATEMENT; collapsing would background the WHOLE
+## create (a race), DROP a job-control '&', or DROP the '!'. Each is left
+## byte-identical for the gate, never auto-rewritten.
+for name_body in \
+   "bg-chmod__mkdir a; chmod 700 a &" \
+   "bg-mkdir__mkdir a & chmod 700 a" \
+   "negated__! mkdir a; chmod 700 a" ; do
+   name="${name_body%%__*}"
+   body="${name_body#*__}"
+   f="${test_dir}/mkdirchmod_${name}.sh"
+   printf '%s\n' "#!/bin/bash" "${body}" >"${f}"
+   before="$(cksum < "${f}")"
+   run_fix "${f}" >/dev/null 2>&1
+   if [ "$(cksum < "${f}")" = "${before}" ] ; then
+      note_pass "R-173 leaves the ${name} form for the gate (not auto-fixed)"
+   else
+      note_fail "R-173 rewrote the ${name} form unsafely"
+   fi
+done
+## ... but a '&' that backgrounds the WHOLE '&&' pair still collapses (equivalent).
+f="${test_dir}/mkdirchmod_wholebg.sh"
+printf '%s\n' "#!/bin/bash" "mkdir a && chmod 700 a &" >"${f}"
+run_fix "${f}" >/dev/null 2>&1
+if grep --quiet --fixed-strings -- 'install -d -m 700 -- a &' "${f}" ; then
+   note_pass "R-173 collapses a whole-pair-backgrounded && pair (equivalent)"
+else
+   note_fail "R-173 wrongly declined a whole-pair-backgrounded && pair"
+fi
+
 exit_gate
