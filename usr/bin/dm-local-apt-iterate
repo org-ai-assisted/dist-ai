@@ -1,0 +1,115 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## One-shot dev loop for the derivative-maker LOCAL apt repo across a VBox VM.
+## Chains the (independently usable) primitives:
+##   1. [--update]        derivative-update          -- fetch the latest source
+##   2.                   derivative-maker            -- build changed packages into
+##                        --skip-published-packages     the local repo (or --packages
+##                        (or --only-packages '<p>')    '<p1 p2>' for a subset)
+##   3.                   dm-shared-apt-repo prepare  -- make the repo _apt-readable
+##   4. [--vm NAME]       dm-shared-apt-repo attach   -- share it read-only to the VM
+##   5.                   (printed) guest step        -- 'sudo repo-add-local'
+##
+## Step 5 runs INSIDE the VM (over the shared folder), so it is printed, not run.
+## Use --dry-run to print every step's command and run nothing.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+me="${0##*/}"
+dm_dir="${DERIVATIVE_MAKER_DIR:-${HOME}/derivative-maker}"
+derivative=""
+vm=""
+packages=""
+do_update="false"
+dry_run="false"
+
+die() {
+   printf '%s\n' "${me}: ERROR: ${1}" >&2
+   exit 1
+}
+
+usage() {
+   printf '%s\n' "usage: ${me} <kicksecure|whonix> [--vm NAME] [--update] [--packages 'p1 p2'] [--dm-dir DIR] [--dry-run]"
+}
+
+while [ "$#" -gt 0 ]; do
+   case "$1" in
+      kicksecure|whonix)
+         derivative="$1"
+         shift
+         ;;
+      --vm)
+         vm="${2:-}"
+         shift 2
+         ;;
+      --packages)
+         packages="${2:-}"
+         shift 2
+         ;;
+      --dm-dir)
+         dm_dir="${2:-}"
+         shift 2
+         ;;
+      --update)
+         do_update="true"
+         shift
+         ;;
+      --dry-run)
+         dry_run="true"
+         shift
+         ;;
+      -h|--help)
+         usage
+         exit 0
+         ;;
+      *)
+         usage
+         die "unknown argument: '$1'"
+         ;;
+   esac
+done
+
+[ "${derivative}" = "kicksecure" ] || [ "${derivative}" = "whonix" ] \
+   || { usage; die "first argument must be 'kicksecure' or 'whonix'"; }
+
+## Print each step's command; run it unless --dry-run.
+run_step() {
+   local label="$1"
+   shift
+   printf '%s\n' "${me}: STEP ${label}:"
+   printf '%s\n' "${me}:   + $*"
+   if [ "${dry_run}" = "true" ]; then
+      return 0
+   fi
+   "$@"
+}
+
+if [ "${do_update}" = "true" ]; then
+   run_step "update source" "${dm_dir}/derivative-update"
+fi
+
+if [ -n "${packages}" ]; then
+   # shellcheck disable=SC2086
+   run_step "build packages" "${dm_dir}/derivative-maker" --only-packages "${packages}"
+else
+   run_step "build changed packages" "${dm_dir}/derivative-maker" --skip-published-packages
+fi
+
+run_step "prepare shared repo" dm-shared-apt-repo prepare "${derivative}"
+
+if [ -n "${vm}" ]; then
+   run_step "attach to vm" dm-shared-apt-repo attach "${vm}"
+fi
+
+printf '%s\n' "${me}: in the guest, enable + upgrade: sudo repo-add-local ${derivative}"
