@@ -49,8 +49,11 @@ REQUIRED_SYSCALL_GROUPS = (
     '@setuid',
 )
 
-## Namespaces kloakwl's self_sandbox unshares that RestrictNamespaces must allow.
-REQUIRED_NAMESPACES = ('user', 'mnt')
+## Namespaces kloakwl's self_sandbox unshares that RestrictNamespaces must allow;
+## omitting any one makes systemd deny that unshare (EPERM) and the sandbox dies.
+## CLONE_SYSVSEM and CLONE_NEWTIME have no RestrictNamespaces token, so are not
+## listed here.
+REQUIRED_NAMESPACES = ('user', 'pid', 'net', 'ipc', 'uts', 'cgroup', 'mnt')
 
 
 def _repo() -> str:
@@ -86,50 +89,56 @@ class PrivsepHardening(unittest.TestCase):
         cls.kloakwl_aa = _read('etc/apparmor.d/usr.bin.kloakwl')
         cls.sysusers_text = _read('debian/kloak.sysusers')
 
-    def _directive(self, text: str, name: str) -> str:
-        ## Last assignment wins, matching systemd's own override semantics.
-        value = ''
+    def _directive_tokens(self, text: str, name: str) -> list[str]:
+        ## systemd MERGES repeated SystemCallFilter=/RestrictNamespaces= (and the
+        ## other list directives) -- it does NOT take the last line -- so union the
+        ## tokens of every matching line. An assignment with an empty value resets
+        ## the list (systemd.exec(5)).
+        tokens: list[str] = []
         for line in text.splitlines():
             match = re.match(r'\s*%s=(.*)' % re.escape(name), line)
-            if match is not None:
-                value = match.group(1).strip()
-        return value
+            if match is None:
+                continue
+            value = match.group(1).strip()
+            if value == '':
+                tokens = []
+                continue
+            tokens.extend(value.split())
+        return tokens
 
     def test_syscall_filter_is_group_based(self) -> None:
-        value = self._directive(self.service_text, 'SystemCallFilter')
-        self.assertTrue(value, 'kloak.service has no SystemCallFilter')
+        tokens = self._directive_tokens(self.service_text, 'SystemCallFilter')
+        self.assertTrue(tokens, 'kloak.service has no SystemCallFilter')
         self.assertFalse(
-            value.startswith('~'),
+            any(token.startswith('~') for token in tokens),
             'SystemCallFilter is a deny-list (%r); kloak uses an allow-list of '
-            'groups' % value)
-        tokens = value.split()
+            'groups' % tokens)
         for group in REQUIRED_SYSCALL_GROUPS:
             self.assertIn(
                 group, tokens,
                 "SystemCallFilter is missing the %s syscall group. A bare "
                 "individual-syscall allow-list is the arm64 SIGSYS trap this "
                 "guards against -- arch-neutral groups must cover kloak's proxy "
-                "work and kloakwl's sandbox setup. Filter: %r" % (group, value))
+                "work and kloakwl's sandbox setup. Filter: %r" % (group, tokens))
 
     def test_restrictnamespaces_permits_sandbox(self) -> None:
-        value = self._directive(self.service_text, 'RestrictNamespaces')
-        self.assertTrue(value, 'kloak.service has no RestrictNamespaces')
-        ## A boolean true (deny all) or a '~' deny-list blocks kloakwl's unshare.
-        self.assertNotIn(
-            value.lower(), ('true', 'yes', '1', 'on'),
-            'RestrictNamespaces=%s denies ALL namespaces; kloakwl cannot build '
-            'its sandbox' % value)
+        tokens = self._directive_tokens(self.service_text, 'RestrictNamespaces')
+        self.assertTrue(tokens, 'kloak.service has no RestrictNamespaces')
+        ## A lone boolean true (deny all) or a '~' deny-list blocks the unshare.
         self.assertFalse(
-            value.startswith('~'),
+            len(tokens) == 1 and tokens[0].lower() in ('true', 'yes', '1', 'on'),
+            'RestrictNamespaces=%s denies ALL namespaces; kloakwl cannot build '
+            'its sandbox' % tokens)
+        self.assertFalse(
+            any(token.startswith('~') for token in tokens),
             'RestrictNamespaces is a deny-list (%r); kloakwl needs its '
-            'namespaces allowed' % value)
-        tokens = value.split()
+            'namespaces allowed' % tokens)
         for namespace in REQUIRED_NAMESPACES:
             self.assertIn(
                 namespace, tokens,
                 "RestrictNamespaces does not allow the '%s' namespace that "
                 "kloakwl's self_sandbox unshares. Value: %r"
-                % (namespace, value))
+                % (namespace, tokens))
 
     def test_kloak_apparmor_authorizes_kloakwl_exec(self) -> None:
         ## A discrete-profile (Px/Pix), inherit (ix) or unconfined (ux/Ux)

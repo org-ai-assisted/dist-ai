@@ -29,6 +29,10 @@
  * the Wayland/libinput code is dead (never called) during fuzzing.
  */
 
+/* kloak.c uses _GNU_SOURCE symbols (memfd_create, environ); define it before any
+ * system header, since this file includes them before kloak.c. */
+#define _GNU_SOURCE
+
 #include <setjmp.h>
 #include <stdint.h>
 #include <stdlib.h>

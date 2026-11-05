@@ -21,6 +21,10 @@
  * build tree's fuzz/ dir, hence the "../src/kloak.c" include.
  */
 
+/* kloak.c uses _GNU_SOURCE symbols (memfd_create, environ); define it before any
+ * system header, since this file includes them before kloak.c. */
+#define _GNU_SOURCE
+
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,6 +42,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
   ssize_t pos = 0;
   ssize_t prev = 0;
   bool do_attach = false;
+  bool overflow = false;
 
   if (!reg_ready) {
     applayer_regex_init();
@@ -56,7 +61,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 
   while (pos >= 0 && pos < buf_len) {
     prev = pos;
-    (void)parse_inotify_events(buf, buf_len, &pos, &do_attach);
+    (void)parse_inotify_events(buf, buf_len, &pos, &do_attach, &overflow);
     if (pos <= prev) {
       break;
     }

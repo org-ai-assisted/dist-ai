@@ -19,6 +19,10 @@
  * the "../src/kloak.c" include relative to that staged location.
  */
 
+/* kloak.c uses _GNU_SOURCE symbols (memfd_create, environ); define it before any
+ * system header, since this file includes them before kloak.c. */
+#define _GNU_SOURCE
+
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
