@@ -555,42 +555,44 @@ def _command_operands(call, source, value_short=frozenset(),
             if kind == "operand" and text != "--"]
 
 
-def _mkdir_has_mode_opt(call, source):
-    """True if the mkdir CALL already carries a mode option ('-m'/'--mode'). When
-    it does, R-173 declines the auto-fix: R-172's '-m'->'--mode' fixer may ALSO
-    edit this mkdir, and bash_ast.apply_edits cannot splice overlapping spans."""
+def _mkdir_fix_shape(call, source):
+    """True iff the mkdir is EXACTLY 'mkdir -p|--parents [--] DIR' -- its ONLY
+    option is parents. The autofix RECONSTRUCTS 'install -d -m MODE -- DIR' from
+    scratch, so any option it does not reproduce is silently DROPPED -- including
+    '-Z'/'--context=' (the SELinux/SMACK security context) and '-m' (a mode that
+    would also collide with R-172's '-m'->'--mode' fixer). Requiring parents-only
+    makes the rewrite provably COMPLETE (every original token is reproduced) and
+    behavior-preserving: '-p' is idempotent like 'install -d', whereas a PLAIN
+    'mkdir DIR' FAILS if DIR exists (the lock-dir idiom relies on that) so is
+    excluded too. Anything else leaves the pair detect-only, per fix()'s
+    provably-structure-preserving contract."""
+    has_parents = False
     for kind, _word, text in bash_ast.command_tokens(
             call, source, frozenset("m"), frozenset({"mode"})):
-        if kind != "opt":
+        if kind != "opt" or text == "--":
             continue
         name = _long_name(text)
-        if name is not None:
-            if bash_ast.resolve_long(name, MKDIR_LONG) == "mode":
-                return True
-        elif not text.startswith("--") and "m" in text[1:]:
-            return True
-    return False
+        if name is not None and bash_ast.resolve_long(name, MKDIR_LONG) \
+                == "parents":
+            has_parents = True
+        elif text == "-p":
+            has_parents = True
+        else:
+            ## any other option ('-Z', '--context=', '-m', '-v', a bundled '-pv')
+            ## would be dropped by the reconstruction -- decline the fix.
+            return False
+    return has_parents
 
 
-def _mkdir_has_parents(call, source):
-    """True if the mkdir CALL carries -p/--parents. The autofix collapses ONLY a
-    '-p' mkdir: 'mkdir -p DIR' is idempotent (succeeds when DIR already exists),
-    matching 'install -d', so the rewrite is behavior-preserving. A PLAIN
-    'mkdir DIR' FAILS when DIR exists -- the lock-dir idiom ('mkdir "$lock"' under
-    errexit) relies on that, and 'install -d' does not -- so it stays detect-only
-    (flagged, the human decides), per fix()'s provably-structure-preserving
-    contract."""
-    for kind, _word, text in bash_ast.command_tokens(
-            call, source, frozenset("m"), frozenset({"mode"})):
-        if kind != "opt":
-            continue
-        name = _long_name(text)
-        if name is not None:
-            if bash_ast.resolve_long(name, MKDIR_LONG) == "parents":
-                return True
-        elif not text.startswith("--") and "p" in text[1:]:
-            return True
-    return False
+def _chmod_fix_shape(call, source):
+    """True iff the chmod carries NO option flag (just MODE and the target,
+    optional '--'). The reconstruction reproduces only the mode and dir, so any
+    chmod flag ('-v'/'-c'/'-f', '-R' already declined at match) would be dropped;
+    require none for a provably complete rewrite."""
+    for kind, _word, text in bash_ast.command_tokens(call, source):
+        if kind == "opt" and text != "--":
+            return False
+    return True
 
 
 def _chmod_is_recursive(call, source):
@@ -697,8 +699,8 @@ def _mkdir_then_chmod_pairs(ctx):
             and _plain_stmt(s1) and _plain_stmt(s2)
             and between in ("", ";", "&&")
             and bool(mode_lit) and bool(NUMERIC_MODE.fullmatch(mode_lit))
-            and not _mkdir_has_mode_opt(eff1, source)
-            and _mkdir_has_parents(eff1, source)
+            and _mkdir_fix_shape(eff1, source)
+            and _chmod_fix_shape(eff2, source)
             and not any(a <= s1_start < b for a, b in heredocs))
         return {
             "mkdir_offset": (c1.get("Pos") or {}).get("Offset"),
@@ -710,6 +712,13 @@ def _mkdir_then_chmod_pairs(ctx):
             "fixable": fixable,
         }
 
+    ## Two adjacency traversals: consecutive sibling statements, and the leaves of
+    ## an '&&' chain. SCOPE BOUNDARY (safe under-report): a pair SPLIT across a
+    ## mixed BinaryCmd sibling boundary -- a chmod that is the X of a sibling
+    ## '&&'/pipe ('mkdir -p a' then 'chmod 700 a && echo x'), or a mkdir that is
+    ## the Y-tail of a leading chain -- is not matched. Chasing every BinaryCmd
+    ## nesting is open-ended; missing one only UNDER-reports a lint violation (no
+    ## wrong rewrite), so these exotic shapes are left for a later pass.
     for group in h.statement_lists(tree):
         for prev, cur in zip(group, group[1:]):
             record = match(prev, cur)

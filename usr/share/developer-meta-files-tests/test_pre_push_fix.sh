@@ -1058,4 +1058,27 @@ else
    note_fail "R-173 wrongly declined a whole-pair-backgrounded && pair"
 fi
 
+## --- 7r: an extra flag on mkdir/chmod is detect-only -----------------------
+## The fix RECONSTRUCTS 'install -d -m MODE -- DIR', so an option it does not
+## reproduce would be silently DROPPED -- notably '-Z'/'--context=' (the SELinux
+## security context). Only a parents-only mkdir + a flagless chmod is auto-fixed;
+## any other flag leaves the pair byte-identical for the gate.
+for name_body in \
+   "mkdir-Z__mkdir -p -Z a; chmod 700 a" \
+   "mkdir-context__mkdir -p --context=u:o:t a; chmod 700 a" \
+   "mkdir-pv__mkdir -pv a; chmod 700 a" \
+   "chmod-v__mkdir -p a; chmod -v 700 a" ; do
+   name="${name_body%%__*}"
+   body="${name_body#*__}"
+   f="${test_dir}/mkdirchmod_${name}.sh"
+   printf '%s\n' "#!/bin/bash" "${body}" >"${f}"
+   before="$(cksum < "${f}")"
+   run_fix "${f}" >/dev/null 2>&1
+   if [ "$(cksum < "${f}")" = "${before}" ] ; then
+      note_pass "R-173 leaves the ${name} form for the gate (option would be dropped)"
+   else
+      note_fail "R-173 collapsed ${name}, dropping an option"
+   fi
+done
+
 exit_gate
