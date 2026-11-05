@@ -88,10 +88,12 @@ else
    bad "sources file diverges from the shared stanza generator"
 fi
 
-if grep --quiet --line-regexp 'apt-get update' "${tmp}/apt/log" 2>/dev/null; then
-   ok "ran 'apt-get update'"
+## It only ENABLES the repo (writes the stanza); running apt-get is the caller's
+## job, so the stubbed apt-get must NOT have been invoked.
+if [ ! -e "${tmp}/apt/log" ]; then
+   ok "does NOT run apt-get (enabling only)"
 else
-   bad "did not run 'apt-get update'"
+   bad "ran apt-get (not its task): $(cat -- "${tmp}/apt/log")"
 fi
 
 ## --- canary: a repo WITHOUT dists/local is refused -----------------------------
