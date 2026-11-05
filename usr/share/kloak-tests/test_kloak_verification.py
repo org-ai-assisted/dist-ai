@@ -55,15 +55,24 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 ## of every structurally identical step.
 ## The geometry scans run to MAX_SCREEN_COUNT (128); --unwind 129 covers them
 ## fully (exhaustive, not truncated), so no --no-unwinding-assertions there.
+## function -> (harness file, extra CBMC flags). The refactor split kloak's
+## arithmetic: sleep_ms stays in the libinput proxy (kloak.c -> kloak_cbmc.c);
+## the geometry/scroll/time/random functions moved to the Wayland adapter
+## (kloakwl.c -> kloakwl_cbmc.c).
 CBMC_FUNCTIONS = {
-    'verify_check_screen_touch': [],
-    'verify_abs_coord_to_screen_local_coord': ['--unwind', '129'],
-    'verify_screen_local_coord_to_abs_coord': ['--unwind', '129'],
-    'verify_random_between': ['--unwind', '4', '--no-unwinding-assertions'],
-    'verify_traverse_line': ['--unwind', '8', '--no-unwinding-assertions'],
-    'verify_get_ticks_from_scroll_accum': [],
-    'verify_current_time_ms': [],
-    'verify_sleep_ms': ['--unwind', '2', '--no-unwinding-assertions'],
+    'verify_sleep_ms': ('kloak_cbmc.c',
+                        ['--unwind', '2', '--no-unwinding-assertions']),
+    'verify_check_screen_touch': ('kloakwl_cbmc.c', []),
+    'verify_abs_coord_to_screen_local_coord': ('kloakwl_cbmc.c',
+                                               ['--unwind', '129']),
+    'verify_screen_local_coord_to_abs_coord': ('kloakwl_cbmc.c',
+                                               ['--unwind', '129']),
+    'verify_random_between': ('kloakwl_cbmc.c',
+                              ['--unwind', '4', '--no-unwinding-assertions']),
+    'verify_traverse_line': ('kloakwl_cbmc.c',
+                             ['--unwind', '8', '--no-unwinding-assertions']),
+    'verify_get_ticks_from_scroll_accum': ('kloakwl_cbmc.c', []),
+    'verify_current_time_ms': ('kloakwl_cbmc.c', []),
 }
 
 ## client-header + private-code stem for each protocol xml kloak.c pulls in.
@@ -94,7 +103,7 @@ def _require(tool: str) -> str:
     return path
 
 
-def _pkg_config(flag: str) -> list:
+def _pkg_config(flag: str) -> list[str]:
     pkg_config = _require('pkg-config')
     out = subprocess.run(
         [pkg_config, flag, *PKG_CONFIG_LIBS],
@@ -135,7 +144,8 @@ class KloakVerification(unittest.TestCase):
         ## symlinks of the real kloak.c / kloak.h, so kloak.c's quoted includes
         ## resolve and both harnesses compile the actual source (no copy).
         cls._work = tempfile.mkdtemp(prefix='kloak-cbmc-')
-        for name in ('kloak.c', 'kloak.h'):
+        for name in ('kloak.c', 'kloak.h', 'kloakwl.c', 'kloakwl.h',
+                     'kloak-shared.h'):
             os.symlink(os.path.join(cls.src_dir, name),
                        os.path.join(cls._work, name))
         cls.proto_sources = []
@@ -158,22 +168,28 @@ class KloakVerification(unittest.TestCase):
             shutil.rmtree(work, ignore_errors=True)
 
     def test_unit_tests_pass(self) -> None:
-        harness = os.path.join(HERE, 'kloak_harness.c')
-        with tempfile.TemporaryDirectory() as workdir:
-            binary = os.path.join(workdir, 'kloak_harness')
-            subprocess.run(
-                [self.gcc, '-O2', '-I', self._work, harness,
-                 *self.proto_sources, '-o', binary, '-lm', '-lrt',
-                 *self.cflags, *self.libs],
-                check=True, capture_output=True, text=True)
-            result = subprocess.run(
-                [binary], check=True, capture_output=True, text=True)
-            self.assertIn('all assertions passed', result.stdout)
+        ## Two harnesses: the libinput proxy (kloak.c) and the Wayland adapter
+        ## (kloakwl.c). Both link the protocol code + wayland/libinput/xkbcommon;
+        ## kloakwl additionally needs libcap. The extra libs are harmless to the
+        ## harness that does not use them.
+        for harness_name in ('kloak_harness.c', 'kloakwl_harness.c'):
+            with self.subTest(harness=harness_name):
+                harness = os.path.join(HERE, harness_name)
+                with tempfile.TemporaryDirectory() as workdir:
+                    binary = os.path.join(workdir, 'harness')
+                    subprocess.run(
+                        [self.gcc, '-O2', '-I', self._work, harness,
+                         *self.proto_sources, '-o', binary, '-lm', '-lrt',
+                         *self.cflags, *self.libs, '-lcap'],
+                        check=True, capture_output=True, text=True)
+                    result = subprocess.run(
+                        [binary], check=True, capture_output=True, text=True)
+                    self.assertIn('all assertions passed', result.stdout)
 
     def test_cbmc_proofs_verify(self) -> None:
-        harness = os.path.join(HERE, 'kloak_cbmc.c')
-        for function, extra in CBMC_FUNCTIONS.items():
+        for function, (cbmc_file, extra) in CBMC_FUNCTIONS.items():
             with self.subTest(function=function):
+                harness = os.path.join(HERE, cbmc_file)
                 result = subprocess.run(
                     [self.cbmc, harness, '-I', self._work, *self.cflags,
                      '--function', function, *extra],
@@ -249,7 +265,7 @@ class KloakVerification(unittest.TestCase):
             with open(src, 'w', encoding='utf-8') as handle:
                 handle.write(prog)
 
-            def run(flags: list) -> int:
+            def run(flags: list[str]) -> int:
                 binary = os.path.join(workdir, 'overflow')
                 subprocess.run([self.clang, *flags, src, '-o', binary],
                                check=True, capture_output=True, text=True)
