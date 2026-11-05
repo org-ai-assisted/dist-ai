@@ -14,23 +14,23 @@
 ##
 ##   POPULATE (cache-fast, only changed packages rebuild -- no package list needed):
 ##     derivative-maker --skip-published-packages ...
-##   dm builds into ~/derivative-binary/aptrepo_local/<derivative> (codename local)
-##   via its own genmkfile reprepro-remove + reprepro-add -- a same-version rebuild
-##   replaces content, nothing stale.
+##   dm builds into the local apt repo store aptrepo_local/<derivative> (codename
+##   local) via its own genmkfile reprepro-remove + reprepro-add -- a same-version
+##   rebuild replaces content, nothing stale.
 ##
 ## Then this tool:
-##   prepare <kicksecure|whonix>   make the repo _apt-readable + stage the guest helper
+##   prepare <kicksecure|whonix>   make the repo _apt-readable
 ##   attach <vm> [--transient]     attach the `shared` folder to a VM
 ##   status [vm]                   show repo + (optional) VM mapping
 ##
 ## Delivery reuses Kicksecure vm-config-dist: the share is named exactly `shared`;
 ## mnt-shared-vbox.service auto-mounts it to /mnt/shared on every boot. So this tool
 ## does NOT pass VBox --automount (that double-mounts to /media/sf_shared). In the
-## guest, run /mnt/shared/add-local-test-repo (it rides the share -- no copy-in).
+## guest, enable it with the shipped helper-scripts tool: 'sudo repo-add-local'.
 ##
 ## SECURITY: the guest trusts this repo [trusted=yes] (installs as root, no sig check)
-## over a READ-ONLY vboxsf mount. Trust anchor = the host build user who owns
-## ~/derivative-binary -- exactly the freshly-built .debs under test.
+## over a READ-ONLY vboxsf mount. Trust anchor = the host build user who owns the
+## local apt repo store -- exactly the freshly-built .debs under test.
 
 set -o errexit
 set -o nounset
@@ -43,20 +43,21 @@ export LC_ALL=C
 me="${0##*/}"
 VBOXMANAGE="${VBOXMANAGE:-VBoxManage}"
 
-## dm's binary build dir (binary_build_folder_dist) is the share host path; the
-## reprepro repos live in its aptrepo_local/<derivative> subdirs, codename `local`.
-## A laned build (dist_build_slot set) writes under derivative-binary/<slot>, so
-## follow the lane when it is set in the env; DERIVATIVE_BINARY overrides outright.
-## This reads an EXISTING build's repo, so it does NOT invent a slot (that could
-## miss a flat build) -- it matches whatever lane the build itself used. The slot
-## comes from the trusted env/command line (same as dm's own --build-slot), so it is
-## used as-is -- a broken value here is a caller error with worse consequences elsewhere.
-repo_parent="${DERIVATIVE_BINARY:-${HOME}/derivative-binary${dist_build_slot:+/${dist_build_slot}}}"
+## dm's LOCAL apt repo store is the share host path; the reprepro repos live in its
+## aptrepo_local/<derivative> subdirs, codename `local`. dm serves it from a
+## build-user-owned, FHS-served /srv dir (variables.d/05_load-config.bsh's
+## local_apt_repository_base), slot-aware like the build dir. Follow the slot when set
+## in the env; LOCAL_APT_REPOSITORY_BASE overrides outright (e.g. a CI build that kept
+## the repo under binary_build_folder_dist). This reads an EXISTING build's repo, so it
+## does NOT invent a slot (that could miss a flat build) -- it matches whatever lane the
+## build used. The slot comes from the trusted env/command line (same as dm's own
+## --build-slot), used as-is -- a broken value is a caller error with worse consequences
+## elsewhere.
+repo_parent="${LOCAL_APT_REPOSITORY_BASE:-/srv/derivative-maker${dist_build_slot:+/${dist_build_slot}}}"
 codename="local"
 
 share_name="shared"
 guest_mount="/mnt/shared"
-helper_src="/usr/share/dm-smbios-reader-boot-tests/add-local-test-repo"
 
 die() {
    printf '%s\n' "${me}: ERROR: ${2}" >&2
@@ -81,32 +82,22 @@ check_derivative() {
 
 repo_dir_for() { printf '%s' "${repo_parent}/aptrepo_local/${1}"; }
 
-## Stage the guest helper into the share root so it rides the share into the guest
-## (/mnt/shared/add-local-test-repo). Skipped when running from a checkout where the
-## shipped helper is absent -- the guest apt stanza can then be added by hand.
-stage_helper() {
-   [ -d "${repo_parent}" ] || return 0
-   [ -f "${helper_src}" ] && install --mode=0755 -- "${helper_src}" "${repo_parent}/add-local-test-repo"
-   return 0
-}
-
 do_prepare() {
    local d="$1" rd
    check_derivative "${d}"
    rd="$(repo_dir_for "${d}")"
    [ -d "${rd}" ] || die 1 "repo not found: ${rd} (populate it with: derivative-maker --only-packages '<pkgs>')"
-   ## dm's create-local-temp-apt-repo perms fix: a user-owned repo under umask 027
-   ## is unreadable by the unprivileged _apt user. (Over the read-only vboxsf mount
-   ## the guest also falls back to root for file: + [trusted=yes]; this keeps host
-   ## parity and works for any mount options.)
+   ## dm's create-local-apt-repo perms fix: a user-owned repo under umask 027 is
+   ## unreadable by the unprivileged _apt user. (Over the read-only vboxsf mount the
+   ## guest also falls back to root for file: + [trusted=yes]; this keeps host parity
+   ## and works for any mount options.)
    chmod --recursive o+r -- "${rd}"
    ## Run find from INSIDE the repo so it never needs to restore an inaccessible
-   ## caller CWD (e.g. invoked from another user's home) -- that failure is
-   ## non-zero and would abort under errexit before stage_helper.
+   ## caller CWD (e.g. invoked from another user's home) -- that failure is non-zero
+   ## and would abort under errexit.
    ( cd -- "${rd}" && find . -type d -exec chmod o+rx -- {} + )
-   stage_helper
    printf '%s\n' \
-      "${me}: prepared ${rd} (codename ${codename}); guest: run ${guest_mount}/add-local-test-repo"
+      "${me}: prepared ${rd} (codename ${codename}); guest: run 'sudo repo-add-local'"
 }
 
 ## Print the VM's VMState (empty if unknown). Must never return non-zero: a
@@ -136,7 +127,6 @@ do_attach() {
    "${VBOXMANAGE}" sharedfolder remove "${vm}" --name "${share_name}" "${rm_args[@]}" >/dev/null 2>&1 || true
    "${VBOXMANAGE}" sharedfolder add "${vm}" --name "${share_name}" \
       --hostpath "${repo_parent}" --readonly "${add_args[@]}"
-   stage_helper
 
    printf '%s\n' \
       "${me}: attached ${share_name} -> ${repo_parent} on ${vm}$([ "${transient}" = "true" ] && printf '%s' " (transient)")"
