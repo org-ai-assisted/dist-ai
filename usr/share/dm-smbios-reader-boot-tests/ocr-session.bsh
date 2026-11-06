@@ -1,0 +1,175 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## OCR real-session executor for the shared numbered release-check battery
+## (release-checks.bsh), used where a check must run in a REAL in-guest logind session
+## (so e.g. `systemcheck --cli --ci`'s `systemctl --user is-system-running` has a user
+## manager), NOT over a bare guestcontrol exec (which has no user session).
+##
+## A check command is TYPED into the guest's on-screen terminal, then completion is read
+## PRIMARILY from a deterministic exit-code FILE over the guestcontrol channel (no OCR
+## flake), falling back to an OCR screen marker for a GA-less image. This gives real-session
+## FIDELITY with deterministic verdicts.
+##
+## Callers: dm-calamares-install (Kicksecure installed disk) and dm-whonix-pair --mode
+## functional (Whonix Workstation). Both reach an input-ready terminal first (wait_ready +
+## open_terminal), then drive run_release_check_battery with an exec_fn that calls run_check.
+##
+## This is a pure library: it defines functions only, no top-level code. The caller MUST
+## already source gui-drive.bsh (gui_scan/gui_ocr), vbox-session.bsh (gc_run) and
+## release-checks.bsh (RELEASE_CHECK_SESSION/RELEASE_CHECK_DESC), and set the globals these
+## read: vm, GUESTCTL, VBOXMANAGE, me, FAIL_RC, and optionally shot_dir + check_log (both
+## guarded when empty). The resize-nudge env knob keeps its dm-calamares name
+## (DM_CALAMARES_RESIZE_NUDGE_AFTER) for its existing callers/tests.
+
+## style-ok: no-strict -- sourced-only fragment; a top-level 'set -o errexit'/
+## 'nounset'/'pipefail' would leak into (and could kill) the sourcing shell.
+## The caller-provided globals below are intentionally not assigned here.
+# shellcheck disable=SC2154  ## vm/me/GUESTCTL/VBOXMANAGE/FAIL_RC/shot_dir/check_log are set by the sourcing tool
+
+## Poll until the guest desktop reaches a full-resolution mode (past the 800x600 software
+## framebuffer), Shift-tapping each round to defeat DPMS blanking. Resize-nudge fallback:
+## GA's cooperative auto-resize is the normal path; only if still at 800x600 past the
+## threshold is a one-shot host setvideomodehint issued -- a nudge, NOT a forced pass. Writes
+## a RESIZE-NUDGE-USED marker (when shot_dir is set) only on a nudge that actually fired.
+wait_ready() {
+   local timeout="$1" deadline res width start nudge_after nudged=0
+   start="${SECONDS}"
+   nudge_after="${DM_CALAMARES_RESIZE_NUDGE_AFTER:-$(( timeout / 3 ))}"
+   deadline=$(( start + timeout ))
+   while [ "${SECONDS}" -lt "${deadline}" ]; do
+      gui_scan 2a aa
+      res="$("${GUESTCTL}" "${vm}" res 2>/dev/null || true)"
+      width="${res% *}"
+      if [[ "${width}" =~ ^[0-9]+$ ]] && [ "${width}" -ge 1024 ]; then
+         return 0
+      fi
+      ## One-shot on SUCCESS only: if the host rejects the hint (VM transiently locked / not
+      ## running) leave nudged=0 so the next poll retries, and do NOT write the marker -- it
+      ## must record a nudge that actually fired, never a failed attempt (no fabricated signal).
+      if [ "${nudged}" -eq 0 ] && [ "$(( SECONDS - start ))" -ge "${nudge_after}" ]; then
+         printf '%s\n' "${me}: NOTICE: full-res auto-resize not reached after ${nudge_after}s -- issuing one-shot setvideomodehint 1280x800 fallback nudge (GA must still honour it; the non-degenerate full-res shot gate still decides)"
+         if "${VBOXMANAGE}" controlvm "${vm}" setvideomodehint 1280 800 32 >/dev/null 2>&1; then
+            nudged=1
+            if [ -n "${shot_dir}" ]; then
+               printf '%s\n' "setvideomodehint 1280x800 fallback nudge issued after ${nudge_after}s (GA cooperative auto-resize did not reach full-res in time)" \
+                  > "${shot_dir}/RESIZE-NUDGE-USED" 2>/dev/null || true
+            fi
+         fi
+      fi
+      sleep 10
+   done
+   die "${FAIL_RC}" "desktop not ready (no full-resolution mode) after ${timeout}s"
+}
+
+## Open a terminal via the Ctrl+Alt+T global shortcut, RETRYING: the shortcut
+## daemon (and the updatecheck popup) settle a few seconds after the desktop hits
+## full resolution, so a single early keypress opens nothing.
+open_terminal() {
+   local deadline text last_fire=0
+   ## The global-shortcut daemon settles ~20-30s AFTER the desktop hits full
+   ## resolution, so a lone early Ctrl+Alt+T opens nothing; re-fire on a long
+   ## interval (not every poll -- that spawns a stack of terminals).
+   deadline=$(( SECONDS + 150 ))
+   while [ "${SECONDS}" -lt "${deadline}" ]; do
+      if [ "$(( SECONDS - last_fire ))" -ge 20 ]; then
+         gui_scan 2a aa
+         gui_scan 1d 38 14 94 b8 9d
+         last_fire="${SECONDS}"
+      fi
+      sleep 5
+      text="$(gui_ocr)"
+      if [[ "${text,,}" =~ localhost|pts/|'[user' ]]; then
+         return 0
+      fi
+   done
+   die "${FAIL_RC}" "terminal did not open (Ctrl+Alt+T)"
+}
+
+## Surface a failed check's OWN identity + in-guest output (otherwise lost on power-off): the
+## exact command run, its exit code, and the captured output -- to stderr + the check log, so a
+## failure is diagnosable (and the results page names the command + exit, not just an opaque
+## "exit 5" install rc) without a re-run. The command + exit are ALWAYS known, so the check log
+## is written even when the guest produced no output. Best-effort output read (a GA-less guest
+## has no exec channel). Shared by both detect paths; the OCR fallback passes an empty rc.
+run_check_report_failure() {
+   local num="$1" session="$2" cmd="$3" rc="$4" out rc_label
+   out="$(gc_run "${session}" "cat /var/tmp/dmcheck-${num}.out 2>/dev/null" 2>/dev/null || true)"
+   case "${rc}" in
+      ''|*[!0-9]*)
+         rc_label='unknown (OCR fallback)'
+         ;;
+      *)
+         rc_label="${rc}"
+         ;;
+   esac
+   printf '%s\n' \
+      "${me}: check ${num} (${RELEASE_CHECK_DESC[${num}]:-}) FAILED" \
+      "${me}: command: ${cmd}" \
+      "${me}: exit: ${rc_label}" >&2
+   [ -n "${out}" ] && printf '%s\n' "${me}: check ${num} output (why it failed):" "${out}" >&2
+   if [ -n "${check_log}" ]; then
+      {
+         printf '%s\n' "check ${num} (${RELEASE_CHECK_DESC[${num}]:-}) FAILED:"
+         printf '%s\n' "command: ${cmd}"
+         printf '%s\n' "exit: ${rc_label}"
+         [ -n "${out}" ] && printf '%s\n' "" "output:" "${out}"
+      } > "${check_log}"
+   fi
+}
+
+## Run one release-critical check in-guest via the terminal and classify by its EXIT CODE.
+## 0 PASS / 1 FAIL. Completion is detected PRIMARILY by polling an exit-code FILE over the
+## guestcontrol exec channel -- deterministic, no OCR (tesseract flaked on the on-screen
+## marker, timing a completed check out as "did not complete"). The LXQt Calamares-installed
+## disk ships Guest Additions, so gc_run works here (confirmed live). It FALLS BACK to an OCR
+## screen marker when the guestcontrol channel is unavailable (a GA-less image), so the gate
+## never depends on Guest Additions. Marker design (learned the hard way): ALL LETTERS, no
+## digit (tesseract misreads digits); built from a shell var so the typed command's own echo
+## does not self-match before it runs; `clear` first so a prior check's marker cannot cross
+## match. The '.rc' file is removed FIRST so a stale value from a prior attempt (check 8
+## retries) can never be read as this attempt's verdict.
+run_check() {
+   local num="$1" cmd="$2" timeout="$3" deadline text session rc_raw rc_str
+   session="${RELEASE_CHECK_SESSION[${num}]}"
+   printf '%s' "clear; M=CHK; rm -f /var/tmp/dmcheck-${num}.rc; ${cmd} > /var/tmp/dmcheck-${num}.out 2>&1; rc=\$?; echo \${rc} > /var/tmp/dmcheck-${num}.rc; sync; if [ \${rc} -eq 0 ]; then echo DM\${M}PASSMARK; else echo DM\${M}FAILMARK; fi" \
+      | "${GUESTCTL}" "${vm}" type-stdin >/dev/null
+   gui_scan 1c 9c
+   ## let `clear` + the rm + the command start before the first poll (so the command echo,
+   ## which holds the literal-var marker, is gone and the stale .rc is already removed).
+   sleep 3
+   deadline=$(( SECONDS + timeout ))
+   while [ "${SECONDS}" -lt "${deadline}" ]; do
+      ## PRIMARY: the exit-code file over guestcontrol. Only a clean integer counts; a missing
+      ## file (check still running) or a torn read is ignored and retried, never a verdict.
+      rc_raw="$(gc_run "${session}" "cat /var/tmp/dmcheck-${num}.rc 2>/dev/null" 2>/dev/null || true)"
+      read -r rc_str <<< "${rc_raw}" || true
+      if [[ "${rc_str}" =~ ^[0-9]+$ ]]; then
+         if [ "${rc_str}" = "0" ]; then
+            printf '%s\n' "${me}: check ${num} PASS"
+            return 0
+         fi
+         printf '%s\n' "${me}: check ${num} FAIL (rc=${rc_str})"
+         run_check_report_failure "${num}" "${session}" "${cmd}" "${rc_str}"
+         return 1
+      fi
+      ## FALLBACK: OCR the marker, for a GA-less image where gc_run cannot reach the guest.
+      gui_scan 2a aa
+      text="$(gui_ocr)"
+      if [[ "${text,,}" =~ dmchkpassmark ]]; then
+         printf '%s\n' "${me}: check ${num} PASS"
+         return 0
+      fi
+      if [[ "${text,,}" =~ dmchkfailmark ]]; then
+         printf '%s\n' "${me}: check ${num} FAIL"
+         run_check_report_failure "${num}" "${session}" "${cmd}" ""
+         return 1
+      fi
+      sleep 10
+   done
+   die "${FAIL_RC}" "check ${num} did not complete in ${timeout}s"
+}

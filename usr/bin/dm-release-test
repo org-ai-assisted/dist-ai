@@ -66,7 +66,7 @@ DASHARO_VBOX_BIN="${DASHARO_VBOX_BIN:-}"
 DIST_INSTALLER_CLI="${DIST_INSTALLER_CLI:-dist-installer-cli}"
 ## dist-installer-cli REFUSES to run as root; it must be invoked by a non-root,
 ## passwordless-sudo-capable user (it sudo's internally for apt/modprobe and run_as_target_user
-## to the install account). dm-release-test runs as root, so rt_provision_leak drops to this
+## to the install account). dm-release-test runs as root, so rt_provision_pair drops to this
 ## invoker. Default matches the VBOX_INSTALL_USER convention on the derivative hosts.
 DIST_INSTALLER_USER="${DIST_INSTALLER_USER:-${VBOX_INSTALL_USER:-user}}"
 ## Forward the AI-session identity ACROSS the sudo drop into a leaf VM tool, so dm-vm-lock
@@ -77,9 +77,9 @@ DIST_INSTALLER_USER="${DIST_INSTALLER_USER:-${VBOX_INSTALL_USER:-user}}"
 rt_session_env=(env
    "CLAUDE_RC_SESSION_NAME=${CLAUDE_RC_SESSION_NAME:-}"
    "CLAUDE_CODE_SESSION_ID=${CLAUDE_CODE_SESSION_ID:-}")
-## VBox extradata key pinning the imported leak pair's version. Set on BOTH VMs at
-## provision time (rt_provision_leak) and read back by rt_lane_whonix, which REFUSES to
-## attribute a verdict to a version the pair was not provisioned with.
+## VBox extradata key pinning the imported pair's version. Set on BOTH VMs at provision
+## time (rt_provision_pair) and read back by rt_whonix_pair_require (both lanes), which
+## REFUSES to attribute a verdict to a version the pair was not provisioned with.
 PAIR_VERSION_KEY="${PAIR_VERSION_KEY:-leaktest/pair-version}"
 ## Best-effort host-firewall fleet-set refresh so a freshly-created eph account's
 ## leak-probe egress is dropped; the tool is a private-ai-config server script,
@@ -110,6 +110,10 @@ RESULTS_OWNER="${IMAGE_TEST_RESULTS_OWNER:-www-data}"
 ## A lane sets this to a FAILED release check's output file; rt_publish_result
 ## publishes it as the step's stderr tail, then resets it. Empty = nothing to add.
 rt_check_log=""
+## A lane sets this to its lane key (inst|leak); rt_publish_result folds it into the
+## results subtree + --lane so the two whonix lanes (inst vs leak) never collide on one
+## cell, then resets it. Empty = no lane component (the kicksecure install lane).
+rt_lane_key=""
 ## A lane sets these to the captured firmware-lane evidence; rt_publish_result forwards them to
 ## the results plane (environment.firmware), then resets them. Empty = nothing to add.
 rt_fw_declared=""
@@ -125,9 +129,13 @@ desktop=""
 channel="developers"
 version_override=""
 firmware="efi-secureboot"
+## Test lane: inst (functional release battery) | leak (anon-leak-test battery). No
+## default -- mandatory for whonix (both lanes are real choices); kicksecure is always
+## inst. Validated in main once guest is known.
+lane=""
 run_checks='false'
 dry_run='false'
-provision_leak='false'
+do_provision='false'
 ## --iso PATH: test a LOCALLY-BUILT ISO instead of downloading a published release.
 ## Empty = the normal download path; set = built-origin lane (no iso-download).
 local_iso=""
@@ -168,12 +176,15 @@ die() {
 
 print_usage() {
    printf '%s\n' "Usage:
-  ${me} GUEST INTERFACE [--channel stable|developers] [--version VER]
+  ${me} GUEST INTERFACE [--lane inst|leak] [--channel stable|developers] [--version VER]
         [--firmware bios|efi|efi-secureboot] [--iso PATH] [--checks] [--dry-run]
-        [--coreboot-rom PATH] [--provision-leak]
+        [--coreboot-rom PATH] [--provision]
 
   GUEST      kicksecure | whonix
   INTERFACE  lxqt | xfce | cli (the published desktop flavor)
+  --lane     inst (functional release-check battery) | leak (anon-leak-test battery).
+             MANDATORY for whonix (both are real lanes; no default). kicksecure is always
+             inst (--lane leak is rejected).
   --iso PATH test a LOCALLY-BUILT ISO (kicksecure only): skip iso-download, install
              PATH, record origin=built. Version LABEL is derived from the filename
              (override with --version); the run uses a disposable eph-inst-GUEST-built
@@ -181,11 +192,13 @@ print_usage() {
 
 A pre-bless candidate installs under a disposable eph-inst-GUEST-VERSION
 account; a blessed release (version == stable pin) uses persist-inst-GUEST.
-The whonix leak lane ALWAYS uses the dedicated persistent persist-leak-GUEST account.
+The whonix leak lane ALWAYS uses the dedicated persistent persist-leak-GUEST account; the
+whonix inst lane uses the pre-provisioned persist-inst-GUEST pair (blessed only).
 --dry-run prints the resolved plan and runs nothing.
---provision-leak (whonix only) is the one-time setup of the leak pair: create the clean
-persist-leak-GUEST account, import the GW+WS pair under it, and pin the version marker
-each run then verifies; it prints the remaining one-time dev-root bake + snapshot step.
+--provision (whonix only) is the one-time setup of a persistent pair for the selected lane
+(persist-leak-GUEST for leak, persist-inst-GUEST for a blessed inst): create the clean
+account, import the GW+WS pair under it, and pin the version marker each run then verifies;
+it prints the remaining one-time dev-root/clean-live snapshot step.
 --coreboot-rom PATH (kicksecure only) runs the SAME default-EFI full Calamares install story
 with ONLY the firmware swapped to the coreboot+UefiPayload ROM at PATH (a generic EFI firmware,
 a drop-in for VBox's OVMF). Needs --firmware efi and the patched CorebootRom-aware VBoxManage:
@@ -328,10 +341,46 @@ rt_eph_account() {
    printf '%s\n' "${account}"
 }
 
-## True when GUEST runs the leak lane (the Whonix GW/WS pair + anon-leak-test); the
-## leak lane ALWAYS uses the dedicated persist-leak- account, regardless of bless-state.
+## True when the run is the leak lane (the Whonix GW/WS pair + anon-leak-test battery);
+## the leak lane ALWAYS uses the dedicated persist-leak- account, regardless of bless-
+## state. Keyed on the selected LANE (not the guest): whonix supports both inst and leak,
+## so the account/nft/provision decisions follow the lane, never a guest hardcode.
 rt_lane_is_leak() {
-   [ "$1" = 'whonix' ]
+   [ "$1" = 'leak' ]
+}
+
+## Validate the test lane for a guest and echo the EFFECTIVE lane. No default lane:
+##   whonix    -- --lane is MANDATORY (inst|leak); both are real choices, so a missing
+##                or invalid value fails loud (return 1), never a silently-picked lane.
+##   kicksecure-- only the inst (Calamares install) lane exists; '' or 'inst' normalize
+##                to inst, 'leak' is rejected.
+## $1=guest $2=raw lane. Pure; unit-tested.
+rt_effective_lane() {
+   case "$1" in
+      whonix)
+         case "$2" in
+            inst|leak)
+               printf '%s\n' "$2"
+               ;;
+            *)
+               return 1
+               ;;
+         esac
+         ;;
+      kicksecure)
+         case "$2" in
+            ''|inst)
+               printf '%s\n' "inst"
+               ;;
+            *)
+               return 1
+               ;;
+         esac
+         ;;
+      *)
+         return 1
+         ;;
+   esac
 }
 
 ## True only for a leak-namespace account name. Guards the invariant that the leak
@@ -361,8 +410,8 @@ rt_account_is_leak() {
 ## privleap/leaprun grant, polkit, file-caps, or a private group given an extra member
 ## are adversarial pre-provisioning (out of the accident model), prevented by creating
 ## the account clean. rt_create_clean_account forces the private primary with
-## `useradd --user-group` and grants only vboxusers; the leak account is provisioned the
-## same way (rt_provision_leak), so it is clean by construction.
+## `useradd --user-group` and grants only vboxusers; the persistent leak/inst account is
+## provisioned the same way (rt_provision_pair), so it is clean by construction.
 rt_account_unprivileged() {
    local account uid primary grp
    account="$1"
@@ -527,7 +576,7 @@ rt_require_fleet_member() {
 ## assert it is clean whether freshly created or pre-existing. Used for the ephemeral
 ## install account AND to PROVISION the persistent leak account, so both are clean by
 ## construction -- not merely rejected at run time. Needs root.
-## Serialize operations on a shared PERSISTENT account (the leak pair is one account +
+## Serialize operations on a shared PERSISTENT account (a persistent pair is one account +
 ## fixed VM names, so two runs would corrupt each other's snapshot restore). Acquires a
 ## per-account flock held until THIS process exits; fail-fast (nonblock) so a second
 ## concurrent run errors clearly instead of racing. Covers both a provision and a run, so
@@ -636,7 +685,7 @@ rt_create_clean_account() {
    rt_require_fleet_member "${account}"
 }
 
-## Read the leak pair's version marker off VM (as ACCOUNT -- VBox state is per-$HOME).
+## Read the pair's version marker off VM (as ACCOUNT -- VBox state is per-$HOME).
 ## Prints the pinned version, or returns 1 when the key is unset. Needs root.
 rt_pair_version() {
    local out
@@ -644,18 +693,19 @@ rt_pair_version() {
    rt_parse_extradata "${out}"
 }
 
-## Pin VERSION onto VM's leak-pair marker (as ACCOUNT). Needs root.
+## Pin VERSION onto VM's pair marker (as ACCOUNT). Needs root.
 rt_set_pair_version() {
    sudo -u "$1" -- "${VBOXMANAGE}" setextradata "$2" "${PAIR_VERSION_KEY}" "$3" \
       || die "${SETUP_RC}" "failed to set ${PAIR_VERSION_KEY} on '$2'"
 }
 
-## Provision the persistent leak pair end to end: create the clean leak account, import
-## the GW+WS pair under it via dist-installer-cli (which self-locks against concurrent
-## runs), and pin the version marker on both VMs. The one-time dev-root bake + 'clean-live'
-## snapshot still runs on the live guests (printed as the next step) -- it needs a booted
-## sysmaint session, not scriptable headless from here. Needs root.
-rt_provision_leak() {
+## Provision a persistent pair (leak OR blessed inst) end to end: create the clean account,
+## import the GW+WS pair under it via dist-installer-cli (which self-locks against concurrent
+## runs), and pin the version marker on both VMs. The one-time 'clean-live' snapshot bake
+## (and dev-root, needed by the leak lane; harmless for inst) still runs on the live guests
+## (printed as the next step) -- it needs a booted sysmaint session, not scriptable headless
+## from here. Needs root.
+rt_provision_pair() {
    local account version gw ws account_home
    account="$1"
    version="$2"
@@ -684,8 +734,8 @@ rt_provision_leak() {
       || die "${SETUP_RC}" "dist-installer-cli import failed for whonix ${version}"
    rt_set_pair_version "${account}" "${gw}" "${version}"
    rt_set_pair_version "${account}" "${ws}" "${version}"
-   log info "leak pair ${version} imported + version-pinned under ${account}"
-   log info "NEXT (one-time, per VM, in a booted sysmaint session): run 'dev-root force', power off, then '${VBOXMANAGE} snapshot <vm> take clean-live' so dm-whonix-pair restore_fresh has a pristine, root-capable pair"
+   log info "pair ${version} imported + version-pinned under ${account}"
+   log info "NEXT (one-time, per VM, in a booted sysmaint session): run 'dev-root force' (needed by the leak lane; harmless for inst), power off, then '${VBOXMANAGE} snapshot <vm> take clean-live' so dm-whonix-pair restore_fresh has a pristine, root-capable pair"
 }
 
 ## Marker recording a kept run's staged ISO dir (the VM still has the ISO attached), so
@@ -889,16 +939,24 @@ rt_publish_result() {
    if [ "${mode}" = 'calamares-install' ]; then
       lane_fw="-${firmware}"
    fi
+   ## The whonix guest runs two lanes (inst vs leak) with no firmware axis, so WITHOUT a lane
+   ## component both would publish to the same guest-interface cell and clobber each other.
+   ## A lane sets rt_lane_key (inst|leak); fold it in as its own component. Empty (the
+   ## kicksecure install lane) -> no component, so existing kicksecure cells are unchanged.
+   ## Consumed once.
+   local lane_sfx=""
+   [ -n "${rt_lane_key:-}" ] && lane_sfx="-${rt_lane_key}"
+   rt_lane_key=""
    ## origin=downloaded: this lane downloads + signature-verifies the OFFICIAL
-   ## release image, it does not build it. lane = guest-interface[-firmware] so the site
-   ## groups lxqt vs cli, distinct versions, AND distinct firmware as separate cells.
-   ## A publish failure must NOT change the TEST verdict: keep rc, log it, and
-   ## report the lane's real result on the console line (the results plane simply
+   ## release image, it does not build it. lane = guest-interface[-lane][-firmware] so the
+   ## site groups lxqt vs cli, inst vs leak, distinct versions, AND distinct firmware as
+   ## separate cells. A publish failure must NOT change the TEST verdict: keep rc, log it,
+   ## and report the lane's real result on the console line (the results plane simply
    ## has no entry for this run -- NO-DATA on the site, never a faked verdict).
    outdir="$(image_test_results_publish "${RESULTS_ROOT}" "${RESULTS_OWNER}" \
-      "${guest_name}-${interface}${lane_fw}-${version//./-}" "${account}" "${mode}" \
+      "${guest_name}-${interface}${lane_sfx}${lane_fw}-${version//./-}" "${account}" "${mode}" \
       "${rc}" "${shot}" \
-      --lane "${guest_name}-${interface}${lane_fw}" --version "${version}" \
+      --lane "${guest_name}-${interface}${lane_sfx}${lane_fw}" --version "${version}" \
       --builder dm-release-test --origin "${rt_origin}" \
       "${pub_expect[@]}" "${pub_stderr[@]}" "${pub_sha[@]}" "${pub_fw[@]}")" \
       || { log warn "results publish failed for ${guest_name} ${interface} ${version} (verdict ${verdict} preserved)"; outdir='(publish-failed)'; }
@@ -1075,37 +1133,54 @@ rt_lane_kicksecure() {
    return "${rc}"
 }
 
-rt_lane_whonix() {
+## Shared whonix-pair preamble (both lanes): serialize on the shared persistent account +
+## verify the imported pair carries the REQUESTED version marker before running. The pair
+## must already be imported under ${account} (rt_provision_pair) with a 'clean-live'
+## snapshot on each VM; dm-whonix-pair fails closed if the snapshot is absent. Fail CLOSED
+## on a stale/wrong-version/markerless pair (a provisioning gap, SETUP_RC) so a run never
+## mislabels a verdict for the wrong version. Reads both VMs (a half-reprovisioned pair with
+## one stale VM is caught too). $1=account $2=version $3=gw $4=ws.
+rt_whonix_pair_require() {
+   local account version gw ws gw_ver ws_ver
+   account="$1"
+   version="$2"
+   gw="$3"
+   ws="$4"
+   rt_lock_account "${account}"
+   gw_ver="$(rt_pair_version "${account}" "${gw}")" || gw_ver=""
+   ws_ver="$(rt_pair_version "${account}" "${ws}")" || ws_ver=""
+   rt_pair_version_ok "${version}" "${gw_ver}" "${ws_ver}" \
+      || die "${SETUP_RC}" "whonix pair version mismatch: requested '${version}', GW marked '${gw_ver}', WS marked '${ws_ver}' -- re-provision with 'dm-release-test whonix ${interface} --lane ${lane} --version ${version} --provision' or pass the matching --version"
+}
+
+## leak lane: the anon-leak-test battery on the dedicated persist-leak- pair.
+rt_lane_whonix_leak() {
    local account version gw ws rc
    account="$1"
    version="$2"
    gw="Whonix-Gateway-${desktop}"
    ws="Whonix-Workstation-${desktop}"
-
-   ## Serialize concurrent whonix runs: they share this one persistent account + fixed VM
-   ## names, so two runs would corrupt each other's snapshot restore. Fail-fast if another
-   ## run (or a provision) holds the lock.
-   rt_lock_account "${account}"
-
-   ## The pair must already be imported under ${account} (rt_provision_leak) with a
-   ## dev-root-baked 'clean-live' snapshot on each VM; dm-whonix-pair fails closed with a
-   ## clear message if the snapshot is absent.
-   ##
-   ## Verify the imported pair IS ${version} before running: the lane attributes the leak
-   ## verdict to ${version}, so a stale/wrong-version or unprovisioned (markerless) pair
-   ## must not silently mislabel a PASS or a leak. Fail CLOSED -- a missing/mismatched
-   ## marker is a provisioning gap (SETUP_RC), NEVER a leak FAIL. Read both VMs (a half-
-   ## reprovisioned pair with one stale VM is caught too).
-   local gw_ver ws_ver
-   gw_ver="$(rt_pair_version "${account}" "${gw}")" || gw_ver=""
-   ws_ver="$(rt_pair_version "${account}" "${ws}")" || ws_ver=""
-   rt_pair_version_ok "${version}" "${gw_ver}" "${ws_ver}" \
-      || die "${SETUP_RC}" "leak pair version mismatch: requested '${version}', GW marked '${gw_ver}', WS marked '${ws_ver}' -- re-provision with 'dm-release-test whonix ${interface} --version ${version} --provision-leak' or pass the matching --version"
-
+   rt_whonix_pair_require "${account}" "${version}" "${gw}" "${ws}"
+   rt_lane_key='leak'
    rc=0
-   sudo -u "${account}" -- "${rt_session_env[@]}" "${DM_WHONIX_PAIR}" --gw "${gw}" --ws "${ws}" || rc=$?
-
+   sudo -u "${account}" -- "${rt_session_env[@]}" "${DM_WHONIX_PAIR}" --mode leak --gw "${gw}" --ws "${ws}" || rc=$?
    rt_publish_result whonix "${version}" "${account}" whonix-pair "${rc}" "" tor-confirm
+   return "${rc}"
+}
+
+## inst lane: the functional release-check battery (>= the kicksecure coverage) run on the
+## Workstation of a persist-inst- pair, after the Gateway's Tor bootstrap gate.
+rt_lane_whonix_inst() {
+   local account version gw ws rc
+   account="$1"
+   version="$2"
+   gw="Whonix-Gateway-${desktop}"
+   ws="Whonix-Workstation-${desktop}"
+   rt_whonix_pair_require "${account}" "${version}" "${gw}" "${ws}"
+   rt_lane_key='inst'
+   rc=0
+   sudo -u "${account}" -- "${rt_session_env[@]}" "${DM_WHONIX_PAIR}" --mode functional --gw "${gw}" --ws "${ws}" || rc=$?
+   rt_publish_result whonix "${version}" "${account}" whonix-func "${rc}" "" release-checks
    return "${rc}"
 }
 
@@ -1158,6 +1233,13 @@ parse_args() {
             coreboot_rom="$2"
             shift 2
             ;;
+         --lane)
+            [ "$#" -ge 2 ] || die "${SETUP_RC}" "missing value for --lane"
+            ## Store raw; rt_effective_lane validates against the guest in main (the
+            ## guest is a positional, not necessarily parsed yet).
+            lane="$2"
+            shift 2
+            ;;
          --checks)
             run_checks='true'
             shift
@@ -1166,8 +1248,8 @@ parse_args() {
             dry_run='true'
             shift
             ;;
-         --provision-leak)
-            provision_leak='true'
+         --provision)
+            do_provision='true'
             shift
             ;;
          -h|--help)
@@ -1216,6 +1298,15 @@ main() {
          ;;
    esac
 
+   ## Resolve + validate the test lane now the guest is known. No default: whonix requires
+   ## --lane inst|leak (both are real choices), kicksecure accepts only inst ('' -> inst).
+   ## Capture into a temp first so a rejection still reports the RAW --lane the user passed
+   ## (assigning the failed substitution straight into lane would blank it before the die).
+   local eff_lane
+   eff_lane="$(rt_effective_lane "${guest}" "${lane}")" \
+      || { print_usage >&2; die "${SETUP_RC}" "whonix requires --lane inst|leak; kicksecure accepts only inst (got guest='${guest}' lane='${lane}')"; }
+   lane="${eff_lane}"
+
    if [ -n "${local_iso}" ]; then
       ## Built-ISO lane: no download. kicksecure-only (whonix tests an imported pair, not
       ## an ISO install). A disposable eph-inst-GUEST-built account installs it; the version
@@ -1258,43 +1349,54 @@ main() {
       stable="$("${ISO_DOWNLOAD}" --project "${guest}" --channel stable --print-version)"
       bless_state="$(rt_bless_state "${version}" "${stable}")"
       ## The leak lane ALWAYS runs in the dedicated, PERSISTENT persist-leak- account
-      ## (never the shared persist-inst-/eph-inst- namespace); every other lane selects
-      ## by bless-state. account_kind in {blessed, prebless, leak}; only prebless is
+      ## (never the shared persist-inst-/eph-inst- namespace); the inst lane selects by
+      ## bless-state. account_kind in {blessed, prebless, leak}; only prebless is
       ## ephemeral (created + gc'd here) -- blessed and leak are pre-provisioned.
-      if rt_lane_is_leak "${guest}"; then
+      if rt_lane_is_leak "${lane}"; then
          account="persist-leak-${guest}"
          rt_account_is_leak "${account}" \
             || die "${SETUP_RC}" "leak account '${account}' is not in the persist-leak- namespace"
          account_kind='leak'
       else
+         ## inst lane. whonix inst runs the functional battery on a PRE-PROVISIONED pair
+         ## (persist-inst-whonix), so a non-blessed (ephemeral) whonix inst run has no
+         ## durable pair to boot -- fail loud with how to proceed, rather than create an
+         ## eph account and then fail on the absent version marker. kicksecure inst self-
+         ## creates its install account (ephemeral prebless is fine there).
+         if [ "${guest}" = 'whonix' ] && [ "${bless_state}" != 'blessed' ]; then
+            die "${SETUP_RC}" "whonix inst lane needs a pre-provisioned pair (persist-inst-whonix); version '${version}' != stable pin '${stable}'. Pass a blessed --version, or provision + pin that pair with --provision."
+         fi
          account="$(rt_select_account "${guest}" "${bless_state}" "${token}")" \
             || die "${SETUP_RC}" "could not derive account for ${guest} ${version}"
          account_kind="${bless_state}"
       fi
    fi
 
-   ## --provision-leak is a one-time setup of the dedicated leak pair, not a test run;
-   ## only the leak lane has a pre-provisioned persistent account to build.
-   if [ "${provision_leak}" = 'true' ]; then
-      rt_lane_is_leak "${guest}" \
-         || die "${SETUP_RC}" "--provision-leak is only for the whonix leak lane"
+   ## --provision is a one-time setup of a dedicated PERSISTENT pair, not a test run:
+   ## whonix only, and only a persistent account (leak, or a blessed inst) can be built --
+   ## an ephemeral eph-inst account has no durable pair to provision.
+   if [ "${do_provision}" = 'true' ]; then
+      [ "${guest}" = 'whonix' ] \
+         || die "${SETUP_RC}" "--provision is whonix-only"
+      [ "${account_kind}" = 'leak' ] || [ "${account_kind}" = 'blessed' ] \
+         || die "${SETUP_RC}" "--provision needs a persistent account (leak, or a blessed inst version == stable pin '${stable}'), got state '${account_kind}'"
    fi
 
    if [ "${dry_run}" = 'true' ]; then
       printf '%s\n' "plan:" \
-         "  guest=${guest} interface=${interface} desktop=${desktop}" \
+         "  guest=${guest} interface=${interface} desktop=${desktop} lane=${lane}" \
          "  channel=${channel} resolved=${version} stable=${stable} state=${account_kind}" \
          "  origin=${rt_origin} iso=${local_iso:-<download>}" \
          "  account=${account} firmware=${firmware} checks=${run_checks}" \
-         "  mode=$([ "${provision_leak}" = 'true' ] && printf '%s' "provision-leak" || printf '%s' "test")" \
+         "  mode=$([ "${do_provision}" = 'true' ] && printf '%s' "provision" || printf '%s' "test")" \
          "  iso_dir=${ISO_DIR} results_root=${RESULTS_ROOT}"
       return 0
    fi
 
    [ "$(id -u)" -eq 0 ] || die "${SETUP_RC}" "must run as root (creates the test account, publishes to the web root)"
 
-   if [ "${provision_leak}" = 'true' ]; then
-      rt_provision_leak "${account}" "${version}"
+   if [ "${do_provision}" = 'true' ]; then
+      rt_provision_pair "${account}" "${version}"
       return 0
    fi
 
@@ -1353,7 +1455,11 @@ main() {
          rt_lane_kicksecure "${account}" "${version}" || rc=$?
          ;;
       whonix)
-         rt_lane_whonix "${account}" "${version}" || rc=$?
+         if rt_lane_is_leak "${lane}"; then
+            rt_lane_whonix_leak "${account}" "${version}" || rc=$?
+         else
+            rt_lane_whonix_inst "${account}" "${version}" || rc=$?
+         fi
          ;;
    esac
    return "${rc}"

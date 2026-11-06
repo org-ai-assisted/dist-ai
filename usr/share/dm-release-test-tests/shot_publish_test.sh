@@ -130,13 +130,46 @@ else
 fi
 
 ## A non-install lane (whonix-pair) has NO firmware axis -- its lane must stay bare even
-## when firmware is set, or EFI/BIOS would wrongly fork packet-based runs.
+## when firmware is set, or EFI/BIOS would wrongly fork packet-based runs. (rt_lane_key
+## unset here, so no lane component either.)
 rt_publish_result whonix 18.2.3.6 acct whonix-pair 0 '' tor-confirm >/dev/null
 if grep --quiet -- '--lane whonix-lxqt ' "${argv_file}" \
    && ! grep --quiet -- 'whonix-lxqt-bios' "${argv_file}"; then
    printf '%s\n' "ok: whonix-pair lane carries no firmware suffix"
 else
    printf '%s\n' "FAIL: whonix-pair lane wrongly forked by firmware: $(cat -- "${argv_file}")" >&2
+   failures=$((failures + 1))
+fi
+
+## Lane key (inst|leak) is folded into BOTH the subtree and --lane so the two whonix lanes
+## (which share guest+interface and have no firmware axis) never collide on one cell.
+## Canary: without the lane component both publish to the same whonix-lxqt cell.
+# shellcheck disable=SC2034  ## read by the sourced rt_publish_result (dynamic scope)
+rt_lane_key='leak'
+rt_publish_result whonix 18.2.3.6 acct whonix-pair 0 '' tor-confirm >/dev/null
+if grep --quiet -- '--lane whonix-lxqt-leak ' "${argv_file}" \
+   && grep --quiet -- 'whonix-lxqt-leak-18-2-3-6' "${argv_file}"; then
+   printf '%s\n' "ok: leak lane key reaches --lane + subtree (whonix-lxqt-leak)"
+else
+   printf '%s\n' "FAIL: leak lane key missing: $(cat -- "${argv_file}")" >&2
+   failures=$((failures + 1))
+fi
+# shellcheck disable=SC2034  ## read by the sourced rt_publish_result (dynamic scope)
+rt_lane_key='inst'
+rt_publish_result whonix 18.2.3.6 acct whonix-func 0 '' release-checks >/dev/null
+if grep --quiet -- '--lane whonix-lxqt-inst ' "${argv_file}" \
+   && grep --quiet -- 'whonix-lxqt-inst-18-2-3-6' "${argv_file}"; then
+   printf '%s\n' "ok: inst lane key reaches --lane + subtree (whonix-lxqt-inst)"
+else
+   printf '%s\n' "FAIL: inst lane key missing: $(cat -- "${argv_file}")" >&2
+   failures=$((failures + 1))
+fi
+## Canary: rt_lane_key is consumed ONCE -- the next publish (no key) is bare again.
+rt_publish_result whonix 18.2.3.6 acct whonix-pair 0 '' tor-confirm >/dev/null
+if grep --quiet -- '--lane whonix-lxqt ' "${argv_file}"; then
+   printf '%s\n' "ok: rt_lane_key consumed once (bare lane after)"
+else
+   printf '%s\n' "FAIL: rt_lane_key leaked to the next publish: $(cat -- "${argv_file}")" >&2
    failures=$((failures + 1))
 fi
 

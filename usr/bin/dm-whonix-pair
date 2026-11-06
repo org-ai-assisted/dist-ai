@@ -58,6 +58,12 @@ gw='Whonix-Gateway-LXQt'
 ws='Whonix-Workstation-LXQt'
 ## committed clean-desktop snapshot each VM is restored to before a run.
 SNAPSHOT="${SNAPSHOT:-clean-live}"
+## Run mode: leak (the anon-leak-test battery, default) | functional (the numbered
+## release-check battery on the WS, parallel to the kicksecure install gate). Set by --mode.
+mode='leak'
+## functional mode: host file capturing a FAILED release check's in-guest output (consumed
+## by ocr-session.bsh's run_check_report_failure). Empty in leak mode.
+check_log=""
 ## anon-leak-test checkout ON THIS HOST, pushed into the WS (the single authoritative
 ## battery -- no re-embedded copy). Provisioned location; overridable.
 ANON_LEAK_TEST_REPO="${ANON_LEAK_TEST_REPO:-/var/lib/image-tests/anon-leak-test}"
@@ -173,15 +179,27 @@ source "${lib_base}/gui-drive.bsh"
 source "${lib_base}/grub-boot-select.bsh"
 # shellcheck source=./usr/share/dm-smbios-reader-boot-tests/vbox-session.bsh
 source "${lib_base}/vbox-session.bsh"
+## functional mode: the shared numbered release-check battery + its OCR real-session
+## executor (so a full `systemcheck --cli --ci` runs with a logind user session). Sourced
+## after gui-drive.bsh + vbox-session.bsh (ocr-session.bsh uses gui_* + gc_run +
+## RELEASE_CHECK_*). Leak mode does not use them, but sourcing is define-only + cheap.
+# shellcheck source=./usr/share/dm-smbios-reader-boot-tests/release-checks.bsh
+source "${lib_base}/release-checks.bsh"
+# shellcheck source=./usr/share/dm-smbios-reader-boot-tests/ocr-session.bsh
+source "${lib_base}/ocr-session.bsh"
 
 usage() {
-   printf '%s\n' "usage: ${me} [--gw NAME] [--ws NAME]
+   printf '%s\n' "usage: ${me} [--gw NAME] [--ws NAME] [--mode leak|functional]
 
 --gw   Whonix Gateway VM name (default: ${gw})
 --ws   Whonix Workstation VM name (default: ${ws})
+--mode leak (default): boot both, run the anon-leak-test battery in the Workstation
+       (sysmaint), assert it egresses ONLY through the Gateway's Tor.
+       functional: boot both, gate on Tor bootstrap, then run the numbered release-check
+       battery (release-checks.bsh, >= the kicksecure install coverage incl. the full
+       systemcheck) in the Workstation via an OCR real-session executor.
 
-Boots both headless, runs the anon-leak-test battery in the Workstation (sysmaint),
-and asserts it egresses ONLY through the Gateway's Tor. Exit 0 = PASS."
+Exit 0 = PASS."
 }
 
 parse_args() {
@@ -193,6 +211,17 @@ parse_args() {
             ;;
          --ws)
             ws="$2"
+            shift 2
+            ;;
+         --mode)
+            case "$2" in
+               leak|functional)
+                  mode="$2"
+                  ;;
+               *)
+                  die "${SETUP_RC}" "--mode must be leak|functional, got '$2'"
+                  ;;
+            esac
             shift 2
             ;;
          --print-guards)
@@ -276,6 +305,10 @@ on_exit() {
    "${VBOXMANAGE}" sharedfolder remove "${ws}" --name shared >/dev/null 2>&1 || true
    if [ -n "${share_dir}" ]; then
       safe-rm --recursive --force -- "${share_dir}" 2>/dev/null || true
+   fi
+   ## functional mode: drop the per-run check-log host file.
+   if [ -n "${check_log}" ]; then
+      safe-rm --force -- "${check_log}" 2>/dev/null || true
    fi
 }
 
@@ -718,6 +751,103 @@ canary_gateway_pcap() {
    printf '%s\n' "${me}: canary OK (GW emitted ${total} pkt(s); ${tor_seen} genuine Tor guard pkt(s), ${pc_seen} positive-control pkt(s); 0 probe-target, 0 non-guard clearnet)"
 }
 
+## ---------------------------------------------------------------------------
+## functional mode (the numbered release-check battery on the Workstation)
+## ---------------------------------------------------------------------------
+
+## Boot the Gateway fresh in its default (user) role so it routes Tor for the WS. Unlike
+## the leak lane's boot_gateway there is NO guard-pin / NIC-trace / canary -- functional
+## mode does not measure egress, it just needs a live Tor uplink.
+boot_gateway_functional() {
+   vm="${gw}"
+   restore_fresh "${gw}"
+   "${VBOXMANAGE}" startvm "${gw}" --type headless >/dev/null
+   gw_started='true'
+   wait_guestcontrol_ready user 300 \
+      || die "${SETUP_RC}" "${gw}: guestcontrol not ready -- a provisioning failure, not a release FAIL"
+}
+
+## Boot the Workstation fresh into its DEFAULT (user) session -- the battery's first checks
+## (user-session boot, CLI/GUI login, networking, systemcheck) are user-session checks, so
+## do NOT select the sysmaint GRUB entry (the ~5s autoboot lands on the user entry). No
+## battery share: the release checks run from the guest's own PATH.
+boot_workstation_user() {
+   vm="${ws}"
+   restore_fresh "${ws}"
+   "${VBOXMANAGE}" startvm "${ws}" --type headless >/dev/null
+   ws_started='true'
+   wait_guestcontrol_ready user 300 \
+      || die "${SETUP_RC}" "${ws}: guestcontrol not ready as user -- a provisioning failure, not a release FAIL"
+}
+
+## Gate on the Gateway's Tor bootstrap from the WS USER session (functional mode boots the
+## WS as user), so the battery's networking check is meaningful and not a cold-bootstrap
+## flake. The single-function systemcheck run is user-agnostic (skips root_check), so it
+## works as the user role. Both SocksPort AND TransPort must confirm (an OR would pass a
+## half-broken Tor). Fail CLOSED (SETUP_RC) if Tor never confirms: a provisioning/bootstrap
+## gap, not a release FAIL.
+ws_func_tor_gate() {
+   local attempt port ok
+   for attempt in $(seq 1 15); do
+      assert_vm_running "${gw}" 'functional phase (wait Tor)'
+      ok='true'
+      for port in check_tor_socks_port check_tor_trans_port; do
+         "${VBOX_EXEC_LOCAL}" "${ws}" --role user --timeout 300 \
+            --cmd "systemcheck --cli --leak-tests --function ${port}" || ok='false'
+      done
+      [ "${ok}" = 'true' ] && return 0
+      printf '%s\n' "${me}: Tor not confirmed yet (attempt ${attempt}); retrying"
+      sleep 20
+   done
+   die "${SETUP_RC}" "Tor egress never confirmed from the WS user session (GW Tor did not bootstrap / provisioning gap) -- inconclusive, NOT a release FAIL"
+}
+
+## Battery executor callback (exec_fn NUM SESSION CMD TIMEOUT): the boot role already implies
+## the session (user for 1/5/6/4/8, sysmaint after the reboot for 2/3), so drop SESSION and
+## type the command into the REAL on-screen terminal via run_check -- which runs it in a live
+## logind session (so `systemcheck --cli --ci` has a user manager) and reads a deterministic
+## .rc verdict over guestcontrol.
+ws_func_exec() {
+   run_check "$1" "$3" "$4"
+}
+
+## Battery reboot callback (reboot_sysmaint_fn): the user->sysmaint transition for checks 2,3.
+## Clean-reboot the WS into sysmaint (the GW stays up for Tor egress) and reach an input-ready
+## terminal again for the OCR executor. clean_poweroff/startvm act on ${vm} (= ws here).
+ws_func_reboot_sysmaint() {
+   clean_poweroff
+   "${VBOXMANAGE}" startvm "${ws}" --type headless >/dev/null
+   select_installed_sysmaint
+   wait_guestcontrol_ready sysmaint 300 \
+      || die "${FAIL_RC}" "${ws}: guestcontrol not ready as sysmaint after reboot -- cannot run the sysmaint checks"
+   wait_ready 300
+   open_terminal
+}
+
+## functional mode end to end: boot the pair, gate on Tor, reach an input-ready WS user
+## terminal, then drive the numbered release-check battery (>= the kicksecure coverage,
+## incl. the full systemcheck via a real user session) and tear down.
+main_functional() {
+   trap on_exit EXIT
+   printf '%s\n' "${me}: [functional] boot Gateway (${gw})"
+   boot_gateway_functional
+   printf '%s\n' "${me}: [functional] boot Workstation (${ws}) into the user session"
+   boot_workstation_user
+   printf '%s\n' "${me}: [functional] wait for Tor egress (systemcheck SocksPort + TransPort)"
+   ws_func_tor_gate
+   printf '%s\n' "${me}: [functional] reach an input-ready terminal in the WS user session"
+   wait_ready 300
+   open_terminal
+   ## Capture a failed check's in-guest output (ocr-session run_check_report_failure writes here).
+   check_log="$(mktemp -t whonix-func-checklog.XXXXXX)"
+   printf '%s\n' "${me}: [functional] run the release-check battery in the Workstation"
+   ## No verify_fn ('' skips the optional OCR render pre-check): the authoritative signal is
+   ## each check's exit code (the .rc file), which run_check reads deterministically.
+   run_release_check_battery ws_func_exec ws_func_reboot_sysmaint ''
+   printf '%s\n' "${me}: [functional] PASS -- Workstation passed the full release-check battery"
+   return "${PASS_RC}"
+}
+
 main() {
    parse_args "$@"
    ## Self-lock AFTER parse_args, so informational flags (--print-guards/-filter, --help) that
@@ -728,9 +858,19 @@ main() {
    ## and runs through (staging below then happens once, under the lock). Fail-closed: a
    ## missing dm-vm-lock aborts rather than running a leak test unlocked.
    if [ -z "${DM_VM_LOCK_HELD:-}" ]; then
-      ## style-ok: R-103 -- intentional re-exec: run this leak test under the VM-work lock.
+      ## style-ok: R-103 -- intentional re-exec: run this VM test under the VM-work lock
+      ## (class=leak serializes ALL fleet VM work; the functional battery needs the same
+      ## exclusivity on the shared host).
       exec dm-vm-lock acquire --class leak --ttl "${DM_WHONIX_PAIR_LOCK_TTL:-2400}" -- "$0" "$@"
    fi
+
+   ## functional mode: the numbered release-check battery on the WS -- no anon-leak-test
+   ## checkout, no battery share, no GW nictrace/canary. Branch before the leak-only setup.
+   if [ "${mode}" = 'functional' ]; then
+      main_functional
+      return "$?"
+   fi
+
    [ -x "${ANON_LEAK_TEST_REPO}/usr/bin/anon-leak-test" ] \
       || die "${SETUP_RC}" "anon-leak-test checkout not found at ${ANON_LEAK_TEST_REPO} (set ANON_LEAK_TEST_REPO)"
    [ -r "${ANON_LEAK_TEST_REPO}/usr/bin/anon-leak-inject" ] \

@@ -5,13 +5,15 @@
 
 ## AI-Assisted
 
-## Regression test for the Whonix leak lane's pair-version gate and the leak-pair
-## provisioner. Canary targets:
-##   - rt_lane_whonix must REFUSE (SETUP_RC, never reach dm-whonix-pair) when the imported
-##     pair's version marker is absent or differs from the requested version -- else a
-##     stale/wrong-version pair mislabels the leak verdict. A reverted gate reaches the
-##     dm-whonix-pair recorder, so the "not invoked" assertion is a real canary.
-##   - rt_provision_leak must import via dist-installer-cli with the pinned version and set
+## Regression test for the Whonix lanes' pair-version gate, the --mode each lane passes to
+## dm-whonix-pair, and the pair provisioner. Canary targets:
+##   - rt_lane_whonix_leak / rt_lane_whonix_inst must REFUSE (SETUP_RC, never reach
+##     dm-whonix-pair) when the imported pair's version marker is absent or differs from the
+##     requested version -- else a stale/wrong-version pair mislabels the verdict. A reverted
+##     gate reaches the dm-whonix-pair recorder, so the "not invoked" assertion is a real canary.
+##   - the leak lane must pass --mode leak and the inst lane --mode functional (a swapped mode
+##     would run the wrong battery on the wrong account).
+##   - rt_provision_pair must import via dist-installer-cli with the pinned version and set
 ##     the marker on BOTH VMs -- the counterpart the run-time gate reads.
 ## Stubs isolate the unit: no VM, no account mutation, no root.
 
@@ -117,7 +119,7 @@ EOF
 cat > "${stubbin}/getent" <<'EOF'
 #!/bin/bash
 # group lookups: succeed (vboxusers exists). passwd lookups: synthesize a home so
-# rt_provision_leak can derive --directory-prefix for the target account.
+# rt_provision_pair can derive --directory-prefix for the target account.
 case "$1" in
   passwd) printf '%s:x:5001:5001::/home/%s:/bin/bash\n' "$2" "$2";;
   *) exit 0;;
@@ -156,8 +158,7 @@ export NFT_FLEET_TOOL="${stubbin}/nft-fleet"
 ## Lock dir this user can write (root uses a 0700 dir under /run in production).
 ## Pre-create it world-writable so the chmod-to-0700 hardening is a real canary.
 export DM_RELEASE_TEST_LOCK_DIR="${work}/lock"
-mkdir --parents -- "${DM_RELEASE_TEST_LOCK_DIR}"
-chmod 0777 -- "${DM_RELEASE_TEST_LOCK_DIR}"
+install -d -m 0777 -- "${DM_RELEASE_TEST_LOCK_DIR}"
 export interface='cli'
 export desktop='CLI'
 export RESULTS_ROOT="${work}/results"
@@ -175,30 +176,50 @@ check() {
 }
 
 run_lane() {
-   ## Run the lane in a subshell so a `die` (exit) is captured, not fatal to the test.
+   ## Run a lane fn in a subshell so a `die` (exit) is captured, not fatal to the test.
+   ## $1=lane fn, $2=account.
    local rc=0
-   ( rt_lane_whonix persist-leak-whonix 18.2.3.5 ) >/dev/null 2>&1 || rc=$?
+   ( "$1" "$2" 18.2.3.5 ) >/dev/null 2>&1 || rc=$?
    printf '%s' "${rc}"
 }
 
-## Case A: marker matches -> lane proceeds to dm-whonix-pair and publishes.
+## Case A (leak lane): marker matches -> lane proceeds to dm-whonix-pair with --mode leak
+## and publishes.
 printf '%s\n' 'Value: 18.2.3.5' > "${MARKER_RESPONSE_FILE}"
 printf '%s' "" > "${PAIR_ARGV}"
-rc_a="$(run_lane)"
-check "match: lane returns 0" "$([ "${rc_a}" = '0' ] && printf '%s' "true" || printf '%s' "false")"
-check "match: dm-whonix-pair invoked" "$([ -s "${PAIR_ARGV}" ] && printf '%s' "true" || printf '%s' "false")"
+rc_a="$(run_lane rt_lane_whonix_leak persist-leak-whonix)"
+check "leak match: lane returns 0" "$([ "${rc_a}" = '0' ] && printf '%s' "true" || printf '%s' "false")"
+check "leak match: dm-whonix-pair invoked" "$([ -s "${PAIR_ARGV}" ] && printf '%s' "true" || printf '%s' "false")"
+check "leak match: passed --mode leak" \
+   "$(grep --quiet -- '--mode leak' "${PAIR_ARGV}" && printf '%s' "true" || printf '%s' "false")"
 
-## Case B: marker differs -> SETUP_RC, dm-whonix-pair NEVER reached (no verdict mislabel).
-printf '%s\n' 'Value: 18.2.3.3' > "${MARKER_RESPONSE_FILE}"
+## Case A-inst (inst lane): marker matches -> lane proceeds to dm-whonix-pair with --mode
+## functional. A swapped mode (functional vs leak) is a real canary.
+printf '%s\n' 'Value: 18.2.3.5' > "${MARKER_RESPONSE_FILE}"
 printf '%s' "" > "${PAIR_ARGV}"
-rc_b="$(run_lane)"
-check "mismatch: lane fails SETUP_RC(2)" "$([ "${rc_b}" = '2' ] && printf '%s' "true" || printf '%s' "false")"
-check "mismatch: dm-whonix-pair NOT invoked" "$([ ! -s "${PAIR_ARGV}" ] && printf '%s' "true" || printf '%s' "false")"
+rc_ai="$(run_lane rt_lane_whonix_inst persist-inst-whonix)"
+check "inst match: lane returns 0" "$([ "${rc_ai}" = '0' ] && printf '%s' "true" || printf '%s' "false")"
+check "inst match: passed --mode functional" \
+   "$(grep --quiet -- '--mode functional' "${PAIR_ARGV}" && printf '%s' "true" || printf '%s' "false")"
+check "inst match: did NOT pass --mode leak" \
+   "$(grep --quiet -- '--mode leak' "${PAIR_ARGV}" && printf '%s' "false" || printf '%s' "true")"
 
-## Case C: marker unset -> SETUP_RC, dm-whonix-pair NEVER reached.
+## Case B (both lanes): marker differs -> SETUP_RC, dm-whonix-pair NEVER reached (no verdict
+## mislabel). Checked on BOTH lanes since they share rt_whonix_pair_require.
+for pair in "rt_lane_whonix_leak persist-leak-whonix" "rt_lane_whonix_inst persist-inst-whonix"; do
+   # shellcheck disable=SC2086
+   set -- ${pair}
+   printf '%s\n' 'Value: 18.2.3.3' > "${MARKER_RESPONSE_FILE}"
+   printf '%s' "" > "${PAIR_ARGV}"
+   rc_b="$(run_lane "$1" "$2")"
+   check "mismatch ($1): fails SETUP_RC(2)" "$([ "${rc_b}" = '2' ] && printf '%s' "true" || printf '%s' "false")"
+   check "mismatch ($1): dm-whonix-pair NOT invoked" "$([ ! -s "${PAIR_ARGV}" ] && printf '%s' "true" || printf '%s' "false")"
+done
+
+## Case C (leak lane): marker unset -> SETUP_RC, dm-whonix-pair NEVER reached.
 printf '%s\n' 'No value set!' > "${MARKER_RESPONSE_FILE}"
 printf '%s' "" > "${PAIR_ARGV}"
-rc_c="$(run_lane)"
+rc_c="$(run_lane rt_lane_whonix_leak persist-leak-whonix)"
 check "unset: lane fails SETUP_RC(2)" "$([ "${rc_c}" = '2' ] && printf '%s' "true" || printf '%s' "false")"
 check "unset: dm-whonix-pair NOT invoked" "$([ ! -s "${PAIR_ARGV}" ] && printf '%s' "true" || printf '%s' "false")"
 
@@ -207,7 +228,7 @@ check "unset: dm-whonix-pair NOT invoked" "$([ ! -s "${PAIR_ARGV}" ] && printf '
 printf '%s\n' 'persist-leak-whonix' > "${NFT_UNCOVERED_FILE}"
 printf '%s' "" > "${DIST_ARGV}"
 rc_e=0
-( rt_provision_leak persist-leak-whonix 18.2.3.5 ) >/dev/null 2>&1 || rc_e=$?
+( rt_provision_pair persist-leak-whonix 18.2.3.5 ) >/dev/null 2>&1 || rc_e=$?
 check "uncovered: provision fails SETUP_RC(2)" "$([ "${rc_e}" = '2' ] && printf '%s' "true" || printf '%s' "false")"
 check "uncovered: dist-installer-cli NOT invoked" "$([ ! -s "${DIST_ARGV}" ] && printf '%s' "true" || printf '%s' "false")"
 true >| "${NFT_UNCOVERED_FILE}"
@@ -217,7 +238,7 @@ printf '%s' "" > "${DIST_ARGV}"
 printf '%s' "" > "${SETEXTRA_LOG}"
 printf '%s' "" > "${SUDO_LOG}"
 rc_d=0
-( rt_provision_leak persist-leak-whonix 18.2.3.5 ) >/dev/null 2>&1 || rc_d=$?
+( rt_provision_pair persist-leak-whonix 18.2.3.5 ) >/dev/null 2>&1 || rc_d=$?
 check "provision: returns 0" "$([ "${rc_d}" = '0' ] && printf '%s' "true" || printf '%s' "false")"
 check "provision: dist-installer-cli got --guest=whonix" \
    "$(grep --quiet -- '--guest=whonix' "${DIST_ARGV}" && printf '%s' "true" || printf '%s' "false")"

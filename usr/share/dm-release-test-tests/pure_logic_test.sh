@@ -105,15 +105,31 @@ assert_out "bless differ" "prebless" rt_bless_state 18.2.3.5 18.2.3.3
 
 ## account selection by bless-state
 assert_out "select blessed golden" "persist-inst-kicksecure" rt_select_account kicksecure blessed 18-2-3-5
+assert_out "select whonix inst blessed" "persist-inst-whonix" rt_select_account whonix blessed 18-2-4-3
 assert_out "select prebless eph" "eph-inst-whonix-18-2-3-5" rt_select_account whonix prebless 18-2-3-5
 assert_reject "select unknown state" rt_select_account kicksecure bogus 18-2-3-5
 
-## leak-lane + leak-account predicates: the whonix lane IS the leak test and ALWAYS
-## uses the dedicated, persistent persist-leak- account, never a shared namespace.
-## rt_account_is_leak must REJECT the golden persist-inst- and the install eph-inst-
-## accounts, so the leak lane can never be handed a potentially-contaminated account.
-assert_out "whonix is leak lane" "" rt_lane_is_leak whonix
-assert_reject "kicksecure not leak lane" rt_lane_is_leak kicksecure
+## lane predicates: rt_lane_is_leak keys on the LANE (inst|leak), NOT the guest -- whonix
+## supports both. Canary: the old body `[ "$1" = whonix ]` passes 'whonix' and rejects 'leak'.
+assert_out "leak lane is leak" "" rt_lane_is_leak leak
+assert_reject "inst lane not leak" rt_lane_is_leak inst
+assert_reject "guest name not a lane (whonix)" rt_lane_is_leak whonix
+
+## rt_effective_lane enforces NO DEFAULT: whonix requires inst|leak (empty/bogus rejected),
+## kicksecure is always inst ('' -> inst, leak rejected). Canary: a default-to-leak or
+## default-to-inst impl would accept whonix with an empty lane.
+assert_out "effective whonix inst" "inst" rt_effective_lane whonix inst
+assert_out "effective whonix leak" "leak" rt_effective_lane whonix leak
+assert_reject "effective whonix empty (mandatory)" rt_effective_lane whonix ""
+assert_reject "effective whonix bogus" rt_effective_lane whonix bogus
+assert_out "effective kicksecure empty -> inst" "inst" rt_effective_lane kicksecure ""
+assert_out "effective kicksecure inst" "inst" rt_effective_lane kicksecure inst
+assert_reject "effective kicksecure leak rejected" rt_effective_lane kicksecure leak
+assert_reject "effective unknown guest" rt_effective_lane debian inst
+
+## leak-account predicate: rt_account_is_leak must REJECT the golden persist-inst- and the
+## install eph-inst- accounts, so the leak lane can never be handed a potentially-
+## contaminated account.
 assert_out "persist-leak- is a leak account" "" rt_account_is_leak persist-leak-whonix
 assert_reject "persist-inst- not a leak account" rt_account_is_leak persist-inst-whonix
 assert_reject "eph-inst- not a leak account" rt_account_is_leak eph-inst-whonix-18-2-3-5
