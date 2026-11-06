@@ -676,7 +676,8 @@ different VM and code path, so no lane covers `systemcheck` on the upgraded VM.)
 `--repository stable-proposed-updates` is R6 (next-stable candidate, BLOCKING); `--repository developers`
 is the early-warning developer persona. In-guest commands run via `VBoxManage guestcontrol`
 (authoritative exit code) AND cross-checked against a best-effort screenshot: when the screen is
-readable, a catastrophic screen (kernel panic / emergency / rescue / stuck-LUKS) fails any check, and a
+readable, OCR text matching a known catastrophe pattern (kernel panic, emergency mode, rescue shell,
+give-root-password prompt, cannot-unlock -- an unlisted variant is NOT caught) fails any check, and a
 desktop-expected check additionally fails closed if the desktop never painted. The non-desktop
 catastrophe check fails OPEN when the screenshot cannot be captured or OCR reads nothing -- the
 guestcontrol exit code stays authoritative. `--persist` is required (no default); `--revert` is reserved (not yet implemented).
