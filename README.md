@@ -669,13 +669,17 @@ Exit 0 PASS / 5 FAIL / 2 setup.
 The R6 upgrade-regression lane + the developer persona. Takes an EXISTING stable Kicksecure VM
 install, switches its apt suite via `repository-dist`, applies staged updates, reboots, and
 re-verifies the release-critical check battery -- the "stable users receiving stable updates are never
-bricked" gate. (Check 8, `systemcheck`, is routed to the authoritative GUI-OCR gate rather than run on
-the guestcontrol fast-path; the skip is recorded so a PASS never reads as "all checks green".)
+bricked" gate. (Check 8, `systemcheck`, is NOT run on the upgraded VM -- the guestcontrol fast-path has
+no logind user session for it; the skip is recorded so a PASS never reads as "all checks green". The
+authoritative GUI-OCR gate (`dm-calamares-install`) exercises `systemcheck` only on a FRESH install, a
+different VM and code path, so no lane covers `systemcheck` on the upgraded VM.)
 `--repository stable-proposed-updates` is R6 (next-stable candidate, BLOCKING); `--repository developers`
 is the early-warning developer persona. In-guest commands run via `VBoxManage guestcontrol`
-(authoritative exit code) AND cross-checked against a screenshot: a catastrophic screen (kernel panic /
-emergency / rescue / stuck-LUKS) fails any check, and a desktop-expected check additionally requires the
-desktop to have painted. `--persist` is required (no default); `--revert` is reserved (not yet implemented).
+(authoritative exit code) AND cross-checked against a best-effort screenshot: when the screen is
+readable, a catastrophic screen (kernel panic / emergency / rescue / stuck-LUKS) fails any check, and a
+desktop-expected check additionally fails closed if the desktop never painted. The non-desktop
+catastrophe check fails OPEN when the screenshot cannot be captured or OCR reads nothing -- the
+guestcontrol exit code stays authoritative. `--persist` is required (no default); `--revert` is reserved (not yet implemented).
 
 ### dm-shared-apt-repo
 
