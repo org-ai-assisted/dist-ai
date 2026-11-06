@@ -154,6 +154,32 @@ check "mktemp-fail: lane aborts SETUP_RC(2)" "$([ "${rc_c}" = '2' ] && printf '%
 check "mktemp-fail: installer NOT invoked" "$([ ! -s "${install_argv}" ] && printf '%s' "true" || printf '%s' "false")"
 safe-rm --force -- "${mktemp_fail_stub}"
 
+## D: when a LATER account mktemp fails (shot_dir) after an earlier one already succeeded
+## (pass_file), the lane must clean up the already-allocated temp file, not leak it on the early
+## return. Canary: pre-fix the early return left the pass_file (the disposable passphrase) behind.
+export MKTEMP_PASS_KNOWN="${work}/pass.known"
+safe-rm --force -- "${MKTEMP_PASS_KNOWN}" 2>/dev/null || true
+mktemp_sel_stub="${stubbin}/mktemp"
+cat > "${mktemp_sel_stub}" <<'EOF'
+#!/bin/bash
+## Fail the shot-dir allocation; hand back a known path (created) for any earlier allocation.
+for a in "$@"; do
+   case "$a" in
+      *dm-release-test-shots*) exit 1 ;;
+   esac
+done
+: > "${MKTEMP_PASS_KNOWN}"
+printf '%s\n' "${MKTEMP_PASS_KNOWN}"
+EOF
+chmod 0770 -- "${mktemp_sel_stub}"
+printf '%s' "" > "${install_argv}"
+rc_d=0
+rt_lane_kicksecure "persist-inst-kicksecure" 18.2.3.5 >/dev/null 2>&1 || rc_d=$?
+check "leak-guard: lane aborts SETUP_RC(2) when shot_dir mktemp fails" "$([ "${rc_d}" = '2' ] && printf '%s' "true" || printf '%s' "false")"
+check "leak-guard: the already-allocated pass_file is cleaned up (no leak)" "$([ ! -e "${MKTEMP_PASS_KNOWN}" ] && printf '%s' "true" || printf '%s' "false")"
+check "leak-guard: installer NOT invoked" "$([ ! -s "${install_argv}" ] && printf '%s' "true" || printf '%s' "false")"
+safe-rm --force -- "${mktemp_sel_stub}"
+
 if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "" "${failures} lane assertion(s) failed" >&2
    exit 1

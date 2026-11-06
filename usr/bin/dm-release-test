@@ -1071,6 +1071,7 @@ rt_lane_kicksecure() {
    ## ordered sequence. Account-owned + root forwards each path no-follow to the emitter.
    if ! shot_dir="$(sudo -u "${account}" -- mktemp --directory --tmpdir "dm-release-test-shots.XXXXXX")"; then
       log error "cannot allocate the install milestone-shot directory"
+      sudo -u "${account}" -- safe-rm --force -- "${pass_file}" 2>/dev/null || true
       rt_publish_result kicksecure "${version}" "${account}" calamares-install "${SETUP_RC}" "" Kicksecure
       return "${SETUP_RC}"
    fi
@@ -1078,12 +1079,14 @@ rt_lane_kicksecure() {
    ## record explains WHY it failed (otherwise lost on power-off).
    if ! check_log="$(sudo -u "${account}" -- mktemp --tmpdir "dm-release-test-checklog.XXXXXX")"; then
       log error "cannot allocate the install check-log sink"
+      sudo -u "${account}" -- safe-rm --recursive --force -- "${pass_file}" "${shot_dir}" 2>/dev/null || true
       rt_publish_result kicksecure "${version}" "${account}" calamares-install "${SETUP_RC}" "" Kicksecure
       return "${SETUP_RC}"
    fi
    ## Account-owned sink for the firmware-lane evidence the install captures in-guest.
    if ! firmware_evidence_file="$(sudo -u "${account}" -- mktemp --tmpdir "dm-release-test-fwevidence.XXXXXX")"; then
       log error "cannot allocate the firmware-evidence sink"
+      sudo -u "${account}" -- safe-rm --recursive --force -- "${pass_file}" "${shot_dir}" "${check_log}" 2>/dev/null || true
       rt_publish_result kicksecure "${version}" "${account}" calamares-install "${SETUP_RC}" "" Kicksecure
       return "${SETUP_RC}"
    fi

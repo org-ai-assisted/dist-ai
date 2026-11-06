@@ -822,25 +822,26 @@ ws_func_exec() {
 ## Clean-reboot the WS into sysmaint (the GW stays up for Tor egress) and reach an input-ready
 ## terminal again for the OCR executor. clean_poweroff/startvm act on ${vm} (= ws here).
 ws_func_reboot_sysmaint() {
-   clean_poweroff
-   ## Confirm the WS actually powered off before restarting it -- clean_poweroff (ACPI) is
-   ## async and its hard fallback returns without waiting, so an immediate startvm can race a
-   ## still-running VM (the slow-poweroff case seen at bake time).
-   ## RETURN (not die/exit) on a reboot failure: this runs as the battery's
-   ## reboot_sysmaint_fn, which records check 2's reboot failure (number+reason) only when
-   ## the callback RETURNS nonzero -- a die would exit the process first and skip the record.
-   wait_vm_off "${ws}" 20 || {
-      printf '%s\n' "${me}: ERROR: ${ws}: did not power off before the sysmaint reboot -- cannot restart the Workstation" >&2
-      return 1
-   }
-   "${VBOXMANAGE}" startvm "${ws}" --type headless >/dev/null
-   select_installed_sysmaint
-   wait_guestcontrol_ready sysmaint 300 || {
-      printf '%s\n' "${me}: ERROR: ${ws}: guestcontrol not ready as sysmaint after reboot -- cannot run the sysmaint checks" >&2
-      return 1
-   }
-   wait_ready 300
-   open_terminal
+   ## Runs as the battery's reboot_sysmaint_fn: it MUST return nonzero (never exit) on ANY
+   ## reboot-stage failure, so run_release_check_battery records check 2's reboot failure
+   ## (number + reason) and main_functional's `if ! run_release_check_battery` reports it. Every
+   ## stage here dies on failure (wait_vm_off, and the shared select_installed_sysmaint /
+   ## wait_ready / open_terminal), so run the whole sequence in a SUBSHELL and convert any exit
+   ## into `return 1` -- the dying stage's own stderr still names what failed.
+   (
+      clean_poweroff
+      ## Confirm the WS actually powered off before restarting it -- clean_poweroff (ACPI) is
+      ## async and its hard fallback returns without waiting, so an immediate startvm can race a
+      ## still-running VM (the slow-poweroff case seen at bake time).
+      wait_vm_off "${ws}" 20 \
+         || die "${FAIL_RC}" "${ws}: did not power off before the sysmaint reboot -- cannot restart the Workstation"
+      "${VBOXMANAGE}" startvm "${ws}" --type headless >/dev/null
+      select_installed_sysmaint
+      wait_guestcontrol_ready sysmaint 300 \
+         || die "${FAIL_RC}" "${ws}: guestcontrol not ready as sysmaint after reboot -- cannot run the sysmaint checks"
+      wait_ready 300
+      open_terminal
+   ) || return 1
 }
 
 ## functional mode end to end: boot the pair, gate on Tor, reach an input-ready WS user

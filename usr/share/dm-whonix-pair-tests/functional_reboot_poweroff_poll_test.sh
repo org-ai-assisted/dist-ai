@@ -98,6 +98,19 @@ assert "guestcontrol-not-ready reboot RETURNS 1 (does not die/exit)" test "${rc}
 # shellcheck disable=SC2317
 wait_guestcontrol_ready() { :; }   ## restore the passing stub
 
+## Case C: a LATER reboot stage that die()s (the shared select_installed_sysmaint / wait_ready /
+## open_terminal all die on timeout) must still RETURN 1, not exit the process -- the subshell
+## wrap converts the exit. Canary: a fix touching only wait_vm_off/guestcontrol leaves this exit.
+# shellcheck disable=SC2317
+vm_state() { printf '%s\n' "poweroff"; }
+# shellcheck disable=SC2317
+wait_ready() { die "${FAIL_RC}" "stub: desktop not ready after reboot"; }
+rc=0
+( ws_func_reboot_sysmaint ) >/dev/null 2>&1 || rc=$?
+assert "late-stage die (wait_ready) RETURNS 1 (subshell-converted, not a process exit)" test "${rc}" -eq 1
+# shellcheck disable=SC2317
+wait_ready() { :; }   ## restore the passing stub
+
 ## Integration: the REAL battery must RECORD a failing reboot (number + reason), not have the
 ## process killed under it. A passing exec stub reaches the user->sysmaint transition, then the
 ## REAL ws_func_reboot_sysmaint fails (WS stuck 'running'). A pre-fix die exits the subshell
