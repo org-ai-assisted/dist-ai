@@ -53,7 +53,9 @@ fi
 ## as extension '.bak' (a mismatch that fails) rather than being silently
 ## truncated to '.qcow2' -- the extension must be the COMPLETE basename.
 # shellcheck disable=SC2016
-export_disk="$(grep -oE 'Data/\$\{VMNAME\}\.[A-Za-z0-9.]+"' -- "${export_step}" | head -n 1)"
+## || true: a no-match (grep exit 1) or head-closes-early SIGPIPE (141) must
+## reach the canary '' branch below, not errexit-kill the shell at this assignment.
+export_disk="$(grep -oE 'Data/\$\{VMNAME\}\.[A-Za-z0-9.]+"' -- "${export_step}" | head -n 1 || true)"
 export_disk="${export_disk%\"}"
 case "${export_disk}" in
    '')
@@ -175,7 +177,9 @@ for name in "${templates[@]}"; do
    fi
    ## The <ImageName> value, e.g. _FLAVOR_.qcow2. 4600 substitutes
    ## _FLAVOR_ -> ${VMNAME}, so the extension is the whole compatibility story.
-   image_name="$(grep -A1 '<key>ImageName</key>' -- "${template}" | grep -oE '_FLAVOR_\.[A-Za-z0-9]+' | head -n 1)"
+   ## || true: a no-match or head-closes-early SIGPIPE must reach the canary ''
+   ## branch (and its continue to the next template), not errexit-kill the shell.
+   image_name="$(grep -A1 '<key>ImageName</key>' -- "${template}" | grep -oE '_FLAVOR_\.[A-Za-z0-9]+' | head -n 1 || true)"
    case "${image_name}" in
       '')
          fail "canary: could not read ImageName from ${name}.plist.template"
