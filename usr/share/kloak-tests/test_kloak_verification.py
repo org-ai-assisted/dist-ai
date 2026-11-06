@@ -144,10 +144,21 @@ class KloakVerification(unittest.TestCase):
         ## symlinks of the real kloak.c / kloak.h, so kloak.c's quoted includes
         ## resolve and both harnesses compile the actual source (no copy).
         cls._work = tempfile.mkdtemp(prefix='kloak-cbmc-')
-        for name in ('kloak.c', 'kloak.h', 'kloakwl.c', 'kloakwl.h',
-                     'kloak-shared.h'):
+        for name in ('kloak.c', 'kloakwl.c', 'kloakwl.h', 'kloak-shared.h'):
             os.symlink(os.path.join(cls.src_dir, name),
                        os.path.join(cls._work, name))
+        ## kloak.h is generated from kloak.h.in ('make' bakes the kloakwl path in
+        ## via sed), so there is no kloak.h to symlink. kloak.c's #include
+        ## "kloak.h" must still resolve, so render it with the production path --
+        ## the harnesses never exec kloakwl, the value just has to be a valid
+        ## string literal.
+        with open(os.path.join(cls.src_dir, 'kloak.h.in'),
+                  encoding='utf-8') as kloak_h_in:
+            kloak_h = kloak_h_in.read().replace(
+                '@KLOAKWL_PATH@', '/usr/bin/kloakwl')
+        with open(os.path.join(cls._work, 'kloak.h'), 'w',
+                  encoding='utf-8') as kloak_h_out:
+            kloak_h_out.write(kloak_h)
         cls.proto_sources = []
         for xml, stem in PROTOCOL_STEMS.items():
             xml_path = os.path.join(cls.protocol_dir, xml)

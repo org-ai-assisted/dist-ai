@@ -292,10 +292,18 @@ class PrivsepHardening(unittest.TestCase):
             self.kloakwl_aa, r'(?m)^\s*capability\s+dac_override\b',
             'usr.bin.kloakwl lacks capability dac_override; as root (pre-drop) it '
             'cannot traverse the user-owned /run/user/<uid> to the Wayland socket')
+        ## The three map files may be written as separate lines
+        ## (@{PROC}/@{pid}/uid_map rw) or as one brace alternation
+        ## (@{PROC}/@{pid}/{uid_map,gid_map,setgroups} rw); apparmor_parser expands
+        ## the brace, so both are equivalent. Accept either shape -- do NOT
+        ## reimplement apparmor's full alternation grammar (the realistic profile
+        ## is one of these two forms). What matters is a writable rule on the
+        ## numeric-@{pid} path, not /proc/self.
         for mapfile in ('uid_map', 'gid_map', 'setgroups'):
             self.assertRegex(
                 self.kloakwl_aa,
-                r'(?m)^\s*@\{PROC\}/@\{pid\}/%s\s+\S*w' % mapfile,
+                r'(?m)^\s*@\{PROC\}/@\{pid\}/(?:%s|\{[^}]*\b%s\b[^}]*\})\s+\S*w'
+                % (mapfile, mapfile),
                 "usr.bin.kloakwl lacks a writable @{PROC}/@{pid}/%s rule; AppArmor "
                 "mediates the resolved numeric-pid path, not the /proc/self magic "
                 "symlink, so a @{PROC}/self rule never matches" % mapfile)
