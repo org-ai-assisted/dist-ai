@@ -654,11 +654,12 @@ drainer, MOK extractor).
 ### dm-whonix-pair
 
 Boots an imported Whonix Gateway + Workstation pair headless on a VBox internal network and asserts
-the Workstation egresses ONLY via the Gateway's Tor. The WS has a single internal-net NIC, so its
-only route out is WS -> GW -> Tor by construction; the test proves that path is live and really Tor
-by running the full `anon-leak-test` battery (enumerate / icmp / udp-123 / ipv6 / tor-confirm /
-gateway-craft) inside the WS via guestcontrol, fail-closed, with an AppArmor-confined `systemcheck`
-as the live positive control. Canary: the WS emits tagged direct-egress packets while the GW external
+the Workstation egresses ONLY via the Gateway's Tor. The WS has a single internal-net NIC, so by
+construction its only route out is via the Gateway (no direct WS egress); that the Gateway in turn
+egresses ONLY over Tor -- not forwarding clearnet -- is the property the test VERIFIES, not something
+the NIC topology guarantees, by running the `anon-leak-test` battery (enumerate / icmp / udp /
+tor-confirm / gateway-craft; the reply-based ipv6-clearnet probe is deliberately omitted) inside the
+WS via guestcontrol, fail-closed, with an AppArmor-confined `systemcheck` as the live positive control. Canary: the WS emits tagged direct-egress packets while the GW external
 NIC is traced to a host pcap (`VBoxManage --nictrace`) -- the tagged destinations must NOT appear
 leaving the GW, while a non-empty pcap + a passing tor-confirm prove the observation is not blind.
 Exit 0 PASS / 5 FAIL / 2 setup.
@@ -667,12 +668,14 @@ Exit 0 PASS / 5 FAIL / 2 setup.
 
 The R6 upgrade-regression lane + the developer persona. Takes an EXISTING stable Kicksecure VM
 install, switches its apt suite via `repository-dist`, applies staged updates, reboots, and
-re-verifies every release-critical check -- the "stable users receiving stable updates are never
-bricked" gate. `--repository stable-proposed-updates` is R6 (next-stable candidate, BLOCKING);
-`--repository developers` is the early-warning developer persona. In-guest commands run via
-`VBoxManage guestcontrol` (authoritative exit code) AND every check is cross-checked against a
-screenshot (OCR + desktop-up), so a check is green only when the functional and visual signals
-agree. `--persist`/`--revert` is required (no default).
+re-verifies the release-critical check battery -- the "stable users receiving stable updates are never
+bricked" gate. (Check 8, `systemcheck`, is routed to the authoritative GUI-OCR gate rather than run on
+the guestcontrol fast-path; the skip is recorded so a PASS never reads as "all checks green".)
+`--repository stable-proposed-updates` is R6 (next-stable candidate, BLOCKING); `--repository developers`
+is the early-warning developer persona. In-guest commands run via `VBoxManage guestcontrol`
+(authoritative exit code) AND cross-checked against a screenshot: a catastrophic screen (kernel panic /
+emergency / rescue / stuck-LUKS) fails any check, and a desktop-expected check additionally requires the
+desktop to have painted. `--persist` is required (no default); `--revert` is reserved (not yet implemented).
 
 ### dm-shared-apt-repo
 
@@ -690,8 +693,9 @@ Downloads a published Kicksecure/Whonix ISO and verifies it before use (`dist-in
 of `<image>.sha512sums.asc` over the sums file against `--cert`, then a hash match of the authenticated
 entry for exactly `<image>` (basename-bound, so an older signed release cannot be served under a newer
 name). Version is discovered (`--channel stable` -> wiki `Template:VersionNew` pin; `--channel developers`
--> highest published version dir) or pinned with `--version`; downloads can route over Tor/SOCKS5
-(`--socks-proxy`, `--onion`). The version source is unsigned by design (TLS/onion-trusted), so it
+-> highest published version dir) or pinned with `--version`; downloads route over Tor/SOCKS5 with
+`--socks-proxy`, and `--onion` permits plaintext-http locations (onion services self-encrypt). The
+version source is unsigned by design (TLS/onion-trusted), so it
 guarantees a key-signed release of the resolved version but cannot alone stop a controlled version
 source from selecting an older genuine release.
 

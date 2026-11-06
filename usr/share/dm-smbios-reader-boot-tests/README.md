@@ -23,7 +23,9 @@ with a ~0-byte serial log (flagged by the image-test 0-byte-log diagnostic).
   + boot a VM wired for serial driving; also the OCR run/install lanes + `emit-argv`.
 - `vbox-ctl-local` -- host-side vboxapi (XPCOM) input/output driver: absolute mouse,
   keyboard, and screenshot for a running VM with NO Guest Additions (mouse + screenshot
-  share one pixel space). The default `GUESTCTL` driver for the OCR run/install lanes.
+  share one pixel space). The default `GUESTCTL` driver for the GUI lanes
+  (`dm-calamares-install`, `dm-whonix-pair`, `dm-upgrade-regression`); the serial backend
+  `dm-smbios-reader-vbox` here captures with `VBoxManage screenshotpng` instead.
 - `debug/` -- boot-once/poke-many dev tooling (`dmserial.py`); not gated.
 
 ## Backends: QEMU (default) and VBox/AMD-V (`--backend vbox`)
