@@ -66,6 +66,12 @@ REQUIRED_SYSCALL_GROUPS = (
 ## listed here.
 REQUIRED_NAMESPACES = ('user', 'pid', 'net', 'ipc', 'uts', 'cgroup', 'mnt')
 
+## Every namespace type systemd's RestrictNamespaces understands. With no
+## assignment (or an explicit false) all of them are allowed; a positive list
+## is an allow-list that restricts to the listed set.
+ALL_SYSTEMD_NAMESPACES = frozenset(
+    ('cgroup', 'ipc', 'net', 'mnt', 'pid', 'user', 'uts'))
+
 
 def _repo() -> str:
     return os.path.abspath(os.environ.get('KLOAK_REPO', '').strip() or '/')
@@ -117,6 +123,18 @@ class PrivsepHardening(unittest.TestCase):
             tokens.extend(value.split())
         return tokens
 
+    def _directive_values(self, text: str, name: str) -> list[str]:
+        ## The ordered raw value of EACH matching assignment (not unioned), for a
+        ## directive whose repeated-assignment merge is order-sensitive. An empty
+        ## value is kept -- it resets the directive (systemd.exec(5)).
+        values: list[str] = []
+        for line in text.splitlines():
+            match = re.match(r'\s*%s=(.*)' % re.escape(name), line)
+            if match is None:
+                continue
+            values.append(match.group(1).strip())
+        return values
+
     def test_syscall_filter_is_group_based(self) -> None:
         tokens = self._directive_tokens(self.service_text, 'SystemCallFilter')
         self.assertTrue(tokens, 'kloak.service has no SystemCallFilter')
@@ -133,29 +151,47 @@ class PrivsepHardening(unittest.TestCase):
                 "work and kloakwl's sandbox setup. Filter: %r" % (group, tokens))
 
     def test_restrictnamespaces_permits_sandbox(self) -> None:
-        tokens = self._directive_tokens(self.service_text, 'RestrictNamespaces')
-        self.assertTrue(tokens, 'kloak.service has no RestrictNamespaces')
-        ## A boolean (true/yes/1/on) ANYWHERE in the unioned tokens means a
-        ## RestrictNamespaces= line denied all namespaces. systemd merges
-        ## repeated assignments, so such a line can sit beside the allow list
-        ## and still break the unshare -- reject the boolean wherever it
-        ## appears, not only when it is the lone token. A '~' deny-list is
-        ## caught below.
-        bool_tokens = [t for t in tokens if t.lower() in ('true', 'yes', '1', 'on')]
+        values = self._directive_values(self.service_text, 'RestrictNamespaces')
+        self.assertTrue(values, 'kloak.service has no RestrictNamespaces')
+        ## Compute the EFFECTIVE allowed namespace set the way systemd merges
+        ## repeated RestrictNamespaces= in order (systemd.exec(5)); kloakwl can
+        ## only unshare a namespace that ends up allowed:
+        ##   * true/yes/1/on     -> allow NONE (restrict all)
+        ##   * false/no/0/off/"" -> allow ALL (reset to no restriction)
+        ##   * a bare list       -> an allow-list: the FIRST restricts to the
+        ##                          listed set, later ones UNION more in
+        ##   * a '~' list        -> a deny-list: REMOVE the listed from allowed
+        ## So a trailing `=true`, a shortened list, or a '~' deny of a needed
+        ## namespace leaves it un-allowed -- the regression this guards. A
+        ## boolean is NOT fatal on its own: `=true` followed by the allow-list
+        ## re-grants every namespace (verified with systemctl show -p
+        ## RestrictNamespaces), so rejecting a boolean token outright would
+        ## false-positive on a working config.
+        allowed = set(ALL_SYSTEMD_NAMESPACES)
+        restricted = False
+        for value in values:
+            lowered = value.lower()
+            if value == '' or lowered in ('false', 'no', '0', 'off'):
+                allowed = set(ALL_SYSTEMD_NAMESPACES)
+                restricted = False
+            elif lowered in ('true', 'yes', '1', 'on'):
+                allowed = set()
+                restricted = True
+            elif value.startswith('~'):
+                deny = {token.lstrip('~') for token in value.split()}
+                base = allowed if restricted else set(ALL_SYSTEMD_NAMESPACES)
+                allowed = base - deny
+                restricted = True
+            else:
+                listed = set(value.split())
+                allowed = listed if not restricted else (allowed | listed)
+                restricted = True
+        missing = [ns for ns in REQUIRED_NAMESPACES if ns not in allowed]
         self.assertFalse(
-            bool_tokens,
-            'RestrictNamespaces has a deny-all boolean token %r; kloakwl cannot '
-            'build its sandbox. Full tokens: %r' % (bool_tokens, tokens))
-        self.assertFalse(
-            any(token.startswith('~') for token in tokens),
-            'RestrictNamespaces is a deny-list (%r); kloakwl needs its '
-            'namespaces allowed' % tokens)
-        for namespace in REQUIRED_NAMESPACES:
-            self.assertIn(
-                namespace, tokens,
-                "RestrictNamespaces does not allow the '%s' namespace that "
-                "kloakwl's self_sandbox unshares. Value: %r"
-                % (namespace, tokens))
+            missing,
+            "effective RestrictNamespaces does not allow %r that kloakwl's "
+            "self_sandbox unshares; allowed set is %r. Assignments (in order): "
+            "%r" % (missing, sorted(allowed), values))
 
     def test_no_new_privileges_off_for_profile_transition(self) -> None:
         tokens = self._directive_tokens(self.service_text, 'NoNewPrivileges')
@@ -183,27 +219,34 @@ class PrivsepHardening(unittest.TestCase):
         ## separation, and the sandbox build is then denied); an unconfined
         ## (ux/Ux) transition would drop confinement entirely. Either is a
         ## privsep regression, so a bare ix/ux/Ux must fail this -- it is NOT
-        ## enough that SOME transition authorizes the execve. Absence of any
-        ## rule means AppArmor denies the spawn.
+        ## enough that SOME transition authorizes the execve. A FALLBACK form
+        ## (PUx/Pux, Pix/Cix, ...) must fail too: it runs kloakwl unconfined or
+        ## under kloak's own profile when the target profile is absent, silently
+        ## losing the separation. So require a BARE profile transition (exactly
+        ## P/p/C/c, optionally after read/mem perms). Absence of any rule means
+        ## AppArmor denies the spawn.
         match = re.search(
             r'^\s*/usr/bin/kloakwl\s+([^,]*?)\s*,', self.kloak_aa, re.MULTILINE)
         self.assertIsNotNone(
             match,
             'usr.bin.kloak has no exec rule for /usr/bin/kloakwl, so AppArmor '
             'denies the kloak->kloakwl execve')
+        assert match is not None  # narrow for mypy; asserted above
         perms = match.group(1).strip()
         mode = re.search(r'([PpCcUuIi]+)x(?![A-Za-z])', perms)
         self.assertIsNotNone(
             mode,
             'usr.bin.kloak kloakwl rule %r carries no exec transition mode'
             % perms)
+        assert mode is not None  # narrow for mypy; asserted above
         qualifier = mode.group(1)
         self.assertRegex(
-            qualifier, r'[PpCc]',
-            "usr.bin.kloak execs kloakwl with transition mode '%sx', not a "
+            qualifier, r'^[PpCc]$',
+            "usr.bin.kloak execs kloakwl with transition mode '%sx', not a BARE "
             "profile (Px/Cx) transition: 'ix' inherits kloak's profile (no "
-            "separation), 'ux'/'Ux' runs kloakwl unconfined -- both defeat the "
-            "privsep" % qualifier)
+            "separation), 'ux'/'Ux' runs kloakwl unconfined, and a fallback form "
+            "(e.g. 'PUx'/'Pix') drops to unconfined/inherit when the target "
+            "profile is absent -- all defeat the privsep" % qualifier)
 
     def test_kloakwl_apparmor_profile_grants_sandbox(self) -> None:
         self.assertIn(
