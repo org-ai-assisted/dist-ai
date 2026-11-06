@@ -245,10 +245,16 @@ class PrivsepHardening(unittest.TestCase):
             'denies the kloak->kloakwl execve')
         assert match is not None  # narrow for mypy; asserted above
         perms = match.group(1).strip()
-        mode = re.search(r'([PpCcUuIi]+)x(?![A-Za-z])', perms)
+        ## Split off a named-transition target (`Px -> profile`) first, then read
+        ## the exec mode from the head. apparmor_parser accepts file-perm letters
+        ## (r/m/w/l/k/a) on EITHER side of the exec 'x' (rPx, Pxr, Pixr all parse),
+        ## and 'x' is the only exec marker, so capture the run of transition
+        ## letters [pPcCuUi] immediately before that sole 'x'.
+        head, named, target = perms.partition('->')
+        mode = re.search(r'([pPcCuUi]*)x', head)
         self.assertIsNotNone(
             mode,
-            'usr.bin.kloak kloakwl rule %r carries no exec transition mode'
+            'usr.bin.kloak kloakwl rule %r carries no exec (x) transition mode'
             % perms)
         assert mode is not None  # narrow for mypy; asserted above
         qualifier = mode.group(1)
@@ -259,6 +265,17 @@ class PrivsepHardening(unittest.TestCase):
             "separation), 'ux'/'Ux' runs kloakwl unconfined, and a fallback form "
             "(e.g. 'PUx'/'Pix') drops to unconfined/inherit when the target "
             "profile is absent -- all defeat the privsep" % qualifier)
+        ## A named transition must target kloakwl's OWN profile. A bare `Px,`
+        ## (no `->`) already transitions to the profile named for the executable
+        ## (/usr/bin/kloakwl), which is correct; `-> usr.bin.kloak` (kloak's own
+        ## narrow profile) or any other target runs kloakwl confined to the wrong
+        ## profile, so its sandbox build (userns/mount/pivot_root) is denied.
+        if named:
+            self.assertEqual(
+                target.strip(), '/usr/bin/kloakwl',
+                "usr.bin.kloak execs kloakwl with a named transition to %r, not "
+                "kloakwl's own profile (/usr/bin/kloakwl); the wrong target "
+                "profile denies kloakwl's sandbox build" % target.strip())
 
     def test_kloakwl_apparmor_profile_grants_sandbox(self) -> None:
         self.assertIn(
