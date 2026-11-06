@@ -298,12 +298,16 @@ class PrivsepHardening(unittest.TestCase):
         ## the brace, so both are equivalent. Accept either shape -- do NOT
         ## reimplement apparmor's full alternation grammar (the realistic profile
         ## is one of these two forms). What matters is a writable rule on the
-        ## numeric-@{pid} path, not /proc/self.
+        ## numeric-@{pid} path, not /proc/self. The brace branch requires the map
+        ## name to be a COMPLETE comma-delimited alternative (bounded by { or , on
+        ## the left and , or } on the right), not a substring: a \b word boundary
+        ## would wrongly accept {uid_map.bak,...} or {task/uid_map,...}, which
+        ## AppArmor expands to the .bak / task/ paths, NOT the real map files.
         for mapfile in ('uid_map', 'gid_map', 'setgroups'):
             self.assertRegex(
                 self.kloakwl_aa,
-                r'(?m)^\s*@\{PROC\}/@\{pid\}/(?:%s|\{[^}]*\b%s\b[^}]*\})\s+\S*w'
-                % (mapfile, mapfile),
+                r'(?m)^\s*@\{PROC\}/@\{pid\}/(?:%s|\{(?:[^}]*,)?%s(?:,[^}]*)?\})'
+                r'\s+\S*w' % (mapfile, mapfile),
                 "usr.bin.kloakwl lacks a writable @{PROC}/@{pid}/%s rule; AppArmor "
                 "mediates the resolved numeric-pid path, not the /proc/self magic "
                 "symlink, so a @{PROC}/self rule never matches" % mapfile)
