@@ -135,11 +135,17 @@ class PrivsepHardening(unittest.TestCase):
     def test_restrictnamespaces_permits_sandbox(self) -> None:
         tokens = self._directive_tokens(self.service_text, 'RestrictNamespaces')
         self.assertTrue(tokens, 'kloak.service has no RestrictNamespaces')
-        ## A lone boolean true (deny all) or a '~' deny-list blocks the unshare.
+        ## A boolean (true/yes/1/on) ANYWHERE in the unioned tokens means a
+        ## RestrictNamespaces= line denied all namespaces. systemd merges
+        ## repeated assignments, so such a line can sit beside the allow list
+        ## and still break the unshare -- reject the boolean wherever it
+        ## appears, not only when it is the lone token. A '~' deny-list is
+        ## caught below.
+        bool_tokens = [t for t in tokens if t.lower() in ('true', 'yes', '1', 'on')]
         self.assertFalse(
-            len(tokens) == 1 and tokens[0].lower() in ('true', 'yes', '1', 'on'),
-            'RestrictNamespaces=%s denies ALL namespaces; kloakwl cannot build '
-            'its sandbox' % tokens)
+            bool_tokens,
+            'RestrictNamespaces has a deny-all boolean token %r; kloakwl cannot '
+            'build its sandbox. Full tokens: %r' % (bool_tokens, tokens))
         self.assertFalse(
             any(token.startswith('~') for token in tokens),
             'RestrictNamespaces is a deny-list (%r); kloakwl needs its '
@@ -169,17 +175,35 @@ class PrivsepHardening(unittest.TestCase):
                 "CapabilityBoundingSet lacks %s; kloakwl's pre-unshare privilege "
                 "drop (setgroups/setresuid) fails EPERM. Value: %r" % (cap, tokens))
 
-    def test_kloak_apparmor_authorizes_kloakwl_exec(self) -> None:
-        ## A discrete-profile (Px/Pix), inherit (ix) or unconfined (ux/Ux)
-        ## transition on the kloakwl path -- any of these authorizes the execve;
-        ## absence means AppArmor denies the spawn.
+    def test_kloak_apparmor_requires_kloakwl_profile_transition(self) -> None:
+        ## kloak must exec kloakwl under a discrete/child AppArmor PROFILE
+        ## transition (Px/Cx family) -- the thing that gives the privilege
+        ## separation: kloakwl runs under its OWN broader profile. An inherit
+        ## (ix) transition would run kloakwl under kloak's narrow profile (no
+        ## separation, and the sandbox build is then denied); an unconfined
+        ## (ux/Ux) transition would drop confinement entirely. Either is a
+        ## privsep regression, so a bare ix/ux/Ux must fail this -- it is NOT
+        ## enough that SOME transition authorizes the execve. Absence of any
+        ## rule means AppArmor denies the spawn.
         match = re.search(
-            r'^\s*/usr/bin/kloakwl\s+[^,]*\b([PpCU]?[iux]x?|ux|Ux)\b',
-            self.kloak_aa, re.MULTILINE)
+            r'^\s*/usr/bin/kloakwl\s+([^,]*?)\s*,', self.kloak_aa, re.MULTILINE)
         self.assertIsNotNone(
             match,
             'usr.bin.kloak has no exec rule for /usr/bin/kloakwl, so AppArmor '
             'denies the kloak->kloakwl execve')
+        perms = match.group(1).strip()
+        mode = re.search(r'([PpCcUuIi]+)x(?![A-Za-z])', perms)
+        self.assertIsNotNone(
+            mode,
+            'usr.bin.kloak kloakwl rule %r carries no exec transition mode'
+            % perms)
+        qualifier = mode.group(1)
+        self.assertRegex(
+            qualifier, r'[PpCc]',
+            "usr.bin.kloak execs kloakwl with transition mode '%sx', not a "
+            "profile (Px/Cx) transition: 'ix' inherits kloak's profile (no "
+            "separation), 'ux'/'Ux' runs kloakwl unconfined -- both defeat the "
+            "privsep" % qualifier)
 
     def test_kloakwl_apparmor_profile_grants_sandbox(self) -> None:
         self.assertIn(

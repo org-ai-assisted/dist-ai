@@ -49,10 +49,28 @@ ssize_t read(int fd, void *buf, size_t count)
 int clock_gettime(clockid_t clk_id, struct timespec *tp)
 {
     (void)clk_id;
-    /* A plausible CLOCK_MONOTONIC: non-negative, normalised, and far below the
-     * int64 ms-overflow threshold (tv_sec*1000 must not overflow). */
-    __CPROVER_assume(tp->tv_sec >= 0 && tp->tv_sec < (1LL << 40));
+    /* Model CLOCK_MONOTONIC faithfully: a non-decreasing timespec. Havoc a FRESH
+     * nondet sample (as the read() stub does), THEN constrain it -- order matters.
+     * clock_gettime is an output-parameter function, so a constrain-without-write
+     * leaves the caller's zero-initialised struct, i.e. the all-zeros clock that
+     * made this proof vacuous. The constraints are the clock's real contract:
+     * tv_nsec normalised, and monotonic non-decreasing across calls (tv_sec rises,
+     * or tv_sec is equal and tv_nsec does not fall) -- the property current_time_ms
+     * relies on for its non-negative delta. A static carries the prior reading.
+     * Constraining the raw timespec (not a derived ms) is both the exact
+     * CLOCK_MONOTONIC guarantee and far cheaper for the solver than reconciling a
+     * second symbolic multiply here against timespec_to_ms's. The tv_sec bound
+     * (1LL<<25, ~388 days) is kloak's real operating envelope, as COORD_MAX is for
+     * geometry: a maintained Whonix/Kicksecure host reboots for security updates
+     * far sooner, tv_sec*1000 cannot overflow int64 until ~292 million years
+     * regardless, and adversarial extremes rely on -ftrapv (see top). */
+    static int64_t prev_sec = 0, prev_nsec = 0;
+    __CPROVER_havoc_object(tp);
+    __CPROVER_assume(tp->tv_sec >= prev_sec && tp->tv_sec < (1LL << 25));
     __CPROVER_assume(tp->tv_nsec >= 0 && tp->tv_nsec < 1000000000L);
+    __CPROVER_assume(tp->tv_sec > prev_sec || tp->tv_nsec >= prev_nsec);
+    prev_sec = tp->tv_sec;
+    prev_nsec = tp->tv_nsec;
     return 0;
 }
 
