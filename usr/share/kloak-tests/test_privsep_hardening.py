@@ -93,17 +93,18 @@ def _read(rel_path: str) -> str:
 def _require_source() -> None:
     ## Skip unless KLOAK_REPO points at a kloak SOURCE checkout. kloak.service
     ## and the apparmor profiles also exist on an INSTALLED system under '/', so
-    ## they cannot tell source from installed -- but setUpClass reads the
-    ## source-only debian/kloak.sysusers, so an installed-only invocation
-    ## (KLOAK_REPO unset -> '/') that passes an installed-file guard then crashes
-    ## the whole class with FileNotFoundError. src/kloak.c is the same
-    ## source-only marker the sibling verification suite skips on.
-    source_marker = os.path.join(_repo(), 'src', 'kloak.c')
-    if not os.path.exists(source_marker):
+    ## keying the guard on one of them lets an installed-only invocation
+    ## (KLOAK_REPO unset -> '/') pass and then crash setUpClass with
+    ## FileNotFoundError on the source-only debian/kloak.sysusers. The debian/
+    ## packaging dir exists ONLY in a source checkout and is where that sysusers
+    ## file lives, so it is the right discriminator: a real checkout (debian/
+    ## present) RUNS the assertions -- a present-but-wrong config is caught, not
+    ## skipped -- while an installed system skips cleanly.
+    if not os.path.isdir(os.path.join(_repo(), 'debian')):
         ## style-ok: allow-skip: kloak source absent (not a --component run)
         raise unittest.SkipTest(
-            'kloak source (src/kloak.c) not found under %s -- set KLOAK_REPO '
-            'or install the kloak source' % _repo())
+            'kloak source (debian/) not found under %s -- set KLOAK_REPO or '
+            'install the kloak source' % _repo())
 
 
 class PrivsepHardening(unittest.TestCase):
@@ -333,12 +334,22 @@ class PrivsepHardening(unittest.TestCase):
 
 
 class RequireSourceGuard(unittest.TestCase):
-    ## _require_source must SKIP, not crash, when KLOAK_REPO is not a kloak
-    ## source checkout. An installed system has kloak.service and the apparmor
-    ## profiles under '/', but no src/kloak.c and no debian/ -- keying the guard
-    ## on an installed-present file passes here and then faults setUpClass with
-    ## FileNotFoundError on debian/kloak.sysusers.
-    def test_installed_without_source_skips(self) -> None:
+    ## _require_source gates the privsep assertions, and must get two things
+    ## right:
+    ##   * SKIP in LOCKSTEP with the real suite when there is no kloak source
+    ##     checkout -- an always-passing guard test would make run-unittest.py
+    ##     read a subject-absent run (every real class skipped) as a green PASS
+    ##     instead of SKIP (exit 78), hiding that the seccomp/namespace/AppArmor/
+    ##     sysusers checks never ran.
+    ##   * key on a SOURCE marker (debian/), not an installed-present file, so a
+    ##     real checkout with a present-but-wrong config is asserted, not skipped.
+    ## setUpClass is the lockstep: no source checkout -> this class skips too.
+    @classmethod
+    def setUpClass(cls) -> None:
+        _require_source()
+
+    def test_installed_tree_skips(self) -> None:
+        ## kloak.service present (as on an installed system) but no debian/.
         with tempfile.TemporaryDirectory() as tmp:
             unit_dir = os.path.join(tmp, 'usr', 'lib', 'systemd', 'system')
             os.makedirs(unit_dir)
@@ -348,6 +359,13 @@ class RequireSourceGuard(unittest.TestCase):
             with mock.patch.dict(os.environ, {'KLOAK_REPO': tmp}):
                 with self.assertRaises(unittest.SkipTest):
                     _require_source()
+
+    def test_source_tree_runs(self) -> None:
+        ## debian/ present -> a source checkout -> the guard must NOT skip.
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, 'debian'))
+            with mock.patch.dict(os.environ, {'KLOAK_REPO': tmp}):
+                _require_source()
 
 
 if __name__ == '__main__':
