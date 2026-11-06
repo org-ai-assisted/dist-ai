@@ -72,6 +72,12 @@ REQUIRED_NAMESPACES = ('user', 'pid', 'net', 'ipc', 'uts', 'cgroup', 'mnt')
 ALL_SYSTEMD_NAMESPACES = frozenset(
     ('cgroup', 'ipc', 'net', 'mnt', 'pid', 'user', 'uts'))
 
+## systemd's full boolean spellings (src/basic/parse-util.c parse_boolean):
+## a RestrictNamespaces=/NoNewPrivileges= value equal to one of these IS a
+## boolean, not a namespace token. No namespace name collides with them.
+SYSTEMD_TRUE = frozenset(('1', 'yes', 'y', 'true', 't', 'on'))
+SYSTEMD_FALSE = frozenset(('0', 'no', 'n', 'false', 'f', 'off'))
+
 
 def _repo() -> str:
     return os.path.abspath(os.environ.get('KLOAK_REPO', '').strip() or '/')
@@ -167,14 +173,20 @@ class PrivsepHardening(unittest.TestCase):
         ## re-grants every namespace (verified with systemctl show -p
         ## RestrictNamespaces), so rejecting a boolean token outright would
         ## false-positive on a working config.
+        ## Scope: this models the realistic single-[Service] directive -- boolean
+        ## reset, positive-list union, '~' deny. It deliberately does NOT
+        ## reimplement systemd's full parser (section-keyed directive tables, or
+        ## the atomic rejection of a list carrying an unknown token): kloak.service
+        ## is one [Service] line, none of those are realistic regressions here,
+        ## and a typo that drops a REQUIRED namespace is already caught below.
         allowed = set(ALL_SYSTEMD_NAMESPACES)
         restricted = False
         for value in values:
             lowered = value.lower()
-            if value == '' or lowered in ('false', 'no', '0', 'off'):
+            if value == '' or lowered in SYSTEMD_FALSE:
                 allowed = set(ALL_SYSTEMD_NAMESPACES)
                 restricted = False
-            elif lowered in ('true', 'yes', '1', 'on'):
+            elif lowered in SYSTEMD_TRUE:
                 allowed = set()
                 restricted = True
             elif value.startswith('~'):
@@ -197,7 +209,7 @@ class PrivsepHardening(unittest.TestCase):
         tokens = self._directive_tokens(self.service_text, 'NoNewPrivileges')
         self.assertTrue(tokens, 'kloak.service has no NoNewPrivileges')
         self.assertNotIn(
-            tokens[-1].lower(), ('true', 'yes', '1', 'on'),
+            tokens[-1].lower(), SYSTEMD_TRUE,
             "NoNewPrivileges=%s blocks the kloak->kloakwl AppArmor Px transition: "
             "no_new_privs forbids a transition to kloakwl's broader (non-subset) "
             "profile, so kloak restart-loops" % tokens[-1])
