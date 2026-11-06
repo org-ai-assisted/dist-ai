@@ -361,11 +361,17 @@ class RequireSourceGuard(unittest.TestCase):
                     _require_source()
 
     def test_source_tree_runs(self) -> None:
-        ## debian/ present -> a source checkout -> the guard must NOT skip.
+        ## debian/ present -> a source checkout -> the guard must NOT skip. A
+        ## bare SkipTest here would be recorded as a skip (green), not a failure,
+        ## so catch it and fail explicitly -- otherwise this test cannot go red
+        ## for the over-skip regression it guards.
         with tempfile.TemporaryDirectory() as tmp:
             os.makedirs(os.path.join(tmp, 'debian'))
             with mock.patch.dict(os.environ, {'KLOAK_REPO': tmp}):
-                _require_source()
+                try:
+                    _require_source()
+                except unittest.SkipTest:
+                    self.fail('guard skipped a source checkout (debian/ present)')
 
 
 if __name__ == '__main__':
