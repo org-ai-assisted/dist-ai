@@ -1055,18 +1055,38 @@ rt_lane_kicksecure() {
       fi
    fi
 
+   ## errexit is OFF in this lane (called `... || rc=$?`), so a failed account-owned mktemp
+   ## would silently yield an empty path and run the install with a broken --passphrase-file
+   ## "" / --shot-dir "" / --check-log "". Check each explicitly (like the built-ISO staging
+   ## guards above) and abort INCONCLUSIVE (SETUP_RC) before the install.
    ## Disposable LUKS passphrase for the install, readable only by the account.
-   pass_file="$(sudo -u "${account}" -- mktemp --tmpdir "dm-release-test-pass.XXXXXX")"
+   if ! pass_file="$(sudo -u "${account}" -- mktemp --tmpdir "dm-release-test-pass.XXXXXX")"; then
+      log error "cannot allocate the install passphrase file"
+      rt_publish_result kicksecure "${version}" "${account}" calamares-install "${SETUP_RC}" "" Kicksecure
+      return "${SETUP_RC}"
+   fi
    printf '%s\n' "release-test-${version}" | sudo -u "${account}" -- tee -- "${pass_file}" >/dev/null
    ## Account-owned shot DIR; dm-calamares-install drops milestone shots (NN-<milestone>.png,
    ## the install "full story") here, and image_test_results_publish publishes the whole
    ## ordered sequence. Account-owned + root forwards each path no-follow to the emitter.
-   shot_dir="$(sudo -u "${account}" -- mktemp --directory --tmpdir "dm-release-test-shots.XXXXXX")"
+   if ! shot_dir="$(sudo -u "${account}" -- mktemp --directory --tmpdir "dm-release-test-shots.XXXXXX")"; then
+      log error "cannot allocate the install milestone-shot directory"
+      rt_publish_result kicksecure "${version}" "${account}" calamares-install "${SETUP_RC}" "" Kicksecure
+      return "${SETUP_RC}"
+   fi
    ## Account-owned sink for a FAILED release check's own in-guest output, so the run
    ## record explains WHY it failed (otherwise lost on power-off).
-   check_log="$(sudo -u "${account}" -- mktemp --tmpdir "dm-release-test-checklog.XXXXXX")"
+   if ! check_log="$(sudo -u "${account}" -- mktemp --tmpdir "dm-release-test-checklog.XXXXXX")"; then
+      log error "cannot allocate the install check-log sink"
+      rt_publish_result kicksecure "${version}" "${account}" calamares-install "${SETUP_RC}" "" Kicksecure
+      return "${SETUP_RC}"
+   fi
    ## Account-owned sink for the firmware-lane evidence the install captures in-guest.
-   firmware_evidence_file="$(sudo -u "${account}" -- mktemp --tmpdir "dm-release-test-fwevidence.XXXXXX")"
+   if ! firmware_evidence_file="$(sudo -u "${account}" -- mktemp --tmpdir "dm-release-test-fwevidence.XXXXXX")"; then
+      log error "cannot allocate the firmware-evidence sink"
+      rt_publish_result kicksecure "${version}" "${account}" calamares-install "${SETUP_RC}" "" Kicksecure
+      return "${SETUP_RC}"
+   fi
 
    vmname="Kicksecure-release-${version//./-}"
    if [ "${run_checks}" = 'true' ]; then
@@ -1181,7 +1201,14 @@ rt_lane_whonix_inst() {
    ## Account-owned sink for a FAILED release check's in-guest output, so the run record
    ## explains WHY it failed (mirrors the kicksecure lane's check-log handoff). Account-
    ## owned: the sudo'd dm-whonix-pair writes it, the root parent reads it to publish.
-   check_log="$(sudo -u "${account}" -- mktemp --tmpdir "dm-release-test-whonix-checklog.XXXXXX")"
+   ## errexit is OFF in this lane (called `... || rc=$?`), so a failed mktemp would yield
+   ## check_log="" and run the battery with no diagnostic sink -- check explicitly and abort
+   ## INCONCLUSIVE (SETUP_RC) before the battery, like the kicksecure lane's staging guards.
+   if ! check_log="$(sudo -u "${account}" -- mktemp --tmpdir "dm-release-test-whonix-checklog.XXXXXX")"; then
+      log error "cannot allocate the whonix functional-lane check-log sink"
+      rt_publish_result whonix "${version}" "${account}" whonix-func "${SETUP_RC}" "" release-checks
+      return "${SETUP_RC}"
+   fi
    rc=0
    sudo -u "${account}" -- "${rt_session_env[@]}" "${DM_WHONIX_PAIR}" --mode functional --check-log "${check_log}" --gw "${gw}" --ws "${ws}" || rc=$?
    ## Thread a non-empty check-log into the published step's stderr tail (empty = a pass or a

@@ -130,6 +130,30 @@ fi
 check "iso-download was invoked with --version 18.2.3.5" \
    "$(grep --quiet -- '--version 18.2.3.5' "${iso_argv}" && printf '%s' "true" || printf '%s' "false")"
 
+## C: a SUCCEEDING download that then hits a failed account-owned mktemp (pass_file) must abort
+## the lane INCONCLUSIVE (SETUP_RC) BEFORE the installer -- errexit is off in the lane, so an
+## unchecked mktemp would run dm-calamares-install with a broken --passphrase-file "".
+## Canary: pre-fix code falls through to the installer (install_argv non-empty).
+iso_ok_stub="${stubbin}/iso-download-ok"
+{
+   printf '%s\n' '#!/bin/bash'
+   printf '%s\n' "printf '%s\\n' '${work}/fake.iso'"
+   printf '%s\n' 'exit 0'
+} > "${iso_ok_stub}"
+mktemp_fail_stub="${stubbin}/mktemp"
+{
+   printf '%s\n' '#!/bin/bash'
+   printf '%s\n' 'exit 1'
+} > "${mktemp_fail_stub}"
+chmod 0770 -- "${iso_ok_stub}" "${mktemp_fail_stub}"
+export ISO_DOWNLOAD="${iso_ok_stub}"
+printf '%s' "" > "${install_argv}"
+rc_c=0
+rt_lane_kicksecure "persist-inst-kicksecure" 18.2.3.5 >/dev/null 2>&1 || rc_c=$?
+check "mktemp-fail: lane aborts SETUP_RC(2)" "$([ "${rc_c}" = '2' ] && printf '%s' "true" || printf '%s' "false")"
+check "mktemp-fail: installer NOT invoked" "$([ ! -s "${install_argv}" ] && printf '%s' "true" || printf '%s' "false")"
+safe-rm --force -- "${mktemp_fail_stub}"
+
 if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "" "${failures} lane assertion(s) failed" >&2
    exit 1

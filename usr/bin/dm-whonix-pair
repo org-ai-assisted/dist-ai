@@ -826,12 +826,19 @@ ws_func_reboot_sysmaint() {
    ## Confirm the WS actually powered off before restarting it -- clean_poweroff (ACPI) is
    ## async and its hard fallback returns without waiting, so an immediate startvm can race a
    ## still-running VM (the slow-poweroff case seen at bake time).
-   wait_vm_off "${ws}" 20 \
-      || die "${FAIL_RC}" "${ws}: did not power off before the sysmaint reboot -- cannot restart the Workstation"
+   ## RETURN (not die/exit) on a reboot failure: this runs as the battery's
+   ## reboot_sysmaint_fn, which records check 2's reboot failure (number+reason) only when
+   ## the callback RETURNS nonzero -- a die would exit the process first and skip the record.
+   wait_vm_off "${ws}" 20 || {
+      printf '%s\n' "${me}: ERROR: ${ws}: did not power off before the sysmaint reboot -- cannot restart the Workstation" >&2
+      return 1
+   }
    "${VBOXMANAGE}" startvm "${ws}" --type headless >/dev/null
    select_installed_sysmaint
-   wait_guestcontrol_ready sysmaint 300 \
-      || die "${FAIL_RC}" "${ws}: guestcontrol not ready as sysmaint after reboot -- cannot run the sysmaint checks"
+   wait_guestcontrol_ready sysmaint 300 || {
+      printf '%s\n' "${me}: ERROR: ${ws}: guestcontrol not ready as sysmaint after reboot -- cannot run the sysmaint checks" >&2
+      return 1
+   }
    wait_ready 300
    open_terminal
 }

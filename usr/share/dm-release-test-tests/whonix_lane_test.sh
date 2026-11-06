@@ -271,6 +271,22 @@ check "provision: dist-installer-cli invoked via sudo -u (not as root)" \
 check "lock dir hardened to 0700" \
    "$([ "$(stat --format='%a' -- "${DM_RELEASE_TEST_LOCK_DIR}")" = '700' ] && printf '%s' "true" || printf '%s' "false")"
 
+## Case F (inst lane): a failed account-owned mktemp (the check-log sink) must abort the lane
+## INCONCLUSIVE (SETUP_RC) BEFORE dm-whonix-pair -- errexit is off in the lane, so an unchecked
+## mktemp would yield check_log="" and run the battery with `--check-log ""`. Canary: pre-fix
+## code reaches dm-whonix-pair (PAIR_ARGV non-empty).
+printf '%s\n' 'Value: 18.2.3.5' > "${MARKER_RESPONSE_FILE}"
+printf '%s' "" > "${PAIR_ARGV}"
+cat > "${stubbin}/mktemp" <<'EOF'
+#!/bin/bash
+exit 1
+EOF
+chmod 0770 -- "${stubbin}/mktemp"
+rc_f="$(run_lane rt_lane_whonix_inst persist-inst-whonix)"
+check "mktemp-fail (inst): lane aborts SETUP_RC(2)" "$([ "${rc_f}" = '2' ] && printf '%s' "true" || printf '%s' "false")"
+check "mktemp-fail (inst): dm-whonix-pair NOT invoked" "$([ ! -s "${PAIR_ARGV}" ] && printf '%s' "true" || printf '%s' "false")"
+safe-rm --force -- "${stubbin}/mktemp"
+
 if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "" "${failures} whonix-lane assertion(s) failed" >&2
    exit 1
