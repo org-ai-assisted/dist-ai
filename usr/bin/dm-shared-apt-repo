@@ -88,9 +88,13 @@ do_prepare() {
    rd="$(repo_dir_for "${d}")"
    [ -d "${rd}" ] || die 1 "repo not found: ${rd} (populate it with: derivative-maker --only-packages '<pkgs>')"
    ## dm's create-local-apt-repo perms fix: a user-owned repo under umask 027 is
-   ## unreadable by the unprivileged _apt user. (Over the read-only vboxsf mount the
-   ## guest also falls back to root for file: + [trusted=yes]; this keeps host parity
-   ## and works for any mount options.)
+   ## unreadable by the unprivileged _apt user. Matters for the /srv (real-fs) and
+   ## host-parity case. Over the read-only vboxsf mount this chmod is a NO-OP: vboxsf
+   ## derives guest perms from its mount options (uid/gid/umask), not the inode mode,
+   ## so _apt still cannot read /mnt/shared. apt then retries the fetch unsandboxed as
+   ## root ("Download is performed unsandboxed as root ...") and succeeds via
+   ## [trusted=yes]. That warning is expected and benign on a disposable test VM --
+   ## accepted; not worth a dedicated permissive remount or an APT::Sandbox::User knob.
    chmod --recursive o+r -- "${rd}"
    ## Run find from INSIDE the repo so it never needs to restore an inaccessible
    ## caller CWD (e.g. invoked from another user's home) -- that failure is non-zero
