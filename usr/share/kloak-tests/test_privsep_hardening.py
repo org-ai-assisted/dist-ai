@@ -47,7 +47,9 @@ copy, no body-cut.
 
 import os
 import re
+import tempfile
 import unittest
+from unittest import mock
 
 ## systemd syscall groups the unit must grant for kloak's proxy work plus
 ## kloakwl's sandbox setup (unshare, mount/pivot_root, capset, uid/gid drop,
@@ -89,13 +91,19 @@ def _read(rel_path: str) -> str:
 
 
 def _require_source() -> None:
-    service = os.path.join(
-        _repo(), 'usr', 'lib', 'systemd', 'system', 'kloak.service')
-    if not os.path.exists(service):
+    ## Skip unless KLOAK_REPO points at a kloak SOURCE checkout. kloak.service
+    ## and the apparmor profiles also exist on an INSTALLED system under '/', so
+    ## they cannot tell source from installed -- but setUpClass reads the
+    ## source-only debian/kloak.sysusers, so an installed-only invocation
+    ## (KLOAK_REPO unset -> '/') that passes an installed-file guard then crashes
+    ## the whole class with FileNotFoundError. src/kloak.c is the same
+    ## source-only marker the sibling verification suite skips on.
+    source_marker = os.path.join(_repo(), 'src', 'kloak.c')
+    if not os.path.exists(source_marker):
         ## style-ok: allow-skip: kloak source absent (not a --component run)
         raise unittest.SkipTest(
-            'kloak.service not found under %s -- set KLOAK_REPO or install the '
-            'kloak source' % service)
+            'kloak source (src/kloak.c) not found under %s -- set KLOAK_REPO '
+            'or install the kloak source' % _repo())
 
 
 class PrivsepHardening(unittest.TestCase):
@@ -322,6 +330,24 @@ class PrivsepHardening(unittest.TestCase):
         self.assertRegex(
             self.sysusers_text, r'(?m)^\s*u\s+kloakwl\b',
             'debian/kloak.sysusers does not create the kloakwl system user')
+
+
+class RequireSourceGuard(unittest.TestCase):
+    ## _require_source must SKIP, not crash, when KLOAK_REPO is not a kloak
+    ## source checkout. An installed system has kloak.service and the apparmor
+    ## profiles under '/', but no src/kloak.c and no debian/ -- keying the guard
+    ## on an installed-present file passes here and then faults setUpClass with
+    ## FileNotFoundError on debian/kloak.sysusers.
+    def test_installed_without_source_skips(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            unit_dir = os.path.join(tmp, 'usr', 'lib', 'systemd', 'system')
+            os.makedirs(unit_dir)
+            with open(os.path.join(unit_dir, 'kloak.service'),
+                      'w', encoding='utf-8'):
+                pass
+            with mock.patch.dict(os.environ, {'KLOAK_REPO': tmp}):
+                with self.assertRaises(unittest.SkipTest):
+                    _require_source()
 
 
 if __name__ == '__main__':
