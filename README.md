@@ -694,8 +694,8 @@ of `<image>.sha512sums.asc` over the sums file against `--cert`, then a hash mat
 entry for exactly `<image>` (basename-bound, so an older signed release cannot be served under a newer
 name). Version is discovered (`--channel stable` -> wiki `Template:VersionNew` pin; `--channel developers`
 -> highest published version dir) or pinned with `--version`; downloads route over Tor/SOCKS5 with
-`--socks-proxy`, and `--onion` permits plaintext-http locations (onion services self-encrypt). The
-version source is unsigned by design (TLS/onion-trusted), so it
+`--socks-proxy`; `--onion` permits plaintext-http download locations. The version source is unsigned
+by design (TLS/onion-trusted), so it
 guarantees a key-signed release of the resolved version but cannot alone stop a controlled version
 source from selecting an older genuine release.
 
