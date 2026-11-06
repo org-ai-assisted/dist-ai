@@ -23,7 +23,8 @@
 ## already source gui-drive.bsh (gui_scan/gui_ocr), vbox-session.bsh (gc_run) and
 ## release-checks.bsh (RELEASE_CHECK_SESSION/RELEASE_CHECK_DESC), and set the globals these
 ## read: vm, GUESTCTL, VBOXMANAGE, me, FAIL_RC, and optionally shot_dir + check_log (both
-## guarded when empty). The resize-nudge env knob keeps its dm-calamares name
+## referenced as ${x:-}, so a caller that leaves them UNSET is fine even under nounset --
+## dm-whonix-pair --mode functional sets neither). The resize-nudge env knob keeps its dm-calamares name
 ## (DM_CALAMARES_RESIZE_NUDGE_AFTER) for its existing callers/tests.
 
 ## style-ok: no-strict -- sourced-only fragment; a top-level 'set -o errexit'/
@@ -55,7 +56,7 @@ wait_ready() {
          printf '%s\n' "${me}: NOTICE: full-res auto-resize not reached after ${nudge_after}s -- issuing one-shot setvideomodehint 1280x800 fallback nudge (GA must still honour it; the non-degenerate full-res shot gate still decides)"
          if "${VBOXMANAGE}" controlvm "${vm}" setvideomodehint 1280 800 32 >/dev/null 2>&1; then
             nudged=1
-            if [ -n "${shot_dir}" ]; then
+            if [ -n "${shot_dir:-}" ]; then
                printf '%s\n' "setvideomodehint 1280x800 fallback nudge issued after ${nudge_after}s (GA cooperative auto-resize did not reach full-res in time)" \
                   > "${shot_dir}/RESIZE-NUDGE-USED" 2>/dev/null || true
             fi
@@ -112,7 +113,7 @@ run_check_report_failure() {
       "${me}: command: ${cmd}" \
       "${me}: exit: ${rc_label}" >&2
    [ -n "${out}" ] && printf '%s\n' "${me}: check ${num} output (why it failed):" "${out}" >&2
-   if [ -n "${check_log}" ]; then
+   if [ -n "${check_log:-}" ]; then
       {
          printf '%s\n' "check ${num} (${RELEASE_CHECK_DESC[${num}]:-}) FAILED:"
          printf '%s\n' "command: ${cmd}"
