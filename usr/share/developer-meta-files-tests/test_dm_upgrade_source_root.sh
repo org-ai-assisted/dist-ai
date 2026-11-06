@@ -14,7 +14,7 @@
 ## (five levels up from .../developer-meta-files/usr/bin). Installed at /usr/bin
 ## that resolves to '/', so the tool died sourcing '//help-steps/pre' with a
 ## confusing "No such file" instead of a clear diagnostic. Fix: validate the
-## derived root and fall back to DERIVATIVE_MAKER_ROOT / derivative_maker /
+## derived root and fall back to DERIVATIVE_MAKER_ROOT / source_code_folder_dist /
 ## $HOME/derivative-maker, else fail with an actionable error.
 ##
 ## The REAL tool is driven via a SYMLINK placed at a shallow path: the tool does
@@ -93,10 +93,22 @@ else
    fail "DERIVATIVE_MAKER_ROOT fallback did not resolve (rc=${rc})"
 fi
 
+## Scenario 1b: resolves via source_code_folder_dist -- the project's canonical
+## source-tree variable (help-steps/variables honors a pre-set value), so an
+## operator pointing it at a checkout must be honored like DERIVATIVE_MAKER_ROOT.
+rc=0
+out="$( env --unset=DERIVATIVE_MAKER_ROOT source_code_folder_dist="${fixture}" HOME="${work}/nohome" \
+   bash "${link}" 2>&1 )" || rc=$?
+if [ "${rc}" -eq 0 ] && grep --quiet --fixed-strings -- 'FIXTURE_PRE_SOURCED' <<< "${out}"; then
+   pass "resolves the checkout via source_code_folder_dist when installed outside a checkout"
+else
+   fail "source_code_folder_dist fallback did not resolve (rc=${rc})"
+fi
+
 ## Scenario 2: nothing resolvable -> a clear, actionable error, and NOT the old
 ## '//help-steps/pre' confusion.
 rc=0
-out="$( env --unset=DERIVATIVE_MAKER_ROOT --unset=derivative_maker HOME="${work}/nohome" \
+out="$( env --unset=DERIVATIVE_MAKER_ROOT --unset=source_code_folder_dist HOME="${work}/nohome" \
    bash "${link}" 2>&1 )" || rc=$?
 if [ "${rc}" -ne 0 ] && grep --quiet --fixed-strings -- 'cannot locate the derivative-maker checkout' <<< "${out}"; then
    pass "unresolvable install location fails with a clear, actionable error"
