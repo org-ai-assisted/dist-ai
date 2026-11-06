@@ -22,10 +22,12 @@ shopt -s shift_verbose
 export LC_ALL=C
 
 here="$(cd -- "$(dirname -- "$(readlink --canonicalize -- "$0")")" && pwd)"
-## OCR_SESSION_BSH overrides the subject (the canary points it at a pre-fix copy).
+## OCR_SESSION_BSH overrides the subject (the canary points it at a pre-fix copy). The
+## default resolves in both the checkout and installed layouts (sibling dir under usr/share),
+## so there is no separate /usr fallback -- a missing checkout lib must FATAL, never silently
+## fall back to a stale installed copy (matches the sibling-test convention).
 lib="${OCR_SESSION_BSH:-${here}/../dm-smbios-reader-boot-tests/ocr-session.bsh}"
-[ -r "${lib}" ] || lib='/usr/share/dm-smbios-reader-boot-tests/ocr-session.bsh'
-[ -r "${lib}" ] || { printf '%s\n' "FATAL: ocr-session.bsh not found" >&2; exit 1; }
+[ -r "${lib}" ] || { printf '%s\n' "FATAL: ocr-session.bsh not found at ${lib}" >&2; exit 1; }
 
 work="$(mktemp --directory)"
 # shellcheck disable=SC2317  ## runs via the EXIT trap

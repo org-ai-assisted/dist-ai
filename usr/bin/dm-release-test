@@ -1171,16 +1171,25 @@ rt_lane_whonix_leak() {
 ## inst lane: the functional release-check battery (>= the kicksecure coverage) run on the
 ## Workstation of a persist-inst- pair, after the Gateway's Tor bootstrap gate.
 rt_lane_whonix_inst() {
-   local account version gw ws rc
+   local account version gw ws rc check_log
    account="$1"
    version="$2"
    gw="Whonix-Gateway-${desktop}"
    ws="Whonix-Workstation-${desktop}"
    rt_whonix_pair_require "${account}" "${version}" "${gw}" "${ws}"
    rt_lane_key='inst'
+   ## Account-owned sink for a FAILED release check's in-guest output, so the run record
+   ## explains WHY it failed (mirrors the kicksecure lane's check-log handoff). Account-
+   ## owned: the sudo'd dm-whonix-pair writes it, the root parent reads it to publish.
+   check_log="$(sudo -u "${account}" -- mktemp --tmpdir "dm-release-test-whonix-checklog.XXXXXX")"
    rc=0
-   sudo -u "${account}" -- "${rt_session_env[@]}" "${DM_WHONIX_PAIR}" --mode functional --gw "${gw}" --ws "${ws}" || rc=$?
+   sudo -u "${account}" -- "${rt_session_env[@]}" "${DM_WHONIX_PAIR}" --mode functional --check-log "${check_log}" --gw "${gw}" --ws "${ws}" || rc=$?
+   ## Thread a non-empty check-log into the published step's stderr tail (empty = a pass or a
+   ## pre-check failure -> no tail). Consumed once by rt_publish_result.
+   rt_check_log=""
+   [ -s "${check_log}" ] && rt_check_log="${check_log}"
    rt_publish_result whonix "${version}" "${account}" whonix-func "${rc}" "" release-checks
+   sudo -u "${account}" -- safe-rm --force -- "${check_log}" 2>/dev/null || true
    return "${rc}"
 }
 

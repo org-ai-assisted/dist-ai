@@ -153,6 +153,23 @@ vm_state() {
       | sed -n 's/^VMState="\(.*\)"$/\1/p' || true
 }
 
+## Bounded fail-closed wait for a CONFIRMED off-state before the next modifyvm/startvm. An
+## empty vm_state is transient showvminfo lock-contention (NOT off) -> keep polling; return
+## nonzero if it never settles (the caller dies with a context-specific message/RC).
+## $1=vm $2=iterations (default 20, 2s each).
+wait_vm_off() {
+   local vm="$1" iterations="${2:-20}" _i
+   for _i in $(seq 1 "${iterations}"); do
+      case "$(vm_state "${vm}")" in
+         poweroff|aborted)
+            return 0
+            ;;
+      esac
+      sleep 2
+   done
+   return 1
+}
+
 ## Fast-fail guard: a VM that is no longer running (crashed/aborted/powered off) will
 ## never make progress, so detect it in ONE check instead of waiting out a whole retry
 ## budget. Call in any wait loop that depends on the VM being up.
@@ -222,6 +239,12 @@ parse_args() {
                   die "${SETUP_RC}" "--mode must be leak|functional, got '$2'"
                   ;;
             esac
+            shift 2
+            ;;
+         --check-log)
+            ## functional mode: a CALLER-owned file for a failed release check's in-guest
+            ## output (the caller creates, reads + reclaims it; ocr-session writes it).
+            check_log="$2"
             shift 2
             ;;
          --print-guards)
@@ -306,10 +329,6 @@ on_exit() {
    if [ -n "${share_dir}" ]; then
       safe-rm --recursive --force -- "${share_dir}" 2>/dev/null || true
    fi
-   ## functional mode: drop the per-run check-log host file.
-   if [ -n "${check_log}" ]; then
-      safe-rm --force -- "${check_log}" 2>/dev/null || true
-   fi
 }
 
 ## Power off, restore the clean snapshot, then discardstate so the next start is a FRESH
@@ -355,20 +374,8 @@ boot_gateway() {
    ## truncate it. Then WAIT for the VM to actually reach poweroff: clean_poweroff's hard-fallback
    ## path returns without waiting, and the next modifyvm needs the VM fully stopped.
    clean_poweroff
-   ## Poll for a CONFIRMED off-state before re-tracing. An empty vm_state is transient showvminfo
-   ## lock-contention (NOT off), so do not break on it; fail-closed if the VM never settles -- the
-   ## next modifyvm needs it fully stopped.
-   local _i off='false'
-   for _i in $(seq 1 20); do
-      case "$(vm_state "${gw}")" in
-         poweroff|aborted)
-            off='true'
-            break
-            ;;
-      esac
-      sleep 2
-   done
-   [ "${off}" = 'true' ] \
+   ## Confirm a settled off-state before re-tracing (the next modifyvm needs it fully stopped).
+   wait_vm_off "${gw}" 20 \
       || die "${SETUP_RC}" "${gw}: did not reach poweroff before re-trace -- a provisioning failure, not a WS leak"
    ## Boot 2 (TRACED): RECONNECT the external NIC, enable the NIC trace offline (-u: just a name,
    ## VBox creates the pcap), then start. Tor autostarts and StrictNodes forces it onto the pinned
@@ -816,6 +823,11 @@ ws_func_exec() {
 ## terminal again for the OCR executor. clean_poweroff/startvm act on ${vm} (= ws here).
 ws_func_reboot_sysmaint() {
    clean_poweroff
+   ## Confirm the WS actually powered off before restarting it -- clean_poweroff (ACPI) is
+   ## async and its hard fallback returns without waiting, so an immediate startvm can race a
+   ## still-running VM (the slow-poweroff case seen at bake time).
+   wait_vm_off "${ws}" 20 \
+      || die "${FAIL_RC}" "${ws}: did not power off before the sysmaint reboot -- cannot restart the Workstation"
    "${VBOXMANAGE}" startvm "${ws}" --type headless >/dev/null
    select_installed_sysmaint
    wait_guestcontrol_ready sysmaint 300 \
@@ -838,14 +850,39 @@ main_functional() {
    printf '%s\n' "${me}: [functional] reach an input-ready terminal in the WS user session"
    wait_ready 300
    open_terminal
-   ## Capture a failed check's in-guest output (ocr-session run_check_report_failure writes here).
-   check_log="$(mktemp -t whonix-func-checklog.XXXXXX)"
+   ## check_log (ocr-session's run_check_report_failure sink for a failed check's in-guest
+   ## output) is CALLER-provided via --check-log; the caller creates, reads + reclaims it
+   ## (like the kicksecure lane). Empty on a standalone run -> that sink's
+   ## [ -n "${check_log:-}" ] guard skips it.
    printf '%s\n' "${me}: [functional] run the release-check battery in the Workstation"
    ## No verify_fn ('' skips the optional OCR render pre-check): the authoritative signal is
    ## each check's exit code (the .rc file), which run_check reads deterministically.
-   run_release_check_battery ws_func_exec ws_func_reboot_sysmaint ''
+   ## `if !` both reports WHICH check failed (the battery records the number + reason) and
+   ## disarms errexit, so a failure surfaces the reason + FAIL_RC instead of a bare rc=1 abort
+   ## (matches dm-upgrade-regression / dm-calamares-install).
+   if ! run_release_check_battery ws_func_exec ws_func_reboot_sysmaint ''; then
+      die "${FAIL_RC}" "release check ${RELEASE_CHECK_FAILED_NUM:-?} (${RELEASE_CHECK_FAILED_REASON:-unknown}) FAILED"
+   fi
    printf '%s\n' "${me}: [functional] PASS -- Workstation passed the full release-check battery"
    return "${PASS_RC}"
+}
+
+## functional stacks Tor bootstrap + two VM boots + a sysmaint reboot + the full numbered
+## battery (per-check budgets sum to ~2430s, check 3 alone is 1800s), so the 2400s leak TTL
+## can expire mid-run. Default = battery budget + setup headroom (robust to battery changes --
+## RELEASE_CHECK_TIMEOUT is sourced from release-checks.bsh); leak keeps the lighter 2400s.
+## DM_WHONIX_PAIR_LOCK_TTL still overrides either.
+FUNCTIONAL_SETUP_HEADROOM=1800
+lock_ttl_default() {
+   local m="$1" sum=0 t
+   if [ "${m}" = 'functional' ]; then
+      for t in "${RELEASE_CHECK_TIMEOUT[@]}"; do
+         sum=$(( sum + t ))
+      done
+      printf '%s' "$(( sum + FUNCTIONAL_SETUP_HEADROOM ))"
+   else
+      printf '%s' 2400
+   fi
 }
 
 main() {
@@ -861,7 +898,7 @@ main() {
       ## style-ok: R-103 -- intentional re-exec: run this VM test under the VM-work lock
       ## (class=leak serializes ALL fleet VM work; the functional battery needs the same
       ## exclusivity on the shared host).
-      exec dm-vm-lock acquire --class leak --ttl "${DM_WHONIX_PAIR_LOCK_TTL:-2400}" -- "$0" "$@"
+      exec dm-vm-lock acquire --class leak --ttl "${DM_WHONIX_PAIR_LOCK_TTL:-$(lock_ttl_default "${mode}")}" -- "$0" "$@"
    fi
 
    ## functional mode: the numbered release-check battery on the WS -- no anon-leak-test
