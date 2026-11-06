@@ -46,8 +46,12 @@ operator's private cache (`~/private-cache`), never in the repo or package.
 | `setup-wizard-dist-tests` | shipping | `usr/share/setup-wizard-dist-tests/` |
 | `iso-boot-tests` (fuzz)  | shipping | `usr/share/iso-boot-tests/` |
 | `dm-smbios-reader-boot-tests`    | shipping | `usr/share/dm-smbios-reader-boot-tests/` |
-| `dm-raw-to-iso` (docs)   | shipping | `usr/share/dm-raw-to-iso/` (tool lives in derivative-maker) |
-| `dm-raw-to-iso-tests`    | shipping | `usr/share/dm-raw-to-iso-tests/` |
+| `vbox-ctl-local`         | shipping | `usr/share/dm-smbios-reader-boot-tests/vbox-ctl-local` |
+| `image-test` (VBox fleet runner) | shipping | `usr/bin/image-test-*`, `usr/lib/systemd/system/image-test@.service` |
+| `dm-whonix-pair`         | shipping | `usr/bin/dm-whonix-pair` (+ `usr/share/dm-whonix-pair-tests/`) |
+| `dm-upgrade-regression`  | shipping | `usr/bin/dm-upgrade-regression` (+ `usr/share/dm-upgrade-regression-tests/`) |
+| `dm-shared-apt-repo`     | shipping | `usr/bin/dm-shared-apt-repo` |
+| `iso-download`           | shipping | `usr/bin/iso-download` (+ `usr/share/iso-download-tests/`) |
 | `dm-reproducible-build-tests` | shipping | `usr/share/dm-reproducible-build-tests/` |
 | `check-ref-commits-for-unicode-tests` | shipping | `usr/share/check-ref-commits-for-unicode-tests/` |
 | `developer-meta-files-tests` | shipping | `usr/share/developer-meta-files-tests/` |
@@ -624,21 +628,108 @@ check-ref-commits-for-unicode-tests-fuzz    # heavy fuzz sweep
 CHECK_REF_COMMITS_REPO=/path/to/helper-scripts check-ref-commits-for-unicode-tests
 ```
 
-## dm-raw-to-iso
+## VBox image-test fleet
 
-`dm-raw-to-iso` converts a bootable raw disk image (as produced by
-derivative-maker's `3200_create-raw-image`) into a highly boot-compatible hybrid
-ISO -- legacy BIOS + UEFI + UEFI Secure Boot (shim -> signed GRUB) + `loopback.cfg`
-+ USB/DVD hybrid -- using only packages.debian.org tools, the same approach
-Debian `live-build` takes, reimplemented without live-build. The tool itself lives
-in derivative-maker as `help-steps/dm-raw-to-iso` (this package ships only its docs
-and test suite); dist-ai does not ship a `usr/bin/dm-raw-to-iso`.
+Tools that run built Kicksecure/Whonix disk images under VirtualBox on the AMD OVH
+bare-metal test server (headless, GPU-less). The `dm-smbios-reader-boot-tests` harness
+above owns the serial/SMBIOS boot path; the tools here own the GUI-driven install, leak,
+and upgrade lanes, their on-demand runner + results plane, and the host plumbing.
 
-The exact command sequence and the reasoning for each step are in
-`usr/share/dm-raw-to-iso/README.md`. The companion suite `dm-raw-to-iso-tests`
-resolves the tool via `DM_RAW_TO_ISO_BIN` (else `DERIVATIVE_MAKER_DIR`), asserts the
-ISO's boot structure, and boots it across `bios | efi | efi-secureboot` via the
-`dm-smbios-reader-boot-tests` harness.
+### image-test runner (`image-test-run`, `image-test@.service`, `image-test-gc`, `image-test-result-emit`)
+
+On-demand templated oneshot: `image-test@<name>.service` reads `/etc/image-test/<name>.conf`
+and runs `image-test-run`, which executes ONE `dm-smbios-reader-vbox` test as an unprivileged
+per-instance user (the user is the isolation boundary -- VBox state is per-`$HOME`; `TEST_USER=root`
+is refused) under `dm-vm-lock acquire --class work`, then publishes a screenshot + `result.json`
+to the read-only results plane. A failing VM is the SIGNAL, it never aborts the publish; a publish
+that cannot complete is NO-DATA, never a faked or downgraded verdict. `result.json` (schema
+`dm-test-result/v1`) is written and validated solely by `image-test-result-emit`, so field order,
+status enum, and step-summary agreement are defined once. `image-test-gc` resets an EPHEMERAL test
+user's VBox state between runs (powers off + `unregistervm --delete` every VM it registered, removes
+`~/VirtualBox VMs` and the per-user IPC dir); it refuses root and any `persist-*` user, only `eph-*`
+is wipeable. Scheduling via a `.timer` is deferred; the unit is fired on demand today. Backed by the
+sourced helpers under `usr/libexec/image-test/` (results publisher, screenshot content gate, COM1
+drainer, MOK extractor).
+
+### dm-whonix-pair
+
+Boots an imported Whonix Gateway + Workstation pair headless on a VBox internal network and asserts
+the Workstation egresses ONLY via the Gateway's Tor. The WS has a single internal-net NIC, so its
+only route out is WS -> GW -> Tor by construction; the test proves that path is live and really Tor
+by running the full `anon-leak-test` battery (enumerate / icmp / udp-123 / ipv6 / tor-confirm /
+gateway-craft) inside the WS via guestcontrol, fail-closed, with an AppArmor-confined `systemcheck`
+as the live positive control. Canary: the WS emits tagged direct-egress packets while the GW external
+NIC is traced to a host pcap (`VBoxManage --nictrace`) -- the tagged destinations must NOT appear
+leaving the GW, while a non-empty pcap + a passing tor-confirm prove the observation is not blind.
+Exit 0 PASS / 5 FAIL / 2 setup.
+
+### dm-upgrade-regression
+
+The R6 upgrade-regression lane + the developer persona. Takes an EXISTING stable Kicksecure VM
+install, switches its apt suite via `repository-dist`, applies staged updates, reboots, and
+re-verifies every release-critical check -- the "stable users receiving stable updates are never
+bricked" gate. `--repository stable-proposed-updates` is R6 (next-stable candidate, BLOCKING);
+`--repository developers` is the early-warning developer persona. In-guest commands run via
+`VBoxManage guestcontrol` (authoritative exit code) AND every check is cross-checked against a
+screenshot (OCR + desktop-up), so a check is green only when the functional and visual signals
+agree. `--persist`/`--revert` is required (no default).
+
+### dm-shared-apt-repo
+
+Delivers the derivative-maker local apt repo to the VBox fleet over a VBox SHARED FOLDER (no network
+-- works even for a Whonix-Workstation on an internal-only net). Delivery only: derivative-maker owns
+repo creation (`--skip-published-packages` populates `aptrepo_local/<derivative>`, codename `local`).
+Subcommands `prepare <kicksecure|whonix>`, `attach <vm> [--transient]` (auto-mounted by the guest's
+`mnt-shared-vbox.service` at `/mnt/shared`), `status [vm]`. The guest trusts this repo `[trusted=yes]`
+over a read-only vboxsf mount; the trust anchor is the host build user who owns the local repo store.
+
+### iso-download
+
+Downloads a published Kicksecure/Whonix ISO and verifies it before use (`dist-installer-cli` fetches
+`.ova`/KVM images but not the ISO). Integrity is fail-closed and both legs are required: OpenPGP verify
+of `<image>.sha512sums.asc` over the sums file against `--cert`, then a hash match of the authenticated
+entry for exactly `<image>` (basename-bound, so an older signed release cannot be served under a newer
+name). Version is discovered (`--channel stable` -> wiki `Template:VersionNew` pin; `--channel developers`
+-> highest published version dir) or pinned with `--version`; downloads can route over Tor/SOCKS5
+(`--socks-proxy`, `--onion`). The version source is unsigned by design (TLS/onion-trusted), so it
+guarantees a key-signed release of the resolved version but cannot alone stop a controlled version
+source from selecting an older genuine release.
+
+### vbox-ctl-local
+
+Host-side VBox guest input/output via the vboxapi Main API (in-process XPCOM): real absolute mouse,
+keyboard, and screenshot for a RUNNING VM with NO Guest Additions, where mouse and screenshot share
+one pixel space (click where the screenshot shows something). It is the host-side counterpart to
+`VBoxManage keyboardputscancode`, adding the mouse the CLI lacks (VM needs `--mouse usbtablet` + a USB
+controller). It carries US set-1 scancode tables (unshifted, shifted, named chord keys), so it types
+the full ASCII shell set and expresses combos by name; `vboxapi` is imported lazily so the pure
+scancode helpers stay unit-testable without the bindings. It is the default `GUESTCTL` driver for
+`dm-calamares-install`, `dm-whonix-pair`, and `dm-upgrade-regression`. Lives in
+`usr/share/dm-smbios-reader-boot-tests/`.
+
+### Host + plumbing helpers
+
+- `vbox-host-shot` -- captures a Wayland-native PNG of a VBox GUI surface on a headless GPU-less host
+  by running one VBox GUI client under a private `labwc` compositor and grabbing with `grim`,
+  blank-gated (a failed/blank grab exits nonzero, never publishes a black image). `manager` grabs the
+  VirtualBox Manager window; `vm-window` starts and grabs a running VM window.
+- `dm-firmware-identity` -- classifier: maps three boot probes (`--efi`, `--coreboot`, `--secureboot`)
+  to one canonical firmware identity and, with `--declared <id>`, reports `match=true|false|unknown` as
+  data (not via exit code). The single place the VBox/qemu lanes resolve declared-vs-detected firmware.
+- `dm-vbox-vcpus` -- prints the vCPU count a test VM should use: online host CPUs minus one (leaving a
+  core for host + harness), floored at 1.
+- `dm-vm-lock` -- VM-concurrency mutex for the shared server, wrapping a command: a readers-writer
+  `flock` where `--class leak` is exclusive and `--class work` is shared but additionally claims one of
+  N counting-semaphore slots to cap concurrent VMs. A `timeout` TTL backstops a wedged holder.
+- `dm-local-apt-iterate` -- one-shot dev loop against a VBox VM: optional `derivative-update`, a
+  derivative-maker build, `dm-shared-apt-repo prepare`, and optional `attach --vm NAME`; `--dry-run`
+  prints every step and runs nothing.
+- `image-redact-tokens` -- redacts non-deterministic tokens from screenshots for golden comparison:
+  OCRs each image with tesseract and fills just each `--pattern`-matching word's box with a black
+  rectangle, leaving the rest of the frame intact so a blank-gate still sees real content.
+- `vbox-disk-extract` -- reads one file out of a VBox disk image on the HOST, read-only, without
+  booting the VM (optional single-LUKS unlock, handles plain or LVM-in-LUKS). Reusable host-side
+  inspection, e.g. lifting the installed system's MOK public cert for host-side enroll.
 
 ## coreboot firmware swap (opt-in, Dasharo-in-VirtualBox port)
 
@@ -665,7 +756,8 @@ dm-release-test kicksecure lxqt --firmware efi \
 
 The reusable coreboot argv template (`build_coreboot_rom_argv`, `CB_CPUIDSET`,
 `build_coreboot_vm_plan`, `build_uart_server_argv`) lives in the shared `dm-smbios-reader-vbox`
-backend and is byte-exact unit tested by `dm-smbios-reader-vbox-tests`; the install lane's
+backend and is byte-exact unit tested by the `dm-smbios-reader-boot-tests` suite's
+`test_dm_smbios_reader_vbox.py`; the install lane's
 coreboot `modifyvm`/extradata argv is unit tested by `dm-calamares-install-tests`, and the
 `dm-release-test` pass-through by `dm-release-test-tests`. See
 `usr/share/dm-smbios-reader-boot-tests/dasharo-vbox-firmware-port.md` for the firmware-port
