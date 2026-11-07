@@ -181,7 +181,7 @@ print_usage() {
         [--coreboot-rom PATH] [--provision]
 
   GUEST      kicksecure | whonix
-  INTERFACE  lxqt | xfce | cli (the published desktop flavor)
+  INTERFACE  lxqt | cli (the published desktop flavor)
   --lane     inst (functional release-check battery) | leak (anon-leak-test battery).
              MANDATORY for whonix (both are real lanes; no default). kicksecure is always
              inst (--lane leak is rejected).
@@ -226,9 +226,6 @@ rt_desktop_token() {
    case "$1" in
       lxqt)
          printf '%s\n' "LXQt"
-         ;;
-      xfce)
-         printf '%s\n' "Xfce"
          ;;
       cli)
          printf '%s\n' "CLI"
@@ -1352,8 +1349,8 @@ main() {
       ## is a results-matrix LABEL only (git-describe, not a release token).
       [ "${guest}" = 'kicksecure' ] || die "${SETUP_RC}" "--iso is kicksecure-only"
       [ -f "${local_iso}" ] || die "${SETUP_RC}" "--iso '${local_iso}' is not a regular file"
-      ## The filename's desktop must match INTERFACE, else the lane would publish (say) an
-      ## Xfce build into the lxqt results cell.
+      ## The filename's desktop must match INTERFACE, else the lane would publish (say) a
+      ## CLI build into the lxqt results cell.
       local iso_base
       iso_base="${local_iso##*/}"
       [ "${iso_base#"Kicksecure-${desktop}-"}" != "${iso_base}" ] \

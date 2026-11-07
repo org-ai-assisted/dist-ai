@@ -78,7 +78,7 @@ assert_reject "guest empty rejected" rt_guest_valid ""
 
 ## interface -> published desktop token
 assert_out "desktop lxqt" "LXQt" rt_desktop_token lxqt
-assert_out "desktop xfce" "Xfce" rt_desktop_token xfce
+assert_reject "desktop xfce rejected (deprecated)" rt_desktop_token xfce
 assert_out "desktop cli" "CLI" rt_desktop_token cli
 assert_reject "desktop gnome rejected" rt_desktop_token gnome
 

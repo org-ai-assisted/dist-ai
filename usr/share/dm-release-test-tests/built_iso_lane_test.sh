@@ -145,10 +145,10 @@ else
    bad "build-distinct --version override failed: ${over_plan}"
 fi
 
-## the filename desktop must match INTERFACE (no Xfce build under the lxqt cell).
-xfce="${d}/Kicksecure-Xfce-18.2.3.0-222-gdead.Intel_AMD64.iso"
-touch -- "${xfce}"
-if "${subject}" kicksecure lxqt --iso "${xfce}" --dry-run >/dev/null 2>&1; then
+## the filename desktop must match INTERFACE (no CLI build under the lxqt cell).
+mismatch_iso="${d}/Kicksecure-CLI-18.2.3.0-222-gdead.Intel_AMD64.iso"
+touch -- "${mismatch_iso}"
+if "${subject}" kicksecure lxqt --iso "${mismatch_iso}" --dry-run >/dev/null 2>&1; then
    bad 'interface/desktop mismatch wrongly accepted'
 else
    ok 'interface/desktop mismatch rejected'
