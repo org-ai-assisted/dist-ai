@@ -28,9 +28,15 @@
 ##
 ## Whonix lanes use the pre-imported pairs, so they assume those pairs are provisioned at the
 ## resolved --channel version (re-provision a stale pair; see dm-release-test --provision).
+## The whonix INST lanes in particular need a pre-provisioned pair at the resolved version, so
+## with --channel developers run `dm-release-test <guest> <iface> --lane inst --provision ...`
+## FIRST -- a developers INST lane has no blessed stable pin to fall back on.
+##
+## A full batch EXECUTES the real multi-hour OVH server-exec jobs merely by invoking this tool;
+## pass --dry-run (alias --print-lanes) to print the resolved lanes and exit WITHOUT running them.
 ##
 ## Usage: vbox-image-test-default [--iso KS_ISO] [--channel stable|developers]
-##                                [--coreboot-rom ROM] [--add 'LANE']... [--no-publish]
+##                                [--coreboot-rom ROM] [--add 'LANE']... [--no-publish] [--dry-run]
 ## A full batch is HOURS -- drive it durably under bgjob-run.
 
 set -o errexit
@@ -45,11 +51,14 @@ me="${0##*/}"
 
 usage() {
    printf '%s\n' \
-      "Usage: ${me} [--iso KS_ISO] [--channel stable|developers] [--version VER] [--coreboot-rom ROM] [--add 'LANE']... [--no-publish]" \
+      "Usage: ${me} [--iso KS_ISO] [--channel stable|developers] [--version VER] [--coreboot-rom ROM] [--add 'LANE']... [--no-publish] [--dry-run]" \
       "Runs the DEFAULT lane batch (kicksecure lxqt EFI+SecureBoot + BIOS; whonix lxqt BIOS inst + leak;" \
       "whonix cli BIOS inst) then publishes once (via vbox-image-test)." \
       "--version VER is REQUIRED with --channel developers (whonix developers OVAs are not auto-discoverable);" \
-      "it is threaded into the whonix lanes only. Opt-in: --coreboot-rom ROM, --add 'LANE'." \
+      "it is threaded into the whonix lanes only. The whonix INST lanes need a pre-provisioned pair at the" \
+      "resolved version (with --channel developers, run dm-release-test ... --lane inst --provision first)." \
+      "--dry-run (alias --print-lanes): print the resolved lanes and exit WITHOUT running the OVH batch." \
+      "Opt-in: --coreboot-rom ROM, --add 'LANE'." \
       "A full batch is HOURS -- drive it durably under bgjob-run."
 }
 
@@ -58,6 +67,7 @@ channel="stable"
 version=""
 coreboot_rom=""
 no_publish="false"
+dry_run="false"
 extra=()
 
 while [ "$#" -ge 1 ]; do
@@ -115,6 +125,10 @@ while [ "$#" -ge 1 ]; do
          no_publish="true"
          shift
          ;;
+      --dry-run | --print-lanes)
+         dry_run="true"
+         shift
+         ;;
       -h | --help)
          usage
          exit 0
@@ -160,5 +174,12 @@ lanes=(
 
 args=()
 [ "${no_publish}" = "false" ] || args+=( --no-publish )
+
+## Safe inspection path: running this tool otherwise EXECUTES the real multi-hour OVH batch,
+## so --dry-run prints the resolved lanes and exits WITHOUT touching vbox-image-test.
+if [ "${dry_run}" = "true" ]; then
+   printf '%s\n' "${lanes[@]}"
+   exit 0
+fi
 
 vbox-image-test "${args[@]}" "${lanes[@]}"

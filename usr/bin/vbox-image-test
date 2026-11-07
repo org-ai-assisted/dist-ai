@@ -68,6 +68,21 @@ if [ "${#lanes[@]}" -lt 1 ]; then
    exit 64
 fi
 
+## Defense in depth: each lane is split with `read -r -a <<<`, which TRUNCATES at a newline (so a
+## newline-bearing spec would silently drop its tail -- and the dropped args would not reach the
+## remote dm-release-test). Every lane field is already whitespace/newline-rejected upstream, so
+## this is belt-and-braces; reject a newline-bearing spec loudly here, BEFORE the publish trap is
+## armed (so a rejected usage error never triggers a spurious publish).
+nl=$'\n'
+for spec in "${lanes[@]}"; do
+   case "${spec}" in
+      *"${nl}"*)
+         printf '%s\n' "${me}: lane spec must not contain a newline: '${spec}'" >&2
+         exit 64
+         ;;
+   esac
+done
+
 ## Publish exactly once, on ANY exit (success, a lane failure, or an interrupt) -- the whole point
 ## is that the operator never has to remember test-results-deploy. A publish failure does NOT
 ## mask the lanes' verdict (the results stay on the plane for a manual re-run).

@@ -133,6 +133,23 @@ if grep --quiet -E 'kicksecure.*--version' "${args}"; then fail "kicksecure lane
 run --add "kicksecure lxqt --firmware bios"
 if has "kicksecure lxqt --firmware bios"; then pass "--add appends a raw lane"; else fail "--add did not append"; fi
 
+# --- --dry-run / --print-lanes: print the resolved lanes to stdout and NEVER invoke
+#     vbox-image-test (merely running this tool otherwise fires the real OVH batch).
+#     Canary: old code rejected --dry-run as an unknown argument (exit 64). ---
+dr_out="${work}/dryrun.out"
+dr_rc=0
+true > "${args}"
+VIT_ARGS="${args}" "${bin}" --dry-run >"${dr_out}" 2>/dev/null || dr_rc=$?
+want "${dr_rc}" 0 "--dry-run exits 0"
+if [ -s "${args}" ]; then fail "--dry-run wrongly invoked vbox-image-test"; else pass "--dry-run did not invoke vbox-image-test"; fi
+want "$(wc --lines < "${dr_out}" | tr --delete ' ')" 5 "--dry-run printed the 5 lanes"
+if grep --quiet --fixed-strings 'kicksecure lxqt --source official --channel stable --firmware efi-secureboot' "${dr_out}"; then pass "--dry-run printed the flagship lane"; else fail "--dry-run missing the flagship lane"; fi
+pl_rc=0
+true > "${args}"
+VIT_ARGS="${args}" "${bin}" --print-lanes >/dev/null 2>&1 || pl_rc=$?
+want "${pl_rc}" 0 "--print-lanes alias exits 0"
+if [ -s "${args}" ]; then fail "--print-lanes wrongly invoked vbox-image-test"; else pass "--print-lanes did not invoke vbox-image-test"; fi
+
 printf '%s\n' "----"
 printf '%s\n' "passed=${pass_count} failed=${fail_count}"
 [ "${fail_count}" -eq 0 ]

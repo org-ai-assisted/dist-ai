@@ -111,6 +111,15 @@ rc=0
 SE_LANES="${lanes}" TRD_CALLS="${calls}" "${bin}" >/dev/null 2>&1 || rc=$?
 want "${rc}" 64 "no lanes -> usage rc 64"
 
+# --- W6: a lane spec with a newline is rejected (exit 64) BEFORE any publish -- the local
+#     read -r -a would otherwise truncate it and silently drop the tail args. ---
+reset
+rc=0
+nlspec="kicksecure lxqt"$'\n'"--iso /x.iso"
+SE_LANES="${lanes}" TRD_CALLS="${calls}" "${bin}" "${nlspec}" >/dev/null 2>&1 || rc=$?
+want "${rc}" 64 "newline-bearing lane rejected (exit 64)"
+want "$(n_calls)" 0 "newline rejection does not publish"
+
 printf '%s\n' "----"
 printf '%s\n' "passed=${pass_count} failed=${fail_count}"
 [ "${fail_count}" -eq 0 ]
