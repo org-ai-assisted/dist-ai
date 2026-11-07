@@ -87,9 +87,15 @@ trap do_publish EXIT
 rc=0
 for spec in "${lanes[@]}"; do
    printf '%s\n' "${me}: lane: dm-release-test ${spec}" >&2
-   ## --timeout 0: an install lane runs ~40-50 min; never let server-exec kill it mid-run. The spec
-   ## is deliberately word-split into dm-release-test's own args.
-   # shellcheck disable=SC2086
-   server-exec --user root --timeout 0 --cmd "dm-release-test ${spec}" || rc=$?
+   ## The lane is a single space-joined string; split it LOCALLY into dm-release-test's args (the
+   ## intended split), then rebuild the remote command with each token %q-quoted. server-exec --cmd
+   ## runs as a REMOTE bash script AS ROOT, so an unquoted spec would word-split AND interpret shell
+   ## metachars THERE; %q neutralizes that (a space-bearing --iso/--coreboot-rom path is already
+   ## rejected upstream in vbox-image-test-default). --timeout 0: an install lane runs ~40-50 min;
+   ## never let server-exec kill it mid-run.
+   # shellcheck disable=SC2086  # the LOCAL word-split of ${spec} into argv is intended
+   read -r -a lane_argv <<< "${spec}"
+   remote_cmd="$(printf '%q ' dm-release-test "${lane_argv[@]}")"
+   server-exec --user root --timeout 0 --cmd "${remote_cmd}" || rc=$?
 done
 exit "${rc}"

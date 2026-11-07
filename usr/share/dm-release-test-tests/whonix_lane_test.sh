@@ -303,6 +303,9 @@ check "provision: dist-installer-cli invoked via sudo -u (not as root)" \
 export rt_origin='built'
 export ova_gw="${work}/Whonix-Gateway-CLI-build.ova"
 export ova_ws="${work}/Whonix-Workstation-CLI-build.ova"
+## The ovas must EXIST + be readable: rt_import_built_pair prechecks `sudo -u account test -r`
+## on both before importing either (so an unreadable ova never destroys the existing pair).
+touch -- "${ova_gw}" "${ova_ws}"
 printf '%s' "" > "${DIST_ARGV}"
 printf '%s' "" > "${SETEXTRA_LOG}"
 printf '%s' "" > "${VBOX_LOG}"
@@ -320,6 +323,20 @@ check "built provision: GW marker set to the build label" \
    "$(grep --quiet -- 'Whonix-Gateway-CLI leaktest/pair-version 18.2.3.0-g9999' "${SETEXTRA_LOG}" && printf '%s' "true" || printf '%s' "false")"
 check "built provision: WS marker set to the build label" \
    "$(grep --quiet -- 'Whonix-Workstation-CLI leaktest/pair-version 18.2.3.0-g9999' "${SETEXTRA_LOG}" && printf '%s' "true" || printf '%s' "false")"
+
+## Case H2 (built pair, unreadable ova): the account-readability precheck must abort SETUP_RC
+## BEFORE any destructive unregister/import, so an unreadable ova never destroys the existing
+## pair. Point --ova-gw at a MISSING path so the stubbed `sudo -u account test -r` fails.
+export rt_origin='built'
+export ova_gw="${work}/missing-gw.ova"
+printf '%s' "" > "${VBOX_LOG}"
+rc_h2=0
+( rt_provision_pair persist-inst-whonix 18.2.3.0-g9999 ) >/dev/null 2>&1 || rc_h2=$?
+export rt_origin='downloaded'
+check "built provision unreadable ova: aborts SETUP_RC(2)" \
+   "$([ "${rc_h2}" = '2' ] && printf '%s' "true" || printf '%s' "false")"
+check "built provision unreadable ova: no destructive VBoxManage op before abort" \
+   "$([ ! -s "${VBOX_LOG}" ] && printf '%s' "true" || printf '%s' "false")"
 
 ## Lock dir hardened to 0700 (a world-writable lock dir lets any local user hold the
 ## lock and wedge every run). Canary: pre-created 0777 above; the chmod must tighten it.

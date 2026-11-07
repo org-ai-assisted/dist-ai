@@ -155,6 +155,59 @@ cleanup() {
 trap cleanup EXIT
 workdir="$(mktemp --directory)"
 
+## run_ensure drives the shipped fragment in this SEPARATE bash process (NOT a
+## subshell) so the strict mode it sets is honored even when the caller invokes
+## run_ensure as an 'if'/'&&'/'||' operand. A subshell in that position runs with
+## its OWN errexit SUPPRESSED (the condition rule reaches into it), so a reject
+## case relying on errexit to propagate a failed install/chown would be masked;
+## toggling the caller's errexit off instead is forbidden (R-011). A distinct
+## process keeps its own 'set -o errexit' fully honored, so the reject cases
+## genuinely exercise the strict mode the production build uses (help-steps/pre +
+## 1200_prepare-build-machine source this fragment under errexit).
+##
+## argv: base owner sudo_cmd sentinel helper. The child defines the stand-ins the
+## fragment would otherwise inherit from the build:
+##   error           -- derivative-maker's fail-loud handler (help-steps/pre),
+##                       stubbed to abort, so a REJECT case's non-zero exit is the
+##                       asserted PASS instead of a false success;
+##   sudo_record_run -- records the SUDO_TO_ROOT invocation AND runs the real
+##                       privileged command (a correct repair leaves the sentinel
+##                       and takes effect; an ambient-root/EUID-0 direct chown
+##                       leaves NO sentinel);
+##   sudo_recorder   -- records only; the $HOME fast path must NEVER invoke it.
+run_ensure_driver="${workdir}/run_ensure_driver.sh"
+cat > "${run_ensure_driver}" <<'DRIVER'
+#!/bin/bash
+## Match the strict mode the production build applies when it sources the
+## fragment (help-steps/pre + 1200_prepare-build-machine); a fresh bash process
+## inherits NONE of it, and inherit_errexit is load-bearing -- without it errexit
+## is off inside $(...), so a failed command in a substitution would not abort.
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+local_apt_repository_base="$1"
+user_name="$2"
+SUDO_TO_ROOT="$3"
+sentinel="$4"
+helper="$5"
+error() {
+   printf '%s\n' "stub error: $*" >&2
+   exit 1
+}
+sudo_record_run() {
+   touch -- "${sentinel}"
+   "$@"
+}
+sudo_recorder() {
+   touch -- "${sentinel}"
+}
+source "${helper}"
+local_apt_repo_store_ensure
+DRIVER
+
 owner_of() {
    stat -c '%U' -- "$1" 2>/dev/null || true
 }
@@ -193,49 +246,11 @@ assert_store_ok() {
    fi
 }
 
-## Drive the SHIPPED function against a controlled store path, owner and
-## SUDO_TO_ROOT. A fresh subshell per call keeps strict mode and the sourced
-## definition out of this shell. The subshell defines the stand-ins the fragment
-## would otherwise inherit from the build:
-##   error           -- derivative-maker's fail-loud handler (help-steps/pre),
-##                       stubbed to abort, so a REJECT case can assert the helper
-##                       failed loud (non-zero) instead of returning success;
-##   sudo_record_run -- records the SUDO_TO_ROOT invocation AND runs the real
-##                       privileged command (so a correct repair both leaves the
-##                       sentinel and takes effect; an ambient-root / EUID-0-only
-##                       direct chown leaves NO sentinel);
-##   sudo_recorder   -- records only; the $HOME fast path must NEVER invoke it.
+## Drive the SHIPPED function (via run_ensure_driver, a child process -- see its
+## definition above) against a controlled store path, owner and SUDO_TO_ROOT.
 run_ensure() {
    local base="$1" owner="$2" sudo_cmd="$3"
-   (
-      set -o errexit
-      set -o nounset
-      set -o pipefail
-      # shellcheck disable=SC2034  # consumed by the sourced function
-      local_apt_repository_base="${base}"
-      # shellcheck disable=SC2034
-      user_name="${owner}"
-      # shellcheck disable=SC2317  # invoked from the sourced fragment
-      error() {
-         printf '%s\n' "stub error: $*" >&2
-         exit 1
-      }
-      ## style-ok: R-120 -- test stubs standing in for SUDO_TO_ROOT, not wrappers.
-      # shellcheck disable=SC2317  # invoked indirectly via ${SUDO_TO_ROOT}
-      sudo_record_run() {
-         touch -- "${sentinel}"
-         "$@"
-      }
-      # shellcheck disable=SC2317  # invoked indirectly via ${SUDO_TO_ROOT}
-      sudo_recorder() {
-         touch -- "${sentinel}"
-      }
-      # shellcheck disable=SC2034
-      SUDO_TO_ROOT="${sudo_cmd}"
-      # shellcheck disable=SC1090  # helper path is resolved at runtime
-      source "${helper}"
-      local_apt_repo_store_ensure
-   )
+   bash -- "${run_ensure_driver}" "${base}" "${owner}" "${sudo_cmd}" "${sentinel}" "${helper}"
 }
 
 ## Assert SUDO_TO_ROOT was / was not invoked during the last run (via the
@@ -321,7 +336,8 @@ assert_sudo_used "(non-UPG)"
 ## A build-user-owned REGULAR FILE: 'install -d || true' swallows "Not a
 ## directory" and the owner check (deref) matches, so an owner-only helper returns
 ## success -- then reprepro fails "Not a directory". 'run_ensure' is in an 'if' so
-## its non-zero exit (the helper's fail-loud) is the asserted PASS.
+## its non-zero exit (the helper's fail-loud) is the asserted PASS -- see run_ensure
+## for why that 'if' does NOT mask an errexit-driven rejection.
 base_e="${workdir}/case_e/store"
 sentinel="${workdir}/case_e.sudo"
 install -d -m 0755 -o "${build_user}" -g "${build_user}" -- "${workdir}/case_e"

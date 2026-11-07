@@ -116,22 +116,28 @@ assert_reject "select unknown state" rt_select_account kicksecure bogus 18-2-3-5
 assert_out "origin official kicksecure" "downloaded" rt_resolve_origin official kicksecure "" "" ""
 assert_out "origin official whonix" "downloaded" rt_resolve_origin official whonix "" "" ""
 assert_out "origin built kicksecure iso" "built" rt_resolve_origin built kicksecure /b.iso "" ""
-assert_out "origin built whonix pair" "built" rt_resolve_origin built whonix "" /g.ova /w.ova
+## whonix built: ovas are a provision-only input (enforced in main), so the pure gate accepts
+## both the test-run shape (no ovas) and the provision shape (ovas present).
+assert_out "origin built whonix test (no ova)" "built" rt_resolve_origin built whonix "" "" ""
+assert_out "origin built whonix provision (ova pair)" "built" rt_resolve_origin built whonix "" /g.ova /w.ova
 assert_reject "origin empty source (mandatory)" rt_resolve_origin "" kicksecure /b.iso "" ""
 assert_reject "origin bogus source" rt_resolve_origin bogus kicksecure /b.iso "" ""
 assert_reject "origin official forbids --iso" rt_resolve_origin official kicksecure /b.iso "" ""
 assert_reject "origin official forbids --ova-gw" rt_resolve_origin official whonix "" /g.ova ""
 assert_reject "origin built kicksecure needs --iso" rt_resolve_origin built kicksecure "" "" ""
 assert_reject "origin built kicksecure forbids --ova" rt_resolve_origin built kicksecure /b.iso /g.ova ""
-assert_reject "origin built whonix needs both ovas" rt_resolve_origin built whonix "" /g.ova ""
 assert_reject "origin built whonix forbids --iso" rt_resolve_origin built whonix /b.iso /g.ova /w.ova
 assert_reject "origin built unknown guest" rt_resolve_origin built debian /b.iso "" ""
 
-## rt_version_build_distinct: a build-distinct label (dash/letter) passes; a release-shaped
-## (pure dotted) label of ANY length is rejected so a built run can't overwrite a release cell.
+## rt_version_build_distinct: a label carrying a char OUTSIDE [0-9.-] passes; a label of only
+## [0-9.-] is release-shaped and REJECTED -- the cell key folds BOTH '.' and '-' to '-', so a
+## dash-form label (18-2-3-0) would collide with the official dotted release 18.2.3.0.
 assert_out "build-distinct git-describe" "" rt_version_build_distinct 18.2.3.0-g9999
 assert_out "build-distinct with letter" "" rt_version_build_distinct 18.2.3.0rc1
+assert_out "build-distinct with plus" "" rt_version_build_distinct 1.0+build-1
 assert_reject "release-shaped pure dotted rejected" rt_version_build_distinct 18.2.3.0
+assert_reject "release-shaped dash form rejected (cell collision)" rt_version_build_distinct 18-2-3-0
+assert_reject "release-shaped dash-dot mix rejected" rt_version_build_distinct 18.2.3-0
 assert_reject "release-shaped long dotted rejected" rt_version_build_distinct 1.2.3.4.5.6.7.8.9.0.1.2.3.4.5.6.7.8
 
 ## lane predicates: rt_lane_is_leak keys on the LANE (inst|leak), NOT the guest -- whonix
