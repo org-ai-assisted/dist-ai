@@ -62,6 +62,11 @@ mode_rc=0
 ( parse_args --mode bogus ) >/dev/null 2>&1 || mode_rc=$?
 assert "--mode bogus rejected (SETUP_RC)" test "${mode_rc}" -eq 2
 
+## --shot-dir parses into shot_dir (the leak "story" sink); default is empty (storyless run).
+assert "shot_dir defaults empty" test -z "${shot_dir}"
+parse_args --shot-dir /shot-dir-parse-canary
+assert "--shot-dir sets shot_dir" test "${shot_dir}" = '/shot-dir-parse-canary'
+
 ## functional wiring canaries (grep the SOURCE): the executor maps to run_check and
 ## main_functional drives the shared numbered battery with the two callbacks. The patterns
 ## hold literal $1/$3 which must NOT expand.

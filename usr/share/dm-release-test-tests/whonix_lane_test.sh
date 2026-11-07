@@ -192,6 +192,10 @@ check "leak match: lane returns 0" "$([ "${rc_a}" = '0' ] && printf '%s' "true" 
 check "leak match: dm-whonix-pair invoked" "$([ -s "${PAIR_ARGV}" ] && printf '%s' "true" || printf '%s' "false")"
 check "leak match: passed --mode leak" \
    "$(grep --quiet -- '--mode leak' "${PAIR_ARGV}" && printf '%s' "true" || printf '%s' "false")"
+## leak lane must hand dm-whonix-pair a --shot-dir (the account-owned leak "story" sink), so the
+## run publishes the ordered milestone sequence. A revert to the old storyless call fails this.
+check "leak match: passed --shot-dir" \
+   "$(grep --quiet -- '--shot-dir ' "${PAIR_ARGV}" && printf '%s' "true" || printf '%s' "false")"
 
 ## Case A-inst (inst lane): marker matches -> lane proceeds to dm-whonix-pair with --mode
 ## functional. A swapped mode (functional vs leak) is a real canary.
@@ -285,6 +289,16 @@ chmod 0770 -- "${stubbin}/mktemp"
 rc_f="$(run_lane rt_lane_whonix_inst persist-inst-whonix)"
 check "mktemp-fail (inst): lane aborts SETUP_RC(2)" "$([ "${rc_f}" = '2' ] && printf '%s' "true" || printf '%s' "false")"
 check "mktemp-fail (inst): dm-whonix-pair NOT invoked" "$([ ! -s "${PAIR_ARGV}" ] && printf '%s' "true" || printf '%s' "false")"
+
+## Case G (leak lane): a failed account-owned mktemp (the --shot-dir story sink) must abort the
+## lane INCONCLUSIVE (SETUP_RC) BEFORE dm-whonix-pair -- errexit is off in the lane, so an
+## unchecked mktemp would yield shot_dir="" and run with `--shot-dir ""` (a storyless pass that
+## hides a provisioning gap). Canary: pre-fix code reaches dm-whonix-pair (PAIR_ARGV non-empty).
+printf '%s\n' 'Value: 18.2.3.5' > "${MARKER_RESPONSE_FILE}"
+printf '%s' "" > "${PAIR_ARGV}"
+rc_g="$(run_lane rt_lane_whonix_leak persist-leak-whonix)"
+check "mktemp-fail (leak): lane aborts SETUP_RC(2)" "$([ "${rc_g}" = '2' ] && printf '%s' "true" || printf '%s' "false")"
+check "mktemp-fail (leak): dm-whonix-pair NOT invoked" "$([ ! -s "${PAIR_ARGV}" ] && printf '%s' "true" || printf '%s' "false")"
 safe-rm --force -- "${stubbin}/mktemp"
 
 if [ "${failures}" -ne 0 ]; then

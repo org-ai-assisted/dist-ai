@@ -64,6 +64,14 @@ mode='leak'
 ## functional mode: host file capturing a FAILED release check's in-guest output (consumed
 ## by ocr-session.bsh's run_check_report_failure). Empty in leak mode.
 check_log=""
+## Account-owned milestone "story" dir (--shot-dir): the leak run drops an ordered visual +
+## textual record here (NN-<name>.png guest-framebuffer shots, NN-<name>.card.txt text cards),
+## which image_test_results_publish renders as the lane's "full story" -- the same mechanism the
+## Calamares install lane uses. Empty => every story_snap/story_card call is a no-op, so a run
+## without --shot-dir is byte-unchanged.
+shot_dir=""
+## Captured anon-leak-test battery JSON (set by ws_battery), carded by main as the battery stage.
+battery_json_last=""
 ## anon-leak-test checkout ON THIS HOST, pushed into the WS (the single authoritative
 ## battery -- no re-embedded copy). Provisioned location; overridable.
 ANON_LEAK_TEST_REPO="${ANON_LEAK_TEST_REPO:-/var/lib/image-tests/anon-leak-test}"
@@ -143,7 +151,42 @@ gw_relay_cache=''
 
 die() {
    printf '%s\n' "${me}: ERROR: ${2}" >&2
+   ## Publish WHY the run failed as the final story card, so a FAIL/INCONCLUSIVE run still
+   ## carries a readable verdict in the results plane (mirrors the install lane's failure card).
+   ## No-op without --shot-dir. story_card is defined below; die is only ever CALLED at runtime
+   ## (after the whole file is parsed), so forward-reference is fine.
+   story_card 98 failure "Run failed (rc=${1})" "${2}"
    exit "$1"
+}
+
+## --- leak-lane screenshot "story" --------------------------------------------------------------
+## Mirror of dm-calamares-install's story: an ordered record of the leak run, published from the
+## account-owned ${shot_dir}. Two kinds, exactly as the install lane: PNG screenshots for the
+## visually-meaningful, known-up frames (GW/WS desktop), and TEXT state cards for points with no
+## distinct screen -- the leak battery runs NON-interactively over guestcontrol, so each probe's
+## evidence is its anon-leak-test JSON verdict, not a photo (the install lane made the same call:
+## state cards are text, not images). ALL calls are BEST-EFFORT: a grab/write failure NEVER changes
+## the leak verdict -- the authoritative oracle is the battery exit + the GW-NIC canary, never a
+## frame. Empty shot_dir => no-op (a --shot-dir-less run is unchanged).
+
+## Guest-framebuffer screenshot into ${shot_dir}/NN-<name>.png via vbox-ctl-local (vboxapi, no
+## Guest Additions -- the SAME grab gui_ocr uses). $3 picks the VM (default: the current ${vm});
+## the leak flow interleaves GW and WS, so callers name it explicitly.
+story_snap() {
+   local nn="$1" name="$2" snap_vm="${3:-${vm}}"
+   [ -n "${shot_dir}" ] || return 0
+   "${GUESTCTL}" "${snap_vm}" shot "${shot_dir}/${nn}-${name}.png" >/dev/null 2>&1 || true
+}
+
+## Text "state card" (NN-<name>.card.txt) for a point with no framebuffer worth a photo. $3=title,
+## $4=body (newlines preserved). The publisher renders it as a labelled text panel -- no PNG, no
+## OCR round-trip, no golden; the text is authoritative.
+story_card() {
+   local nn="$1" name="$2" title="$3" body="$4" card
+   [ -n "${shot_dir}" ] || return 0
+   card="${shot_dir}/${nn}-${name}.card.txt"
+   printf '%s\n' "[state card -- rendered text, not a screenshot]" "${title}" "" "${body}" \
+      > "${card}" 2>/dev/null || true
 }
 
 ## Current VBox run-state of a VM ('running', 'poweroff', 'aborted', ...); empty if
@@ -245,6 +288,12 @@ parse_args() {
             ## functional mode: a CALLER-owned file for a failed release check's in-guest
             ## output (the caller creates, reads + reclaims it; ocr-session writes it).
             check_log="$2"
+            shift 2
+            ;;
+         --shot-dir)
+            ## CALLER-owned dir for the leak run's milestone story (NN-<name>.png / .card.txt).
+            ## The caller creates, publishes + reclaims it; empty/unset => no story captured.
+            shot_dir="$2"
             shift 2
             ;;
          --print-guards)
@@ -367,6 +416,10 @@ boot_gateway() {
    gw_started='true'
    wait_guestcontrol_ready user 300 \
       || die "${SETUP_RC}" "${gw}: guestcontrol not ready as user to pin guards -- a provisioning failure, not a WS leak"
+   ## Story: the Gateway desktop is up (guestcontrol confirmed) -- capture the "gateway booted to
+   ## desktop" frame. Same desktop renders on the traced boot 2; the guard-pin boot is the first
+   ## point the GW is reliably rendered, so grab it here.
+   story_snap 20 gateway-desktop "${gw}"
    gw_pin_guards
    ## CLEAN poweroff (ACPI) so the torrc write is flushed; a hard poweroff could lose it. NOT
    ## restore_fresh -- that reverts the pin; a plain power-cycle keeps the on-disk drop-in.
@@ -404,6 +457,9 @@ boot_workstation_sysmaint() {
    select_installed_sysmaint
    wait_guestcontrol_ready sysmaint 300 \
       || die "${SETUP_RC}" "${ws}: guestcontrol not ready as sysmaint -- a provisioning failure, not a WS leak"
+   ## Story: the Workstation sysmaint desktop is up -- capture the "workstation booted to desktop"
+   ## frame before any probe runs.
+   story_snap 40 workstation-desktop "${ws}"
 }
 
 ## Classify a guest probe run from its captured stdout by anon-leak-test's OWN JSON verdict, never
@@ -443,6 +499,9 @@ ws_battery() {
    out="$("${VBOX_EXEC_LOCAL}" "${ws}" --role sysmaint --timeout 300 \
       --cmd "dsudo ${GUEST_SHARE_MOUNT}/anon-leak-test ${probes} --json")" || true
    printf '%s\n' "${out}"
+   ## Expose the raw JSON for the story: main cards the battery verdict (per-probe results +
+   ## exit_code) from the last battery output -- one authoritative stage card, not a re-run.
+   battery_json_last="${out}"
    probe_verdict "${out}"
 }
 
@@ -935,6 +994,16 @@ main() {
       cp -- "${ANON_LEAK_TEST_REPO}/usr/share/anon-leak-test/anon-leak-webrtc.js" "${share_dir}/anon-leak-webrtc.js"
    fi
 
+   ## Story: pre-boot evidence of the exact pair under test (VBoxManage facts, not a photo).
+   story_card 10 pair-defined "Whonix pair under test (pre-boot)" "$(
+      printf '%s\n' "Gateway VM: ${gw}"
+      "${VBOXMANAGE}" showvminfo "${gw}" --machinereadable 2>/dev/null \
+         | grep -iE '^(VMState|firmware|memory|vram|nic1|"SATA|"IDE)=' | head -10
+      printf '%s\n' "" "Workstation VM: ${ws}"
+      "${VBOXMANAGE}" showvminfo "${ws}" --machinereadable 2>/dev/null \
+         | grep -iE '^(VMState|firmware|memory|vram|nic1|"SATA|"IDE)=' | head -10
+   )"
+
    printf '%s\n' "${me}: boot Gateway (${gw}) with external-NIC trace"
    boot_gateway
 
@@ -969,11 +1038,19 @@ main() {
    ## after Tor is confirmed here; if it never is, the run is reported inconclusive, not clean.
    [ "${tor_ok}" = 'true' ] || die "${SETUP_RC}" "Tor egress never confirmed (GW Tor did not bootstrap / provisioning gap) -- inconclusive, NOT a leak"
 
+   ## Story: Tor bootstrap gate passed. The Gateway state is TEXTUAL (systemcheck positive
+   ## control), so card it; the Workstation desktop that just proved egress is the visual frame.
+   story_card 30 gateway-tor-bootstrap "Gateway Tor bootstrapped" "Workstation systemcheck confirmed the Gateway's Tor SocksPort + TransPort are up (Phase 1 positive control). The egress path Workstation -> Gateway -> Tor is live; the leak oracle below runs only now."
+   story_snap 50 workstation-tor-confirmed "${ws}"
+
    ## Flush the WS's OWN firewall before the battery: the MAIN leak protection is the GATEWAY, and
    ## a WS-firewall drop would stop a leak probe at the WS so it never reaches the GW NIC -- a
    ## false "clean" that hides a broken GW. Removing it lets every probe flow to the GW so the
    ## canary measures the GATEWAY's protection. Reverted by the next snapshot restore.
    ws_flush_firewall
+   ## Story: the WS's own failsafe firewall is flushed + confirmed empty, so every probe flows to
+   ## the Gateway NIC and the canary measures the GATEWAY's protection, not a WS-side drop.
+   story_card 45 ws-firewall-flushed "Workstation firewall flushed" "The Workstation's own nftables failsafe was flushed and confirmed empty before the battery, so no WS-side drop can mask a leak -- the main Whonix protection (the Gateway) is what the battery + GW-NIC canary now measure."
 
    ## Craft aim + watch list in ONE place: the gateway-craft matrix aims here and the
    ## canary (canary_gateway_pcap) watches exactly these. clearnet-ipv4 = CLEARNET_ICMP.
@@ -1000,6 +1077,9 @@ main() {
    elif [ "${battery_rc}" != '0' ]; then
       die "${SETUP_RC}" "leak test INCONCLUSIVE: a probe could not run (battery rc=${battery_rc}) -- not a proven leak"
    fi
+   ## Story: the full battery's verdict (per-probe results + exit_code) as ONE authoritative stage
+   ## card -- the battery ran non-interactively, so its JSON is the evidence, not a screen.
+   story_card 60 leak-battery "anon-leak-test battery (enumerate / icmp-clearnet / udp-clearnet / tor-confirm / gateway-craft)" "${battery_json_last}"
 
    ## Phase 2b: APP/BROWSER layer -- OPT-IN (DM_WHONIX_PAIR_BROWSER=1). Drives the WS browser
    ## (headless) via anon-leak-test's browser-webrtc probe: asserts WebRTC exposes no host IP
@@ -1017,6 +1097,8 @@ main() {
       elif [ "${browser_rc}" != '0' ]; then
          die "${SETUP_RC}" "app/browser layer INCONCLUSIVE: the browser-webrtc probe exited ${browser_rc} (see the guest output above) -- not a proven leak"
       fi
+      ## Story: the opt-in app/browser layer passed (WebRTC exposed no host IP; browser egress Tor).
+      story_card 62 browser-webrtc "App/browser layer: WebRTC leak probe" "anon-leak-test browser-webrtc probe PASSED in the Workstation: the browser's WebRTC path exposed no host IP and its egress was Tor-only."
    fi
 
    ## Phase 3+4: KILLSWITCH -- OPT-IN only (DM_WHONIX_PAIR_KILLSWITCH=1). Stopping Tor on
@@ -1060,6 +1142,9 @@ main() {
       done
       [ "${restored}" = 'true' ] \
          || die "${SETUP_RC}" "killswitch recovery: Tor egress NOT restored after restart (stop not cleanly reversible) -- an infra failure, not a WS leak"
+      ## Story: the opt-in killswitch phase passed -- Tor stopped on the GW, the crafted re-emit
+      ## stayed clean (firewall dropped, no clearnet), and Tor egress recovered afterward.
+      story_card 64 killswitch "Fail-closed killswitch (Tor stopped on the Gateway)" "With Tor positively confirmed DOWN on the Gateway, the crafted direct-egress re-emit still showed zero clearnet probe-target packets (the firewall dropped it, not Tor), and Tor egress was restored after restart -- a bracketed, reversible stop."
    fi
 
    ## Positive control: emit one deterministic known-good packet to a pinned guard (best-effort),
@@ -1079,7 +1164,14 @@ main() {
    "${VBOXMANAGE}" controlvm "${gw}" poweroff >/dev/null 2>&1 || true
    sleep 3
    canary_gateway_pcap
+   ## Story: the GW-NIC canary passed -- the external-NIC trace classified zero clearnet
+   ## probe-target packets, with genuine Tor guard traffic + the deliberate positive-control
+   ## packet both present (so the capture was not blind). Exact counts are on the canary line
+   ## in the run log.
+   story_card 80 gw-canary "Gateway-NIC canary (external-NIC pcap)" "The Gateway's external-NIC trace showed 0 probe-target clearnet packets across every capture window, while carrying genuine Tor guard traffic and the deliberate positive-control packet -- proof the capture was live, not blind, and that nothing egressed to clearnet via the Gateway."
 
+   ## Story: the final leak verdict.
+   story_card 90 leak-verdict "LEAK TEST PASS" "Workstation egresses ONLY via the Gateway's Tor: the full anon-leak-test battery was clean and the Gateway-NIC canary confirmed no clearnet probe-target egress."
    printf '%s\n' "${me}: PASS -- Workstation egresses ONLY via the Gateway's Tor (full battery + GW-trace canary)"
    return "${PASS_RC}"
 }

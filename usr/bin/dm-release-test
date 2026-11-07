@@ -1175,16 +1175,34 @@ rt_whonix_pair_require() {
 
 ## leak lane: the anon-leak-test battery on the dedicated persist-leak- pair.
 rt_lane_whonix_leak() {
-   local account version gw ws rc
+   local account version gw ws rc shot_dir shot_arg
    account="$1"
    version="$2"
    gw="Whonix-Gateway-${desktop}"
    ws="Whonix-Workstation-${desktop}"
    rt_whonix_pair_require "${account}" "${version}" "${gw}" "${ws}"
    rt_lane_key='leak'
+   ## Account-owned shot DIR: dm-whonix-pair drops the leak run's milestone story here
+   ## (NN-<milestone>.png shots + NN-<milestone>.card.txt text cards -- boot -> Tor -> battery
+   ## -> canary -> verdict), and image_test_results_publish publishes the whole ordered
+   ## sequence, exactly like the Calamares install lane's "full story". Account-owned so the
+   ## unprivileged dm-whonix-pair can write it and root forwards each path no-follow to the
+   ## emitter. errexit is OFF in this lane (called `... || rc=$?`), so a failed mktemp would
+   ## silently run with `--shot-dir ""` (a valid but storyless run); check explicitly and abort
+   ## INCONCLUSIVE (SETUP_RC) so a provisioning gap never hides as a storyless pass -- mirrors the
+   ## inst lane's check-log guard.
+   if ! shot_dir="$(sudo -u "${account}" -- mktemp --directory --tmpdir "dm-release-test-whonix-leak-shots.XXXXXX")"; then
+      log error "cannot allocate the whonix leak milestone-shot directory"
+      rt_publish_result whonix "${version}" "${account}" whonix-pair "${SETUP_RC}" "" tor-confirm
+      return "${SETUP_RC}"
+   fi
    rc=0
-   sudo -u "${account}" -- "${rt_session_env[@]}" "${DM_WHONIX_PAIR}" --mode leak --gw "${gw}" --ws "${ws}" || rc=$?
-   rt_publish_result whonix "${version}" "${account}" whonix-pair "${rc}" "" tor-confirm
+   sudo -u "${account}" -- "${rt_session_env[@]}" "${DM_WHONIX_PAIR}" --mode leak --shot-dir "${shot_dir}" --gw "${gw}" --ws "${ws}" || rc=$?
+   ## Publish the milestone-shot DIR (empty/never-started -> no attachments, verdict still
+   ## publishes); forward the dir unconditionally (see the kicksecure lane's note).
+   shot_arg="${shot_dir}"
+   rt_publish_result whonix "${version}" "${account}" whonix-pair "${rc}" "${shot_arg}" tor-confirm
+   sudo -u "${account}" -- safe-rm --recursive --force -- "${shot_dir}" 2>/dev/null || true
    return "${rc}"
 }
 
