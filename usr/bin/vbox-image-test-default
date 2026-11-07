@@ -8,21 +8,25 @@
 ## The DEFAULT VBox image-test batch -- a CONSERVATIVE set of the important lanes, run + published
 ## in one command via vbox-image-test. This encodes the lane-importance policy:
 ##
-##   DEFAULT (run every batch), all LXQt + efi-secureboot:
-##     - kicksecure lxqt   (a built --iso if given, else --channel's release)   <- flagship
-##     - whonix lxqt --lane inst
-##     - whonix lxqt --lane leak
+##   DEFAULT (run every batch):
+##     - kicksecure lxqt  EFI+SecureBoot  (built --iso if given, else --channel release) <- flagship
+##     - kicksecure lxqt  BIOS            (legacy boot must stay tested)
+##     - whonix     lxqt  BIOS  --lane inst   (Whonix primary real usage = VBox BIOS)
+##     - whonix     lxqt  BIOS  --lane leak   (network-isolation leak battery)
+##     - whonix     cli   BIOS  --lane inst   (CLI edition; its gateway is the CLI gateway)
+##
+##   INTENDED-BUT-NOT-YET-SUPPORTED:
+##     - kicksecure VM-IMAGE (OVA) lxqt EFI -- dm-release-test has NO kicksecure OVA-import path
+##       (kicksecure = ISO download+install only); needs a new harness lane before it can default.
 ##
 ##   OPT-IN ONLY (never in the default set; add with a flag):
-##     --cli             a MINIMAL kicksecure cli lane
 ##     --coreboot-rom R  the kicksecure coreboot/dasharo firmware lane (efi, ROM at R)
 ##     --add 'LANE'      any extra raw dm-release-test lane (repeatable)
-##   Also opt-in / out of scope here: non-secureboot firmware (bios / plain efi), xfce (deprecated).
 ##
 ## Whonix lanes use the pre-imported pairs, so they assume those pairs are provisioned at the
 ## resolved --channel version (re-provision a stale pair; see dm-release-test --provision).
 ##
-## Usage: vbox-image-test-default [--iso KS_ISO] [--channel stable|developers] [--cli]
+## Usage: vbox-image-test-default [--iso KS_ISO] [--channel stable|developers]
 ##                                [--coreboot-rom ROM] [--add 'LANE']... [--no-publish]
 ## A full batch is HOURS -- drive it durably under bgjob-run.
 
@@ -38,15 +42,14 @@ me="${0##*/}"
 
 usage() {
    printf '%s\n' \
-      "Usage: ${me} [--iso KS_ISO] [--channel stable|developers] [--cli] [--coreboot-rom ROM] [--add 'LANE']... [--no-publish]" \
-      "Runs the DEFAULT conservative lane batch (kicksecure lxqt + whonix inst + leak; LXQt, efi-secureboot)" \
-      "then publishes once (via vbox-image-test). Opt-in: --cli (minimal cli), --coreboot-rom ROM, --add 'LANE'." \
-      "A full batch is HOURS -- drive it durably under bgjob-run."
+      "Usage: ${me} [--iso KS_ISO] [--channel stable|developers] [--coreboot-rom ROM] [--add 'LANE']... [--no-publish]" \
+      "Runs the DEFAULT lane batch (kicksecure lxqt EFI+SecureBoot + BIOS; whonix lxqt BIOS inst + leak;" \
+      "whonix cli BIOS inst) then publishes once (via vbox-image-test)." \
+      "Opt-in: --coreboot-rom ROM, --add 'LANE'. A full batch is HOURS -- drive it durably under bgjob-run."
 }
 
 iso=""
 channel="stable"
-cli="false"
 coreboot_rom=""
 no_publish="false"
 extra=()
@@ -62,10 +65,6 @@ while [ "$#" -ge 1 ]; do
          [ "$#" -ge 2 ] || { printf '%s\n' "${me}: --channel needs stable|developers" >&2; exit 64; }
          channel="$2"
          shift 2
-         ;;
-      --cli)
-         cli="true"
-         shift
          ;;
       --coreboot-rom)
          [ "$#" -ge 2 ] || { printf '%s\n' "${me}: --coreboot-rom needs a ROM path" >&2; exit 64; }
@@ -92,18 +91,19 @@ while [ "$#" -ge 1 ]; do
    esac
 done
 
-## The flagship Kicksecure lane: a built ISO when given (tests THIS build), else the release.
+## The flagship Kicksecure source: a built ISO when given (tests THIS build), else the release.
 ks_src="--channel ${channel}"
 [ -z "${iso}" ] || ks_src="--iso ${iso}"
 
 lanes=(
-   "kicksecure lxqt ${ks_src}"
-   "whonix lxqt --lane inst --channel ${channel}"
-   "whonix lxqt --lane leak --channel ${channel}"
+   "kicksecure lxqt ${ks_src} --firmware efi-secureboot"
+   "kicksecure lxqt ${ks_src} --firmware bios"
+   "whonix lxqt --lane inst --channel ${channel} --firmware bios"
+   "whonix lxqt --lane leak --channel ${channel} --firmware bios"
+   "whonix cli --lane inst --channel ${channel} --firmware bios"
 )
 
 ## Opt-in additions.
-[ "${cli}" = "false" ] || lanes+=( "kicksecure cli ${ks_src}" )
 [ -z "${coreboot_rom}" ] || lanes+=( "kicksecure lxqt ${ks_src} --firmware efi --coreboot-rom ${coreboot_rom}" )
 [ "${#extra[@]}" -eq 0 ] || lanes+=( "${extra[@]}" )
 

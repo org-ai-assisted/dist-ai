@@ -5,10 +5,11 @@
 
 ## AI-Assisted
 
-## vbox-image-test-default encodes the lane-importance policy: the DEFAULT set is exactly the
-## three conservative LXQt + efi-secureboot lanes (kicksecure lxqt, whonix inst, whonix leak);
-## cli / coreboot / extra lanes are OPT-IN only; --no-publish and --channel/--iso flow through.
-## vbox-image-test is stubbed (records the lane argv it is handed); no server, no network.
+## vbox-image-test-default encodes the lane-importance policy: the DEFAULT set is the five
+## conservative lanes (kicksecure lxqt EFI+SecureBoot, kicksecure lxqt BIOS, whonix lxqt BIOS
+## inst, whonix lxqt BIOS leak, whonix cli BIOS inst); coreboot / extra lanes are OPT-IN only;
+## --no-publish and --channel/--iso flow through. vbox-image-test is stubbed (records the lane
+## argv it is handed); no server, no network.
 
 set -o errexit
 set -o nounset
@@ -54,34 +55,36 @@ line() { sed -n "${1}p" "${args}"; }
 has() { grep --quiet --fixed-strings -- "${1}" "${args}"; }
 n() { wc --lines < "${args}" | tr --delete ' '; }
 
-# --- default: exactly the 3 conservative lanes, no --no-publish ---
+# --- default: exactly the 5 conservative lanes, no --no-publish ---
 run
-want "$(n)" 3 "default = 3 lanes"
-want "$(line 1)" "kicksecure lxqt --channel stable" "default lane 1 = kicksecure lxqt (release)"
-if has "whonix lxqt --lane inst --channel stable"; then pass "default includes whonix inst"; else fail "default missing whonix inst"; fi
-if has "whonix lxqt --lane leak --channel stable"; then pass "default includes whonix leak"; else fail "default missing whonix leak"; fi
+want "$(n)" 5 "default = 5 lanes"
+want "$(line 1)" "kicksecure lxqt --channel stable --firmware efi-secureboot" "lane 1 = kicksecure lxqt EFI+SecureBoot (release)"
+want "$(line 2)" "kicksecure lxqt --channel stable --firmware bios" "lane 2 = kicksecure lxqt BIOS"
+if has "whonix lxqt --lane inst --channel stable --firmware bios"; then pass "default includes whonix lxqt BIOS inst"; else fail "default missing whonix lxqt BIOS inst"; fi
+if has "whonix lxqt --lane leak --channel stable --firmware bios"; then pass "default includes whonix lxqt BIOS leak"; else fail "default missing whonix lxqt BIOS leak"; fi
+if has "whonix cli --lane inst --channel stable --firmware bios"; then pass "default includes whonix cli BIOS inst"; else fail "default missing whonix cli BIOS inst"; fi
 if has "--no-publish"; then fail "default wrongly passed --no-publish"; else pass "default publishes (no --no-publish)"; fi
 
-# --- --iso: the kicksecure lane tests the built ISO ---
-run --iso /b.iso
-want "$(line 1)" "kicksecure lxqt --iso /b.iso" "--iso -> kicksecure lane tests the built ISO"
+# --- Whonix defaults are BIOS, never Secure Boot (primary real usage) ---
+if has "whonix lxqt --lane inst --channel stable --firmware efi-secureboot"; then fail "whonix inst wrongly defaults to Secure Boot"; else pass "whonix inst is BIOS by default"; fi
 
-# --- cli is OPT-IN: absent by default, present with --cli ---
-run
-if has "kicksecure cli"; then fail "cli lane present by default (should be opt-in)"; else pass "cli is opt-in (absent by default)"; fi
-run --cli
-want "$(n)" 4 "--cli adds one lane"
-if has "kicksecure cli --channel stable"; then pass "--cli adds a kicksecure cli lane"; else fail "--cli did not add the cli lane"; fi
+# --- --iso: BOTH kicksecure lanes test the built ISO, firmware preserved ---
+run --iso /b.iso
+want "$(line 1)" "kicksecure lxqt --iso /b.iso --firmware efi-secureboot" "--iso -> kicksecure EFI+SecureBoot lane tests the built ISO"
+want "$(line 2)" "kicksecure lxqt --iso /b.iso --firmware bios" "--iso -> kicksecure BIOS lane tests the built ISO"
 
 # --- coreboot is OPT-IN ---
+run
+if has "--coreboot-rom"; then fail "coreboot lane present by default (should be opt-in)"; else pass "coreboot is opt-in (absent by default)"; fi
 run --coreboot-rom /x.rom
 if has "--coreboot-rom /x.rom"; then pass "--coreboot-rom adds a coreboot firmware lane"; else fail "--coreboot-rom did not add the lane"; fi
 
-# --- --no-publish flows through; --channel resolves ---
+# --- --no-publish flows through; --channel resolves into every channel-keyed lane ---
 run --no-publish
 want "$(line 1)" "--no-publish" "--no-publish passed to vbox-image-test"
 run --channel developers
-if has "kicksecure lxqt --channel developers"; then pass "--channel developers resolves"; else fail "--channel not applied"; fi
+if has "kicksecure lxqt --channel developers --firmware efi-secureboot"; then pass "--channel developers resolves (kicksecure)"; else fail "--channel not applied to kicksecure"; fi
+if has "whonix lxqt --lane leak --channel developers --firmware bios"; then pass "--channel developers resolves (whonix)"; else fail "--channel not applied to whonix"; fi
 
 # --- --add appends a raw lane ---
 run --add "kicksecure lxqt --firmware bios"
