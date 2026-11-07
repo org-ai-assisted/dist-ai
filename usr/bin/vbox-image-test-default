@@ -83,6 +83,15 @@ while [ "$#" -ge 1 ]; do
          ;;
       --version)
          [ "$#" -ge 2 ] || { printf '%s\n' "${me}: --version needs a value" >&2; exit 64; }
+         ## --version is threaded verbatim into a lane spec that the remote side re-splits on
+         ## whitespace into dm-release-test args; a value with a space would inject extra options
+         ## (e.g. --version '18.9 --lane leak' turns an inst lane into a leak lane). Reject it.
+         case "$2" in
+            *[[:space:]]*)
+               printf '%s\n' "${me}: --version must not contain whitespace (would inject extra dm-release-test options)" >&2
+               exit 64
+               ;;
+         esac
          version="$2"
          shift 2
          ;;

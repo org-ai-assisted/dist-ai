@@ -119,6 +119,14 @@ if has "whonix lxqt --lane inst --source official --channel developers --version
 if has "whonix lxqt --lane leak --source official --channel developers --version 18.9 --firmware bios"; then pass "developers --version threads into whonix leak"; else fail "whonix leak missing --version"; fi
 if has "whonix cli --lane inst --source official --channel developers --version 18.9 --firmware bios"; then pass "developers --version threads into whonix cli"; else fail "whonix cli missing --version"; fi
 want "$(line 1)" "kicksecure lxqt --source official --channel developers --firmware efi-secureboot" "developers kicksecure lane carries NO --version (auto-discover)"
+
+# --- codex#1: a --version value with whitespace would inject extra dm-release-test options into
+#     the whonix lanes (--version '18.9 --lane leak' -> --lane leak lands as a separate arg).
+#     Rejected early. Canary: old code accepted it and the injected option reached the lane. ---
+inj_rc=0
+true > "${args}"
+VIT_ARGS="${args}" "${bin}" --channel developers --version '18.9 --lane leak' >/dev/null 2>&1 || inj_rc=$?
+want "${inj_rc}" 64 "--version with whitespace (option injection) rejected (exit 64)"
 if grep --quiet -E 'kicksecure.*--version' "${args}"; then fail "kicksecure lane wrongly carries --version"; else pass "no kicksecure lane carries --version"; fi
 
 # --- --add appends a raw lane ---
