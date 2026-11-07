@@ -541,11 +541,14 @@ CHMOD_LONG = frozenset({
 ## but NOT auto-fixed: chmod applies it relative to the EXISTING bits while
 ## 'install -m' sets ABSOLUTE bits, so the rewrite would not be equivalent.
 NUMERIC_MODE = re.compile(r'[0-7]{3,4}')
-## A chmod REMOVE-form symbolic mode ('-w', '-rx', '-s') looks like an option to
-## command_tokens (leading '-'). chmod has NO short option whose letters are all
-## permission bits (its flags are c/f/v/R and the long '--...'), so a '-'-led token
-## whose chars are ALL in [rwxXst] is unambiguously the mode, not a flag.
-CHMOD_DASH_MODE = re.compile(r'-[rwxXst]+')
+## A dash-led chmod MODE ('-w', '-rx', '-700', '-u', '-w,u+x') looks like an option
+## to command_tokens (leading '-'). chmod's mode alphabet -- perm bits [rwxXst],
+## who [ugoa], octal [0-7], the operators/separator [-+=,] -- is DISJOINT from its
+## flag letters (c/f/v/R/H/L/P), so a '-'-led token built only from mode-alphabet
+## chars is unambiguously the mode, not a flag. A dash mode is never numeric
+## (NUMERIC_MODE needs no leading '-'), so this classification only ever makes the
+## pair DETECTED, never auto-fixed.
+CHMOD_DASH_MODE = re.compile(r'-[rwxXst0-7ugoa,+=-]+')
 
 
 def _command_operands(call, source, value_short=frozenset(),
@@ -560,24 +563,41 @@ def _command_operands(call, source, value_short=frozenset(),
             if kind == "operand" and text != "--"]
 
 
-def _chmod_operands(call, source):
-    """chmod's operand words -- its [mode, target]. Two chmod-specific reads that a
-    generic operand scan gets wrong:
-      - a REMOVE-form symbolic mode ('-w', '-rx') is '-'-led so command_tokens
-        classes it 'opt' and would drop it; count such a token as the mode operand
-        (see CHMOD_DASH_MODE) so 'mkdir d; chmod -w d' is still DETECTED -- never
-        auto-fixed, a symbolic mode is not numeric.
-      - '--reference REF' takes a SEPARATE value (space form); declare it so REF is
-        consumed as the option value, not mis-read as the mode. That shape carries
-        no mode operand of its own and is not an R-173 pair at all."""
+def _chmod_mode_target(call, source):
+    """CALL's (mode_word, target_word) for R-173's 'chmod MODE DIR' shape, or None
+    when CALL is not that shape. Two chmod-specific reads a generic operand scan
+    gets wrong:
+      - '--reference' (ANY spelling: space form, '=' form, an abbreviation) takes
+        the mode FROM A FILE, so chmod has NO mode operand and every following word
+        is a file -- never R-173, whatever the operand count.
+      - a dash-led mode ('-w', '-700', '-u', and repeated '-w -x' which chmod folds
+        into ONE mode) is classed 'opt' by command_tokens; treat such tokens as the
+        mode so the pair is still DETECTED (a dash mode is non-numeric, so never
+        auto-fixed). With a dash mode the SINGLE remaining operand is the target.
+    Otherwise the operands are exactly [mode, target]."""
+    dash_modes = []
     operands = []
-    for kind, word, text in bash_ast.command_tokens(
-            call, source, frozenset(), frozenset({"reference"})):
+    for kind, word, text in bash_ast.command_tokens(call, source):
+        if kind == "opt":
+            if text == "--":
+                continue
+            name = _long_name(text)
+            if name is not None \
+                    and bash_ast.resolve_long(name, CHMOD_LONG) == "reference":
+                return None
+            if CHMOD_DASH_MODE.fullmatch(text):
+                dash_modes.append(word)
+            continue
         if kind == "operand" and text != "--":
             operands.append(word)
-        elif kind == "opt" and CHMOD_DASH_MODE.fullmatch(text):
-            operands.append(word)
-    return operands
+    if dash_modes:
+        ## repeated dash modes are ONE mode -> exactly one operand (the target).
+        if len(operands) != 1:
+            return None
+        return dash_modes[0], operands[0]
+    if len(operands) != 2:
+        return None
+    return operands[0], operands[1]
 
 
 def _mkdir_fix_shape(call, source):
@@ -692,14 +712,13 @@ def _mkdir_then_chmod_pairs(ctx):
                                  frozenset({"mode"}))
         if len(dirs) != 1 or _chmod_is_recursive(eff2, source):
             return None
-        chmod_operands = _chmod_operands(eff2, source)
-        ## chmod's operands are exactly [mode, target]; anything else (no target,
-        ## a second target, a '--reference' form with no mode operand) is not the
-        ## one-dir shape 'install -d' replaces.
-        if len(chmod_operands) != 2:
+        ## chmod must be the one-dir 'chmod MODE DIR' shape 'install -d' replaces;
+        ## no target, a second target, or a '--reference' mode-from-file is not it.
+        mode_target = _chmod_mode_target(eff2, source)
+        if mode_target is None:
             return None
         dir_word = dirs[0]
-        mode_word, target_word = chmod_operands
+        mode_word, target_word = mode_target
         if bash_ast.word_source(dir_word, source) \
                 != bash_ast.word_source(target_word, source):
             return None
