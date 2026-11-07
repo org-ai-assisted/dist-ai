@@ -356,13 +356,16 @@ rt_build_version_ok() {
    return 0
 }
 
-## True when a version LABEL is build-distinct (carries a dash/letter), return 1 when it is
-## release-shaped (pure dotted). A built result must NOT overwrite an official-release results
-## cell, so the caller REJECTS a release-shaped label. Charset match (not length) so a long
-## pure-dotted label cannot slip past rt_version_token's 32-char cap. Pure; unit-tested.
+## True when a version LABEL is build-distinct, return 1 when it is release-shaped. A built
+## result must NOT overwrite an official-release results cell, so the caller REJECTS a
+## release-shaped label. The cell key is "${version//./-}" -- dots AND dashes both fold to '-'
+## -- so a label of ONLY [0-9.-] (e.g. "18-2-3-0") collides with the official dotted release
+## "18.2.3.0". Require a char OUTSIDE [0-9.-] (the git-describe <ver>-g<sha> always carries the
+## letter 'g'); charset match (not length) so a long collider cannot slip past rt_version_token's
+## 32-char cap. Pure; unit-tested.
 rt_version_build_distinct() {
    case "$1" in
-      *[!0-9.]*)
+      *[!0-9.-]*)
          return 0
          ;;
    esac
@@ -583,13 +586,14 @@ rt_select_account() {
    esac
 }
 
-## Validate the MANDATORY --source and its artifact-flag coupling, and echo the resulting
-## origin (downloaded for official, built for built). Pure (no FS/VM/root); unit-tested.
+## Validate the MANDATORY --source and its artifact-flag coupling by GUEST, and echo the origin
+## (downloaded for official, built for built). Pure (no FS/VM/root); unit-tested.
 ## Rules (no default -- an empty source is rejected):
-##   - official: a published-release download; NO artifact flag may be set.
-##   - built: a local artifact, one shape per guest -- kicksecure=--iso, whonix=--ova pair.
-##     The wrong-guest shape (an --ova under kicksecure, an --iso under whonix) is rejected,
-##     so a source+artifact mismatch can never silently test the wrong subject.
+##   - official: a published-release download; NO artifact flag (--iso/--ova-*) may be set.
+##   - built kicksecure: --iso (the ISO installed every run); --ova-* is whonix-only.
+##   - built whonix: --iso is kicksecure-only. The --ova pair is a PROVISION-only input (the
+##     two-phase flow: --provision imports the pair, a test run only verifies the pinned marker),
+##     so its presence is enforced by main against --provision, NOT here.
 ## $1=source $2=guest $3=iso $4=ova_gw $5=ova_ws.
 rt_resolve_origin() {
    local source guest iso ova_gw ova_ws
@@ -612,8 +616,8 @@ rt_resolve_origin() {
                [ -z "${ova_gw}${ova_ws}" ] || return 1
                ;;
             whonix)
-               ## whonix built = the --ova pair; --iso is kicksecure-only.
-               { [ -n "${ova_gw}" ] && [ -n "${ova_ws}" ]; } || return 1
+               ## whonix built uses the --ova pair (provision-only, checked in main); --iso is
+               ## kicksecure-only.
                [ -z "${iso}" ] || return 1
                ;;
             *)
@@ -826,12 +830,21 @@ rt_import_one_ova() {
 
 ## Import a locally-built GW+WS OVA pair directly under ACCOUNT. $1=account $2=gw $3=ws.
 rt_import_built_pair() {
-   local account gw ws
+   local account gw ws ova
    account="$1"
    gw="$2"
    ws="$3"
    { [ -n "${ova_gw}" ] && [ -n "${ova_ws}" ]; } \
       || die "${SETUP_RC}" "built-pair provisioning needs --ova-gw and --ova-ws"
+   ## Verify BOTH ovas are readable BY THE IMPORT ACCOUNT before importing EITHER. The import
+   ## runs `sudo -u account` (VBox state is per-$HOME) and rt_import_one_ova deletes any existing
+   ## same-named VM first, so an ova the account cannot read (mode-0600 under /root, a 0700 build
+   ## home) would otherwise destroy the existing pair and THEN fail -- a root `[ -f ]` does not
+   ## prove the dropped account can read it.
+   for ova in "${ova_gw}" "${ova_ws}"; do
+      sudo -u "${account}" -- test -r "${ova}" \
+         || die "${SETUP_RC}" "ova '${ova}' is not readable by the import account '${account}' -- place it where that account can read it"
+   done
    rt_import_one_ova "${account}" "${ova_gw}" "${gw}"
    rt_import_one_ova "${account}" "${ova_ws}" "${ws}"
 }
@@ -1308,7 +1321,7 @@ rt_lane_kicksecure() {
 ## mislabels a verdict for the wrong version. Reads both VMs (a half-reprovisioned pair with
 ## one stale VM is caught too). $1=account $2=version $3=gw $4=ws.
 rt_whonix_pair_require() {
-   local account version gw ws gw_ver ws_ver
+   local account version gw ws gw_ver ws_ver reprovision
    account="$1"
    version="$2"
    gw="$3"
@@ -1316,8 +1329,15 @@ rt_whonix_pair_require() {
    rt_lock_account "${account}"
    gw_ver="$(rt_pair_version "${account}" "${gw}")" || gw_ver=""
    ws_ver="$(rt_pair_version "${account}" "${ws}")" || ws_ver=""
+   ## --source is mandatory, so the recovery command must carry it (and, for a built pair, the
+   ## --ova pair); a source-less hint would fail immediately when pasted.
+   if [ "${rt_origin}" = 'built' ]; then
+      reprovision="${me} whonix ${interface} --lane ${lane} --source built --ova-gw <gw.ova> --ova-ws <ws.ova> --version ${version} --provision"
+   else
+      reprovision="${me} whonix ${interface} --lane ${lane} --source official --version ${version} --provision"
+   fi
    rt_pair_version_ok "${version}" "${gw_ver}" "${ws_ver}" \
-      || die "${SETUP_RC}" "whonix pair version mismatch: requested '${version}', GW marked '${gw_ver}', WS marked '${ws_ver}' -- re-provision with 'dm-release-test whonix ${interface} --lane ${lane} --version ${version} --provision' or pass the matching --version"
+      || die "${SETUP_RC}" "whonix pair version mismatch: requested '${version}', GW marked '${gw_ver}', WS marked '${ws_ver}' -- re-provision with '${reprovision}' or pass the matching --version"
 }
 
 ## leak lane: the anon-leak-test battery on the dedicated persist-leak- pair.
@@ -1444,12 +1464,24 @@ parse_args() {
          --ova-gw)
             [ "$#" -ge 2 ] || die "${SETUP_RC}" "missing value for --ova-gw"
             [ -n "$2" ] || die "${SETUP_RC}" "empty value for --ova-gw"
+            ## A newline/control char would split the one-token-per-line emit-argv output
+            ## (mapfile) and inject extra VBoxManage args; a real OVA path carries none.
+            case "$2" in
+               *[[:cntrl:]]*)
+                  die "${SETUP_RC}" "--ova-gw path contains a control character"
+                  ;;
+            esac
             ova_gw="$2"
             shift 2
             ;;
          --ova-ws)
             [ "$#" -ge 2 ] || die "${SETUP_RC}" "missing value for --ova-ws"
             [ -n "$2" ] || die "${SETUP_RC}" "empty value for --ova-ws"
+            case "$2" in
+               *[[:cntrl:]]*)
+                  die "${SETUP_RC}" "--ova-ws path contains a control character"
+                  ;;
+            esac
             ova_ws="$2"
             shift 2
             ;;
@@ -1561,15 +1593,26 @@ main() {
       account_kind='prebless'
       stable='(local build)'
    elif [ "${rt_origin}" = 'built' ]; then
-      ## Built-pair lane (whonix): import the local OVAs directly (rt_provision_pair), no
-      ## dist-installer-cli, no download. The pair lives under the SAME persistent account the
-      ## official lane uses (leak -> persist-leak, inst -> persist-inst); a build-distinct
-      ## --version LABEL distinguishes its results cell AND pins the pair marker each run
-      ## verifies, so a built run can never overwrite an official-release cell or boot a
-      ## stale/official pair. No OVA-filename version derivation (out of scope) -- --version
-      ## is REQUIRED.
-      [ -f "${ova_gw}" ] || die "${SETUP_RC}" "--ova-gw '${ova_gw}' is not a regular file"
-      [ -f "${ova_ws}" ] || die "${SETUP_RC}" "--ova-ws '${ova_ws}' is not a regular file"
+      ## Built-pair lane (whonix): the --ova pair is a PROVISION input. --provision imports it
+      ## DIRECTLY via VBoxManage (rt_provision_pair; no dist-installer-cli, no download) + pins
+      ## the build label; a TEST run carries NO ovas and only verifies the pinned marker -- the
+      ## SAME shape as the official lane (a pre-provisioned pair). The pair lives under the same
+      ## persistent account the official lane uses (leak -> persist-leak, inst -> persist-inst);
+      ## a build-distinct --version LABEL (REQUIRED; no OVA-filename derivation -- out of scope)
+      ## distinguishes its results cell AND pins the marker each run verifies, so a built run can
+      ## never overwrite an official-release cell or boot a stale/official pair. NOTE: the OPERATOR
+      ## is responsible for passing the Gateway OVA to --ova-gw and the Workstation OVA to --ova-ws
+      ## for this INTERFACE -- a built OVA filename is arbitrary (binary_image_ova_file), so there
+      ## is no canonical name to validate against (unlike the kicksecure ISO).
+      if [ "${do_provision}" = 'true' ]; then
+         { [ -n "${ova_gw}" ] && [ -n "${ova_ws}" ]; } \
+            || { print_usage >&2; die "${SETUP_RC}" "whonix --source built --provision requires --ova-gw PATH --ova-ws PATH"; }
+         [ -f "${ova_gw}" ] || die "${SETUP_RC}" "--ova-gw '${ova_gw}' is not a regular file"
+         [ -f "${ova_ws}" ] || die "${SETUP_RC}" "--ova-ws '${ova_ws}' is not a regular file"
+      else
+         [ -z "${ova_gw}${ova_ws}" ] \
+            || { print_usage >&2; die "${SETUP_RC}" "--ova-gw/--ova-ws are only for --provision; a whonix --source built TEST run verifies the pre-imported pair (pass --version only)"; }
+      fi
       version="${version_override}"
       [ -n "${version}" ] || { print_usage >&2; die "${SETUP_RC}" "whonix --source built requires --version <build-distinct label>"; }
       rt_build_version_ok "${version}" \

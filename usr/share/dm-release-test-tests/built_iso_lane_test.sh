@@ -184,42 +184,58 @@ else
    ok 'interface/desktop mismatch rejected'
 fi
 
-## --- whonix --source built (the --ova pair; direct import, no download) ---
+## --- whonix --source built (two-phase: --provision imports the --ova pair; a TEST run carries
+##     NO ovas and only verifies the pinned marker, like the official lane) ---
 ova_gw="${d}/Whonix-Gateway-CLI-build.ova"
 ova_ws="${d}/Whonix-Workstation-CLI-build.ova"
 touch -- "${ova_gw}" "${ova_ws}"
 
-## inst lane: plan records origin=built, state=built, and the persist-inst- account (shared
-## with the official blessed lane; the build-distinct marker is what distinguishes the pair).
-winst_plan="$("${subject}" whonix cli --lane inst --source built --ova-gw "${ova_gw}" --ova-ws "${ova_ws}" --version 18.2.3.0-g9999 --dry-run 2>&1)"
+## inst TEST run (no ovas): plan records origin=built, state=built, the persist-inst- account
+## (shared with the official blessed lane; the build-distinct marker distinguishes the pair).
+winst_plan="$("${subject}" whonix cli --lane inst --source built --version 18.2.3.0-g9999 --dry-run 2>&1)"
 if grep --quiet 'origin=built' <<<"${winst_plan}" && grep --quiet 'source=built' <<<"${winst_plan}"; then ok 'whonix built inst plan records origin=built source=built'; else bad "whonix built inst plan: ${winst_plan}"; fi
 if grep --quiet 'state=built' <<<"${winst_plan}"; then ok 'whonix built inst uses account_kind=built'; else bad "whonix built inst state: ${winst_plan}"; fi
 if grep --quiet 'account=persist-inst-whonix' <<<"${winst_plan}"; then ok 'whonix built inst uses persist-inst-whonix'; else bad "whonix built inst account: ${winst_plan}"; fi
 
-## leak lane: stays in persist-leak-whonix (account_kind=leak), just a locally-imported pair.
-wleak_plan="$("${subject}" whonix cli --lane leak --source built --ova-gw "${ova_gw}" --ova-ws "${ova_ws}" --version 18.2.3.0-g9999 --dry-run 2>&1)"
+## leak TEST run: stays in persist-leak-whonix (account_kind=leak).
+wleak_plan="$("${subject}" whonix cli --lane leak --source built --version 18.2.3.0-g9999 --dry-run 2>&1)"
 if grep --quiet 'account=persist-leak-whonix' <<<"${wleak_plan}" && grep --quiet 'state=leak' <<<"${wleak_plan}"; then ok 'whonix built leak stays persist-leak-whonix (account_kind=leak)'; else bad "whonix built leak plan: ${wleak_plan}"; fi
 
-## whonix --source built needs BOTH ovas.
-if "${subject}" whonix cli --lane inst --source built --ova-gw "${ova_gw}" --version 18.2.3.0-g9999 --dry-run >/dev/null 2>&1; then
-   bad 'whonix built with only --ova-gw wrongly accepted'
+## a TEST run must REJECT --ova-* (they are a provision-only input; carrying them on a test run
+## is the misleading decorative-path the review flagged -- the run tests the pre-imported pair).
+if "${subject}" whonix cli --lane inst --source built --ova-gw "${ova_gw}" --ova-ws "${ova_ws}" --version 18.2.3.0-g9999 --dry-run >/dev/null 2>&1; then
+   bad 'whonix built TEST run wrongly accepted --ova-* (provision-only)'
 else
-   ok 'whonix built requires both --ova-gw and --ova-ws'
+   ok 'whonix built TEST run rejects --ova-* (provision-only)'
+fi
+
+## --provision imports the pair: plan records mode=provision + the ova paths.
+wprov_plan="$("${subject}" whonix cli --lane inst --source built --ova-gw "${ova_gw}" --ova-ws "${ova_ws}" --version 18.2.3.0-g9999 --provision --dry-run 2>&1)"
+if grep --quiet 'mode=provision' <<<"${wprov_plan}" && grep --quiet "ova_gw=${ova_gw}" <<<"${wprov_plan}"; then ok 'whonix built --provision plan records the ova pair'; else bad "whonix built provision plan: ${wprov_plan}"; fi
+
+## --provision needs BOTH ovas.
+if "${subject}" whonix cli --lane inst --source built --ova-gw "${ova_gw}" --version 18.2.3.0-g9999 --provision --dry-run >/dev/null 2>&1; then
+   bad 'whonix built --provision with only --ova-gw wrongly accepted'
+else
+   ok 'whonix built --provision requires both --ova-gw and --ova-ws'
 fi
 
 ## whonix --source built requires an explicit build-distinct --version (no OVA-name derivation).
-if "${subject}" whonix cli --lane inst --source built --ova-gw "${ova_gw}" --ova-ws "${ova_ws}" --dry-run >/dev/null 2>&1; then
+if "${subject}" whonix cli --lane inst --source built --dry-run >/dev/null 2>&1; then
    bad 'whonix built without --version wrongly accepted'
 else
    ok 'whonix built requires --version'
 fi
 
-## a release-shaped --version is rejected for whonix built too (no official-cell overwrite).
-if "${subject}" whonix cli --lane inst --source built --ova-gw "${ova_gw}" --ova-ws "${ova_ws}" --version 18.2.3.0 --dry-run >/dev/null 2>&1; then
-   bad 'whonix built release-shaped --version wrongly accepted'
-else
-   ok 'whonix built rejects a release-shaped --version'
-fi
+## a release-shaped --version is rejected for whonix built too, INCLUDING the dash form that
+## folds to the same results cell as the official dotted release (no official-cell overwrite).
+for rel in 18.2.3.0 18-2-3-0; do
+   if "${subject}" whonix cli --lane inst --source built --version "${rel}" --dry-run >/dev/null 2>&1; then
+      bad "whonix built release-shaped --version '${rel}' wrongly accepted"
+   else
+      ok "whonix built rejects release-shaped --version '${rel}'"
+   fi
+done
 
 ## --ova flags are built-only: --source official + --ova-gw is rejected.
 if "${subject}" whonix cli --lane inst --source official --ova-gw "${ova_gw}" --ova-ws "${ova_ws}" --dry-run >/dev/null 2>&1; then
