@@ -38,7 +38,9 @@ skipped=0
 for case_script in "${case_scripts[@]}"; do
    printf '%s\n' "== $(basename -- "${case_script}") =="
    case_rc=0
-   VBOX_IMAGE_TEST_BIN="${script_dir}/vbox-image-test" "${case_script}" "$@" || case_rc=$?
+   VBOX_IMAGE_TEST_BIN="${script_dir}/vbox-image-test" \
+      VBOX_IMAGE_TEST_DEFAULT_BIN="${script_dir}/vbox-image-test-default" \
+      "${case_script}" "$@" || case_rc=$?
    if [ "${case_rc}" -eq 77 ]; then
       skipped=$(( skipped + 1 ))
    elif [ "${case_rc}" -ne 0 ]; then
