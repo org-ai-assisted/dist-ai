@@ -764,8 +764,8 @@ check("--full-rebuild kept run A webp byte-identical", read_bytes(a_webp) == a_b
 ## not reused -- the cache records + verifies each webp's sha. Canary: the pre-fix hit checked
 ## only that the filename existed, so it kept the corrupt bytes.
 run_generator(plane, site1, cache_dir=cache_dir)
-with open(a_webp, "ab") as handle:
-    handle.write(b"corruption")
+with open(a_webp, "ab") as bin_handle:
+    bin_handle.write(b"corruption")
 os.utime(a_webp, (EPOCH, EPOCH))
 run_generator(plane, site1, cache_dir=cache_dir)
 check("a corrupted cached webp is re-encoded, not reused",
@@ -802,8 +802,8 @@ run_generator(plane, site1, cache_dir=cache_dir, full_rebuild=True)
 ## over the SAME out_root, and assert it is gone while the run's real output is rebuilt.
 stale_run = os.path.join(out1, "kicksecure-lxqt-18-2-3-5-1")
 stray = os.path.join(stale_run, "kicksecure-lxqt__calamares-install-stray.webp")
-with open(stray, "wb") as handle:
-    handle.write(b"stray-artifact-from-a-prior-generate")
+with open(stray, "wb") as bin_handle:
+    bin_handle.write(b"stray-artifact-from-a-prior-generate")
 ## Even with the incremental cache warm for this run, an unexpected file in the page dir forces a
 ## full rebuild (orphan-purge is still owed), so the stale artifact is removed.
 run_generator(plane, site1, cache_dir=cache_dir)

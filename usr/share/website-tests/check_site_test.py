@@ -2895,7 +2895,7 @@ def run():
         _write(root, 'wiki/Uncurated.html',
                '<html><body><script>steal()</script></body></html>')
         curated = [os.path.join(root, 'wiki', 'Curated.html')]
-        fails: list[str] = []
+        fails = []
         check_site.check_served_markup_safety(root, fails, curated)
         check('uncurated wiki .html inline <script> flagged (curated-subset gap)',
               any('inline <script> body' in f and 'Uncurated.html' in f for f in fails), fails)
