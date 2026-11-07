@@ -948,6 +948,14 @@ expect_rule "R-173" "cd${sp}x${sp}&&${sp}${mkd}${sp}${dir173}${sp}&&${sp}${chm}$
 expect_rule "R-173" "${mkd}${sp}${dir173}${nlreal}${chm}${sp}--reference${sp}ref${sp}${dir173}"        "absent"
 expect_rule "R-173" "${mkd}${sp}${dir173}${nlreal}${chm}${sp}--reference${sp}ref${sp}f${sp}${dir173}" "absent"
 expect_rule "R-173" "${mkd}${sp}${dir173}${nlreal}${chm}${sp}--reference=ref${sp}755${sp}${dir173}"    "absent"
+## ... including a PERMUTED '--reference' past the mode word (GNU permutes options),
+## which must not be misread as 'mode=700, target=--reference=ref'.
+expect_rule "R-173" "${mkd}${sp}-p${sp}--${sp}--reference=ref${nlreal}${chm}${sp}700${sp}--reference=ref" "absent"
+## a real FLAG, even abbreviated ('--s' = '--silent'), leaves a numeric mode and
+## dir, so that IS a pair -- it must NOT be mis-read as a dash mode and dropped; an
+## invalid who-only dash form ('-a', which chmod rejects) is not a real mode.
+expect_rule "R-173" "${mkd}${sp}${dir173}${nlreal}${chm}${sp}--s${sp}700${sp}${dir173}"                "present"
+expect_rule "R-173" "${mkd}${sp}${dir173}${nlreal}${chm}${sp}-a${sp}${dir173}"                         "absent"
 
 ## R-010: seven COPIES of one directive must NOT satisfy the block (DISTINCT
 ## directives are counted); the seven distinct directives pass.

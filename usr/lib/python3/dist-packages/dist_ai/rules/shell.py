@@ -542,13 +542,15 @@ CHMOD_LONG = frozenset({
 ## 'install -m' sets ABSOLUTE bits, so the rewrite would not be equivalent.
 NUMERIC_MODE = re.compile(r'[0-7]{3,4}')
 ## A dash-led chmod MODE ('-w', '-rx', '-700', '-u', '-w,u+x') looks like an option
-## to command_tokens (leading '-'). chmod's mode alphabet -- perm bits [rwxXst],
-## who [ugoa], octal [0-7], the operators/separator [-+=,] -- is DISJOINT from its
-## flag letters (c/f/v/R/H/L/P), so a '-'-led token built only from mode-alphabet
-## chars is unambiguously the mode, not a flag. A dash mode is never numeric
-## (NUMERIC_MODE needs no leading '-'), so this classification only ever makes the
-## pair DETECTED, never auto-fixed.
-CHMOD_DASH_MODE = re.compile(r'-[rwxXst0-7ugoa,+=-]+')
+## to command_tokens (leading '-'). A single '-' then one mode-START char -- a perm
+## bit [rwxXst], a permcopy source [ugo], or an octal digit [0-7] -- is unambiguously
+## a mode: chmod's flag letters (c/f/v/R/H/L/P) are DISJOINT from that set, and a
+## mode's leading operator is the '-' itself so the next char is never '-' (that
+## would be a '--long' option) nor '+'/'='/','/'a' (no clause starts there). The
+## TAIL may add further clauses ('-w,u+x'), so it allows the who 'a' and the
+## operators/separator. A dash mode is never numeric (NUMERIC_MODE needs no leading
+## '-'), so this classification only ever makes the pair DETECTED, never auto-fixed.
+CHMOD_DASH_MODE = re.compile(r'-[rwxXst0-7ugo][rwxXst0-7ugoa,+=-]*')
 
 
 def _command_operands(call, source, value_short=frozenset(),
@@ -569,7 +571,9 @@ def _chmod_mode_target(call, source):
     gets wrong:
       - '--reference' (ANY spelling: space form, '=' form, an abbreviation) takes
         the mode FROM A FILE, so chmod has NO mode operand and every following word
-        is a file -- never R-173, whatever the operand count.
+        is a file -- never R-173. GNU permutes options PAST operands, so it can sit
+        in operand position too ('chmod 700 --reference=ref'); check the token TEXT,
+        not command_tokens' kind, up to a '--' (after which it is a literal file).
       - a dash-led mode ('-w', '-700', '-u', and repeated '-w -x' which chmod folds
         into ONE mode) is classed 'opt' by command_tokens; treat such tokens as the
         mode so the pair is still DETECTED (a dash mode is non-numeric, so never
@@ -577,18 +581,25 @@ def _chmod_mode_target(call, source):
     Otherwise the operands are exactly [mode, target]."""
     dash_modes = []
     operands = []
+    after_ddash = False
     for kind, word, text in bash_ast.command_tokens(call, source):
-        if kind == "opt":
-            if text == "--":
-                continue
+        ## The first '--' ends options AND option permutation, so every later word
+        ## is a literal file -- even a '--reference=...'-named one. command_tokens
+        ## labels a '--' past the first operand 'operand', not 'opt', so match on the
+        ## TEXT, not the kind.
+        if text == "--":
+            after_ddash = True
+            continue
+        if not after_ddash:
             name = _long_name(text)
             if name is not None \
                     and bash_ast.resolve_long(name, CHMOD_LONG) == "reference":
                 return None
+        if kind == "opt":
             if CHMOD_DASH_MODE.fullmatch(text):
                 dash_modes.append(word)
             continue
-        if kind == "operand" and text != "--":
+        if kind == "operand":
             operands.append(word)
     if dash_modes:
         ## repeated dash modes are ONE mode -> exactly one operand (the target).
@@ -747,6 +758,10 @@ def _mkdir_then_chmod_pairs(ctx):
             and _plain_stmt(s1) and _plain_stmt(s2)
             and between in ("", ";", "&&")
             and bool(mode_lit) and bool(NUMERIC_MODE.fullmatch(mode_lit))
+            ## Never RECONSTRUCT 'install -d ... -- DIR' for an option-shaped DIR:
+            ## GNU permutes options past operands, so a dash-led word in operand
+            ## position may be a misread option, not the dir -- leave it detect-only.
+            and not bash_ast.word_source(dir_word, source).startswith("-")
             and _mkdir_fix_shape(eff1, source)
             and _chmod_fix_shape(eff2, source)
             and not any(a <= s1_start < b for a, b in heredocs))

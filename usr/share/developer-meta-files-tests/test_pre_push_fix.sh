@@ -1109,4 +1109,20 @@ else
    note_fail "R-173 collapse corrupted a brace group"
 fi
 
+## --- 7u: a permuted '--reference' is never auto-fixed --------------------
+## GNU chmod permutes options past operands, so '--reference=ref' after the mode
+## word is the reference OPTION (mode-from-file), not the target -- the real
+## command modes a DIFFERENT file. A collapse to 'install -d -m 700 -- ...' would
+## delete that chmod and corrupt the mode. Must stay byte-identical (detect-only).
+f="${test_dir}/mkdirchmod_permref.sh"
+printf '%s\n' "#!/bin/bash" "mkdir -p -- --reference=ref" \
+   "chmod 700 --reference=ref" >"${f}"
+before="$(cksum < "${f}")"
+run_fix "${f}" >/dev/null 2>&1
+if [ "$(cksum < "${f}")" = "${before}" ] ; then
+   note_pass "R-173 leaves a permuted --reference pair untouched (no corruption)"
+else
+   note_fail "R-173 corrupted a permuted --reference chmod"
+fi
+
 exit_gate
