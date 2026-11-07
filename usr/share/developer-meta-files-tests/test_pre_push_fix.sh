@@ -1125,4 +1125,23 @@ else
    note_fail "R-173 corrupted a permuted --reference chmod"
 fi
 
+## --- 7v: an option-shaped dir NAME is never auto-fixed ---------------------
+## A dir that GNU chmod would permute back into an option when the chmod has no
+## '--' guard is NOT moded by that chmod, so a collapse to 'install -d -m 700 --
+## <dir>' would change semantics. Covered: a quoted/escaped literal whose VALUE
+## starts with '-' ('"-v"', "$'--silent'" -- quoting must not hide the dash), and a
+## RUNTIME expansion ('"$1"') that could expand to an option. All must stay
+## byte-identical (detect-only); the '--'-guarded form is fixed by case 7k.
+for body in '"-v"' "\$'--silent'" '"$1"' ; do
+   f="${test_dir}/mkdirchmod_optdir.sh"
+   printf '%s\n' "#!/bin/bash" "mkdir -p -- ${body}" "chmod 700 ${body}" >"${f}"
+   before="$(cksum < "${f}")"
+   run_fix "${f}" >/dev/null 2>&1
+   if [ "$(cksum < "${f}")" = "${before}" ] ; then
+      note_pass "R-173 leaves an option-shaped dir (${body}) untouched (no corruption)"
+   else
+      note_fail "R-173 corrupted an option-shaped dir (${body})"
+   fi
+done
+
 exit_gate

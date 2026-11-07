@@ -541,16 +541,16 @@ CHMOD_LONG = frozenset({
 ## but NOT auto-fixed: chmod applies it relative to the EXISTING bits while
 ## 'install -m' sets ABSOLUTE bits, so the rewrite would not be equivalent.
 NUMERIC_MODE = re.compile(r'[0-7]{3,4}')
-## A dash-led chmod MODE ('-w', '-rx', '-700', '-u', '-w,u+x') looks like an option
-## to command_tokens (leading '-'). A single '-' then one mode-START char -- a perm
-## bit [rwxXst], a permcopy source [ugo], or an octal digit [0-7] -- is unambiguously
-## a mode: chmod's flag letters (c/f/v/R/H/L/P) are DISJOINT from that set, and a
-## mode's leading operator is the '-' itself so the next char is never '-' (that
-## would be a '--long' option) nor '+'/'='/','/'a' (no clause starts there). The
-## TAIL may add further clauses ('-w,u+x'), so it allows the who 'a' and the
-## operators/separator. A dash mode is never numeric (NUMERIC_MODE needs no leading
-## '-'), so this classification only ever makes the pair DETECTED, never auto-fixed.
-CHMOD_DASH_MODE = re.compile(r'-[rwxXst0-7ugo][rwxXst0-7ugoa,+=-]*')
+## A dash-led chmod MODE ('-w', '-rx', '-700', '-u', '-w,u+x', '-=700') looks like an
+## option to command_tokens (leading '-'). After that '-' a mode-START char -- a perm
+## bit [rwxXst], a permcopy source [ugo], an octal digit [0-7], or an operator/
+## separator [+=,] opening a who-less clause -- is unambiguously a mode: chmod's flag
+## letters (c/f/v/R/H/L/P) are DISJOINT from that set. What a mode START char is NOT:
+## another '-' (that is a '--long' option) or a bare who 'a' ('-a' alone is an invalid
+## mode chmod rejects; 'a' is valid only in a TAIL clause, e.g. '-w,a+x'). A dash mode
+## is never numeric (NUMERIC_MODE needs no leading '-'), so this classification only
+## ever makes the pair DETECTED, never auto-fixed.
+CHMOD_DASH_MODE = re.compile(r'-[rwxXst0-7ugo+=,][rwxXst0-7ugoa,+=-]*')
 
 
 def _command_operands(call, source, value_short=frozenset(),
@@ -566,9 +566,10 @@ def _command_operands(call, source, value_short=frozenset(),
 
 
 def _chmod_mode_target(call, source):
-    """CALL's (mode_word, target_word) for R-173's 'chmod MODE DIR' shape, or None
-    when CALL is not that shape. Two chmod-specific reads a generic operand scan
-    gets wrong:
+    """CALL's (mode_word, target_word, target_protected) for R-173's 'chmod MODE
+    DIR' shape, or None when CALL is not that shape (target_protected is True when a
+    '--' preceded the target, so GNU cannot permute it into an option). Two
+    chmod-specific reads a generic operand scan gets wrong:
       - '--reference' (ANY spelling: space form, '=' form, an abbreviation) takes
         the mode FROM A FILE, so chmod has NO mode operand and every following word
         is a file -- never R-173. GNU permutes options PAST operands, so it can sit
@@ -600,15 +601,18 @@ def _chmod_mode_target(call, source):
                 dash_modes.append(word)
             continue
         if kind == "operand":
-            operands.append(word)
+            ## pair each operand with whether a '--' preceded it: a target past the
+            ## end-of-options marker is a LITERAL file GNU cannot permute into an
+            ## option, so the autofix may safely reconstruct it even if dash-led.
+            operands.append((word, after_ddash))
     if dash_modes:
         ## repeated dash modes are ONE mode -> exactly one operand (the target).
         if len(operands) != 1:
             return None
-        return dash_modes[0], operands[0]
+        return (dash_modes[0],) + operands[0]
     if len(operands) != 2:
         return None
-    return operands[0], operands[1]
+    return (operands[0][0],) + operands[1]
 
 
 def _mkdir_fix_shape(call, source):
@@ -729,7 +733,7 @@ def _mkdir_then_chmod_pairs(ctx):
         if mode_target is None:
             return None
         dir_word = dirs[0]
-        mode_word, target_word = mode_target
+        mode_word, target_word, target_protected = mode_target
         if bash_ast.word_source(dir_word, source) \
                 != bash_ast.word_source(target_word, source):
             return None
@@ -749,6 +753,7 @@ def _mkdir_then_chmod_pairs(ctx):
         ## swallowed by the collapse, so that leaves the pair detect-only.
         between = data[s1_end:s2_start].decode("utf-8", "replace").strip()
         mode_lit = bash_ast.word_string(mode_word)
+        dir_lit = bash_ast.word_string(dir_word)
         fixable = (
             eff1 is c1 and eff2 is c2
             ## An env-assignment prefix ('UMASK=077 mkdir a') lives on the CallExpr,
@@ -758,10 +763,16 @@ def _mkdir_then_chmod_pairs(ctx):
             and _plain_stmt(s1) and _plain_stmt(s2)
             and between in ("", ";", "&&")
             and bool(mode_lit) and bool(NUMERIC_MODE.fullmatch(mode_lit))
-            ## Never RECONSTRUCT 'install -d ... -- DIR' for an option-shaped DIR:
-            ## GNU permutes options past operands, so a dash-led word in operand
-            ## position may be a misread option, not the dir -- leave it detect-only.
-            and not bash_ast.word_source(dir_word, source).startswith("-")
+            ## Only auto-fix when the collapse PROVABLY modes the dir. GNU chmod
+            ## permutes an option-shaped word ('-v', '--reference=x') in operand
+            ## position back into an option, so 'chmod 700 "-v"' does NOT mode dir
+            ## '-v' while 'install -d -m 700 -- "-v"' would. Safe iff the dir VALUE is
+            ## a known non-dash word, OR a '--' preceded the target (then it is a
+            ## literal operand, dash-led or not). A dir known only at RUNTIME
+            ## ('"$dir"') and NOT '--'-guarded could expand to an option, so it stays
+            ## detect-only.
+            and ((dir_lit is not None and not dir_lit.startswith("-"))
+                 or target_protected)
             and _mkdir_fix_shape(eff1, source)
             and _chmod_fix_shape(eff2, source)
             and not any(a <= s1_start < b for a, b in heredocs))
