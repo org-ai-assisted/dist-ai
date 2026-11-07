@@ -672,6 +672,49 @@ def check_footer_structure(root, failures):
                             'row double-applies the gutter and misaligns it' % (rel, cls))
 
 
+def _footer_signature(path):
+    # Content signature (every footer attr value + text, lowercased, whitespace-collapsed)
+    # of a page's <footer> region(s), or None if the page has no <footer>. Reuses the
+    # _FooterAudit the family-links check parses with, so the two cannot disagree on what
+    # "the footer" is.
+    audit = _FooterAudit()
+    with open(path, encoding='utf-8') as handle:
+        audit.feed(handle.read())
+    return ' '.join(audit.scope().split()) if audit.saw else None
+
+
+def check_results_footer_matches_home(root, failures):
+    # The generated test-results plane (test-results-site-generate) LIFTS the site footer
+    # from the home page (--chrome-from) so every results page carries the identical site
+    # footer -- brand, columns, share bar, tagline -- not a stripped-down one. Enforce it:
+    # every RESULTS_SUBDIR page's footer content must equal index.html's. This closes the
+    # gap check_footer leaves open -- it only requires the three family LINKS, so a minimal
+    # footer missing the brand / nav columns / share bar / tagline sailed through. Scoped to
+    # the results plane vs the home page of the SAME site (not a global cross-page equality
+    # rule): sibling hand-authored family pages legitimately differ, and the family footer's
+    # links are all absolute or root-relative, so the lifted copy is byte-identical at every
+    # results-plane depth and a plain signature comparison is exact. No-op where the site has
+    # no results plane (the only family site that does is org-ai-assisted).
+    home = os.path.join(root, 'index.html')
+    results_index = os.path.join(root, RESULTS_SUBDIR, 'index.html')
+    if not (os.path.isfile(home) and os.path.isfile(results_index)):
+        return
+    home_sig = _footer_signature(home)
+    if not home_sig:
+        return
+    for page in html_files(os.path.join(root, RESULTS_SUBDIR)):
+        rel = os.path.relpath(page, root)
+        sig = _footer_signature(page)
+        if sig is None:
+            failures.append('%s: no <footer> -- every results page must carry the site '
+                            'footer lifted from index.html' % rel)
+        elif sig != home_sig:
+            failures.append('%s: footer differs from the site footer (index.html) -- the '
+                            'generated results plane must lift the WHOLE site footer '
+                            '(brand, columns, share bar, tagline), not a stripped-down one'
+                            % rel)
+
+
 class _StatusPillAudit(html.parser.HTMLParser):
     """Text of the first review-status pill: a <span>/<a> whose class token set
     contains 'status'. Parsed, not substring-matched, so a single-quoted or
@@ -3274,6 +3317,7 @@ def main():
             check_nav(root, failures)
             check_undefined_classes(root, failures)
             check_generated_class_contract(root, failures)
+            check_results_footer_matches_home(root, failures)
         # CSR-only (vendor-neutral, not in FAMILY): its own footer-nav-consistency
         # check, the stricter CSR CSP assertion, and the perfect-SEO page-metadata bar.
         if policy == 'csr':

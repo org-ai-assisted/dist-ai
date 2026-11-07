@@ -381,7 +381,8 @@ def _rewrite(path, old, new):
         handle.write(text.replace(old, new))
 
 
-def run_generator(root, site_out, cache_dir=None, full_rebuild=False, mask_config=None):
+def run_generator(root, site_out, cache_dir=None, full_rebuild=False, mask_config=None,
+                  chrome_from=None):
     os.makedirs(site_out, exist_ok=True)
     env = dict(os.environ)
     env["SOURCE_DATE_EPOCH"] = str(EPOCH)
@@ -394,6 +395,8 @@ def run_generator(root, site_out, cache_dir=None, full_rebuild=False, mask_confi
         argv += ["--full-rebuild"]
     if mask_config is not None:
         argv += ["--mask-config", mask_config]
+    if chrome_from is not None:
+        argv += ["--chrome-from", chrome_from]
     subprocess.run(  # nosec B603 -- fixed argv, in-tree generator
         argv, check=True, env=env,
     )
@@ -924,6 +927,44 @@ if shutil.which("tesseract") and os.path.isfile(baseline):
 else:
     print("ok: masked-lane redaction e2e deferred to the sandbox (no tesseract here); "
           "unit test covers the rule")
+
+## --chrome-from lifts BOTH the masthead AND the whole site footer from the family page, so every
+## generated page carries the site's exact footer (brand/columns/share bar/tagline), not the
+## stripped-down fallback _FOOTER. check_results_footer_matches_home enforces this at deploy.
+check("extract_footer lifts a verbatim <footer>",
+      _gen.extract_footer.__doc__ is not None)
+_chrome_page = os.path.join(work, "chrome-from.html")
+_site_footer = (
+    '<footer><div class="ftop"><div class="fbrand">'
+    '<span class="ftag">brand</span></div>'
+    '<nav class="fcols" aria-label="Footer"><div class="fcol"><h3>Navigate</h3>'
+    '<a href="/#trust">Trust model</a></div>'
+    '<div class="fcol"><h3>Family</h3>'
+    '<a href="https://output-lies.github.io">output lies</a></div></nav></div>'
+    '<div class="fshare"><span class="fshare-l">Share:</span></div>'
+    '<div class="fbot"><span class="fcopy">(c) 2026</span></div></footer>')
+_site_header = ('<header class="nav"><div class="wrap"><a class="brand" href="/">x</a>'
+                '<nav aria-label="Primary"><a href="/automated-test-results/">Test results</a>'
+                '</nav></div></header>')
+with open(_chrome_page, "w", encoding="utf-8") as _h:
+    _h.write("<!DOCTYPE html><html><main>home</main>%s%s</html>" % (_site_header, _site_footer))
+check("extract_footer lifts the family page footer verbatim",
+      _gen.extract_footer(_chrome_page) == _site_footer)
+check("extract_header lifts the family page header verbatim",
+      _gen.extract_header(_chrome_page) == _site_header)
+
+site_lifted = os.path.join(work, "site-lifted")
+run_generator(plane, site_lifted, cache_dir=os.path.join(work, "gen-cache-lifted"),
+              chrome_from=_chrome_page)
+out_lifted = os.path.join(site_lifted, "automated-test-results")
+overview_lifted = read(os.path.join(out_lifted, "index.html"))
+run_lifted = read(os.path.join(out_lifted, "kicksecure-lxqt-18-2-3-5-1", "index.html"))
+check("overview carries the lifted site footer (not the stripped fallback)",
+      _site_footer in overview_lifted and "Automated OS-image test results." not in overview_lifted)
+check("a run page carries the lifted site footer too", _site_footer in run_lifted)
+check("the lifted footer matches on the overview and a run page",
+      (overview_lifted.split("<footer>", 1)[-1].rsplit("</footer>", 1)[0]
+       == run_lifted.split("<footer>", 1)[-1].rsplit("</footer>", 1)[0]))
 
 shutil.rmtree(work, ignore_errors=True)
 

@@ -821,10 +821,14 @@ _DEFAULT_HEADER = (
     "</div></header>"
 )
 
-## Footer is ALWAYS built here, never lifted: a family page's footer carries that
-## page's own on-page section anchors (#overview, ...), which do not exist on a
-## results page and would read as broken links. This footer carries only the three
-## family URLs the family-footer gate requires, with no on-page anchors.
+## Footer: with --chrome-from (the real deploy) the family page's WHOLE <footer> is
+## lifted verbatim (extract_footer), so every results page carries the SITE's exact
+## footer -- brand, columns, share bar, tagline -- enforced by the
+## check_results_footer_matches_home gate. The family footer links are all absolute
+## or root-relative (incl. the on-page refs as `/#anchor`), so the lift resolves
+## correctly from the results-plane depth. This minimal footer is the FALLBACK used
+## only standalone / in the suite (no --chrome-from): it carries just the three family
+## URLs the family-footer gate requires.
 ##
 ## Structure: each gutter-bearing row (.ftop, .fbot) is a DIRECT <footer> child, as
 ## in every family footer. style.css gives .ftop and .fbot their own
@@ -845,16 +849,27 @@ _FOOTER = (
 
 def extract_header(path):
     """Lift the verbatim <header>...</header> from an existing family page so every
-    generated page carries an identical masthead (the uniform-nav gate). The footer
-    is NOT lifted (see _FOOTER)."""
+    generated page carries an identical masthead (the uniform-nav gate)."""
+    return _extract_region("header", path)
+
+
+def extract_footer(path):
+    """Lift the verbatim <footer>...</footer> from an existing family page so every
+    generated page carries the SITE's exact footer (check_results_footer_matches_home).
+    The family footer's links are all absolute or root-relative (on-page refs as
+    `/#anchor`), so the lifted copy resolves from any results-plane depth."""
+    return _extract_region("footer", path)
+
+
+def _extract_region(tag, path):
     import re
 
     with open(path, "r", encoding="utf-8") as handle:
         text = handle.read()
-    header = re.search(r"<header\b.*?</header>", text, re.DOTALL)
-    if not header:
-        raise ValueError("could not find <header> in %s" % path)
-    return header.group(0)
+    region = re.search(r"<%s\b.*?</%s>" % (tag, tag), text, re.DOTALL)
+    if not region:
+        raise ValueError("could not find <%s> in %s" % (tag, path))
+    return region.group(0)
 
 
 def page(title, description, header, footer, body, noindex=False):
@@ -1218,7 +1233,7 @@ def main(argv):
     try:
         mask_config = load_mask_config(args.mask_config)
         header = extract_header(args.chrome_from) if args.chrome_from else _DEFAULT_HEADER
-        footer = _FOOTER
+        footer = extract_footer(args.chrome_from) if args.chrome_from else _FOOTER
     except ValueError as exc:
         raise SystemExit("test-results-site-generate: %s" % exc)
 

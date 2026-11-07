@@ -2001,6 +2001,59 @@ def run():
         check('the complete index footer is not flagged',
               not any(f.startswith('index.html') for f in fails), repr(fails))
 
+    # check_results_footer_matches_home: the generated results plane must carry the SITE
+    # footer (lifted from index.html), not a stripped-down one. check_footer only requires
+    # the family LINKS, so a minimal footer (brand / columns / share bar / tagline dropped)
+    # passed it -- this gate catches that divergence. Scoped to the results plane vs the home
+    # page of the SAME site.
+    def _rfm_failures(root):
+        failures: list[str] = []
+        check_site.check_results_footer_matches_home(root, failures)
+        return failures
+
+    home_footer = (
+        '<footer><div class="ftop"><div class="fbrand">brand</div>'
+        '<nav class="fcols"><div class="fcol"><a href="/#trust">Trust</a>'
+        + ''.join('<a href="%s">x</a>' % u for u in check_site.FAMILY.values())
+        + '</div></nav></div><div class="fbot"><span class="fcopy">c</span></div></footer>')
+
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', '<main>home</main>' + home_footer)
+        # The OLD stripped footer: family links only, no brand / tagline. It passes
+        # check_footer, but it is NOT the site footer.
+        stripped = (
+            '<footer><div class="ftop"><nav class="fcols"><div class="fcol">'
+            + ''.join('<a href="%s">x</a>' % u for u in check_site.FAMILY.values())
+            + '</div></nav></div><div class="fbot"><span class="fcopy">AI</span></div></footer>')
+        _write(root, 'automated-test-results/index.html', '<main>r</main>' + stripped)
+        fails = _rfm_failures(root)
+        check('a stripped results-plane footer is flagged against the site footer',
+              any('automated-test-results/index.html' in f and 'differs' in f for f in fails),
+              repr(fails))
+
+    with tempfile.TemporaryDirectory() as root:
+        # The lifted (byte-identical) site footer on every results page -> passes.
+        _write(root, 'index.html', '<main>home</main>' + home_footer)
+        _write(root, 'automated-test-results/index.html', '<main>r</main>' + home_footer)
+        _write(root, 'automated-test-results/run1/index.html', '<main>r1</main>' + home_footer)
+        check('results pages carrying the lifted site footer pass',
+              _rfm_failures(root) == [], repr(_rfm_failures(root)))
+
+    with tempfile.TemporaryDirectory() as root:
+        # No results plane -> the gate is a no-op (only org-ai-assisted has one).
+        _write(root, 'index.html', '<main>home</main>' + home_footer)
+        check('no results plane -> gate is a no-op',
+              _rfm_failures(root) == [], repr(_rfm_failures(root)))
+
+    with tempfile.TemporaryDirectory() as root:
+        # A results page with NO footer at all is flagged.
+        _write(root, 'index.html', '<main>home</main>' + home_footer)
+        _write(root, 'automated-test-results/index.html', '<main>r</main>')
+        fails = _rfm_failures(root)
+        check('a results page with no footer is flagged',
+              any('automated-test-results/index.html' in f and 'no <footer>' in f for f in fails),
+              repr(fails))
+
     # check_assets must NOT flag a published run screenshot: it is referenced by its run
     # page's <img>, so it is never an orphan. A genuinely orphaned image is still flagged.
     with tempfile.TemporaryDirectory() as root:
