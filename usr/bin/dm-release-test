@@ -5,11 +5,16 @@
 
 ## AI-Assisted
 
-## Orchestrate an end-to-end image test of a published Kicksecure/Whonix release:
-## resolve the version, pick the test account by bless-state, acquire + install
-## (or import) the image, run the matching test, and publish the verdict to the
-## results plane. The glue over iso-download / dm-calamares-install /
-## dm-whonix-pair / the results publisher; manual-invoke (no scheduler).
+## Orchestrate an end-to-end image test of a Kicksecure/Whonix image: resolve the version,
+## pick the test account by bless-state, acquire + install (or import) the image, run the
+## matching test, and publish the verdict to the results plane. The glue over iso-download /
+## dm-calamares-install / dm-whonix-pair / the results publisher; manual-invoke (no scheduler).
+##
+## --source (MANDATORY, no default) picks the image under test: official downloads a published
+## release (origin=downloaded); built tests a LOCAL artifact (origin=built) -- a kicksecure
+## --iso, or a whonix --ova-gw/--ova-ws pair imported DIRECTLY via VBoxManage (no download).
+## A built run carries a build-distinct --version LABEL (never a release-shaped pure-dotted
+## one) so it can never overwrite an official-release results cell.
 ##
 ## Account model (VBox state is per-$HOME, so the Linux user IS the isolation
 ## boundary):
@@ -19,6 +24,11 @@
 ##     nftables leak-drop covers eph-inst-* by name).
 ##   - blessed (resolved == stable pin): the longitudinal golden account
 ##     persist-inst-<guest>; a non-blessed version is REFUSED there.
+##   - built pair (--source built, whonix inst): persist-inst-<guest> again, but the pair is
+##     a LOCAL OVA import pinned with a build-distinct marker -- so it escapes the blessed
+##     (version == stable pin) requirement while keeping the same clean-account privilege gate.
+##     A whonix built LEAK run stays in the persist-leak- account (account_kind=leak), just
+##     with a locally-imported, build-labelled pair.
 ##   - leak lane (the Whonix pair + anon-leak-test battery): ALWAYS the dedicated,
 ##     persistent persist-leak-<guest>, never the shared persist-inst- or eph-inst-
 ##     namespace -- a non-leak lane's dev-root/leaprun mutation of a shared account's
@@ -52,6 +62,12 @@ fi
 ISO_DOWNLOAD="${ISO_DOWNLOAD:-iso-download}"
 DM_CALAMARES_INSTALL="${DM_CALAMARES_INSTALL:-dm-calamares-install}"
 DM_WHONIX_PAIR="${DM_WHONIX_PAIR:-dm-whonix-pair}"
+## The VirtualBox backend of the dm-image boot/install harness. Its `emit-argv --op import`
+## prints the canonical `VBoxManage import <ova> --vsys 0 --vmname <vm>` argv (one token per
+## line) -- the SINGLE SOURCE for the import shape, reused by the whonix --source built path
+## so the OVA pair is imported DIRECTLY (no dist-installer-cli -> no download, no wrong-subject
+## risk). Overridable for the unit test.
+DM_SMBIOS_READER_VBOX="${DM_SMBIOS_READER_VBOX:-/usr/share/dm-smbios-reader-boot-tests/dm-smbios-reader-vbox}"
 IMAGE_TEST_GC="${IMAGE_TEST_GC:-image-test-gc}"
 ## 1 (default): a FAILED run keeps its ephemeral account, its running VM and its staged
 ## ISO for post-mortem inspection; the next run of the same account reclaims them first
@@ -136,9 +152,19 @@ lane=""
 run_checks='false'
 dry_run='false'
 do_provision='false'
-## --iso PATH: test a LOCALLY-BUILT ISO instead of downloading a published release.
-## Empty = the normal download path; set = built-origin lane (no iso-download).
+## --source official|built: MANDATORY, no default (absence fails loud, never a silently-picked
+## source). official = download a published release (--channel picks the stream); built = test a
+## LOCAL artifact (kicksecure --iso, whonix --ova-gw/--ova-ws). Validated + coupled to the
+## artifact flags by rt_resolve_origin, which also derives rt_origin.
+source_mode=""
+## --iso PATH (kicksecure --source built only): the LOCALLY-BUILT ISO to install instead of a
+## downloaded release. Empty = not a kicksecure built run.
 local_iso=""
+## --ova-gw / --ova-ws PATH (whonix --source built only): the locally-built Gateway and
+## Workstation OVAs, imported DIRECTLY via VBoxManage (no dist-installer-cli, no download) under
+## the same persistent account the official lane uses. Empty = not a whonix built run.
+ova_gw=""
+ova_ws=""
 ## --coreboot-rom PATH (kicksecure only): run the SAME default-EFI full Calamares install story,
 ## with ONLY the firmware swapped to the coreboot+UefiPayload ROM (a generic EFI firmware). Empty
 ## = the normal lanes, byte-unchanged. Forwarded to dm-calamares-install, which needs --firmware
@@ -176,29 +202,47 @@ die() {
 
 print_usage() {
    printf '%s\n' "Usage:
-  ${me} GUEST INTERFACE [--lane inst|leak] [--channel stable|developers] [--version VER]
-        [--firmware bios|efi|efi-secureboot] [--iso PATH] [--checks] [--dry-run]
+  ${me} GUEST INTERFACE --source official|built [--lane inst|leak]
+        [--channel stable|developers] [--version VER] [--firmware bios|efi|efi-secureboot]
+        [--iso PATH] [--ova-gw PATH --ova-ws PATH] [--checks] [--dry-run]
         [--coreboot-rom PATH] [--provision]
 
   GUEST      kicksecure | whonix
   INTERFACE  lxqt | cli (the published desktop flavor)
+  --source   MANDATORY (no default). Picks the image under test:
+               official  download a published release (--channel picks the stream);
+                         origin=downloaded. NO artifact flag (--iso/--ova-*) may be set.
+               built     test a LOCAL artifact; origin=built. One shape per guest:
+                           kicksecure -- --iso PATH (the locally-built ISO)
+                           whonix     -- --ova-gw PATH --ova-ws PATH (the built GW+WS pair,
+                                         imported DIRECTLY via VBoxManage; no download)
+                         A build-distinct --version LABEL is required for whonix built and
+                         for a non-derivable kicksecure ISO name; a release-shaped (pure
+                         dotted) label is rejected so a built run can never overwrite an
+                         official-release results cell.
   --lane     inst (functional release-check battery) | leak (anon-leak-test battery).
              MANDATORY for whonix (both are real lanes; no default). kicksecure is always
              inst (--lane leak is rejected).
-  --iso PATH test a LOCALLY-BUILT ISO (kicksecure only): skip iso-download, install
-             PATH, record origin=built. Version LABEL is derived from the filename
-             (override with --version); the run uses a disposable eph-inst-GUEST-built
-             account.
+  --iso PATH kicksecure --source built only: the locally-built ISO to install. Version LABEL
+             is derived from the filename (override with --version); the run uses a disposable
+             eph-inst-GUEST-built account.
+  --ova-gw / --ova-ws PATH
+             whonix --source built only: the locally-built Gateway/Workstation OVAs. Imported
+             directly (no dist-installer-cli) under the SAME persistent account the official
+             lane uses (leak -> persist-leak-GUEST, inst -> persist-inst-GUEST).
 
 A pre-bless candidate installs under a disposable eph-inst-GUEST-VERSION
 account; a blessed release (version == stable pin) uses persist-inst-GUEST.
 The whonix leak lane ALWAYS uses the dedicated persistent persist-leak-GUEST account; the
-whonix inst lane uses the pre-provisioned persist-inst-GUEST pair (blessed only).
+whonix inst lane uses the pre-provisioned persist-inst-GUEST pair (blessed official, or a
+--source built pair pinned with a build-distinct label).
 --dry-run prints the resolved plan and runs nothing.
 --provision (whonix only) is the one-time setup of a persistent pair for the selected lane
-(persist-leak-GUEST for leak, persist-inst-GUEST for a blessed inst): create the clean
-account, import the GW+WS pair under it, and pin the version marker each run then verifies;
-it prints the remaining one-time dev-root/clean-live snapshot step.
+(persist-leak-GUEST for leak, persist-inst-GUEST for a blessed inst or a built pair): create
+the clean account, import the GW+WS pair under it (via dist-installer-cli for --source
+official, or a direct VBoxManage import of --ova-gw/--ova-ws for --source built), and pin the
+version marker each run then verifies; it prints the remaining one-time dev-root/clean-live
+snapshot step.
 --coreboot-rom PATH (kicksecure only) runs the SAME default-EFI full Calamares install story
 with ONLY the firmware swapped to the coreboot+UefiPayload ROM at PATH (a generic EFI firmware,
 a drop-in for VBox's OVMF). Needs --firmware efi and the patched CorebootRom-aware VBoxManage:
@@ -310,6 +354,19 @@ rt_build_version_ok() {
    esac
    [ "${#v}" -le 64 ] || return 1
    return 0
+}
+
+## True when a version LABEL is build-distinct (carries a dash/letter), return 1 when it is
+## release-shaped (pure dotted). A built result must NOT overwrite an official-release results
+## cell, so the caller REJECTS a release-shaped label. Charset match (not length) so a long
+## pure-dotted label cannot slip past rt_version_token's 32-char cap. Pure; unit-tested.
+rt_version_build_distinct() {
+   case "$1" in
+      *[!0-9.]*)
+         return 0
+         ;;
+   esac
+   return 1
 }
 
 ## Compose + validate the ephemeral install account name. Keeping the eph-inst- prefix
@@ -526,6 +583,51 @@ rt_select_account() {
    esac
 }
 
+## Validate the MANDATORY --source and its artifact-flag coupling, and echo the resulting
+## origin (downloaded for official, built for built). Pure (no FS/VM/root); unit-tested.
+## Rules (no default -- an empty source is rejected):
+##   - official: a published-release download; NO artifact flag may be set.
+##   - built: a local artifact, one shape per guest -- kicksecure=--iso, whonix=--ova pair.
+##     The wrong-guest shape (an --ova under kicksecure, an --iso under whonix) is rejected,
+##     so a source+artifact mismatch can never silently test the wrong subject.
+## $1=source $2=guest $3=iso $4=ova_gw $5=ova_ws.
+rt_resolve_origin() {
+   local source guest iso ova_gw ova_ws
+   source="$1"
+   guest="$2"
+   iso="$3"
+   ova_gw="$4"
+   ova_ws="$5"
+   case "${source}" in
+      official)
+         ## No artifact flag may be set under official.
+         [ -z "${iso}${ova_gw}${ova_ws}" ] || return 1
+         printf '%s\n' "downloaded"
+         ;;
+      built)
+         case "${guest}" in
+            kicksecure)
+               ## kicksecure built = --iso; --ova-* is whonix-only.
+               [ -n "${iso}" ] || return 1
+               [ -z "${ova_gw}${ova_ws}" ] || return 1
+               ;;
+            whonix)
+               ## whonix built = the --ova pair; --iso is kicksecure-only.
+               { [ -n "${ova_gw}" ] && [ -n "${ova_ws}" ]; } || return 1
+               [ -z "${iso}" ] || return 1
+               ;;
+            *)
+               return 1
+               ;;
+         esac
+         printf '%s\n' "built"
+         ;;
+      *)
+         return 1
+         ;;
+   esac
+}
+
 ## ---------------------------------------------------------------------------
 ## version discovery (iso-download --print-version, single source)
 ## ---------------------------------------------------------------------------
@@ -696,12 +798,52 @@ rt_set_pair_version() {
       || die "${SETUP_RC}" "failed to set ${PAIR_VERSION_KEY} on '$2'"
 }
 
-## Provision a persistent pair (leak OR blessed inst) end to end: create the clean account,
-## import the GW+WS pair under it via dist-installer-cli (which self-locks against concurrent
-## runs), and pin the version marker on both VMs. The one-time 'clean-live' snapshot bake
-## (and dev-root, needed by the leak lane; harmless for inst) still runs on the live guests
-## (printed as the next step) -- it needs a booted sysmaint session, not scriptable headless
-## from here. Needs root.
+## Import ONE locally-built OVA as VM under ACCOUNT, idempotently (needs root; runs VBox as
+## the account -- state is per-$HOME). Reuses build_import_argv's canonical argv shape from
+## ${DM_SMBIOS_READER_VBOX} (single source for `import <ova> --vsys 0 --vmname <vm>`) rather
+## than reconstructing it here. $1=account $2=ova $3=vm.
+rt_import_one_ova() {
+   local account ova vm emitted
+   account="$1"
+   ova="$2"
+   vm="$3"
+   ## Idempotent re-provision: drop any same-named VM first (best-effort; a fresh account has
+   ## none). Mirrors dist-installer-cli --destroy-existing-guest so a re-import never collides.
+   sudo -u "${account}" -- "${VBOXMANAGE}" controlvm "${vm}" poweroff >/dev/null 2>&1 || true
+   sudo -u "${account}" -- "${VBOXMANAGE}" unregistervm "${vm}" --delete >/dev/null 2>&1 || true
+   emitted="$("${DM_SMBIOS_READER_VBOX}" emit-argv --op import --ova "${ova}" --vm "${vm}")" \
+      || die "${SETUP_RC}" "could not build the import argv ('${DM_SMBIOS_READER_VBOX}' emit-argv --op import failed for '${ova}')"
+   local -a imp=()
+   mapfile -t imp <<< "${emitted}"
+   ## imp[0] is the literal 'VBoxManage' binary name; run the import with THIS harness's
+   ## overridable VBOXMANAGE (honors the unit-test stub / a dasharo build) plus the remaining
+   ## argv, as the account.
+   { [ "${#imp[@]}" -ge 2 ] && [ -n "${imp[0]}" ]; } \
+      || die "${SETUP_RC}" "unexpected import argv for '${ova}': '${emitted}'"
+   sudo -u "${account}" -- "${VBOXMANAGE}" "${imp[@]:1}" \
+      || die "${SETUP_RC}" "VBoxManage import of '${ova}' as '${vm}' failed"
+}
+
+## Import a locally-built GW+WS OVA pair directly under ACCOUNT. $1=account $2=gw $3=ws.
+rt_import_built_pair() {
+   local account gw ws
+   account="$1"
+   gw="$2"
+   ws="$3"
+   { [ -n "${ova_gw}" ] && [ -n "${ova_ws}" ]; } \
+      || die "${SETUP_RC}" "built-pair provisioning needs --ova-gw and --ova-ws"
+   rt_import_one_ova "${account}" "${ova_gw}" "${gw}"
+   rt_import_one_ova "${account}" "${ova_ws}" "${ws}"
+}
+
+## Provision a persistent pair end to end (leak, blessed inst, OR a built pair): create the
+## clean account, import the GW+WS pair under it, and pin the version marker on both VMs. The
+## import path follows the ORIGIN:
+##   - downloaded (official): dist-installer-cli (which self-locks + downloads + verifies).
+##   - built: the local --ova-gw/--ova-ws imported DIRECTLY via VBoxManage (no download).
+## The one-time 'clean-live' snapshot bake (and dev-root, needed by the leak lane; harmless
+## for inst) still runs on the live guests (printed as the next step) -- it needs a booted
+## sysmaint session, not scriptable headless from here. Needs root.
 rt_provision_pair() {
    local account version gw ws account_home
    account="$1"
@@ -710,25 +852,30 @@ rt_provision_pair() {
    ws="Whonix-Workstation-${desktop}"
    rt_lock_account "${account}"
    rt_create_clean_account "${account}"
-   ## dist-installer-cli runs the download AND import AS the target account
-   ## (run_as_target_user), so the staging dir must be target-writable. Pin it to the
-   ## target's OWN home (always writable by it) via --directory-prefix; otherwise it
-   ## defaults to the invoker's home, which the target cannot write (mkdir fails). This
-   ## matches what the sysmaint-invoker path does automatically, without needing sysmaint.
-   account_home="$(getent passwd "${account}" | cut -d: -f6)"
-   [ -n "${account_home}" ] || die "${SETUP_RC}" "cannot resolve home for '${account}'"
-   log info "importing whonix ${version} pair under ${account} via ${DIST_INSTALLER_CLI} (as ${DIST_INSTALLER_USER}, prefix ${account_home})"
-   ## Invoke as the sudo-capable invoker (NOT root -- dist-installer-cli refuses root);
-   ## --user="${account}" is the INSTALL target (the leak account), distinct from the invoker.
-   ## --noupdate/--noupgrade skip the installer's apt-update + "upgrade the OS first" gate.
-   ## That gate guards a fresh VirtualBox INSTALL on a user machine; here VBox is already
-   ## installed on the test host and we only re-import OVAs, so a pending host upgrade is
-   ## irrelevant to the import -- not masked, just not this harness's concern.
-   sudo -u "${DIST_INSTALLER_USER}" -- "${DIST_INSTALLER_CLI}" --guest=whonix --guest-version="${version}" \
-      --interface="${interface}" --non-interactive --user="${account}" \
-      --directory-prefix="${account_home}/dist-installer-cli-download" \
-      --noupdate --noupgrade --no-boot --import-only=both --destroy-existing-guest \
-      || die "${SETUP_RC}" "dist-installer-cli import failed for whonix ${version}"
+   if [ "${rt_origin}" = 'built' ]; then
+      log info "importing built whonix pair under ${account} via direct VBoxManage import (gw='${ova_gw}' ws='${ova_ws}')"
+      rt_import_built_pair "${account}" "${gw}" "${ws}"
+   else
+      ## dist-installer-cli runs the download AND import AS the target account
+      ## (run_as_target_user), so the staging dir must be target-writable. Pin it to the
+      ## target's OWN home (always writable by it) via --directory-prefix; otherwise it
+      ## defaults to the invoker's home, which the target cannot write (mkdir fails). This
+      ## matches what the sysmaint-invoker path does automatically, without needing sysmaint.
+      account_home="$(getent passwd "${account}" | cut -d: -f6)"
+      [ -n "${account_home}" ] || die "${SETUP_RC}" "cannot resolve home for '${account}'"
+      log info "importing whonix ${version} pair under ${account} via ${DIST_INSTALLER_CLI} (as ${DIST_INSTALLER_USER}, prefix ${account_home})"
+      ## Invoke as the sudo-capable invoker (NOT root -- dist-installer-cli refuses root);
+      ## --user="${account}" is the INSTALL target (the leak account), distinct from the invoker.
+      ## --noupdate/--noupgrade skip the installer's apt-update + "upgrade the OS first" gate.
+      ## That gate guards a fresh VirtualBox INSTALL on a user machine; here VBox is already
+      ## installed on the test host and we only re-import OVAs, so a pending host upgrade is
+      ## irrelevant to the import -- not masked, just not this harness's concern.
+      sudo -u "${DIST_INSTALLER_USER}" -- "${DIST_INSTALLER_CLI}" --guest=whonix --guest-version="${version}" \
+         --interface="${interface}" --non-interactive --user="${account}" \
+         --directory-prefix="${account_home}/dist-installer-cli-download" \
+         --noupdate --noupgrade --no-boot --import-only=both --destroy-existing-guest \
+         || die "${SETUP_RC}" "dist-installer-cli import failed for whonix ${version}"
+   fi
    rt_set_pair_version "${account}" "${gw}" "${version}"
    rt_set_pair_version "${account}" "${ws}" "${version}"
    log info "pair ${version} imported + version-pinned under ${account}"
@@ -1246,6 +1393,20 @@ parse_args() {
    local -a positional=()
    while [ "$#" -gt 0 ]; do
       case "$1" in
+         --source)
+            [ "$#" -ge 2 ] || die "${SETUP_RC}" "missing value for --source"
+            ## Validate the value at PARSE time; the MANDATORY-presence + artifact-flag
+            ## coupling is rt_resolve_origin's job in main (guest/lane known there).
+            case "$2" in
+               official | built)
+                  source_mode="$2"
+                  ;;
+               *)
+                  die "${SETUP_RC}" "--source must be official|built, got '$2'"
+                  ;;
+            esac
+            shift 2
+            ;;
          --channel)
             [ "$#" -ge 2 ] || die "${SETUP_RC}" "missing value for --channel"
             channel="$2"
@@ -1274,11 +1435,22 @@ parse_args() {
             ;;
          --iso)
             [ "$#" -ge 2 ] || die "${SETUP_RC}" "missing value for --iso"
-            ## Reject an EMPTY value: local_iso stays "" and the [ -n "${local_iso}" ]
-            ## gate downstream would silently fall back to DOWNLOADING a published
-            ## release instead of testing the local build -- a false, wrong-subject PASS.
-            [ -n "$2" ] || die "${SETUP_RC}" "empty value for --iso (would silently test a downloaded release, not the local build)"
+            ## Reject an EMPTY value: an empty --iso cannot satisfy kicksecure --source built
+            ## and must fail loud here, never read as "no artifact".
+            [ -n "$2" ] || die "${SETUP_RC}" "empty value for --iso"
             local_iso="$2"
+            shift 2
+            ;;
+         --ova-gw)
+            [ "$#" -ge 2 ] || die "${SETUP_RC}" "missing value for --ova-gw"
+            [ -n "$2" ] || die "${SETUP_RC}" "empty value for --ova-gw"
+            ova_gw="$2"
+            shift 2
+            ;;
+         --ova-ws)
+            [ "$#" -ge 2 ] || die "${SETUP_RC}" "missing value for --ova-ws"
+            [ -n "$2" ] || die "${SETUP_RC}" "empty value for --ova-ws"
+            ova_ws="$2"
             shift 2
             ;;
          --coreboot-rom)
@@ -1361,11 +1533,16 @@ main() {
       || { print_usage >&2; die "${SETUP_RC}" "whonix requires --lane inst|leak; kicksecure accepts only inst (got guest='${guest}' lane='${lane}')"; }
    lane="${eff_lane}"
 
-   if [ -n "${local_iso}" ]; then
-      ## Built-ISO lane: no download. kicksecure-only (whonix tests an imported pair, not
-      ## an ISO install). A disposable eph-inst-GUEST-built account installs it; the version
-      ## is a results-matrix LABEL only (git-describe, not a release token).
-      [ "${guest}" = 'kicksecure' ] || die "${SETUP_RC}" "--iso is kicksecure-only"
+   ## Resolve + couple the MANDATORY --source to the artifact flags, deriving the origin
+   ## (downloaded|built). rt_resolve_origin rejects an absent/invalid source and any
+   ## source+artifact mismatch; the per-guest FS checks + version resolution follow here.
+   rt_origin="$(rt_resolve_origin "${source_mode}" "${guest}" "${local_iso}" "${ova_gw}" "${ova_ws}")" \
+      || { print_usage >&2; die "${SETUP_RC}" "invalid --source/artifact combination (source='${source_mode}' guest='${guest}' iso='${local_iso}' ova-gw='${ova_gw}' ova-ws='${ova_ws}'): --source is mandatory (official|built); official forbids --iso/--ova-gw/--ova-ws; kicksecure built needs --iso; whonix built needs --ova-gw + --ova-ws"; }
+
+   if [ "${rt_origin}" = 'built' ] && [ "${guest}" = 'kicksecure' ]; then
+      ## Built-ISO lane (kicksecure): no download. A disposable eph-inst-kicksecure-built
+      ## account installs it; the version is a results-matrix LABEL only (git-describe, not a
+      ## release token).
       [ -f "${local_iso}" ] || die "${SETUP_RC}" "--iso '${local_iso}' is not a regular file"
       ## The filename's desktop must match INTERFACE, else the lane would publish (say) a
       ## CLI build into the lxqt results cell.
@@ -1378,22 +1555,37 @@ main() {
          || die "${SETUP_RC}" "could not derive a version label from --iso '${local_iso}' -- pass --version"
       rt_build_version_ok "${version}" \
          || die "${SETUP_RC}" "built version label '${version}' is not path-safe (<=64 of [A-Za-z0-9.+_-], no leading '-', no '/' or '..')"
-      ## A built result must NOT overwrite an official-release results cell: reject a
-      ## release-shaped (pure dotted) label of ANY length. A build-distinct label carries a
-      ## dash/letter (the git-describe <ver>-g<sha>); matching on the charset here avoids
-      ## rt_version_token's 32-char cap letting a long pure-dotted label slip through.
-      case "${version}" in
-         *[!0-9.]*)
-            true
-            ;;
-         *)
-            die "${SETUP_RC}" "built label '${version}' looks like a release version -- use a build-distinct label (the git-describe <ver>-g<sha>) so it cannot overwrite an official-release cell"
-            ;;
-      esac
-      rt_origin='built'
+      rt_version_build_distinct "${version}" \
+         || die "${SETUP_RC}" "built label '${version}' looks like a release version -- use a build-distinct label (the git-describe <ver>-g<sha>) so it cannot overwrite an official-release cell"
       account='eph-inst-'"${guest}"'-built'
       account_kind='prebless'
       stable='(local build)'
+   elif [ "${rt_origin}" = 'built' ]; then
+      ## Built-pair lane (whonix): import the local OVAs directly (rt_provision_pair), no
+      ## dist-installer-cli, no download. The pair lives under the SAME persistent account the
+      ## official lane uses (leak -> persist-leak, inst -> persist-inst); a build-distinct
+      ## --version LABEL distinguishes its results cell AND pins the pair marker each run
+      ## verifies, so a built run can never overwrite an official-release cell or boot a
+      ## stale/official pair. No OVA-filename version derivation (out of scope) -- --version
+      ## is REQUIRED.
+      [ -f "${ova_gw}" ] || die "${SETUP_RC}" "--ova-gw '${ova_gw}' is not a regular file"
+      [ -f "${ova_ws}" ] || die "${SETUP_RC}" "--ova-ws '${ova_ws}' is not a regular file"
+      version="${version_override}"
+      [ -n "${version}" ] || { print_usage >&2; die "${SETUP_RC}" "whonix --source built requires --version <build-distinct label>"; }
+      rt_build_version_ok "${version}" \
+         || die "${SETUP_RC}" "built version label '${version}' is not path-safe (<=64 of [A-Za-z0-9.+_-], no leading '-', no '/' or '..')"
+      rt_version_build_distinct "${version}" \
+         || die "${SETUP_RC}" "built label '${version}' looks like a release version -- use a build-distinct label (the git-describe <ver>-g<sha>) so it cannot overwrite an official-release cell"
+      stable='(local build)'
+      if rt_lane_is_leak "${lane}"; then
+         account="persist-leak-${guest}"
+         rt_account_is_leak "${account}" \
+            || die "${SETUP_RC}" "leak account '${account}' is not in the persist-leak- namespace"
+         account_kind='leak'
+      else
+         account="persist-inst-${guest}"
+         account_kind='built'
+      fi
    else
       has "${ISO_DOWNLOAD}" || die "${SETUP_RC}" "'${ISO_DOWNLOAD}' not on PATH"
 
@@ -1427,20 +1619,21 @@ main() {
    fi
 
    ## --provision is a one-time setup of a dedicated PERSISTENT pair, not a test run:
-   ## whonix only, and only a persistent account (leak, or a blessed inst) can be built --
-   ## an ephemeral eph-inst account has no durable pair to provision.
+   ## whonix only, and only a persistent account (leak, a blessed inst, or a built pair) can
+   ## be built -- an ephemeral eph-inst account has no durable pair to provision.
    if [ "${do_provision}" = 'true' ]; then
       [ "${guest}" = 'whonix' ] \
          || die "${SETUP_RC}" "--provision is whonix-only"
-      [ "${account_kind}" = 'leak' ] || [ "${account_kind}" = 'blessed' ] \
-         || die "${SETUP_RC}" "--provision needs a persistent account (leak, or a blessed inst version == stable pin '${stable}'), got state '${account_kind}'"
+      [ "${account_kind}" = 'leak' ] || [ "${account_kind}" = 'blessed' ] || [ "${account_kind}" = 'built' ] \
+         || die "${SETUP_RC}" "--provision needs a persistent account (leak, a blessed inst version == stable pin '${stable}', or a --source built pair), got state '${account_kind}'"
    fi
 
    if [ "${dry_run}" = 'true' ]; then
       printf '%s\n' "plan:" \
          "  guest=${guest} interface=${interface} desktop=${desktop} lane=${lane}" \
          "  channel=${channel} resolved=${version} stable=${stable} state=${account_kind}" \
-         "  origin=${rt_origin} iso=${local_iso:-<download>}" \
+         "  origin=${rt_origin} source=${source_mode}" \
+         "  iso=${local_iso:-<none>} ova_gw=${ova_gw:-<none>} ova_ws=${ova_ws:-<none>}" \
          "  account=${account} firmware=${firmware} checks=${run_checks}" \
          "  mode=$([ "${do_provision}" = 'true' ] && printf '%s' "provision" || printf '%s' "test")" \
          "  iso_dir=${ISO_DIR} results_root=${RESULTS_ROOT}"
@@ -1454,10 +1647,11 @@ main() {
       return 0
    fi
 
-   ## The built lane uses a FIXED account: serialize concurrent built runs HERE, before the
-   ## eph-cleanup trap is armed and before the account is (re)created. A second run's failed
-   ## lock then dies with NO trap set, so it cannot fire rt_eph_cleanup (userdel/pkill) on
-   ## the account the first run is actively using.
+   ## The kicksecure built-ISO lane uses a FIXED eph account (eph-inst-kicksecure-built):
+   ## serialize concurrent built runs HERE, before the eph-cleanup trap is armed and before the
+   ## account is (re)created. A second run's failed lock then dies with NO trap set, so it cannot
+   ## fire rt_eph_cleanup (userdel/pkill) on the account the first run is actively using. (The
+   ## whonix built pair uses a PERSISTENT account, locked inside rt_whonix_pair_require instead.)
    if [ -n "${local_iso}" ]; then
       rt_lock_account "${account}"
    fi
@@ -1500,6 +1694,16 @@ main() {
       id "${account}" >/dev/null 2>&1 \
          || die "${SETUP_RC}" "blessed account '${account}' does not exist -- pre-provision persist-inst-${guest}"
       rt_require_account_unprivileged "${account}" blessed
+   fi
+
+   ## The built-pair account (persist-inst- carrying a build-distinct marker instead of the
+   ## stable pin) is ALSO pre-provisioned, not created here -- re-assert the same fail-closed
+   ## privilege gate as blessed. It shares persist-inst-${guest} with the official blessed lane;
+   ## the version marker (not the account) is what distinguishes a built pair from an official one.
+   if [ "${account_kind}" = 'built' ]; then
+      id "${account}" >/dev/null 2>&1 \
+         || die "${SETUP_RC}" "built pair account '${account}' does not exist -- provision it: ${me} whonix ${interface} --lane inst --source built --ova-gw <gw.ova> --ova-ws <ws.ova> --version ${version} --provision"
+      rt_require_account_unprivileged "${account}" built
    fi
 
    local rc

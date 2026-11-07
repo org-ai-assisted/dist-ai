@@ -109,6 +109,31 @@ assert_out "select whonix inst blessed" "persist-inst-whonix" rt_select_account 
 assert_out "select prebless eph" "eph-inst-whonix-18-2-3-5" rt_select_account whonix prebless 18-2-3-5
 assert_reject "select unknown state" rt_select_account kicksecure bogus 18-2-3-5
 
+## rt_resolve_origin: the MANDATORY --source gate + artifact coupling. Echoes downloaded|built.
+## Canaries: an absent/invalid source must REJECT (no default); official must forbid every
+## artifact flag; each built guest has exactly ONE shape (kicksecure=--iso, whonix=--ova pair),
+## and the wrong-guest shape is rejected. $args: source guest iso ova_gw ova_ws.
+assert_out "origin official kicksecure" "downloaded" rt_resolve_origin official kicksecure "" "" ""
+assert_out "origin official whonix" "downloaded" rt_resolve_origin official whonix "" "" ""
+assert_out "origin built kicksecure iso" "built" rt_resolve_origin built kicksecure /b.iso "" ""
+assert_out "origin built whonix pair" "built" rt_resolve_origin built whonix "" /g.ova /w.ova
+assert_reject "origin empty source (mandatory)" rt_resolve_origin "" kicksecure /b.iso "" ""
+assert_reject "origin bogus source" rt_resolve_origin bogus kicksecure /b.iso "" ""
+assert_reject "origin official forbids --iso" rt_resolve_origin official kicksecure /b.iso "" ""
+assert_reject "origin official forbids --ova-gw" rt_resolve_origin official whonix "" /g.ova ""
+assert_reject "origin built kicksecure needs --iso" rt_resolve_origin built kicksecure "" "" ""
+assert_reject "origin built kicksecure forbids --ova" rt_resolve_origin built kicksecure /b.iso /g.ova ""
+assert_reject "origin built whonix needs both ovas" rt_resolve_origin built whonix "" /g.ova ""
+assert_reject "origin built whonix forbids --iso" rt_resolve_origin built whonix /b.iso /g.ova /w.ova
+assert_reject "origin built unknown guest" rt_resolve_origin built debian /b.iso "" ""
+
+## rt_version_build_distinct: a build-distinct label (dash/letter) passes; a release-shaped
+## (pure dotted) label of ANY length is rejected so a built run can't overwrite a release cell.
+assert_out "build-distinct git-describe" "" rt_version_build_distinct 18.2.3.0-g9999
+assert_out "build-distinct with letter" "" rt_version_build_distinct 18.2.3.0rc1
+assert_reject "release-shaped pure dotted rejected" rt_version_build_distinct 18.2.3.0
+assert_reject "release-shaped long dotted rejected" rt_version_build_distinct 1.2.3.4.5.6.7.8.9.0.1.2.3.4.5.6.7.8
+
 ## lane predicates: rt_lane_is_leak keys on the LANE (inst|leak), NOT the guest -- whonix
 ## supports both. Canary: the old body `[ "$1" = whonix ]` passes 'whonix' and rejects 'leak'.
 assert_out "leak lane is leak" "" rt_lane_is_leak leak
@@ -293,7 +318,10 @@ done
 ## wired through the gate. The blessed wiring is the regression: before it, a privileged
 ## persist-inst- account ran a test unchecked (isolation-boundary gap). Fails on the old
 ## code, where the 'blessed' call was absent.
-for role in test leak blessed; do
+## 'built' is the whonix --source built inst account (persist-inst- with a build-distinct
+## marker): pre-provisioned, so it MUST pass the same gate as blessed. Fails on code that
+## added account_kind=built but skipped its privilege gate.
+for role in test leak blessed built; do
    if grep --quiet --fixed-strings "rt_require_account_unprivileged \"\${account}\" ${role}" "${subject}"; then
       printf '%s\n' "ok: ${role} account wired through the privilege gate"
    else

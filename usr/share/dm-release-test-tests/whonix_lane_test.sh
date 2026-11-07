@@ -13,8 +13,10 @@
 ##     gate reaches the dm-whonix-pair recorder, so the "not invoked" assertion is a real canary.
 ##   - the leak lane must pass --mode leak and the inst lane --mode functional (a swapped mode
 ##     would run the wrong battery on the wrong account).
-##   - rt_provision_pair must import via dist-installer-cli with the pinned version and set
-##     the marker on BOTH VMs -- the counterpart the run-time gate reads.
+##   - rt_provision_pair must import via dist-installer-cli (--source official) with the pinned
+##     version and set the marker on BOTH VMs -- the counterpart the run-time gate reads.
+##   - for a --source built pair (rt_origin=built) rt_provision_pair must import the local OVAs
+##     DIRECTLY via VBoxManage and NOT call dist-installer-cli (no download, no wrong subject).
 ## Stubs isolate the unit: no VM, no account mutation, no root.
 
 set -o errexit
@@ -57,6 +59,7 @@ export SETEXTRA_LOG="${work}/setextradata.log"
 export PAIR_ARGV="${work}/dm-whonix-pair.argv"
 export DIST_ARGV="${work}/dist-installer-cli.argv"
 export SUDO_LOG="${work}/sudo.log"
+export VBOX_LOG="${work}/vboxmanage.log"
 
 ## sudo: `--non-interactive <cmd>` (the rt_account_can_sudo probe) exits 1 => "account is
 ## clean". Otherwise drop `-u <user>` and a leading `--` and run the rest as this user, so
@@ -83,14 +86,33 @@ shift 2
 exec "$@"
 EOF
 
-## VBoxManage: getextradata echoes the controlled marker response; setextradata records.
+## VBoxManage: getextradata echoes the controlled marker response; setextradata records; the
+## built-pair import path's controlvm/unregistervm/import calls record to VBOX_LOG.
 cat > "${stubbin}/VBoxManage" <<'EOF'
 #!/bin/bash
 case "$1" in
   getextradata) cat -- "${MARKER_RESPONSE_FILE}";;
   setextradata) printf '%s %s %s\n' "$2" "$3" "$4" >> "${SETEXTRA_LOG}";;
+  import|controlvm|unregistervm) printf '%s\n' "$*" >> "${VBOX_LOG}";;
 esac
 exit 0
+EOF
+
+## dm-smbios-reader-vbox: emit-argv --op import --ova <ova> --vm <vm> prints the canonical
+## import argv one token per line (mirrors build_import_argv), the single source rt_import_one_ova
+## reuses. imp[0] is the literal 'VBoxManage', which rt_import_one_ova replaces with VBOXMANAGE.
+cat > "${stubbin}/dm-smbios-reader-vbox" <<'EOF'
+#!/bin/bash
+ova=""
+vm=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --ova) ova="$2"; shift 2;;
+    --vm) vm="$2"; shift 2;;
+    *) shift;;
+  esac
+done
+printf '%s\n' VBoxManage import "${ova}" --vsys 0 --vmname "${vm}"
 EOF
 
 ## dm-whonix-pair + dist-installer-cli recorders.
@@ -154,6 +176,7 @@ export PATH="${stubbin}:${PATH}"
 export VBOXMANAGE="${stubbin}/VBoxManage"
 export DM_WHONIX_PAIR="${stubbin}/dm-whonix-pair"
 export DIST_INSTALLER_CLI="${stubbin}/dist-installer-cli"
+export DM_SMBIOS_READER_VBOX="${stubbin}/dm-smbios-reader-vbox"
 export NFT_FLEET_TOOL="${stubbin}/nft-fleet"
 ## Lock dir this user can write (root uses a 0700 dir under /run in production).
 ## Pre-create it world-writable so the chmod-to-0700 hardening is a real canary.
@@ -269,6 +292,34 @@ check "provision: WS marker set to the version" \
 ## of dist-installer-cli in the sudo log.
 check "provision: dist-installer-cli invoked via sudo -u (not as root)" \
    "$(grep --quiet --extended-regexp -- '-u .*dist-installer-cli' "${SUDO_LOG}" && printf '%s' "true" || printf '%s' "false")"
+
+## Case H (built pair): rt_origin=built provisions by importing the LOCAL OVAs DIRECTLY via
+## VBoxManage (reusing dm-smbios-reader-vbox's build_import_argv shape), never dist-installer-cli
+## -- no download, no wrong-subject risk. Both VMs are imported + version-pinned with the build
+## label. Canary: a revert to the dist-installer-cli path leaves VBOX_LOG without the imports (and
+## DIST_ARGV non-empty).
+## rt_origin + ova_gw/ova_ws are globals the sourced rt_provision_pair reads; export so a
+## standalone shellcheck of this file sees them used (SC2034), matching interface/desktop above.
+export rt_origin='built'
+export ova_gw="${work}/Whonix-Gateway-CLI-build.ova"
+export ova_ws="${work}/Whonix-Workstation-CLI-build.ova"
+printf '%s' "" > "${DIST_ARGV}"
+printf '%s' "" > "${SETEXTRA_LOG}"
+printf '%s' "" > "${VBOX_LOG}"
+rc_h=0
+( rt_provision_pair persist-inst-whonix 18.2.3.0-g9999 ) >/dev/null 2>&1 || rc_h=$?
+export rt_origin='downloaded'
+check "built provision: returns 0" "$([ "${rc_h}" = '0' ] && printf '%s' "true" || printf '%s' "false")"
+check "built provision: dist-installer-cli NOT invoked (no download)" \
+   "$([ ! -s "${DIST_ARGV}" ] && printf '%s' "true" || printf '%s' "false")"
+check "built provision: imported the GW ova via VBoxManage" \
+   "$(grep --quiet --fixed-strings -- "import ${ova_gw} --vsys 0 --vmname Whonix-Gateway-CLI" "${VBOX_LOG}" && printf '%s' "true" || printf '%s' "false")"
+check "built provision: imported the WS ova via VBoxManage" \
+   "$(grep --quiet --fixed-strings -- "import ${ova_ws} --vsys 0 --vmname Whonix-Workstation-CLI" "${VBOX_LOG}" && printf '%s' "true" || printf '%s' "false")"
+check "built provision: GW marker set to the build label" \
+   "$(grep --quiet -- 'Whonix-Gateway-CLI leaktest/pair-version 18.2.3.0-g9999' "${SETEXTRA_LOG}" && printf '%s' "true" || printf '%s' "false")"
+check "built provision: WS marker set to the build label" \
+   "$(grep --quiet -- 'Whonix-Workstation-CLI leaktest/pair-version 18.2.3.0-g9999' "${SETEXTRA_LOG}" && printf '%s' "true" || printf '%s' "false")"
 
 ## Lock dir hardened to 0700 (a world-writable lock dir lets any local user hold the
 ## lock and wedge every run). Canary: pre-created 0777 above; the chmod must tighten it.

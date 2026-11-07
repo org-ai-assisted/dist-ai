@@ -5,11 +5,13 @@
 
 ## AI-Assisted
 
-## The --iso built-origin lane: test a LOCALLY-BUILT ISO instead of downloading.
-## A git-describe build version (18.2.3.0-222-g<sha>) is NOT a release token, so it
-## must NOT flow through rt_version_token / the eph account-name ceiling -- a built run
-## uses a FIXED eph-inst-GUEST-built account and records origin=built. Canary: on the old
-## (download-only) code `--iso` is an unknown option and the helpers do not exist.
+## The --source built lanes: test a LOCALLY-BUILT artifact instead of downloading.
+## kicksecure built = --iso (a git-describe build version 18.2.3.0-222-g<sha> is NOT a release
+## token, so it must NOT flow through rt_version_token / the eph account-name ceiling -- a built
+## run uses a FIXED eph-inst-GUEST-built account and records origin=built). whonix built =
+## --ova-gw/--ova-ws under the persistent persist-inst-/persist-leak- account. --source is
+## MANDATORY and coupled to the artifact flags. Canary: on the old (no --source) code the flag
+## is unknown and the coupling rejections do not exist.
 
 set -o errexit
 set -o nounset
@@ -93,28 +95,56 @@ touch -- "${iso}"
 cleanup() { safe-rm --recursive --force -- "${d}"; }
 trap cleanup EXIT
 
-plan="$("${subject}" kicksecure lxqt --iso "${iso}" --firmware efi --checks --dry-run 2>&1)"
-if grep --quiet 'origin=built' <<<"${plan}"; then ok '--iso plan records origin=built'; else bad "no origin=built in plan: ${plan}"; fi
-if grep --quiet 'account=eph-inst-kicksecure-built' <<<"${plan}"; then ok '--iso uses the fixed eph-inst-kicksecure-built account'; else bad "wrong account in plan: ${plan}"; fi
-if grep --quiet 'resolved=222-g0355db7f4fe1' <<<"${plan}"; then ok '--iso derives the concise version label into the plan'; else bad "no derived version in plan: ${plan}"; fi
+plan="$("${subject}" kicksecure lxqt --source built --iso "${iso}" --firmware efi --checks --dry-run 2>&1)"
+if grep --quiet 'origin=built' <<<"${plan}"; then ok 'kicksecure built plan records origin=built'; else bad "no origin=built in plan: ${plan}"; fi
+if grep --quiet 'account=eph-inst-kicksecure-built' <<<"${plan}"; then ok 'kicksecure built uses the fixed eph-inst-kicksecure-built account'; else bad "wrong account in plan: ${plan}"; fi
+if grep --quiet 'resolved=222-g0355db7f4fe1' <<<"${plan}"; then ok 'kicksecure built derives the concise version label into the plan'; else bad "no derived version in plan: ${plan}"; fi
 
-## --iso is kicksecure-only (whonix tests an imported pair, not an ISO install).
-if "${subject}" whonix lxqt --iso "${iso}" --dry-run >/dev/null 2>&1; then
-   bad '--iso wrongly accepted for whonix'
+## --source is MANDATORY: absence fails loud (never a silently-picked source). Canary: the old
+## code had no --source and ran the lane anyway.
+if nosrc_err="$("${subject}" kicksecure lxqt --iso "${iso}" --dry-run 2>&1)"; then
+   bad "missing --source wrongly accepted: ${nosrc_err}"
 else
-   ok '--iso rejected for whonix (kicksecure-only)'
+   case "${nosrc_err}" in
+      *'--source'*)
+         ok 'missing --source rejected (mandatory)'
+         ;;
+      *)
+         bad "missing --source failed for the wrong reason: ${nosrc_err}"
+         ;;
+   esac
 fi
 
-## An EMPTY --iso value must be REJECTED, not silently fall back to downloading a
-## published release: local_iso would stay empty and the [ -n "${local_iso}" ] gate
-## would pick the DOWNLOAD path -- testing the wrong subject and publishing a false
-## PASS. The pre-fix '-ge 2'-only check accepted '--iso ""'.
-if empty_iso_err="$("${subject}" kicksecure lxqt --iso '' --dry-run 2>&1)"; then
+## Coupling: an artifact flag is built-only. --source official + --iso is rejected (a source+
+## artifact mismatch could otherwise silently test the wrong subject).
+if "${subject}" kicksecure lxqt --source official --iso "${iso}" --dry-run >/dev/null 2>&1; then
+   bad '--source official + --iso wrongly accepted'
+else
+   ok '--source official forbids --iso (coupling)'
+fi
+
+## kicksecure --source built REQUIRES --iso.
+if "${subject}" kicksecure lxqt --source built --dry-run >/dev/null 2>&1; then
+   bad 'kicksecure --source built without --iso wrongly accepted'
+else
+   ok 'kicksecure --source built requires --iso'
+fi
+
+## --iso is kicksecure-only (whonix built uses the --ova pair, not an ISO install).
+if "${subject}" whonix lxqt --lane inst --source built --iso "${iso}" --version 18.2.3.0-g9999 --dry-run >/dev/null 2>&1; then
+   bad '--iso wrongly accepted for whonix built'
+else
+   ok '--iso rejected for whonix built (kicksecure-only)'
+fi
+
+## An EMPTY --iso value must be REJECTED, never read as "no artifact". The pre-fix '-ge 2'-only
+## check accepted '--iso ""'.
+if empty_iso_err="$("${subject}" kicksecure lxqt --source built --iso '' --dry-run 2>&1)"; then
    bad "empty --iso value wrongly accepted: ${empty_iso_err}"
 else
    case "${empty_iso_err}" in
       *'empty value for --iso'*)
-         ok 'empty --iso value rejected (no silent download fallback)'
+         ok 'empty --iso value rejected'
          ;;
       *)
          bad "empty --iso failed for the wrong reason: ${empty_iso_err}"
@@ -124,21 +154,21 @@ fi
 
 ## A built result must NOT overwrite an official-release cell: a release-shaped label
 ## (pure dotted token) is rejected.
-if "${subject}" kicksecure lxqt --iso "${iso}" --version 18.2.3.0 --dry-run >/dev/null 2>&1; then
+if "${subject}" kicksecure lxqt --source built --iso "${iso}" --version 18.2.3.0 --dry-run >/dev/null 2>&1; then
    bad '--version with a release-shaped label was wrongly accepted'
 else
    ok 'release-shaped --version label rejected (no official-cell overwrite)'
 fi
 
 ## a LONG pure-dotted label (> the 32-char release-token cap) is still release-shaped.
-if "${subject}" kicksecure lxqt --iso "${iso}" --version 1.2.3.4.5.6.7.8.9.0.1.2.3.4.5.6.7.8 --dry-run >/dev/null 2>&1; then
+if "${subject}" kicksecure lxqt --source built --iso "${iso}" --version 1.2.3.4.5.6.7.8.9.0.1.2.3.4.5.6.7.8 --dry-run >/dev/null 2>&1; then
    bad 'long pure-dotted --version label wrongly accepted'
 else
    ok 'long pure-dotted --version label rejected'
 fi
 
 ## a build-distinct override IS accepted and keeps origin=built.
-over_plan="$("${subject}" kicksecure lxqt --iso "${iso}" --version 18.2.3.0-g9999 --dry-run 2>&1)"
+over_plan="$("${subject}" kicksecure lxqt --source built --iso "${iso}" --version 18.2.3.0-g9999 --dry-run 2>&1)"
 if grep --quiet 'resolved=18.2.3.0-g9999' <<<"${over_plan}" && grep --quiet 'origin=built' <<<"${over_plan}"; then
    ok '--version build-distinct override accepted, keeps origin=built'
 else
@@ -148,10 +178,54 @@ fi
 ## the filename desktop must match INTERFACE (no CLI build under the lxqt cell).
 mismatch_iso="${d}/Kicksecure-CLI-18.2.3.0-222-gdead.Intel_AMD64.iso"
 touch -- "${mismatch_iso}"
-if "${subject}" kicksecure lxqt --iso "${mismatch_iso}" --dry-run >/dev/null 2>&1; then
+if "${subject}" kicksecure lxqt --source built --iso "${mismatch_iso}" --dry-run >/dev/null 2>&1; then
    bad 'interface/desktop mismatch wrongly accepted'
 else
    ok 'interface/desktop mismatch rejected'
+fi
+
+## --- whonix --source built (the --ova pair; direct import, no download) ---
+ova_gw="${d}/Whonix-Gateway-CLI-build.ova"
+ova_ws="${d}/Whonix-Workstation-CLI-build.ova"
+touch -- "${ova_gw}" "${ova_ws}"
+
+## inst lane: plan records origin=built, state=built, and the persist-inst- account (shared
+## with the official blessed lane; the build-distinct marker is what distinguishes the pair).
+winst_plan="$("${subject}" whonix cli --lane inst --source built --ova-gw "${ova_gw}" --ova-ws "${ova_ws}" --version 18.2.3.0-g9999 --dry-run 2>&1)"
+if grep --quiet 'origin=built' <<<"${winst_plan}" && grep --quiet 'source=built' <<<"${winst_plan}"; then ok 'whonix built inst plan records origin=built source=built'; else bad "whonix built inst plan: ${winst_plan}"; fi
+if grep --quiet 'state=built' <<<"${winst_plan}"; then ok 'whonix built inst uses account_kind=built'; else bad "whonix built inst state: ${winst_plan}"; fi
+if grep --quiet 'account=persist-inst-whonix' <<<"${winst_plan}"; then ok 'whonix built inst uses persist-inst-whonix'; else bad "whonix built inst account: ${winst_plan}"; fi
+
+## leak lane: stays in persist-leak-whonix (account_kind=leak), just a locally-imported pair.
+wleak_plan="$("${subject}" whonix cli --lane leak --source built --ova-gw "${ova_gw}" --ova-ws "${ova_ws}" --version 18.2.3.0-g9999 --dry-run 2>&1)"
+if grep --quiet 'account=persist-leak-whonix' <<<"${wleak_plan}" && grep --quiet 'state=leak' <<<"${wleak_plan}"; then ok 'whonix built leak stays persist-leak-whonix (account_kind=leak)'; else bad "whonix built leak plan: ${wleak_plan}"; fi
+
+## whonix --source built needs BOTH ovas.
+if "${subject}" whonix cli --lane inst --source built --ova-gw "${ova_gw}" --version 18.2.3.0-g9999 --dry-run >/dev/null 2>&1; then
+   bad 'whonix built with only --ova-gw wrongly accepted'
+else
+   ok 'whonix built requires both --ova-gw and --ova-ws'
+fi
+
+## whonix --source built requires an explicit build-distinct --version (no OVA-name derivation).
+if "${subject}" whonix cli --lane inst --source built --ova-gw "${ova_gw}" --ova-ws "${ova_ws}" --dry-run >/dev/null 2>&1; then
+   bad 'whonix built without --version wrongly accepted'
+else
+   ok 'whonix built requires --version'
+fi
+
+## a release-shaped --version is rejected for whonix built too (no official-cell overwrite).
+if "${subject}" whonix cli --lane inst --source built --ova-gw "${ova_gw}" --ova-ws "${ova_ws}" --version 18.2.3.0 --dry-run >/dev/null 2>&1; then
+   bad 'whonix built release-shaped --version wrongly accepted'
+else
+   ok 'whonix built rejects a release-shaped --version'
+fi
+
+## --ova flags are built-only: --source official + --ova-gw is rejected.
+if "${subject}" whonix cli --lane inst --source official --ova-gw "${ova_gw}" --ova-ws "${ova_ws}" --dry-run >/dev/null 2>&1; then
+   bad '--source official + --ova pair wrongly accepted'
+else
+   ok '--source official forbids --ova-gw/--ova-ws (coupling)'
 fi
 
 if [ "${failures}" -ne 0 ]; then

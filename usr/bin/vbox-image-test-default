@@ -8,6 +8,9 @@
 ## The DEFAULT VBox image-test batch -- a CONSERVATIVE set of the important lanes, run + published
 ## in one command via vbox-image-test. This encodes the lane-importance policy:
 ##
+##   Each lane carries the MANDATORY --source: kicksecure is --source built when --iso is given
+##   (tests THIS build), else --source official; the whonix lanes are --source official (the
+##   pre-imported release pair).
 ##   DEFAULT (run every batch):
 ##     - kicksecure lxqt  EFI+SecureBoot  (built --iso if given, else --channel release) <- flagship
 ##     - kicksecure lxqt  BIOS            (legacy boot must stay tested)
@@ -91,16 +94,18 @@ while [ "$#" -ge 1 ]; do
    esac
 done
 
-## The flagship Kicksecure source: a built ISO when given (tests THIS build), else the release.
-ks_src="--channel ${channel}"
-[ -z "${iso}" ] || ks_src="--iso ${iso}"
+## The flagship Kicksecure source + its MANDATORY --source: a built ISO when given (tests THIS
+## build, --source built), else the published release (--source official, --channel picks the
+## stream). Whonix lanes default to --source official (the pre-imported release pair).
+ks_src="--source official --channel ${channel}"
+[ -z "${iso}" ] || ks_src="--source built --iso ${iso}"
 
 lanes=(
    "kicksecure lxqt ${ks_src} --firmware efi-secureboot"
    "kicksecure lxqt ${ks_src} --firmware bios"
-   "whonix lxqt --lane inst --channel ${channel} --firmware bios"
-   "whonix lxqt --lane leak --channel ${channel} --firmware bios"
-   "whonix cli --lane inst --channel ${channel} --firmware bios"
+   "whonix lxqt --lane inst --source official --channel ${channel} --firmware bios"
+   "whonix lxqt --lane leak --source official --channel ${channel} --firmware bios"
+   "whonix cli --lane inst --source official --channel ${channel} --firmware bios"
 )
 
 ## Opt-in additions.
