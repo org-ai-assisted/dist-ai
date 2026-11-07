@@ -192,6 +192,17 @@ fi
 # shellcheck source=../libexec/image-test/results-publish.bsh
 source "${image_test_libexec}/results-publish.bsh"
 
+## vbox_apply_firmware (shared with dm-calamares-install + dm-whonix-pair): set a pair VM's
+## firmware while powered off. ONLY that one helper is used here; its gc_*/boot_* siblings (which
+## need gui-drive.bsh/grub-boot-select.bsh) are never called, so the fragment sources standalone.
+if [ -d "${script_dir}/../share/dm-smbios-reader-boot-tests" ]; then
+   vbox_session_lib="${script_dir}/../share/dm-smbios-reader-boot-tests/vbox-session.bsh"
+else
+   vbox_session_lib='/usr/share/dm-smbios-reader-boot-tests/vbox-session.bsh'
+fi
+# shellcheck source=../share/dm-smbios-reader-boot-tests/vbox-session.bsh
+source "${vbox_session_lib}"
+
 die() {
    local code
    code="$1"
@@ -892,9 +903,20 @@ rt_provision_pair() {
          --noupdate --noupgrade --no-boot --import-only=both --destroy-existing-guest \
          || die "${SETUP_RC}" "dist-installer-cli import failed for whonix ${version}"
    fi
+   ## Apply the requested firmware to BOTH freshly-imported VMs while powered off, so the
+   ## one-time clean-live snapshot (the NEXT step below) captures it and every dm-whonix-pair
+   ## restore_fresh boots under it. Routed through VBOX_FW_RUNNER=sudo -u account so the
+   ## powered-off modifyvm/modifynvram land in the account's own $HOME (VBox state is per-$HOME;
+   ## rt_provision_pair runs as root). The imported pair is already installed, so Secure Boot is
+   ## enabled DIRECTLY (enable-now) -- not the calamares live/install two-phase defer. A prebuilt
+   ## OVA may only boot under the firmware it was built for; a non-booting firmware is surfaced by
+   ## the OVH boot-verify as a real fail/inconclusive, never masked here.
+   local -a VBOX_FW_RUNNER=( sudo -u "${account}" -- "${VBOXMANAGE}" )
+   vbox_apply_firmware "${gw}" "${firmware}" enable-now
+   vbox_apply_firmware "${ws}" "${firmware}" enable-now
    rt_set_pair_version "${account}" "${gw}" "${version}"
    rt_set_pair_version "${account}" "${ws}" "${version}"
-   log info "pair ${version} imported + version-pinned under ${account}"
+   log info "pair ${version} imported + firmware '${firmware}' applied + version-pinned under ${account}"
    log info "NEXT (one-time, per VM, in a booted sysmaint session): run 'dev-root force' (needed by the leak lane; harmless for inst), power off, then '${VBOXMANAGE} snapshot <vm> take clean-live' so dm-whonix-pair restore_fresh has a pristine, root-capable pair"
 }
 
@@ -1090,15 +1112,20 @@ rt_publish_result() {
       fi
    fi
    rt_fw_declared=""; rt_fw_detected=""; rt_fw_evidence=""; rt_fw_match=""
-   ## Firmware is part of the run identity for the Calamares INSTALL lane only: a BIOS
-   ## install lays down a BIOS-boot partition and an EFI one an ESP, a legitimately
-   ## different screenshot sequence + golden set, and the overview must not collapse a
-   ## bios and an efi run of one ISO onto a single matrix row (run_key is lane-derived).
-   ## The whonix-pair lane has no firmware axis, so it keeps the bare guest-interface lane.
+   ## Firmware is part of the run identity. For the Calamares INSTALL lane a BIOS install lays
+   ## down a BIOS-boot partition and an EFI one an ESP -- a different screenshot sequence + golden
+   ## set the overview must not collapse onto one matrix row (run_key is lane-derived). For the
+   ## whonix lanes the imported pair has the requested firmware applied at provision
+   ## (rt_provision_pair -> vbox_apply_firmware), so a bios and an efi run of the same pair are
+   ## distinct cells too and must not clobber each other. (A TEST run records the firmware it was
+   ## invoked with; it does not re-verify the pair's applied firmware -- the lane_fw axis prevents
+   ## cross-firmware clobber and the OVH boot-verify is the real check.)
    lane_fw=""
-   if [ "${mode}" = 'calamares-install' ]; then
-      lane_fw="-${firmware}"
-   fi
+   case "${mode}" in
+      calamares-install | whonix-pair | whonix-func)
+         lane_fw="-${firmware}"
+         ;;
+   esac
    ## The whonix guest runs two lanes (inst vs leak) with no firmware axis, so WITHOUT a lane
    ## component both would publish to the same guest-interface cell and clobber each other.
    ## A lane sets rt_lane_key (inst|leak); fold it in as its own component. Empty (the
@@ -1398,7 +1425,12 @@ rt_lane_whonix_inst() {
       return "${SETUP_RC}"
    fi
    rc=0
-   sudo -u "${account}" -- "${rt_session_env[@]}" "${DM_WHONIX_PAIR}" --mode functional --check-log "${check_log}" --gw "${gw}" --ws "${ws}" || rc=$?
+   ## Map the guest desktop variant to dm-whonix-pair's battery edition: a cli guest has no
+   ## desktop, so run the headless guestcontrol battery; every other interface (lxqt) uses the
+   ## OCR real-session battery.
+   local wp_interface='gui'
+   [ "${interface}" = 'cli' ] && wp_interface='cli'
+   sudo -u "${account}" -- "${rt_session_env[@]}" "${DM_WHONIX_PAIR}" --mode functional --interface "${wp_interface}" --check-log "${check_log}" --gw "${gw}" --ws "${ws}" || rc=$?
    ## Thread a non-empty check-log into the published step's stderr tail (empty = a pass or a
    ## pre-check failure -> no tail). Consumed once by rt_publish_result.
    rt_check_log=""
@@ -1474,7 +1506,12 @@ parse_args() {
                   die "${SETUP_RC}" "--ova-gw path contains a control character"
                   ;;
             esac
-            ova_gw="$2"
+            ## Canonicalize to an ABSOLUTE path (lexical: -m does not require existence, so a
+            ## missing file is still reported by the dedicated readability check, not here). A
+            ## relative path passes the root-side `[ -f ]`/readability precheck relative to root's
+            ## CWD but then fails in VBoxManage run as the account (different CWD) AFTER the import
+            ## has already deleted the existing VM -- #814.
+            ova_gw="$(realpath -m -- "$2")" || die "${SETUP_RC}" "cannot canonicalize --ova-gw path '$2'"
             shift 2
             ;;
          --ova-ws)
@@ -1485,7 +1522,7 @@ parse_args() {
                   die "${SETUP_RC}" "--ova-ws path contains a control character"
                   ;;
             esac
-            ova_ws="$2"
+            ova_ws="$(realpath -m -- "$2")" || die "${SETUP_RC}" "cannot canonicalize --ova-ws path '$2'"
             shift 2
             ;;
          --coreboot-rom)

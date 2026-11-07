@@ -93,7 +93,7 @@ cat > "${stubbin}/VBoxManage" <<'EOF'
 case "$1" in
   getextradata) cat -- "${MARKER_RESPONSE_FILE}";;
   setextradata) printf '%s %s %s\n' "$2" "$3" "$4" >> "${SETEXTRA_LOG}";;
-  import|controlvm|unregistervm) printf '%s\n' "$*" >> "${VBOX_LOG}";;
+  import|controlvm|unregistervm|modifyvm) printf '%s\n' "$*" >> "${VBOX_LOG}";;
 esac
 exit 0
 EOF
@@ -323,6 +323,14 @@ check "built provision: GW marker set to the build label" \
    "$(grep --quiet -- 'Whonix-Gateway-CLI leaktest/pair-version 18.2.3.0-g9999' "${SETEXTRA_LOG}" && printf '%s' "true" || printf '%s' "false")"
 check "built provision: WS marker set to the build label" \
    "$(grep --quiet -- 'Whonix-Workstation-CLI leaktest/pair-version 18.2.3.0-g9999' "${SETEXTRA_LOG}" && printf '%s' "true" || printf '%s' "false")"
+## #28: rt_provision_pair applies the requested firmware to BOTH imported VMs (powered off,
+## before the clean-live snapshot). firmware defaults to efi-secureboot here -> modifyvm
+## --firmware efi on each pair VM via the per-account runner. Canary: the pre-fix provisioner
+## applied NO firmware, so VBOX_LOG carried no modifyvm --firmware line for either VM.
+check "built provision: firmware applied to the GW VM" \
+   "$(grep --quiet -- 'modifyvm Whonix-Gateway-CLI --firmware' "${VBOX_LOG}" && printf '%s' "true" || printf '%s' "false")"
+check "built provision: firmware applied to the WS VM" \
+   "$(grep --quiet -- 'modifyvm Whonix-Workstation-CLI --firmware' "${VBOX_LOG}" && printf '%s' "true" || printf '%s' "false")"
 
 ## Case H2 (built pair, unreadable ova): the account-readability precheck must abort SETUP_RC
 ## BEFORE any destructive unregister/import, so an unreadable ova never destroys the existing

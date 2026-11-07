@@ -1736,39 +1736,14 @@ parse_args() {
    esac
 }
 
-## Set the VM firmware; efi-secureboot also enrolls the platform + MS keys in the
-## NVRAM store (VBox 7.x has no modifyvm --secure-boot). Done while powered off.
+## Set the VM firmware; efi-secureboot also enrolls the platform + MS keys in the NVRAM store
+## (VBox 7.x has no modifyvm --secure-boot). Done while powered off. The firmware + key-enroll
+## primitive is the shared vbox_apply_firmware (vbox-session.bsh); install uses `defer` -- enroll
+## the keys but keep Secure Boot OFF until enable_secureboot_installed, because the live ISO's
+## unsigned Guest Additions would be rejected under enforcement and guestcontrol would never come
+## up to drive the install. Only the coreboot extradata (kicksecure-only) is layered here.
 apply_firmware() {
-   local fw
-   case "${firmware}" in
-      bios)
-         fw='bios'
-         ;;
-      *)
-         fw='efi'
-         ;;
-   esac
-   "${VBOXMANAGE}" modifyvm "${vm}" --firmware "${fw}" >/dev/null
-   if [ "${firmware}" = 'efi-secureboot' ]; then
-      ## Initialize the varstore and enroll the platform + MS keys now, but keep Secure Boot
-      ## DISABLED for the live/install phase. The live ISO's VirtualBox Guest Additions kernel
-      ## modules are NOT signed, so under enforced Secure Boot they would be rejected and
-      ## VBoxService never starts -> guestcontrol never comes up -> the install cannot be
-      ## driven. Secure Boot is turned ON only just before the installed-system first boot
-      ## (enable_secureboot_installed), where the GA is DKMS-signed and the MOK enrolled. The
-      ## keys are enrolled here (not at the transition) because inituefivarstore would wipe the
-      ## boot entries Calamares writes during the install; enabling enforcement later does not.
-      "${VBOXMANAGE}" modifynvram "${vm}" inituefivarstore >/dev/null
-      "${VBOXMANAGE}" modifynvram "${vm}" enrollorclpk >/dev/null
-      "${VBOXMANAGE}" modifynvram "${vm}" enrollmssignatures >/dev/null
-      "${VBOXMANAGE}" modifynvram "${vm}" secureboot --disable >/dev/null
-   elif [ "${firmware}" = 'efi' ]; then
-      ## A plain-EFI --reinstall over a VM that was previously efi-secureboot would
-      ## otherwise inherit Secure Boot ENABLED (firmware mode != VM state); disable
-      ## it so plain EFI really is plain. Preserves the other NVRAM boot variables.
-      ## Tolerated on a fresh VM whose varstore is not yet initialized (no-op there).
-      "${VBOXMANAGE}" modifynvram "${vm}" secureboot --disable >/dev/null 2>&1 || true
-   fi
+   vbox_apply_firmware "${vm}" "${firmware}" defer
    ## coreboot layers ON the efi device (a generic EFI firmware, NOT a 4th --firmware token):
    ## the patched CorebootRom-aware VBoxManage loads EfiRom as a coreboot image instead of OVMF.
    ## Same VBoxInternal/Devices/efi/0/Config/ namespace as the EFI DMI overrides. Set here so the

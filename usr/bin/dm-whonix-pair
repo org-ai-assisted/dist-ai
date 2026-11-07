@@ -61,6 +61,10 @@ SNAPSHOT="${SNAPSHOT:-clean-live}"
 ## Run mode: leak (the anon-leak-test battery, default) | functional (the numbered
 ## release-check battery on the WS, parallel to the kicksecure install gate). Set by --mode.
 mode='leak'
+## functional mode edition: gui (default; the OCR real-session battery) | cli (a CLI edition
+## has no desktop, so the battery runs headless over guestcontrol). Set by --interface. Only
+## functional mode branches on it; leak mode ignores it.
+interface='gui'
 ## functional mode: host file capturing a FAILED release check's in-guest output (consumed
 ## by ocr-session.bsh's run_check_report_failure). Empty in leak mode.
 check_log=""
@@ -249,7 +253,7 @@ source "${lib_base}/release-checks.bsh"
 source "${lib_base}/ocr-session.bsh"
 
 usage() {
-   printf '%s\n' "usage: ${me} [--gw NAME] [--ws NAME] [--mode leak|functional]
+   printf '%s\n' "usage: ${me} [--gw NAME] [--ws NAME] [--mode leak|functional] [--interface gui|cli]
 
 --gw   Whonix Gateway VM name (default: ${gw})
 --ws   Whonix Workstation VM name (default: ${ws})
@@ -258,6 +262,10 @@ usage() {
        functional: boot both, gate on Tor bootstrap, then run the numbered release-check
        battery (release-checks.bsh, >= the kicksecure install coverage incl. the full
        systemcheck) in the Workstation via an OCR real-session executor.
+--interface (functional mode) gui (default): the OCR real-session battery (needs a desktop).
+       cli: a CLI edition has no desktop, so run the battery headless over guestcontrol;
+       the GUI-login and systemcheck checks (which need a graphical / logind user session)
+       are routed-skipped with a loud reason, never silently passed.
 
 Exit 0 = PASS."
 }
@@ -280,6 +288,17 @@ parse_args() {
                   ;;
                *)
                   die "${SETUP_RC}" "--mode must be leak|functional, got '$2'"
+                  ;;
+            esac
+            shift 2
+            ;;
+         --interface)
+            case "$2" in
+               gui|cli)
+                  interface="$2"
+                  ;;
+               *)
+                  die "${SETUP_RC}" "--interface must be gui|cli, got '$2'"
                   ;;
             esac
             shift 2
@@ -934,6 +953,63 @@ main_functional() {
    return "${PASS_RC}"
 }
 
+## CLI battery executor (exec_fn NUM SESSION CMD TIMEOUT). A CLI edition has NO graphical
+## terminal, so -- unlike the GUI ws_func_exec, which types into a real on-screen terminal via
+## run_check -- run the check directly over guestcontrol as the boot role's account (SESSION =
+## user|sysmaint, which gc_run maps to --role). No OCR, no desktop. gc_run propagates the
+## in-guest exit code; print the single "check N PASS" line only on success (matching the GUI
+## executor's contract, which owns that green line).
+ws_func_cli_exec() {
+   vm="${ws}"
+   if gc_run "$2" "$3" "$4"; then
+      printf '%s\n' "${me}: check $1 PASS"
+      return 0
+   fi
+   return 1
+}
+
+## CLI battery reboot callback (reboot_sysmaint_fn): the user->sysmaint transition for checks
+## 2, 3. Headless -- boot_installed (vbox-session.bsh) clean-reboots the WS into the sysmaint
+## GRUB entry (GRUB selection is pre-OS scancode/OCR, independent of the OS desktop) and waits
+## for guestcontrol as sysmaint, with NO on-screen terminal. boot_installed already honors the
+## return-nonzero-on-failure contract the battery needs (a GRUB/boot failure fails the battery).
+ws_func_cli_reboot_sysmaint() {
+   vm="${ws}"
+   boot_installed sysmaint
+}
+
+## functional mode, CLI edition: the SAME pair boot + Tor gate as the GUI path, but the numbered
+## battery runs headless over guestcontrol (no desktop, no OCR). Two checks cannot run FAITHFULLY
+## over guestcontrol and are routed-skipped with a loud reason (printed as ROUTED, never a green
+## PASS -- release-checks.bsh's RELEASE_CHECK_SKIP_REASON), matching how dm-upgrade-regression's
+## guestcontrol fast-path routes check 8:
+##   - check 6 (GUI login = pgrep labwc): a CLI edition has no compositor.
+##   - check 8 (systemcheck --cli --ci): it calls `systemctl --user`, which has no user manager
+##     under a VBoxService-spawned guestcontrol process (no logind user session). The GUI edition
+##     covers it in the real LXQt login; a CLI edition has no GUI-OCR gate to route it to, so CLI
+##     systemcheck coverage is a documented follow-up (a console/serial-login transport).
+## Everything else runs faithfully headless: user/sysmaint boot-role (checks 1, 2), CLI login
+## (5, whoami), networking over the Gateway's Tor (4), and upgrade-nonroot (3).
+main_functional_cli() {
+   trap on_exit EXIT
+   printf '%s\n' "${me}: [functional-cli] boot Gateway (${gw})"
+   boot_gateway_functional
+   printf '%s\n' "${me}: [functional-cli] boot Workstation (${ws}) into the user session"
+   boot_workstation_user
+   printf '%s\n' "${me}: [functional-cli] wait for Tor egress (systemcheck SocksPort + TransPort)"
+   ws_func_tor_gate
+   RELEASE_CHECK_SKIP_REASON[6]='CLI edition has no graphical session (no labwc compositor)'
+   RELEASE_CHECK_SKIP_REASON[8]='systemcheck needs a logind user session; guestcontrol has no user manager and a CLI edition has no GUI-OCR gate -- coverage is a follow-up (console/serial-login transport)'
+   printf '%s\n' "${me}: [functional-cli] run the release-check battery over guestcontrol (no OCR)"
+   ## No verify_fn ('' skips the OCR render pre-check -- there is no desktop to cross-check); the
+   ## authoritative signal is each check's in-guest exit code over guestcontrol.
+   if ! run_release_check_battery ws_func_cli_exec ws_func_cli_reboot_sysmaint ''; then
+      die "${FAIL_RC}" "release check ${RELEASE_CHECK_FAILED_NUM:-?} (${RELEASE_CHECK_FAILED_REASON:-unknown}) FAILED"
+   fi
+   printf '%s\n' "${me}: [functional-cli] PASS -- Workstation passed the CLI release-check battery"
+   return "${PASS_RC}"
+}
+
 ## functional stacks Tor bootstrap + two VM boots + a sysmaint reboot + the full numbered
 ## battery (per-check budgets sum to ~2430s, check 3 alone is 1800s), so the 2400s leak TTL
 ## can expire mid-run. Default = battery budget + setup headroom (robust to battery changes --
@@ -971,7 +1047,11 @@ main() {
    ## functional mode: the numbered release-check battery on the WS -- no anon-leak-test
    ## checkout, no battery share, no GW nictrace/canary. Branch before the leak-only setup.
    if [ "${mode}" = 'functional' ]; then
-      main_functional
+      if [ "${interface}" = 'cli' ]; then
+         main_functional_cli
+      else
+         main_functional
+      fi
       return "$?"
    fi
 

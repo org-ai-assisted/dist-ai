@@ -59,8 +59,9 @@ RESULTS_ROOT='/nonexistent/results'
 RESULTS_OWNER='nobody'
 # shellcheck disable=SC2034
 interface='lxqt'
-## Firmware axis: rt_publish_result reads it to disambiguate the Calamares-install lane
-## (bios vs efi are separate goldens). Non-install lanes ignore it.
+## Firmware axis: rt_publish_result reads it to disambiguate both the Calamares-install lane
+## (bios vs efi are separate goldens) AND, since #28, the whonix lanes (the imported pair has the
+## requested firmware applied at provision, so bios vs efi are separate cells there too).
 # shellcheck disable=SC2034
 firmware='efi'
 
@@ -129,27 +130,28 @@ else
    failures=$((failures + 1))
 fi
 
-## A non-install lane (whonix-pair) has NO firmware axis -- its lane must stay bare even
-## when firmware is set, or EFI/BIOS would wrongly fork packet-based runs. (rt_lane_key
-## unset here, so no lane component either.)
+## #28: a whonix lane now DOES carry the firmware axis -- the imported pair has the requested
+## firmware applied at provision (rt_provision_pair -> vbox_apply_firmware), so a bios and an efi
+## run are distinct cells and must not clobber each other. (rt_lane_key unset here, so no
+## inst/leak component -- just guest-interface-firmware.)
 rt_publish_result whonix 18.2.3.6 acct whonix-pair 0 '' tor-confirm >/dev/null
-if grep --quiet -- '--lane whonix-lxqt ' "${argv_file}" \
-   && ! grep --quiet -- 'whonix-lxqt-bios' "${argv_file}"; then
-   printf '%s\n' "ok: whonix-pair lane carries no firmware suffix"
+if grep --quiet -- '--lane whonix-lxqt-bios ' "${argv_file}" \
+   && grep --quiet -- 'whonix-lxqt-bios-18-2-3-6' "${argv_file}"; then
+   printf '%s\n' "ok: whonix-pair lane carries the firmware suffix (whonix-lxqt-bios)"
 else
-   printf '%s\n' "FAIL: whonix-pair lane wrongly forked by firmware: $(cat -- "${argv_file}")" >&2
+   printf '%s\n' "FAIL: whonix-pair lane missing firmware suffix: $(cat -- "${argv_file}")" >&2
    failures=$((failures + 1))
 fi
 
-## Lane key (inst|leak) is folded into BOTH the subtree and --lane so the two whonix lanes
-## (which share guest+interface and have no firmware axis) never collide on one cell.
-## Canary: without the lane component both publish to the same whonix-lxqt cell.
+## Lane key (inst|leak) AND firmware are folded into BOTH the subtree and --lane so the whonix
+## lanes never collide: lane = guest-interface-[inst|leak]-firmware.
+## Canary: without the lane component the inst/leak runs publish to the same cell.
 # shellcheck disable=SC2034  ## read by the sourced rt_publish_result (dynamic scope)
 rt_lane_key='leak'
 rt_publish_result whonix 18.2.3.6 acct whonix-pair 0 '' tor-confirm >/dev/null
-if grep --quiet -- '--lane whonix-lxqt-leak ' "${argv_file}" \
-   && grep --quiet -- 'whonix-lxqt-leak-18-2-3-6' "${argv_file}"; then
-   printf '%s\n' "ok: leak lane key reaches --lane + subtree (whonix-lxqt-leak)"
+if grep --quiet -- '--lane whonix-lxqt-leak-bios ' "${argv_file}" \
+   && grep --quiet -- 'whonix-lxqt-leak-bios-18-2-3-6' "${argv_file}"; then
+   printf '%s\n' "ok: leak lane key + firmware reach --lane + subtree (whonix-lxqt-leak-bios)"
 else
    printf '%s\n' "FAIL: leak lane key missing: $(cat -- "${argv_file}")" >&2
    failures=$((failures + 1))
@@ -157,17 +159,18 @@ fi
 # shellcheck disable=SC2034  ## read by the sourced rt_publish_result (dynamic scope)
 rt_lane_key='inst'
 rt_publish_result whonix 18.2.3.6 acct whonix-func 0 '' release-checks >/dev/null
-if grep --quiet -- '--lane whonix-lxqt-inst ' "${argv_file}" \
-   && grep --quiet -- 'whonix-lxqt-inst-18-2-3-6' "${argv_file}"; then
-   printf '%s\n' "ok: inst lane key reaches --lane + subtree (whonix-lxqt-inst)"
+if grep --quiet -- '--lane whonix-lxqt-inst-bios ' "${argv_file}" \
+   && grep --quiet -- 'whonix-lxqt-inst-bios-18-2-3-6' "${argv_file}"; then
+   printf '%s\n' "ok: inst lane key + firmware reach --lane + subtree (whonix-lxqt-inst-bios)"
 else
    printf '%s\n' "FAIL: inst lane key missing: $(cat -- "${argv_file}")" >&2
    failures=$((failures + 1))
 fi
-## Canary: rt_lane_key is consumed ONCE -- the next publish (no key) is bare again.
+## Canary: rt_lane_key is consumed ONCE -- the next publish has no inst/leak key (the firmware
+## axis stays), so the lane is the bare guest-interface-firmware again.
 rt_publish_result whonix 18.2.3.6 acct whonix-pair 0 '' tor-confirm >/dev/null
-if grep --quiet -- '--lane whonix-lxqt ' "${argv_file}"; then
-   printf '%s\n' "ok: rt_lane_key consumed once (bare lane after)"
+if grep --quiet -- '--lane whonix-lxqt-bios ' "${argv_file}"; then
+   printf '%s\n' "ok: rt_lane_key consumed once (no inst/leak key after; firmware stays)"
 else
    printf '%s\n' "FAIL: rt_lane_key leaked to the next publish: $(cat -- "${argv_file}")" >&2
    failures=$((failures + 1))
