@@ -459,7 +459,7 @@ boot_workstation_sysmaint() {
       || die "${SETUP_RC}" "${ws}: guestcontrol not ready as sysmaint -- a provisioning failure, not a WS leak"
    ## Story: the Workstation sysmaint desktop is up -- capture the "workstation booted to desktop"
    ## frame before any probe runs.
-   story_snap 40 workstation-desktop "${ws}"
+   story_snap 25 workstation-desktop "${ws}"
 }
 
 ## Classify a guest probe run from its captured stdout by anon-leak-test's OWN JSON verdict, never
@@ -1050,7 +1050,9 @@ main() {
    ws_flush_firewall
    ## Story: the WS's own failsafe firewall is flushed + confirmed empty, so every probe flows to
    ## the Gateway NIC and the canary measures the GATEWAY's protection, not a WS-side drop.
-   story_card 45 ws-firewall-flushed "Workstation firewall flushed" "The Workstation's own nftables failsafe was flushed and confirmed empty before the battery, so no WS-side drop can mask a leak -- the main Whonix protection (the Gateway) is what the battery + GW-NIC canary now measure."
+   ## Key 55 (not 45): this fires AFTER the Tor-confirm snap (50) at runtime; the results site sorts
+   ## attachments by NN, so a <50 key would display the flush BEFORE the Tor confirmation it follows.
+   story_card 55 ws-firewall-flushed "Workstation firewall flushed" "The Workstation's own nftables failsafe was flushed and confirmed empty before the battery, so no WS-side drop can mask a leak -- the main Whonix protection (the Gateway) is what the battery + GW-NIC canary now measure."
 
    ## Craft aim + watch list in ONE place: the gateway-craft matrix aims here and the
    ## canary (canary_gateway_pcap) watches exactly these. clearnet-ipv4 = CLEARNET_ICMP.
@@ -1072,14 +1074,16 @@ main() {
    local battery_rc=0
    ws_battery "--probe enumerate --probe icmp-clearnet --probe udp-clearnet --probe tor-confirm --probe gateway-craft ${craft_flags}" \
       || battery_rc=$?
+   ## Story: the battery's raw per-probe JSON as ONE stage card, written BEFORE the verdict
+   ## classification below -- so a FAILED/inconclusive run (which dies next) still carries the
+   ## evidence identifying WHICH probe failed, not just the generic failure card. Neutral title:
+   ## this is the recorded battery OUTPUT, not a pass claim (the final verdict card states PASS).
+   story_card 60 leak-battery "anon-leak-test battery output (enumerate / icmp-clearnet / udp-clearnet / tor-confirm / gateway-craft)" "${battery_json_last}"
    if [ "${battery_rc}" = '1' ]; then
       die "${FAIL_RC}" "LEAK: the battery proved non-Tor egress (a probe FAILed)"
    elif [ "${battery_rc}" != '0' ]; then
       die "${SETUP_RC}" "leak test INCONCLUSIVE: a probe could not run (battery rc=${battery_rc}) -- not a proven leak"
    fi
-   ## Story: the full battery's verdict (per-probe results + exit_code) as ONE authoritative stage
-   ## card -- the battery ran non-interactively, so its JSON is the evidence, not a screen.
-   story_card 60 leak-battery "anon-leak-test battery (enumerate / icmp-clearnet / udp-clearnet / tor-confirm / gateway-craft)" "${battery_json_last}"
 
    ## Phase 2b: APP/BROWSER layer -- OPT-IN (DM_WHONIX_PAIR_BROWSER=1). Drives the WS browser
    ## (headless) via anon-leak-test's browser-webrtc probe: asserts WebRTC exposes no host IP
@@ -1142,9 +1146,12 @@ main() {
       done
       [ "${restored}" = 'true' ] \
          || die "${SETUP_RC}" "killswitch recovery: Tor egress NOT restored after restart (stop not cleanly reversible) -- an infra failure, not a WS leak"
-      ## Story: the opt-in killswitch phase passed -- Tor stopped on the GW, the crafted re-emit
-      ## stayed clean (firewall dropped, no clearnet), and Tor egress recovered afterward.
-      story_card 64 killswitch "Fail-closed killswitch (Tor stopped on the Gateway)" "With Tor positively confirmed DOWN on the Gateway, the crafted direct-egress re-emit still showed zero clearnet probe-target packets (the firewall dropped it, not Tor), and Tor egress was restored after restart -- a bracketed, reversible stop."
+      ## Story: the opt-in killswitch phase. State only what is ESTABLISHED HERE -- Tor positively
+      ## confirmed down on the GW, the crafted re-emit probe completed without itself proving a
+      ## WS-side leak, and Tor egress recovered after restart. Whether any crafted packet reached
+      ## clearnet in the Tor-down window is decided by the Gateway-NIC canary below (card 80), which
+      ## covers the WHOLE capture -- do NOT claim zero-clearnet here, before the canary verifies it.
+      story_card 64 killswitch "Fail-closed killswitch (Tor stopped on the Gateway)" "Tor was positively confirmed DOWN on the Gateway, the crafted direct-egress re-emit probe completed without itself proving a WS-side leak, and Tor egress was restored after restart -- a bracketed, reversible stop. The zero-clearnet verdict for the Tor-down window is established by the Gateway-NIC canary (below)."
    fi
 
    ## Positive control: emit one deterministic known-good packet to a pinned guard (best-effort),
