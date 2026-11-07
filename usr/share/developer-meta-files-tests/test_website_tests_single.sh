@@ -134,5 +134,23 @@ else
    fail "single-usage: expected 64/64, got none=${none_rc} two=${two_rc}"
 fi
 
+## 6. The engine rejects a malformed selector (exit 64) BEFORE any run, never a silent fall-through
+## to the full family gate: an empty --site value, a bare --site=, an unknown flag, and a stray
+## operand after -- must all be hard errors (the documented single-site contract).
+empty_space_rc=0
+"${runner}" --site '' >/dev/null 2>&1 || empty_space_rc=$?
+empty_eq_rc=0
+"${runner}" --site= >/dev/null 2>&1 || empty_eq_rc=$?
+unknown_rc=0
+"${runner}" --bogus >/dev/null 2>&1 || unknown_rc=$?
+operand_rc=0
+"${runner}" -- org-ai-assisted.github.io >/dev/null 2>&1 || operand_rc=$?
+if [ "${empty_space_rc}" -eq 64 ] && [ "${empty_eq_rc}" -eq 64 ] \
+      && [ "${unknown_rc}" -eq 64 ] && [ "${operand_rc}" -eq 64 ]; then
+   pass 'engine rejects empty/bare/unknown/operand selectors with exit 64 (no silent family fall-through)'
+else
+   fail "arg-contract: want 64 for all, got empty-space=${empty_space_rc} empty-eq=${empty_eq_rc} unknown=${unknown_rc} operand=${operand_rc}"
+fi
+
 printf '%s\n' "" "test_website_tests_single: ${pass_count} pass, ${fail_count} fail, 0 skip"
 [ "${fail_count}" -eq 0 ]

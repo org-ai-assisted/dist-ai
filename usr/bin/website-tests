@@ -193,22 +193,23 @@ requested_site=''
 while [ "$#" -gt 0 ]; do
    case "$1" in
       --site)
-         if [ "$#" -lt 2 ]; then
-            printf '%s\n' 'website-tests: --site requires a site name' >&2
+         ## An EMPTY value ($2 absent or '') must NOT fall through to the full family gate -- that
+         ## would silently widen the run, breaking the contract above. Reject it.
+         if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+            printf '%s\n' 'website-tests: --site requires a non-empty site name' >&2
             exit 64
          fi
          requested_site="$2"
          shift 2
          ;;
-      --site=*)
+      --site=?*)
+         ## `?*` requires a non-empty value; a bare `--site=` falls to the catch-all below (exit 64).
          requested_site="${1#--site=}"
          shift
          ;;
-      --)
-         shift
-         break
-         ;;
       *)
+         ## Everything else -- an unknown flag, a bare `--site=`, `--`, or a stray operand -- is a
+         ## hard error, never a silent full-family fall-through.
          printf '%s\n' "website-tests: unknown argument: $1 (use --site <name>, or no argument for the full family gate)" >&2
          exit 64
          ;;
