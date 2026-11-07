@@ -52,11 +52,6 @@ source "${runner}"
 ## Globals read by the sourced add_root/site_in_skip_set (cross-function; not seen by shellcheck).
 # shellcheck disable=SC2034
 home_unset=''
-## add_site also consults the allow set (site_in_only_set); empty => allows all, so this suite
-## exercises the skip path unaffected. Must be defined under nounset. (read by the sourced
-## site_in_only_set; shellcheck cannot see the cross-function use)
-# shellcheck disable=SC2034
-WEBSITE_TESTS_ONLY_SITES=''
 
 ## 1. site_in_skip_set: exact space-padded token, never substring.
 WEBSITE_TESTS_SKIP_SITES='ai computer-security-research.github.io'
@@ -109,9 +104,9 @@ fi
 ## itself is covered above; this pins the wiring so the shot-inventory guard honors the skip).
 ## Literal source text to grep for, not shell to expand -- single quotes are intentional.
 # shellcheck disable=SC2016
-## No trailing `; then` anchor: the guard also ANDs site_in_only_set (the allow set), so match the
-## skip predicate on secure-terminal without assuming it ends the condition.
-if grep --quiet --extended-regexp 'if ! site_in_skip_set secure-terminal\.github\.io' "${runner}" \
+## Match the skip predicate on secure-terminal alone (no `if`/`; then` anchors): the guard ANDs a
+## single-site-scope check, so site_in_skip_set sits on a continuation line, not at the `if`.
+if grep --quiet --extended-regexp '! site_in_skip_set secure-terminal\.github\.io' "${runner}" \
       && grep --quiet --fixed-strings 'resolve_st_site "${SECURE_TERMINAL_SITE_REPO}"' "${runner}"; then
    pass 'resolve_st_site (shot-inventory path) is gated by the skip set'
 else

@@ -155,31 +155,32 @@ fi
 ## The jscov lane keys covered.txt on the site identity; an _REPO override at a non-canonically-
 ## named path (a CI workspace) must still be recorded as its canonical site (root_sites), else
 ## that site's covered entries key on the wrong name and its JS coverage SILENTLY DROPS (vacuous
-## pass). Extract add_root + add_site from the real runner and drive them. Pre-fix: no add_site.
-wt_fns="${work}/wt_fns.bash"
-sed -n '/^add_root(){/,/^}/p' -- "${runner}" >  "${wt_fns}"
-sed -n '/^add_site(){/,/^}/p' -- "${runner}" >> "${wt_fns}"
-if ! grep --quiet --fixed-strings 'add_site(){' "${wt_fns}"; then
-   fail 'website-tests: no add_site canonical-identity wrapper -- jscov keys covered.txt on the override basename (silent coverage drop)'
+## pass). SOURCE the real runner (its source-able guard returns before the suite body, leaving
+## add_root/add_site + their site-set predicates all defined) and drive add_site -- NOT a
+## per-function sed extraction, which silently breaks the moment add_site gains a dependency.
+nonc="${work}/ci-workspace-xyz"          # a NON-canonical basename for an output-lies override
+mkdir --parents -- "${nonc}"
+touch -- "${nonc}/index.html"
+ident_rc=0
+(
+   declare -a roots=()
+   declare -a root_sites=()
+   ## WEBSITE_TESTS_SKIP_SITES is read by the sourced site_in_skip_set (the execution body that
+   ## defaults it is below the source guard, so it did not run); empty => no drop. The override
+   ## path taken here never reads home_unset, so it is not set.
+   # shellcheck disable=SC2034
+   WEBSITE_TESTS_SKIP_SITES=''
+   # shellcheck disable=SC1090 # dynamic path: the runner is resolved at runtime
+   source "${runner}"
+   declare -F add_site >/dev/null || exit 2
+   add_site output-lies.github.io "${nonc}" '/does/not/exist'
+   [ "${#roots[@]}" -eq 1 ] && [ "${roots[0]}" = "${nonc}" ] \
+      && [ "${#root_sites[@]}" -eq 1 ] && [ "${root_sites[0]}" = 'output-lies.github.io' ]
+) || ident_rc=$?
+if [ "${ident_rc}" -eq 0 ]; then
+   pass 'website-tests: non-canonical override recorded under canonical identity (output-lies.github.io)'
 else
-   nonc="${work}/ci-workspace-xyz"          # a NON-canonical basename for an output-lies override
-   mkdir --parents -- "${nonc}"
-   touch -- "${nonc}/index.html"
-   ident_rc=0
-   (
-      declare -a roots=()
-      declare -a root_sites=()
-      # shellcheck disable=SC1090 # dynamic path: add_root/add_site extracted at runtime
-      source "${wt_fns}"
-      add_site output-lies.github.io "${nonc}" '/does/not/exist'
-      [ "${#roots[@]}" -eq 1 ] && [ "${roots[0]}" = "${nonc}" ] \
-         && [ "${#root_sites[@]}" -eq 1 ] && [ "${root_sites[0]}" = 'output-lies.github.io' ]
-   ) || ident_rc=$?
-   if [ "${ident_rc}" -eq 0 ]; then
-      pass 'website-tests: non-canonical override recorded under canonical identity (output-lies.github.io)'
-   else
-      fail 'website-tests: override NOT mapped to its canonical site identity (jscov would key on basename)'
-   fi
+   fail 'website-tests: override NOT mapped to its canonical site identity (jscov would key on basename)'
 fi
 
 ## --- 7. the driver keys covered-site selection on the explicit <site>=<path> identity ---

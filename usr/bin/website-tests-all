@@ -1,0 +1,27 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## style-ok: no-has -- thin front; does not source helper-scripts.
+
+## Thin front for the website-tests engine: gate the FULL family -- every discovered Pages site,
+## with the cross-site checks. This is the engine run with no site selector. For a single site
+## (what site-deploy publishes) use website-tests-single.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+self_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+engine="${self_dir}/website-tests"
+[ -x "${engine}" ] || engine='/usr/bin/website-tests'
+
+## Last command: the front exits with the engine's status (gate pass/fail/skip propagates).
+"${engine}"

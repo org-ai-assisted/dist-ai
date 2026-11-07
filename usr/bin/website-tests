@@ -92,20 +92,6 @@ site_in_skip_set(){
    return 1
 }
 
-## True (0) if $1 (site name) is ALLOWED by WEBSITE_TESTS_ONLY_SITES -- the inverse of the skip
-## set. An EMPTY allow-list (the default) allows EVERYTHING, so the full family gate is unchanged;
-## a non-empty list allows ONLY its space/comma-separated tokens. Same exact space-padded token
-## match as site_in_skip_set (never substring). Pure predicate: no output, no exit.
-site_in_only_set(){
-   [ -n "${WEBSITE_TESTS_ONLY_SITES}" ] || return 0
-   case " ${WEBSITE_TESTS_ONLY_SITES//,/ } " in
-      *" $1 "*)
-         return 0
-         ;;
-   esac
-   return 1
-}
-
 add_root(){
    local given
    local default
@@ -146,23 +132,23 @@ add_site(){
       printf '%s\n' "website-tests: NOTICE: skipping ${site} (WEBSITE_TESTS_SKIP_SITES)" >&2
       return
    fi
-   if ! site_in_only_set "${site}"; then
-      ## FAIL CLOSED, symmetric with the skip guard above: $1 is this site's explicit _REPO
-      ## override. site-deploy sets exactly the override for the site it PUBLISHES, so dropping an
-      ## explicitly-targeted site via the allow-list would pass GREEN without ever checking the
-      ## deploy target -- a false green. Refuse it.
-      if [ -n "$1" ]; then
-         printf '%s\n' "website-tests: FATAL: WEBSITE_TESTS_ONLY_SITES excludes ${site}, which has an explicit checkout override (the publish/test target) -- refusing to drop the site being tested" >&2
-         exit 1
-      fi
-      printf '%s\n' "website-tests: NOTICE: skipping ${site} (not in WEBSITE_TESTS_ONLY_SITES)" >&2
-      return
-   fi
    count_before="${#roots[@]}"
    add_root "$@"
    if [ "${#roots[@]}" -gt "${count_before}" ]; then
       root_sites+=( "${site}" )
    fi
+}
+
+## Single-site selector wrapper over add_site. With requested_site empty (the full-family run) every
+## site is added; with requested_site set only the matching site is, and site_requested records the
+## match so an unknown --site can be distinguished from a host that merely lacks the checkout. Reads
+## the globals requested_site / site_requested (set by the caller / the execution body below).
+add_site_sel(){
+   if [ -n "${requested_site}" ] && [ "${requested_site}" != "$1" ]; then
+      return
+   fi
+   [ -z "${requested_site}" ] || site_requested='yes'
+   add_site "$@"
 }
 
 ## secure-terminal alone carries the shot galleries; resolve its root for the shot-inventory
@@ -196,6 +182,38 @@ resolve_st_site(){
 if (return 0 2>/dev/null); then
    return 0
 fi
+
+## Optional single-site selector. `--site <name>` narrows the gate to exactly one family site --
+## the website-tests-single front passes it (and site-deploy, which gates only the site it
+## publishes). With no selector the full family set is discovered below (website-tests-all). The
+## site is taken EXPLICITLY, not from an ambient env filter, so a stray sibling _REPO in the
+## environment can never widen or abort the run. An unknown name is a hard error, never a silent
+## fall-through to the full family gate.
+requested_site=''
+while [ "$#" -gt 0 ]; do
+   case "$1" in
+      --site)
+         if [ "$#" -lt 2 ]; then
+            printf '%s\n' 'website-tests: --site requires a site name' >&2
+            exit 64
+         fi
+         requested_site="$2"
+         shift 2
+         ;;
+      --site=*)
+         requested_site="${1#--site=}"
+         shift
+         ;;
+      --)
+         shift
+         break
+         ;;
+      *)
+         printf '%s\n' "website-tests: unknown argument: $1 (use --site <name>, or no argument for the full family gate)" >&2
+         exit 64
+         ;;
+   esac
+done
 
 ## Unit regression for check_site's own logic (the image-format gate + the
 ## render-source recognition it depends on). Fixture-based, no site checkout or
@@ -277,13 +295,6 @@ run_required_unit_test ../domsnap-engine/tests/test_host_scrub.py
 ## adding bibliography words that race the spelling baseline). Logged loudly per skip; empty
 ## (the default) scans every resolved site, so the full family gate is unchanged by default.
 [ -v WEBSITE_TESTS_SKIP_SITES ] || WEBSITE_TESTS_SKIP_SITES=''
-## Opt-in ALLOW list (inverse of WEBSITE_TESTS_SKIP_SITES): non-empty => scan ONLY these
-## space/comma-separated site names; empty (the default) => scan every resolved site, so the full
-## family gate is unchanged. test-results-deploy sets it to org-ai-assisted.github.io so publishing
-## the automated-test-results plane gates ONLY that site -- an unrelated sibling-site regression
-## must not block the results publish. Fail-closed like the skip set: dropping a site that has an
-## explicit _REPO override (the publish target) is a FATAL, never a silent green.
-[ -v WEBSITE_TESTS_ONLY_SITES ] || WEBSITE_TESTS_ONLY_SITES=''
 ## The defaults below are rooted at ${HOME}. An unset HOME is an UNEXPECTED, scrubbed
 ## environment -- NOT the normal "no site checkout on this host" case -- so it must FAIL,
 ## never be papered over as a SKIP (no unauthorized skips). Record it, then empty HOME so
@@ -303,16 +314,28 @@ declare -a roots=()
 ## non-canonically-named path (a CI workspace) would otherwise mis-key and SILENTLY DROP that
 ## site's JS coverage. add_root appends 0 or 1 root, so record the site iff roots grew.
 declare -a root_sites=()
-add_site output-lies.github.io          "${OUTPUT_LIES_REPO}"          "${HOME}/private-sources/output-lies.github.io"
-add_site secure-terminal.github.io      "${SECURE_TERMINAL_SITE_REPO}" "${HOME}/private-sources/secure-terminal.github.io"
-add_site org-ai-assisted.github.io      "${ORG_AI_ASSISTED_REPO}"      "${HOME}/private-sources/org-ai-assisted.github.io"
-add_site computer-security-research.github.io "${COMPUTER_SECURITY_RESEARCH_REPO}" "${HOME}/private-sources/computer-security-research.github.io/_site"
+## In single-site mode (--site) assemble ONLY the requested site; with no selector assemble the
+## full family. A requested name that matches none of the four is a hard error below, not a silent
+## empty run. site_requested=yes marks a match so an unknown --site can be told from a host that
+## simply lacks the requested checkout.
+site_requested=''
+add_site_sel output-lies.github.io          "${OUTPUT_LIES_REPO}"          "${HOME}/private-sources/output-lies.github.io"
+add_site_sel secure-terminal.github.io      "${SECURE_TERMINAL_SITE_REPO}" "${HOME}/private-sources/secure-terminal.github.io"
+add_site_sel org-ai-assisted.github.io      "${ORG_AI_ASSISTED_REPO}"      "${HOME}/private-sources/org-ai-assisted.github.io"
+add_site_sel computer-security-research.github.io "${COMPUTER_SECURITY_RESEARCH_REPO}" "${HOME}/private-sources/computer-security-research.github.io/_site"
+
+if [ -n "${requested_site}" ] && [ -z "${site_requested}" ]; then
+   printf '%s\n' "website-tests: FATAL: --site '${requested_site}' is not a known family site (output-lies.github.io, secure-terminal.github.io, org-ai-assisted.github.io, computer-security-research.github.io)" >&2
+   exit 64
+fi
 
 st_site=''
-## Honor the skip AND allow sets here too: add_site already logged the NOTICE and enforced the
-## deploy-target FATAL for secure-terminal, so if it is dropped leave st_site empty (the
-## shot-inventory guard below is then inert). Otherwise resolve it for that guard.
-if ! site_in_skip_set secure-terminal.github.io && site_in_only_set secure-terminal.github.io; then
+## Resolve secure-terminal's shot-inventory root for its guard only when secure-terminal is in
+## scope (all-mode, or the requested single site) AND not skipped; add_site already logged the
+## NOTICE / enforced the deploy-target FATAL, so a dropped secure-terminal leaves st_site empty
+## (the guard below is then inert).
+if { [ -z "${requested_site}" ] || [ "${requested_site}" = 'secure-terminal.github.io' ]; } \
+      && ! site_in_skip_set secure-terminal.github.io; then
    resolve_st_site "${SECURE_TERMINAL_SITE_REPO}" "${HOME}/private-sources/secure-terminal.github.io"
 fi
 
