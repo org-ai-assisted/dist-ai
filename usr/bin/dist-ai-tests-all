@@ -121,6 +121,7 @@ core_suites=(
    dm-approx-curlrc-tests
    dm-reprepro-tracking-tests
    dm-release-test-tests
+   vbox-image-test-tests
    dm-calamares-install-tests
    dm-image-build-tests
    dm-build-account-tests

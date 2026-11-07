@@ -1,0 +1,95 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Dev-VM orchestrator for VBox image testing + publishing.
+##
+## Runs each dm-release-test LANE on the OVH server (via server-exec, as root), then ALWAYS
+## publishes the results plane to the public Pages site (test-results-deploy) ONCE, via an EXIT
+## trap -- so publishing (the end goal) is never forgotten, even on a lane failure or an interrupt.
+##
+## WHY a dev-VM orchestrator: dm-release-test runs ON the OVH server (VBox / accounts / AMD-V, and
+## writes /var/www/results there); test-results-deploy runs HERE on the dev VM, which holds the
+## Pages repo + push credentials (the server has neither, and is push-refused). So the "run test,
+## then publish" step spans two machines and belongs in this dev-VM tool, not in dm-release-test.
+##
+## Lanes run SEQUENTIALLY (one VBox run at a time); the publish is a single batch deploy at the end.
+##
+## Usage:
+##   vbox-image-test [--no-publish] 'GUEST IFACE [dm-release-test args]' ['GUEST IFACE ...' ...]
+## Each argument is one dm-release-test invocation's args, e.g.:
+##   vbox-image-test \
+##     "kicksecure lxqt --iso /home/admin/derivative-binary/<v>/Kicksecure-LXQt-<v>.Intel_AMD64.iso" \
+##     "whonix lxqt --lane inst --channel stable" \
+##     "whonix lxqt --lane leak --version 18.2.1.9"
+##
+## A lane runs ~40-50 min, so a multi-lane batch is HOURS -- drive it durably:
+##   bgjob-run --name vbox-image-test --progress ~/private-cache/bgjob/vit.log --max-runtime 0 \
+##     -- vbox-image-test '<lane>' '<lane>'
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+me="${0##*/}"
+
+publish="true"
+lanes=()
+while [ "$#" -ge 1 ]; do
+   case "$1" in
+      --no-publish)
+         publish="false"
+         shift
+         ;;
+      --)
+         shift
+         break
+         ;;
+      -*)
+         printf '%s\n' "${me}: unknown option '$1'" >&2
+         exit 64
+         ;;
+      *)
+         lanes+=("$1")
+         shift
+         ;;
+   esac
+done
+[ "$#" -eq 0 ] || lanes+=("$@")
+if [ "${#lanes[@]}" -lt 1 ]; then
+   printf '%s\n' "usage: ${me} [--no-publish] 'GUEST IFACE [dm-release-test args]' ..." >&2
+   exit 64
+fi
+
+## Publish exactly once, on ANY exit (success, a lane failure, or an interrupt) -- the whole point
+## is that the operator never has to remember test-results-deploy. A publish failure does NOT
+## mask the lanes' verdict (the results stay on the plane for a manual re-run).
+published="false"
+# shellcheck disable=SC2317  # invoked via the EXIT trap, not inline
+do_publish() {
+   [ "${publish}" = "true" ] || return 0
+   [ "${published}" = "false" ] || return 0
+   published="true"
+   printf '%s\n' "${me}: publishing results to the Pages site (test-results-deploy) ..." >&2
+   if ! test-results-deploy; then
+      printf '%s\n' "${me}: WARNING: test-results-deploy FAILED -- results remain on the plane; re-run 'test-results-deploy'" >&2
+   fi
+}
+trap do_publish EXIT
+
+rc=0
+for spec in "${lanes[@]}"; do
+   printf '%s\n' "${me}: lane: dm-release-test ${spec}" >&2
+   ## --timeout 0: an install lane runs ~40-50 min; never let server-exec kill it mid-run. The spec
+   ## is deliberately word-split into dm-release-test's own args.
+   # shellcheck disable=SC2086
+   server-exec --user root --timeout 0 --cmd "dm-release-test ${spec}" || rc=$?
+done
+exit "${rc}"
