@@ -103,7 +103,7 @@ static void unit_random_between(void)
     CHECK(random_between(10, 3) == 3);
 
     /* real /dev/urandom path: every draw lands inside [lower, upper] */
-    applayer_random_init();
+    init_fd_urandom();
     for (i = 0; i < 100000; ++i) {
         int64_t r = random_between(1, 6);
         CHECK(r >= 1 && r <= 6);

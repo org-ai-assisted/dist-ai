@@ -202,9 +202,10 @@ static void unit_parse_inotify_events(void)
     CHECK(name == NULL);
 }
 
-/* A matching event<N> node carrying neither IN_CREATE nor IN_DELETE is skipped,
- * not asserted on (the function is assert-free by contract -- a fuzz seam). */
-static void unit_parse_inotify_unknown_mask_skipped(void)
+/* A matching event<N> node carrying neither IN_CREATE nor IN_DELETE makes the
+ * walk BAIL gracefully (returns NULL, sets *buf_pos = -1) rather than abort --
+ * the function is assert-free by contract (a fuzz seam). */
+static void unit_parse_inotify_unknown_mask_bails(void)
 {
     char buf[256];
     ssize_t len = 0;
@@ -219,7 +220,7 @@ static void unit_parse_inotify_unknown_mask_skipped(void)
     len = put_inotify(buf, len, IN_ATTRIB, "event7");
 
     name = parse_inotify_events(buf, len, &pos, &do_attach, &overflow);
-    CHECK(name == NULL && !overflow);
+    CHECK(name == NULL && pos == -1 && !overflow);
 }
 
 int main(void)
@@ -232,7 +233,7 @@ int main(void)
     unit_evdev_regex();
     unit_calc_next_led_state();
     unit_parse_inotify_events();
-    unit_parse_inotify_unknown_mask_skipped();
+    unit_parse_inotify_unknown_mask_bails();
     printf("kloak harness: all assertions passed (%d checks)\n", checks);
     return 0;
 }

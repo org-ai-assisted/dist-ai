@@ -153,10 +153,15 @@ class PrivsepHardening(unittest.TestCase):
     def test_syscall_filter_is_group_based(self) -> None:
         tokens = self._directive_tokens(self.service_text, 'SystemCallFilter')
         self.assertTrue(tokens, 'kloak.service has no SystemCallFilter')
+        ## The first (post-reset) token sets the filter MODE. It must be an
+        ## allow-list of groups, never a deny-list. A later ~syscall subtracts
+        ## from the allow-list (e.g. ~memfd_create so MemoryDenyWriteExecute
+        ## works) and does NOT reintroduce the bare individual-syscall arm64
+        ## SIGSYS risk this guards against -- the required groups still cover it.
         self.assertFalse(
-            any(token.startswith('~') for token in tokens),
-            'SystemCallFilter is a deny-list (%r); kloak uses an allow-list of '
-            'groups' % tokens)
+            tokens[0].startswith('~'),
+            'SystemCallFilter starts as a deny-list (%r); kloak uses an '
+            'allow-list of groups with optional ~subtractions' % tokens)
         for group in REQUIRED_SYSCALL_GROUPS:
             self.assertIn(
                 group, tokens,
