@@ -27,6 +27,9 @@ export LC_ALL=C
 
 me="${0##*/}"
 VBOXMANAGE="${VBOXMANAGE:-VBoxManage}"
+## Standalone firmware-apply tool (the single source for the modifyvm --firmware + NVRAM enroll
+## sequence), shared with dm-release-test. Overridable for the unit test.
+DM_VBOX_FIRMWARE="${DM_VBOX_FIRMWARE:-dm-vbox-firmware}"
 GUESTCTL="${GUESTCTL:-vbox-ctl-local}"
 TESSERACT="${TESSERACT:-tesseract}"
 PASS_RC=0
@@ -1736,14 +1739,15 @@ parse_args() {
    esac
 }
 
-## Set the VM firmware; efi-secureboot also enrolls the platform + MS keys in the NVRAM store
-## (VBox 7.x has no modifyvm --secure-boot). Done while powered off. The firmware + key-enroll
-## primitive is the shared vbox_apply_firmware (vbox-session.bsh); install uses `defer` -- enroll
-## the keys but keep Secure Boot OFF until enable_secureboot_installed, because the live ISO's
-## unsigned Guest Additions would be rejected under enforcement and guestcontrol would never come
-## up to drive the install. Only the coreboot extradata (kicksecure-only) is layered here.
+## Set the VM firmware via the shared dm-vbox-firmware tool. For efi-secureboot the INSTALL phase
+## enrolls the keys but keeps enforcement OFF (--defer-enforcement) -- the live ISO's unsigned
+## Guest Additions would be rejected under enforcement -- and enable_secureboot_installed flips it
+## on only before the installed-system boot. VBOXMANAGE is passed through so a coreboot fork binary
+## / namespace is honored. Only the coreboot extradata (kicksecure-only) is layered here.
 apply_firmware() {
-   vbox_apply_firmware "${vm}" "${firmware}" defer
+   local -a fw_args=( "${vm}" "${firmware}" )
+   [ "${firmware}" = 'efi-secureboot' ] && fw_args+=( --defer-enforcement )
+   VBOXMANAGE="${VBOXMANAGE}" "${DM_VBOX_FIRMWARE}" "${fw_args[@]}"
    ## coreboot layers ON the efi device (a generic EFI firmware, NOT a 4th --firmware token):
    ## the patched CorebootRom-aware VBoxManage loads EfiRom as a coreboot image instead of OVMF.
    ## Same VBoxInternal/Devices/efi/0/Config/ namespace as the EFI DMI overrides. Set here so the

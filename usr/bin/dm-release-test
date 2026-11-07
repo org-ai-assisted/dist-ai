@@ -62,6 +62,9 @@ fi
 ISO_DOWNLOAD="${ISO_DOWNLOAD:-iso-download}"
 DM_CALAMARES_INSTALL="${DM_CALAMARES_INSTALL:-dm-calamares-install}"
 DM_WHONIX_PAIR="${DM_WHONIX_PAIR:-dm-whonix-pair}"
+## Standalone firmware-apply tool, shared with dm-calamares-install. Whonix uses it for BIOS only
+## (a plain modifyvm, no NVRAM ops); a prebuilt OVA's firmware cannot be re-applied beyond that.
+DM_VBOX_FIRMWARE="${DM_VBOX_FIRMWARE:-dm-vbox-firmware}"
 ## The VirtualBox backend of the dm-image boot/install harness. Its `emit-argv --op import`
 ## prints the canonical `VBoxManage import <ova> --vsys 0 --vmname <vm>` argv (one token per
 ## line) -- the SINGLE SOURCE for the import shape, reused by the whonix --source built path
@@ -97,11 +100,6 @@ rt_session_env=(env
 ## time (rt_provision_pair) and read back by rt_whonix_pair_require (both lanes), which
 ## REFUSES to attribute a verdict to a version the pair was not provisioned with.
 PAIR_VERSION_KEY="${PAIR_VERSION_KEY:-leaktest/pair-version}"
-## VBox extradata key pinning the firmware the pair was PROVISIONED with. Set on BOTH VMs at
-## provision (rt_provision_pair, right after vbox_apply_firmware) and verified by
-## rt_whonix_pair_require, so a test run can NEVER publish a firmware label the pair does not
-## actually have (firmware is applied at provision, not re-applied per test run).
-PAIR_FIRMWARE_KEY="${PAIR_FIRMWARE_KEY:-leaktest/pair-firmware}"
 ## Best-effort host-firewall fleet-set refresh so a freshly-created eph account's
 ## leak-probe egress is dropped; the tool is a private-ai-config server script,
 ## not on PATH by default -- warn (do not fail) when absent.
@@ -150,6 +148,9 @@ desktop=""
 channel="developers"
 version_override=""
 firmware="efi-secureboot"
+## Whether --firmware was passed explicitly (vs the default), so whonix can reject an EXPLICIT
+## non-bios firmware while still defaulting silently to bios.
+firmware_explicit="false"
 ## Test lane: inst (functional release battery) | leak (anon-leak-test battery). No
 ## default -- mandatory for whonix (both lanes are real choices); kicksecure is always
 ## inst. Validated in main once guest is known.
@@ -196,17 +197,6 @@ else
 fi
 # shellcheck source=../libexec/image-test/results-publish.bsh
 source "${image_test_libexec}/results-publish.bsh"
-
-## vbox_apply_firmware (shared with dm-calamares-install + dm-whonix-pair): set a pair VM's
-## firmware while powered off. ONLY that one helper is used here; its gc_*/boot_* siblings (which
-## need gui-drive.bsh/grub-boot-select.bsh) are never called, so the fragment sources standalone.
-if [ -d "${script_dir}/../share/dm-smbios-reader-boot-tests" ]; then
-   vbox_session_lib="${script_dir}/../share/dm-smbios-reader-boot-tests/vbox-session.bsh"
-else
-   vbox_session_lib='/usr/share/dm-smbios-reader-boot-tests/vbox-session.bsh'
-fi
-# shellcheck source=../share/dm-smbios-reader-boot-tests/vbox-session.bsh
-source "${vbox_session_lib}"
 
 die() {
    local code
@@ -821,20 +811,6 @@ rt_set_pair_version() {
       || die "${SETUP_RC}" "failed to set ${PAIR_VERSION_KEY} on '$2'"
 }
 
-## Read the pair's firmware marker off VM (as ACCOUNT). Prints the pinned firmware, or returns
-## 1 when the key is unset. Needs root.
-rt_pair_firmware() {
-   local out
-   out="$(sudo -u "$1" -- "${VBOXMANAGE}" getextradata "$2" "${PAIR_FIRMWARE_KEY}" 2>/dev/null)" || return 1
-   rt_parse_extradata "${out}"
-}
-
-## Pin FIRMWARE onto VM's pair marker (as ACCOUNT). Needs root.
-rt_set_pair_firmware() {
-   sudo -u "$1" -- "${VBOXMANAGE}" setextradata "$2" "${PAIR_FIRMWARE_KEY}" "$3" \
-      || die "${SETUP_RC}" "failed to set ${PAIR_FIRMWARE_KEY} on '$2'"
-}
-
 ## Import ONE locally-built OVA as VM under ACCOUNT, idempotently (needs root; runs VBox as
 ## the account -- state is per-$HOME). Reuses build_import_argv's canonical argv shape from
 ## ${DM_SMBIOS_READER_VBOX} (single source for `import <ova> --vsys 0 --vmname <vm>`) rather
@@ -922,24 +898,16 @@ rt_provision_pair() {
          --noupdate --noupgrade --no-boot --import-only=both --destroy-existing-guest \
          || die "${SETUP_RC}" "dist-installer-cli import failed for whonix ${version}"
    fi
-   ## Apply the requested firmware to BOTH freshly-imported VMs while powered off, so the
-   ## one-time clean-live snapshot (the NEXT step below) captures it and every dm-whonix-pair
-   ## restore_fresh boots under it. Routed through VBOX_FW_RUNNER=sudo -u account so the
-   ## powered-off modifyvm/modifynvram land in the account's own $HOME (VBox state is per-$HOME;
-   ## rt_provision_pair runs as root). The imported pair is already installed, so Secure Boot is
-   ## enabled DIRECTLY (enable-now) -- not the calamares live/install two-phase defer. A prebuilt
-   ## OVA may only boot under the firmware it was built for; a non-booting firmware is surfaced by
-   ## the OVH boot-verify as a real fail/inconclusive, never masked here.
-   local -a VBOX_FW_RUNNER=( sudo -u "${account}" -- "${VBOXMANAGE}" )
-   vbox_apply_firmware "${gw}" "${firmware}" enable-now
-   vbox_apply_firmware "${ws}" "${firmware}" enable-now
+   ## Apply the firmware to BOTH freshly-imported VMs while powered off, AS the account (VBox state
+   ## is per-$HOME; rt_provision_pair runs as root), so the one-time clean-live snapshot captures it.
+   ## Whonix is BIOS-only (forced in main): a prebuilt OVA's firmware cannot be cleanly re-applied
+   ## beyond a plain modifyvm -- enrolling Secure Boot keys (inituefivarstore) would WIPE the
+   ## installed pair's NVRAM/MOK and brick it, so non-bios whonix firmware is rejected upstream.
+   sudo -u "${account}" -- "${DM_VBOX_FIRMWARE}" "${gw}" "${firmware}"
+   sudo -u "${account}" -- "${DM_VBOX_FIRMWARE}" "${ws}" "${firmware}"
    rt_set_pair_version "${account}" "${gw}" "${version}"
    rt_set_pair_version "${account}" "${ws}" "${version}"
-   ## Pin the firmware marker so a later test run verifies (rt_whonix_pair_require) + publishes the
-   ## firmware the pair ACTUALLY has, never a mismatched --firmware label.
-   rt_set_pair_firmware "${account}" "${gw}" "${firmware}"
-   rt_set_pair_firmware "${account}" "${ws}" "${firmware}"
-   log info "pair ${version} imported + firmware '${firmware}' applied/pinned + version-pinned under ${account}"
+   log info "pair ${version} imported + firmware '${firmware}' applied + version-pinned under ${account}"
    log info "NEXT (one-time, per VM, in a booted sysmaint session): run 'dev-root force' (needed by the leak lane; harmless for inst), power off, then '${VBOXMANAGE} snapshot <vm> take clean-live' so dm-whonix-pair restore_fresh has a pristine, root-capable pair"
 }
 
@@ -1137,12 +1105,10 @@ rt_publish_result() {
    rt_fw_declared=""; rt_fw_detected=""; rt_fw_evidence=""; rt_fw_match=""
    ## Firmware is part of the run identity. For the Calamares INSTALL lane a BIOS install lays
    ## down a BIOS-boot partition and an EFI one an ESP -- a different screenshot sequence + golden
-   ## set the overview must not collapse onto one matrix row (run_key is lane-derived). For the
-   ## whonix lanes the imported pair has the requested firmware applied at provision
-   ## (rt_provision_pair -> vbox_apply_firmware), so a bios and an efi run of the same pair are
-   ## distinct cells too and must not clobber each other. (A TEST run records the firmware it was
-   ## invoked with; it does not re-verify the pair's applied firmware -- the lane_fw axis prevents
-   ## cross-firmware clobber and the OVH boot-verify is the real check.)
+   ## set the overview must not collapse onto one matrix row (run_key is lane-derived). The whonix
+   ## lanes are BIOS-only (dm-vbox-firmware applies bios to the imported pair at provision), so the
+   ## suffix is always -bios there -- a stable, accurate label (never a non-bios firmware the pair
+   ## cannot actually have).
    lane_fw=""
    case "${mode}" in
       calamares-install | whonix-pair | whonix-func)
@@ -1374,7 +1340,7 @@ rt_lane_kicksecure() {
 ## mislabels a verdict for the wrong version. Reads both VMs (a half-reprovisioned pair with
 ## one stale VM is caught too). $1=account $2=version $3=gw $4=ws.
 rt_whonix_pair_require() {
-   local account version gw ws gw_ver ws_ver reprovision gw_fw ws_fw
+   local account version gw ws gw_ver ws_ver reprovision
    account="$1"
    version="$2"
    gw="$3"
@@ -1391,13 +1357,6 @@ rt_whonix_pair_require() {
    fi
    rt_pair_version_ok "${version}" "${gw_ver}" "${ws_ver}" \
       || die "${SETUP_RC}" "whonix pair version mismatch: requested '${version}', GW marked '${gw_ver}', WS marked '${ws_ver}' -- re-provision with '${reprovision}' or pass the matching --version"
-   ## Firmware is applied at PROVISION, not per test run, so verify the pair actually carries the
-   ## requested firmware before a verdict is attributed + published under a -${firmware} cell --
-   ## else a bios pair tested with --firmware efi-secureboot would publish a FALSE Secure Boot pass.
-   gw_fw="$(rt_pair_firmware "${account}" "${gw}")" || gw_fw=""
-   ws_fw="$(rt_pair_firmware "${account}" "${ws}")" || ws_fw=""
-   { [ "${gw_fw}" = "${firmware}" ] && [ "${ws_fw}" = "${firmware}" ]; } \
-      || die "${SETUP_RC}" "whonix pair firmware mismatch: requested '${firmware}', GW marked '${gw_fw}', WS marked '${ws_fw}' -- re-provision with the matching --firmware, or pass the firmware the pair was provisioned with"
 }
 
 ## leak lane: the anon-leak-test battery on the dedicated persist-leak- pair.
@@ -1511,6 +1470,7 @@ parse_args() {
             case "$2" in
                bios | efi | efi-secureboot)
                   firmware="$2"
+                  firmware_explicit="true"
                   ;;
                *)
                   die "${SETUP_RC}" "--firmware must be bios|efi|efi-secureboot, got '$2'"
@@ -1541,10 +1501,13 @@ parse_args() {
             ## relative path passes the root-side `[ -f ]`/readability precheck relative to root's
             ## CWD but then fails in VBoxManage run as the account (different CWD) AFTER the import
             ## has already deleted the existing VM -- #814.
-            ova_gw="$(realpath -m -- "$2")" || die "${SETUP_RC}" "cannot canonicalize --ova-gw path '$2'"
-            ## Re-reject control chars on the CANONICALIZED path: realpath follows symlinks, so a
-            ## symlink whose target carries a newline would reintroduce one past the pre-realpath
-            ## check and split the one-token-per-line emit-argv output (inject VBoxManage args).
+            ## Canonicalize to an ABSOLUTE path (lexical -m: existence not required, so a missing
+            ## file is still reported by the dedicated readability check). -z + read -d '' so a
+            ## TRAILING newline in a symlink target survives (command substitution would strip it,
+            ## letting a crafted sibling through -- #814 / codex), then reject any control char on
+            ## the resolved path (it would split the one-token-per-line emit-argv output).
+            IFS= read -r -d '' ova_gw < <(realpath -mz -- "$2") \
+               || die "${SETUP_RC}" "cannot canonicalize --ova-gw path '$2'"
             case "${ova_gw}" in
                *[[:cntrl:]]*)
                   die "${SETUP_RC}" "--ova-gw resolves to a path containing a control character"
@@ -1560,7 +1523,8 @@ parse_args() {
                   die "${SETUP_RC}" "--ova-ws path contains a control character"
                   ;;
             esac
-            ova_ws="$(realpath -m -- "$2")" || die "${SETUP_RC}" "cannot canonicalize --ova-ws path '$2'"
+            IFS= read -r -d '' ova_ws < <(realpath -mz -- "$2") \
+               || die "${SETUP_RC}" "cannot canonicalize --ova-ws path '$2'"
             case "${ova_ws}" in
                *[[:cntrl:]]*)
                   die "${SETUP_RC}" "--ova-ws resolves to a path containing a control character"
@@ -1628,6 +1592,16 @@ main() {
    ## fail-closed stance -- the operator asked for a coreboot subject and must not get a normal one).
    if [ -n "${coreboot_rom}" ] && [ "${guest}" != 'kicksecure' ]; then
       print_usage >&2; die "${SETUP_RC}" "--coreboot-rom is kicksecure-only (got GUEST '${guest}')"
+   fi
+   ## whonix is BIOS-only: a prebuilt OVA is imported as-built and its firmware cannot be cleanly
+   ## re-applied -- enrolling Secure Boot keys (inituefivarstore) would wipe the installed pair's
+   ## NVRAM/MOK and brick it. Reject an EXPLICIT non-bios --firmware; default silently to bios (the
+   ## efi-secureboot flagship is the kicksecure install lane, which handles firmware at install).
+   if [ "${guest}" = 'whonix' ]; then
+      if [ "${firmware_explicit}" = 'true' ] && [ "${firmware}" != 'bios' ]; then
+         print_usage >&2; die "${SETUP_RC}" "whonix supports only --firmware bios (an imported OVA cannot be re-firmwared cleanly; efi-secureboot is the kicksecure lane)"
+      fi
+      firmware='bios'
    fi
    desktop="$(rt_desktop_token "${interface}")" || die "${SETUP_RC}" "unsupported INTERFACE '${interface}'"
    case "${channel}" in

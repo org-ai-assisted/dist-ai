@@ -87,12 +87,12 @@ case "${ova_ws}" in
       ;;
 esac
 
-## codex#3: a symlink whose TARGET carries a newline must be rejected AFTER canonicalization --
-## realpath follows the symlink and reintroduces the newline past the pre-realpath control-char
-## check, which would otherwise split the one-token-per-line emit-argv output. die exits, so run
-## parse_args in a subshell and capture the rc. Canary: without the post-realpath recheck, the
-## newline-bearing canonical path is accepted.
-nl_target="${work}/gw"$'\n'"inject.ova"
+## codex#3: a symlink whose TARGET ends in a newline must be rejected. realpath follows the
+## symlink and the target's trailing newline would be STRIPPED by command substitution (the old
+## bug: a `gw.ova\n` target silently resolved to the wrong `gw.ova` sibling). The -z + read -d ''
+## canonicalization preserves it so the control-char check rejects it. die exits, so run
+## parse_args in a subshell and capture the rc. Canary: the old cmdsubst form accepted it.
+nl_target="${work}/gwtrail.ova"$'\n'
 touch -- "${nl_target}"
 ln --symbolic -- "${nl_target}" "${work}/gw-link.ova"
 nl_rc=0
@@ -100,10 +100,10 @@ nl_rc=0
    --lane inst --version 18.2.3.0-g1 --provision ) >/dev/null 2>&1 || nl_rc=$?
 case "${nl_rc}" in
    2)
-      check "symlink target with a newline rejected (SETUP_RC)" true
+      check "symlink target ending in a newline rejected (SETUP_RC)" true
       ;;
    *)
-      check "symlink target with a newline rejected (SETUP_RC)" false "rc=${nl_rc}"
+      check "symlink target ending in a newline rejected (SETUP_RC)" false "rc=${nl_rc}"
       ;;
 esac
 

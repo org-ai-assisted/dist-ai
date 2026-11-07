@@ -1,0 +1,121 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Set a VM's firmware (and Secure Boot) while powered off -- the SINGLE place the firmware
+## VBoxManage sequence lives, shared by dm-calamares-install (kicksecure install) and
+## dm-release-test (whonix pair). Runs AS the VM's owner (VBox state is per-$HOME): a caller that
+## is not the owner invokes it `sudo -u <account> -- dm-vbox-firmware ...`. VBOXMANAGE (default
+## VBoxManage) selects the binary; a coreboot fork binary / namespace is honored when the caller
+## passes it through.
+##
+## MODE:
+##   bios            BIOS firmware, no NVRAM ops.
+##   efi             EFI, Secure Boot OFF (scrub any inherited enforcement so plain EFI is plain).
+##   efi-secureboot  EFI + initialize the NVRAM varstore + enroll the platform + MS keys + ENABLE
+##                   Secure Boot. VBox 7.x has no `modifyvm --secure-boot`, hence the varstore.
+##                   inituefivarstore RE-INITIALIZES the varstore (wiping existing boot entries +
+##                   any enrolled MOK), so this is for a FRESH VM only -- NEVER an already-installed
+##                   disk (that would brick it under enforcement).
+##   enable-secureboot
+##                   Turn Secure Boot enforcement ON for an ALREADY-ENROLLED VM, with NO varstore
+##                   re-init and no firmware change -- preserves the installed boot entries + MOK.
+##                   The post-install transition (an installed disk whose modules are now signed).
+##
+## OPTIONS:
+##   --defer-enforcement   (efi-secureboot only) enroll the keys but leave Secure Boot DISABLED,
+##                         for the live/install phase whose unsigned Guest Additions would be
+##                         rejected under enforcement. Turn it on afterwards with enable-secureboot.
+##
+## coreboot extradata is NOT applied here -- it is kicksecure-only and layered by that caller.
+##
+## Usage: dm-vbox-firmware <vm> <bios|efi|efi-secureboot|enable-secureboot> [--defer-enforcement]
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+me="${0##*/}"
+VBOXMANAGE="${VBOXMANAGE:-VBoxManage}"
+
+usage() {
+   printf '%s\n' "Usage: ${me} <vm> <bios|efi|efi-secureboot|enable-secureboot> [--defer-enforcement]"
+}
+
+defer_enforcement='false'
+positional=()
+while [ "$#" -gt 0 ]; do
+   case "$1" in
+      --defer-enforcement)
+         defer_enforcement='true'
+         shift
+         ;;
+      -h | --help)
+         usage
+         exit 0
+         ;;
+      --)
+         shift
+         break
+         ;;
+      -*)
+         usage >&2
+         printf '%s\n' "${me}: unknown option '$1'" >&2
+         exit 64
+         ;;
+      *)
+         positional+=("$1")
+         shift
+         ;;
+   esac
+done
+positional+=("$@")
+[ "${#positional[@]}" -eq 2 ] || { usage >&2; exit 64; }
+vm="${positional[0]}"
+mode="${positional[1]}"
+
+## --defer-enforcement is meaningful only for the efi-secureboot enroll step; reject it elsewhere
+## rather than silently ignore it.
+if [ "${defer_enforcement}" = 'true' ] && [ "${mode}" != 'efi-secureboot' ]; then
+   usage >&2
+   printf '%s\n' "${me}: --defer-enforcement applies only to efi-secureboot" >&2
+   exit 64
+fi
+
+case "${mode}" in
+   bios)
+      "${VBOXMANAGE}" modifyvm "${vm}" --firmware bios >/dev/null
+      ;;
+   efi)
+      "${VBOXMANAGE}" modifyvm "${vm}" --firmware efi >/dev/null
+      ## Scrub Secure Boot state inherited from a prior efi-secureboot config so plain EFI really
+      ## is plain; tolerated on a fresh VM whose varstore is uninitialized (no-op there).
+      "${VBOXMANAGE}" modifynvram "${vm}" secureboot --disable >/dev/null 2>&1 || true
+      ;;
+   efi-secureboot)
+      "${VBOXMANAGE}" modifyvm "${vm}" --firmware efi >/dev/null
+      "${VBOXMANAGE}" modifynvram "${vm}" inituefivarstore >/dev/null
+      "${VBOXMANAGE}" modifynvram "${vm}" enrollorclpk >/dev/null
+      "${VBOXMANAGE}" modifynvram "${vm}" enrollmssignatures >/dev/null
+      if [ "${defer_enforcement}" = 'true' ]; then
+         "${VBOXMANAGE}" modifynvram "${vm}" secureboot --disable >/dev/null
+      else
+         "${VBOXMANAGE}" modifynvram "${vm}" secureboot --enable >/dev/null
+      fi
+      ;;
+   enable-secureboot)
+      "${VBOXMANAGE}" modifynvram "${vm}" secureboot --enable >/dev/null
+      ;;
+   *)
+      usage >&2
+      printf '%s\n' "${me}: mode must be bios|efi|efi-secureboot|enable-secureboot, got '${mode}'" >&2
+      exit 64
+      ;;
+esac

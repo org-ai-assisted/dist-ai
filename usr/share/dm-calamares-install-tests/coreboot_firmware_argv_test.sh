@@ -71,6 +71,15 @@ vm="testvm"
 VBOXMANAGE="${vboxmanage_stub}"
 reinstall="false"
 disk="${work}/disk.vdi"
+## apply_firmware shells out to the extracted dm-vbox-firmware; point it at the checkout copy
+## (VBOXMANAGE is passed through, so the stub still records modifyvm/modifynvram). The coreboot
+## EfiRom/CorebootRom extradata stays inline in apply_firmware, so these assertions are unchanged.
+if [ -x "${test_dir}/../../bin/dm-vbox-firmware" ]; then
+   DM_VBOX_FIRMWARE="$(readlink --canonicalize -- "${test_dir}/../../bin/dm-vbox-firmware")"
+else
+   DM_VBOX_FIRMWARE='/usr/bin/dm-vbox-firmware'
+fi
+export DM_VBOX_FIRMWARE
 
 cb_rom="/opt/coreboot/cb-uefi-gfx.rom"
 cb_cpuid='0x80000008 0x00003024 0x791ef257 0x0000400f 0x00010000'

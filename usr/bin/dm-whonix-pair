@@ -967,22 +967,33 @@ main_functional() {
 ## executor's contract, which owns that green line).
 ws_func_cli_exec() {
    vm="${ws}"
-   local out rc=0
-   out="$(gc_run "$2" "$3" "$4" 2>&1)" || rc=$?
+   local tmp rc=0
+   tmp="$(mktemp)"
+   ## Bound the captured guest output (head --bytes) so a check that spews unbounded output cannot
+   ## OOM the host or fill the disk. PIPESTATUS preserves gc_run's REAL exit code; a check whose
+   ## output overruns the cap gets SIGPIPE and is treated as a fail -- which a multi-GB-output
+   ## check legitimately is.
+   if gc_run "$2" "$3" "$4" 2>&1 | head --bytes 65536 > "${tmp}"; then
+      rc=0
+   else
+      rc="${PIPESTATUS[0]}"
+   fi
    if [ "${rc}" -eq 0 ]; then
+      safe-rm --force -- "${tmp}"
       printf '%s\n' "${me}: check $1 PASS"
       return 0
    fi
-   ## Capture the FAILED check's in-guest output to the caller-owned --check-log (the headless
-   ## parallel of the GUI run_check_report_failure), so dm-release-test can publish the failure
-   ## tail. Empty check_log (a standalone run) -> skip, like the GUI path. Also echo to stderr.
+   ## Capture the FAILED check's (bounded) in-guest output to the caller-owned --check-log (the
+   ## headless parallel of the GUI run_check_report_failure) so dm-release-test can publish the
+   ## failure tail. Empty check_log (a standalone run) -> skip, like the GUI path. Also to stderr.
    if [ -n "${check_log:-}" ]; then
       {
          printf '%s\n' "=== check $1 ($3) FAILED rc=${rc} ==="
-         printf '%s\n' "${out}"
+         cat -- "${tmp}"
       } >> "${check_log}"
    fi
-   printf '%s\n' "${out}" >&2
+   cat -- "${tmp}" >&2
+   safe-rm --force -- "${tmp}"
    return "${rc}"
 }
 

@@ -55,10 +55,6 @@ mkdir --parents -- "${stubbin}"
 
 ## Files the stubs read/write at runtime (exported so the stub bodies stay expansion-free).
 export MARKER_RESPONSE_FILE="${work}/marker.response"
-## The firmware marker the getextradata stub returns for the pair-firmware key -- static at the
-## default firmware (efi-secureboot), which is what rt_whonix_pair_require verifies against.
-export FW_MARKER_RESPONSE_FILE="${work}/fwmarker.response"
-printf '%s\n' 'Value: efi-secureboot' > "${FW_MARKER_RESPONSE_FILE}"
 export SETEXTRA_LOG="${work}/setextradata.log"
 export PAIR_ARGV="${work}/dm-whonix-pair.argv"
 export DIST_ARGV="${work}/dist-installer-cli.argv"
@@ -95,14 +91,9 @@ EOF
 cat > "${stubbin}/VBoxManage" <<'EOF'
 #!/bin/bash
 case "$1" in
-  getextradata)
-    case "$3" in
-      *pair-firmware) cat -- "${FW_MARKER_RESPONSE_FILE}";;
-      *) cat -- "${MARKER_RESPONSE_FILE}";;
-    esac
-    ;;
+  getextradata) cat -- "${MARKER_RESPONSE_FILE}";;
   setextradata) printf '%s %s %s\n' "$2" "$3" "$4" >> "${SETEXTRA_LOG}";;
-  import|controlvm|unregistervm|modifyvm) printf '%s\n' "$*" >> "${VBOX_LOG}";;
+  import|controlvm|unregistervm|modifyvm|modifynvram) printf '%s\n' "$*" >> "${VBOX_LOG}";;
 esac
 exit 0
 EOF
@@ -193,6 +184,17 @@ export DM_RELEASE_TEST_LOCK_DIR="${work}/lock"
 install -d -m 0777 -- "${DM_RELEASE_TEST_LOCK_DIR}"
 export interface='cli'
 export desktop='CLI'
+## whonix is BIOS-only (main forces it; the test calls rt_provision_pair directly, so set it here).
+# shellcheck disable=SC2034  ## read by the sourced rt_provision_pair
+firmware='bios'
+## rt_provision_pair shells out to dm-vbox-firmware (sudo -u account); point it at the checkout
+## copy, which runs the VBoxManage stub (on PATH) and records modifyvm to VBOX_LOG.
+if [ -x "${test_dir}/../../bin/dm-vbox-firmware" ]; then
+   DM_VBOX_FIRMWARE="$(readlink --canonicalize -- "${test_dir}/../../bin/dm-vbox-firmware")"
+else
+   DM_VBOX_FIRMWARE='/usr/bin/dm-vbox-firmware'
+fi
+export DM_VBOX_FIRMWARE
 export RESULTS_ROOT="${work}/results"
 
 check() {
@@ -335,18 +337,22 @@ check "built provision: WS marker set to the build label" \
 ## #28: rt_provision_pair applies the requested firmware to BOTH imported VMs (powered off,
 ## before the clean-live snapshot). firmware defaults to efi-secureboot here -> modifyvm
 ## --firmware efi on each pair VM via the per-account runner. Canary: the pre-fix provisioner
-## applied NO firmware, so VBOX_LOG carried no modifyvm --firmware line for either VM.
-check "built provision: firmware applied to the GW VM" \
-   "$(grep --quiet -- 'modifyvm Whonix-Gateway-CLI --firmware' "${VBOX_LOG}" && printf '%s' "true" || printf '%s' "false")"
-check "built provision: firmware applied to the WS VM" \
-   "$(grep --quiet -- 'modifyvm Whonix-Workstation-CLI --firmware' "${VBOX_LOG}" && printf '%s' "true" || printf '%s' "false")"
-## #28/codex#1: the firmware is also PINNED as a marker on both VMs, so a later test run verifies
-## + publishes the pair's actual firmware (never a mismatched --firmware label). Default firmware
-## here is efi-secureboot.
-check "built provision: firmware marker pinned on the GW VM" \
-   "$(grep --quiet -- 'Whonix-Gateway-CLI leaktest/pair-firmware efi-secureboot' "${SETEXTRA_LOG}" && printf '%s' "true" || printf '%s' "false")"
-check "built provision: firmware marker pinned on the WS VM" \
-   "$(grep --quiet -- 'Whonix-Workstation-CLI leaktest/pair-firmware efi-secureboot' "${SETEXTRA_LOG}" && printf '%s' "true" || printf '%s' "false")"
+## applied NO firmware, so VBOX_LOG carried no modifyvm --firmware line for either VM. whonix is
+## BIOS-only, so the applied firmware is bios (via the extracted dm-vbox-firmware, run sudo -u).
+check "built provision: BIOS firmware applied to the GW VM" \
+   "$(grep --quiet -- 'modifyvm Whonix-Gateway-CLI --firmware bios' "${VBOX_LOG}" && printf '%s' "true" || printf '%s' "false")"
+check "built provision: BIOS firmware applied to the WS VM" \
+   "$(grep --quiet -- 'modifyvm Whonix-Workstation-CLI --firmware bios' "${VBOX_LOG}" && printf '%s' "true" || printf '%s' "false")"
+## BIOS-only means no NVRAM ops for whonix -- the F1 inituefivarstore wipe can never run here.
+check "built provision: no NVRAM ops on a BIOS whonix pair" \
+   "$(grep --quiet -- 'modifynvram' "${VBOX_LOG}" && printf '%s' "false" || printf '%s' "true")"
+## whonix is BIOS-only: an EXPLICIT non-bios --firmware is rejected (SETUP_RC=2) early in main,
+## before any account/VBox work -- black-box the real binary (dies at the guard, needs no stubs).
+## Canary: pre-pivot code accepted efi-secureboot for whonix and attempted the NVRAM-wiping apply.
+fwrej_rc=0
+"${subject}" whonix lxqt --source official --firmware efi-secureboot --version 18.2.3.5 >/dev/null 2>&1 || fwrej_rc=$?
+check "whonix rejects an explicit non-bios --firmware (SETUP_RC)" \
+   "$([ "${fwrej_rc}" = '2' ] && printf '%s' "true" || printf '%s' "false")"
 
 ## Case H2 (built pair, unreadable ova): the account-readability precheck must abort SETUP_RC
 ## BEFORE any destructive unregister/import, so an unreadable ova never destroys the existing

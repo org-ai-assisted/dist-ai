@@ -67,6 +67,15 @@ source "${subject}"
 vm="testvm"
 # shellcheck disable=SC2034
 VBOXMANAGE="${vboxmanage_stub}"
+## apply_firmware now shells out to the extracted dm-vbox-firmware; point it at the checkout copy
+## (VBOXMANAGE is passed through, so the stub still records the calls). Exported so the sourced
+## apply_firmware reads it (and so shellcheck sees it as used externally).
+if [ -x "${test_dir}/../../bin/dm-vbox-firmware" ]; then
+   DM_VBOX_FIRMWARE="$(readlink --canonicalize -- "${test_dir}/../../bin/dm-vbox-firmware")"
+else
+   DM_VBOX_FIRMWARE='/usr/bin/dm-vbox-firmware'
+fi
+export DM_VBOX_FIRMWARE
 
 pass=0
 fail=0

@@ -130,9 +130,8 @@ else
    failures=$((failures + 1))
 fi
 
-## #28: a whonix lane now DOES carry the firmware axis -- the imported pair has the requested
-## firmware applied at provision (rt_provision_pair -> vbox_apply_firmware), so a bios and an efi
-## run are distinct cells and must not clobber each other. (rt_lane_key unset here, so no
+## #28: a whonix lane carries the firmware axis -- whonix is BIOS-only (dm-vbox-firmware applies
+## bios to the imported pair at provision), so the suffix is -bios. (rt_lane_key unset here, so no
 ## inst/leak component -- just guest-interface-firmware.)
 rt_publish_result whonix 18.2.3.6 acct whonix-pair 0 '' tor-confirm >/dev/null
 if grep --quiet -- '--lane whonix-lxqt-bios ' "${argv_file}" \
