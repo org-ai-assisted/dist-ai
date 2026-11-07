@@ -927,6 +927,20 @@ expect_rule "R-173" "${mkd}${sp}${dir173}${nlreal}${chm}${sp}-R${sp}700${sp}${di
 expect_rule "R-173" "${mkd}${sp}-p${sp}${dir173}"                                                  "absent"
 ## a script-wide waiver disables the rule for the whole file.
 expect_rule "R-173" "## style-ok: allow-mkdir-then-chmod${nlreal}${mkd}${sp}-p${sp}${dir173}${nlreal}${chm}${sp}700${sp}${dir173}" "absent"
+## Detect-only, MODE classification edge cases:
+## a REMOVE-form symbolic mode ('-w', '-r') is the chmod MODE, not an option (chmod
+## has no flag whose letters are all permission bits) -- still a pair, still flagged.
+expect_rule "R-173" "${mkd}${sp}${dir173}${nlreal}${chm}${sp}-w${sp}${dir173}"                         "present"
+expect_rule "R-173" "${mkd}${sp}${dir173}${nlreal}${chm}${sp}-r${sp}${dir173}"                         "present"
+## an env-assignment prefix ('UMASK=077 mkdir') is still the anti-pattern, so it is
+## flagged -- but NOT auto-fixed (the fixer would drop the assignment; see fix suite).
+expect_rule "R-173" "UMASK=077${sp}${mkd}${sp}-p${sp}${dir173}${sc}${sp}${chm}${sp}700${sp}${dir173}" "present"
+## a leading non-mkdir command in an '&&' chain must not hide the later pair (the
+## chain is left-associative, so the pair is never one BinaryCmd's X/Y).
+expect_rule "R-173" "cd${sp}x${sp}&&${sp}${mkd}${sp}${dir173}${sp}&&${sp}${chm}${sp}700${sp}${dir173}" "present"
+## ABSENT -- 'chmod --reference REF DIR' (space form) sets the mode FROM a file: it
+## has no mode operand, so it is not the 'install -d -m MODE' shape and must not fire.
+expect_rule "R-173" "${mkd}${sp}${dir173}${nlreal}${chm}${sp}--reference${sp}ref${sp}${dir173}"        "absent"
 
 ## R-010: seven COPIES of one directive must NOT satisfy the block (DISTINCT
 ## directives are counted); the seven distinct directives pass.

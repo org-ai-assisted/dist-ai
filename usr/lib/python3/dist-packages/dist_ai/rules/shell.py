@@ -541,6 +541,11 @@ CHMOD_LONG = frozenset({
 ## but NOT auto-fixed: chmod applies it relative to the EXISTING bits while
 ## 'install -m' sets ABSOLUTE bits, so the rewrite would not be equivalent.
 NUMERIC_MODE = re.compile(r'[0-7]{3,4}')
+## A chmod REMOVE-form symbolic mode ('-w', '-rx', '-s') looks like an option to
+## command_tokens (leading '-'). chmod has NO short option whose letters are all
+## permission bits (its flags are c/f/v/R and the long '--...'), so a '-'-led token
+## whose chars are ALL in [rwxXst] is unambiguously the mode, not a flag.
+CHMOD_DASH_MODE = re.compile(r'-[rwxXst]+')
 
 
 def _command_operands(call, source, value_short=frozenset(),
@@ -553,6 +558,26 @@ def _command_operands(call, source, value_short=frozenset(),
     return [word for kind, word, text
             in bash_ast.command_tokens(call, source, value_short, value_long)
             if kind == "operand" and text != "--"]
+
+
+def _chmod_operands(call, source):
+    """chmod's operand words -- its [mode, target]. Two chmod-specific reads that a
+    generic operand scan gets wrong:
+      - a REMOVE-form symbolic mode ('-w', '-rx') is '-'-led so command_tokens
+        classes it 'opt' and would drop it; count such a token as the mode operand
+        (see CHMOD_DASH_MODE) so 'mkdir d; chmod -w d' is still DETECTED -- never
+        auto-fixed, a symbolic mode is not numeric.
+      - '--reference REF' takes a SEPARATE value (space form); declare it so REF is
+        consumed as the option value, not mis-read as the mode. That shape carries
+        no mode operand of its own and is not an R-173 pair at all."""
+    operands = []
+    for kind, word, text in bash_ast.command_tokens(
+            call, source, frozenset(), frozenset({"reference"})):
+        if kind == "operand" and text != "--":
+            operands.append(word)
+        elif kind == "opt" and CHMOD_DASH_MODE.fullmatch(text):
+            operands.append(word)
+    return operands
 
 
 def _mkdir_fix_shape(call, source):
@@ -667,9 +692,9 @@ def _mkdir_then_chmod_pairs(ctx):
                                  frozenset({"mode"}))
         if len(dirs) != 1 or _chmod_is_recursive(eff2, source):
             return None
-        chmod_operands = _command_operands(eff2, source)
+        chmod_operands = _chmod_operands(eff2, source)
         ## chmod's operands are exactly [mode, target]; anything else (no target,
-        ## a second target, a '--reference=' form with no mode operand) is not the
+        ## a second target, a '--reference' form with no mode operand) is not the
         ## one-dir shape 'install -d' replaces.
         if len(chmod_operands) != 2:
             return None
@@ -696,6 +721,10 @@ def _mkdir_then_chmod_pairs(ctx):
         mode_lit = bash_ast.word_string(mode_word)
         fixable = (
             eff1 is c1 and eff2 is c2
+            ## An env-assignment prefix ('UMASK=077 mkdir a') lives on the CallExpr,
+            ## not the Stmt (so _plain_stmt cannot see it), and s1.Pos spans it, so
+            ## the collapse would silently DROP it -- leave such a pair detect-only.
+            and not c1.get("Assigns") and not c2.get("Assigns")
             and _plain_stmt(s1) and _plain_stmt(s2)
             and between in ("", ";", "&&")
             and bool(mode_lit) and bool(NUMERIC_MODE.fullmatch(mode_lit))

@@ -1081,4 +1081,32 @@ for name_body in \
    fi
 done
 
+## --- 7s: an env-assignment prefix is detect-only ---------------------------
+## 'UMASK=077 mkdir ...' carries the assignment on the CallExpr, and the statement
+## Pos spans it, so a collapse would silently DROP 'UMASK=077'. '-p' so the
+## assignment is the ONLY reason the pair is not auto-fixed.
+f="${test_dir}/mkdirchmod_envprefix.sh"
+printf '%s\n' "#!/bin/bash" "UMASK=077 mkdir -p a; chmod 700 a" >"${f}"
+before="$(cksum < "${f}")"
+run_fix "${f}" >/dev/null 2>&1
+if [ "$(cksum < "${f}")" = "${before}" ] ; then
+   note_pass "R-173 leaves an env-assignment-prefixed pair (not auto-fixed)"
+else
+   note_fail "R-173 collapsed an env-prefixed pair, dropping the assignment"
+fi
+
+## --- 7t: a brace group keeps its terminating ';' --------------------------
+## The collapse span ends at the chmod TARGET, not the chmod statement (whose End
+## includes the trailing ';'); dropping that ';' before '}' is a fatal syntax
+## error. Assert the fixed brace group still parses.
+f="${test_dir}/mkdirchmod_brace.sh"
+printf '%s\n' "#!/bin/bash" "{ mkdir -p a; chmod 700 a; }" >"${f}"
+run_fix "${f}" >/dev/null 2>&1
+if grep --quiet --fixed-strings -- 'install -d -m 700 -- a; }' "${f}" \
+   && bash -n "${f}" 2>/dev/null ; then
+   note_pass "R-173 collapse inside a brace group stays valid bash"
+else
+   note_fail "R-173 collapse corrupted a brace group"
+fi
+
 exit_gate
