@@ -227,9 +227,12 @@ print_usage() {
              is derived from the filename (override with --version); the run uses a disposable
              eph-inst-GUEST-built account.
   --ova-gw / --ova-ws PATH
-             whonix --source built only: the locally-built Gateway/Workstation OVAs. Imported
-             directly (no dist-installer-cli) under the SAME persistent account the official
-             lane uses (leak -> persist-leak-GUEST, inst -> persist-inst-GUEST).
+             whonix --source built --provision ONLY: the locally-built Gateway/Workstation OVAs,
+             imported directly (no dist-installer-cli) under the SAME persistent account the
+             official lane uses (leak -> persist-leak-GUEST, inst -> persist-inst-GUEST). A
+             --source built TEST run takes NO ovas -- it only verifies the pinned marker (pass
+             --version). Pass the Gateway OVA to --ova-gw and the Workstation OVA to --ova-ws for
+             this INTERFACE (a built OVA filename is arbitrary, so it is not validated).
 
 A pre-bless candidate installs under a disposable eph-inst-GUEST-VERSION
 account; a blessed release (version == stable pin) uses persist-inst-GUEST.
