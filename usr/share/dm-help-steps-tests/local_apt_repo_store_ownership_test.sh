@@ -178,9 +178,16 @@ workdir="$(mktemp --directory)"
 run_ensure_driver="${workdir}/run_ensure_driver.sh"
 cat > "${run_ensure_driver}" <<'DRIVER'
 #!/bin/bash
+## Match the strict mode the production build applies when it sources the
+## fragment (help-steps/pre + 1200_prepare-build-machine); a fresh bash process
+## inherits NONE of it, and inherit_errexit is load-bearing -- without it errexit
+## is off inside $(...), so a failed command in a substitution would not abort.
 set -o errexit
 set -o nounset
 set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
 local_apt_repository_base="$1"
 user_name="$2"
 SUDO_TO_ROOT="$3"
