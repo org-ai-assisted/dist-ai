@@ -1180,6 +1180,13 @@ wire() {
             wire_env+=( "CORPUS_REPO=${TERMINAL_POC_CORPUS_REPO}" )
          fi
          ;;
+      vbox-image-test)
+         ## Self-contained unit suite for dist-ai's own vbox-image-test orchestrator +
+         ## vbox-image-test-default: the runner pins VBOX_IMAGE_TEST*_BIN to its sibling
+         ## bin tools, so there is no checkout, VM or network. Nothing to wire; the case
+         ## satisfies the registry guard.
+         wire_env=()
+         ;;
       *)
          printf '%s\n' "dist-ai-tests-all: no wiring for suite ${suite}" >&2
          return 1
@@ -1209,7 +1216,7 @@ suite_component() {
       private-ai-config)
          printf '%s' 'private-ai-config'
          ;;
-      clusterfuzzlite-lib|dist-ai-registry|github-api|image-optimize|iso-download|dm-release-test|dm-build-account|dm-calamares-install|dm-image-build|test-results-site|dm-vm-lock|dm-firmware-identity|dm-ci-job-watch|dm-gitlink-upstream-check|dm-gitlink-bump|iso-boot|tirdad-isn-nat)
+      clusterfuzzlite-lib|dist-ai-registry|github-api|image-optimize|iso-download|dm-release-test|dm-build-account|dm-calamares-install|dm-image-build|test-results-site|vbox-image-test|dm-vm-lock|dm-firmware-identity|dm-ci-job-watch|dm-gitlink-upstream-check|dm-gitlink-bump|iso-boot|tirdad-isn-nat)
          printf '%s' 'dist-ai'
          ;;
       anon-apt-sources-list)

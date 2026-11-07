@@ -96,6 +96,16 @@ SE_LANES="${lanes}" TRD_CALLS="${calls}" "${bin}" --no-publish "kicksecure lxqt 
 want "${rc}" 0 "--no-publish -> rc 0"
 want "$(n_calls)" 0 "--no-publish skips the deploy"
 
+# --- grok#3: a lane token with a shell metachar is %q-escaped into the remote --cmd, never
+#     spliced raw (server-exec --cmd runs as a remote root bash script). Canary: old code spliced
+#     ${spec} raw, so the recorded cmd held a bare 'a;b'; now it is 'a\;b'. ---
+reset
+rc=0
+SE_LANES="${lanes}" TRD_CALLS="${calls}" "${bin}" --no-publish 'kicksecure lxqt --version a;b' || rc=$?
+want "${rc}" 0 "metachar lane -> rc 0"
+if grep --quiet --fixed-strings 'a\;b' "${lanes}"; then pass "metachar token %q-escaped in the remote cmd"; else fail "metachar token NOT escaped -- a raw ';' would execute on the server as root"; fi
+if grep --quiet --fixed-strings 'version a;b' "${lanes}"; then fail "raw unescaped 'a;b' spliced into the remote cmd"; else pass "no raw unescaped metachar token in the remote cmd"; fi
+
 # --- no lanes: usage error ---
 rc=0
 SE_LANES="${lanes}" TRD_CALLS="${calls}" "${bin}" >/dev/null 2>&1 || rc=$?

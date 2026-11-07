@@ -81,18 +81,45 @@ want "$(line 1)" "kicksecure lxqt --source built --iso /b.iso --firmware efi-sec
 want "$(line 2)" "kicksecure lxqt --source built --iso /b.iso --firmware bios" "--iso -> kicksecure BIOS lane tests the built ISO"
 if has "whonix lxqt --lane inst --source official --channel stable --firmware bios"; then pass "--iso leaves whonix lanes --source official"; else fail "--iso wrongly changed the whonix source"; fi
 
+# --- F3 (thread 601C2b) invariant: with --iso, ONLY the kicksecure LXQt lanes carry --iso; no
+#     cli lane and no whonix lane does (the stale finding feared --iso leaking into a CLI lane). ---
+if grep --quiet -E 'whonix.*--iso' "${args}"; then fail "a whonix lane wrongly carries --iso"; else pass "no whonix lane carries --iso (F3 invariant)"; fi
+if grep --quiet -E 'cli.*--iso' "${args}"; then fail "a cli lane wrongly carries --iso"; else pass "no cli lane carries --iso (F3 invariant)"; fi
+
+# --- grok#3 guard: an --iso path with whitespace is rejected early (exit 64) -- a lane is one
+#     space-joined string, so a space would mis-split on the remote shell. Canary: old accepted. ---
+ws_rc=0
+true > "${args}"
+VIT_ARGS="${args}" "${bin}" --iso '/built image.iso' >/dev/null 2>&1 || ws_rc=$?
+want "${ws_rc}" 64 "--iso path with whitespace rejected (exit 64)"
+
 # --- coreboot is OPT-IN ---
 run
 if has "--coreboot-rom"; then fail "coreboot lane present by default (should be opt-in)"; else pass "coreboot is opt-in (absent by default)"; fi
 run --coreboot-rom /x.rom
 if has "--coreboot-rom /x.rom"; then pass "--coreboot-rom adds a coreboot firmware lane"; else fail "--coreboot-rom did not add the lane"; fi
 
-# --- --no-publish flows through; --channel resolves into every channel-keyed lane ---
+# --- --no-publish flows through ---
 run --no-publish
 want "$(line 1)" "--no-publish" "--no-publish passed to vbox-image-test"
-run --channel developers
-if has "kicksecure lxqt --source official --channel developers --firmware efi-secureboot"; then pass "--channel developers resolves (kicksecure)"; else fail "--channel not applied to kicksecure"; fi
-if has "whonix lxqt --lane leak --source official --channel developers --firmware bios"; then pass "--channel developers resolves (whonix)"; else fail "--channel not applied to whonix"; fi
+
+# --- --channel developers: whonix OVAs are not auto-discoverable, so --version is REQUIRED.
+#     Canary: old code emitted whonix developers lanes that die at version resolution; now the
+#     batch is rejected EARLY (exit 64) before any lane is built. ---
+dev_rc=0
+true > "${args}"
+VIT_ARGS="${args}" "${bin}" --channel developers >/dev/null 2>&1 || dev_rc=$?
+want "${dev_rc}" 64 "--channel developers without --version is rejected (exit 64)"
+if [ -s "${args}" ]; then fail "rejected developers run still emitted lanes"; else pass "rejected developers run emitted no lanes"; fi
+
+# --- --channel developers --version VER: threaded into the whonix lanes ONLY (kicksecure
+#     auto-discovers; a whonix version must not pin kicksecure's). ---
+run --channel developers --version 18.9
+if has "whonix lxqt --lane inst --source official --channel developers --version 18.9 --firmware bios"; then pass "developers --version threads into whonix inst"; else fail "whonix inst missing --version"; fi
+if has "whonix lxqt --lane leak --source official --channel developers --version 18.9 --firmware bios"; then pass "developers --version threads into whonix leak"; else fail "whonix leak missing --version"; fi
+if has "whonix cli --lane inst --source official --channel developers --version 18.9 --firmware bios"; then pass "developers --version threads into whonix cli"; else fail "whonix cli missing --version"; fi
+want "$(line 1)" "kicksecure lxqt --source official --channel developers --firmware efi-secureboot" "developers kicksecure lane carries NO --version (auto-discover)"
+if grep --quiet -E 'kicksecure.*--version' "${args}"; then fail "kicksecure lane wrongly carries --version"; else pass "no kicksecure lane carries --version"; fi
 
 # --- --add appends a raw lane ---
 run --add "kicksecure lxqt --firmware bios"

@@ -45,14 +45,17 @@ me="${0##*/}"
 
 usage() {
    printf '%s\n' \
-      "Usage: ${me} [--iso KS_ISO] [--channel stable|developers] [--coreboot-rom ROM] [--add 'LANE']... [--no-publish]" \
+      "Usage: ${me} [--iso KS_ISO] [--channel stable|developers] [--version VER] [--coreboot-rom ROM] [--add 'LANE']... [--no-publish]" \
       "Runs the DEFAULT lane batch (kicksecure lxqt EFI+SecureBoot + BIOS; whonix lxqt BIOS inst + leak;" \
       "whonix cli BIOS inst) then publishes once (via vbox-image-test)." \
-      "Opt-in: --coreboot-rom ROM, --add 'LANE'. A full batch is HOURS -- drive it durably under bgjob-run."
+      "--version VER is REQUIRED with --channel developers (whonix developers OVAs are not auto-discoverable);" \
+      "it is threaded into the whonix lanes only. Opt-in: --coreboot-rom ROM, --add 'LANE'." \
+      "A full batch is HOURS -- drive it durably under bgjob-run."
 }
 
 iso=""
 channel="stable"
+version=""
 coreboot_rom=""
 no_publish="false"
 extra=()
@@ -61,6 +64,15 @@ while [ "$#" -ge 1 ]; do
    case "$1" in
       --iso)
          [ "$#" -ge 2 ] || { printf '%s\n' "${me}: --iso needs a path" >&2; exit 64; }
+         ## A lane is a single space-joined string that the remote shell re-splits into
+         ## dm-release-test args, so a path with whitespace mis-splits (and vbox-image-test
+         ## cannot embed a space in one token). Reject it early rather than fail cryptically.
+         case "$2" in
+            *[[:space:]]*)
+               printf '%s\n' "${me}: --iso path must not contain whitespace" >&2
+               exit 64
+               ;;
+         esac
          iso="$2"
          shift 2
          ;;
@@ -69,8 +81,19 @@ while [ "$#" -ge 1 ]; do
          channel="$2"
          shift 2
          ;;
+      --version)
+         [ "$#" -ge 2 ] || { printf '%s\n' "${me}: --version needs a value" >&2; exit 64; }
+         version="$2"
+         shift 2
+         ;;
       --coreboot-rom)
          [ "$#" -ge 2 ] || { printf '%s\n' "${me}: --coreboot-rom needs a ROM path" >&2; exit 64; }
+         case "$2" in
+            *[[:space:]]*)
+               printf '%s\n' "${me}: --coreboot-rom path must not contain whitespace" >&2
+               exit 64
+               ;;
+         esac
          coreboot_rom="$2"
          shift 2
          ;;
@@ -94,18 +117,32 @@ while [ "$#" -ge 1 ]; do
    esac
 done
 
+## Whonix developers builds publish OVAs, not an auto-discoverable ISO index, so dm-release-test
+## cannot resolve a whonix developers version without --version. Reject early (before a HOURS-long
+## batch) rather than emit whonix lanes that die at version resolution.
+if [ "${channel}" = 'developers' ] && [ -z "${version}" ]; then
+   printf '%s\n' "${me}: --channel developers needs --version VER for the whonix lanes (whonix developers OVAs are not auto-discoverable)" >&2
+   exit 64
+fi
+
 ## The flagship Kicksecure source + its MANDATORY --source: a built ISO when given (tests THIS
 ## build, --source built), else the published release (--source official, --channel picks the
-## stream). Whonix lanes default to --source official (the pre-imported release pair).
+## stream). Kicksecure auto-discovers its version per channel, so --version is NOT threaded here.
 ks_src="--source official --channel ${channel}"
 [ -z "${iso}" ] || ks_src="--source built --iso ${iso}"
+
+## Whonix source: the pre-imported release pair (--source official). --version, when given, is
+## threaded ONLY here -- the whonix lanes need it for developers, and a whonix version must not
+## pin kicksecure's. Firmware is applied to the imported pair by dm-release-test.
+whonix_src="--source official --channel ${channel}"
+[ -z "${version}" ] || whonix_src="${whonix_src} --version ${version}"
 
 lanes=(
    "kicksecure lxqt ${ks_src} --firmware efi-secureboot"
    "kicksecure lxqt ${ks_src} --firmware bios"
-   "whonix lxqt --lane inst --source official --channel ${channel} --firmware bios"
-   "whonix lxqt --lane leak --source official --channel ${channel} --firmware bios"
-   "whonix cli --lane inst --source official --channel ${channel} --firmware bios"
+   "whonix lxqt --lane inst ${whonix_src} --firmware bios"
+   "whonix lxqt --lane leak ${whonix_src} --firmware bios"
+   "whonix cli --lane inst ${whonix_src} --firmware bios"
 )
 
 ## Opt-in additions.
