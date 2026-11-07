@@ -509,10 +509,10 @@ story_snap_nonblank() {
    ## or a slow render turns into a "capture missing" die instead of publishing what rendered.
    local discard_on_timeout="${6:-}"
    ## Non-empty $7: override the capture mode for THIS milestone ('framebuffer' = publish the GUEST
-   ## framebuffer directly instead of the window grab). The VBox EFI logo renders in the guest
-   ## framebuffer, but the GUI window grab (grim) lags it during the brief (~0.6s) splash and records
-   ## black -- so firmware-logo captures the guest directly, where the splash is actually present. A
-   ## local shadows the global for capture_frame/gate_check_path (bash dynamic scope).
+   ## framebuffer directly instead of the window grab) -- for a milestone whose content renders in
+   ## the guest framebuffer but never in a host window grab (same path as the STORY_CAPTURE=framebuffer
+   ## whole-run escape hatch). A local shadows the global for capture_frame/gate_check_path (bash
+   ## dynamic scope).
    local story_capture="${7:-${story_capture}}"
    [ -n "${shot_dir}" ] || return 0
    local dest="${shot_dir}/${nn}-${name}.png" start="${SECONDS}"
@@ -1803,7 +1803,9 @@ build_vm() {
       ## audio-off setting; re-apply it so no audio device exists here either -> the headless
       ## host's unresponsive audio backend cannot raise the HostAudioNotResponding modal over
       ## the capture. Matches the --audio-driver none in the createvm path below.
-      "${VBOXMANAGE}" modifyvm "${vm}" --audio-driver none >/dev/null
+      ## Re-apply the splash hold too: a VM reused across --reinstall may predate the new-VM
+      ## --firmware-logo-display-time setting, which firmware-logo's window grab relies on.
+      "${VBOXMANAGE}" modifyvm "${vm}" --audio-driver none --firmware-logo-display-time 5000 >/dev/null
       ## The reused VM keeps its coreboot board + COM1-server config from the first build;
       ## re-arm the drain (cb_drain_start no-ops on an empty cb_uart_sock, leaving the 16550
       ## undrained -> the THRE-poll boot wedge). The socket path is deterministic, matching
@@ -1843,7 +1845,12 @@ build_vm() {
    ## audio backend does not respond -> VBox raises the "non-fatal problem" (HostAudioNotResponding)
    ## runtime warning as a MODAL that covers the VM window, so grim grabs the popup instead of the
    ## guest for every window-mode milestone. No audio device -> no such warning (VBox 7.x syntax).
-   modify_args+=( --mouse usbtablet --usb-ohci on --nic1 nat --audio-driver none )
+   ## --firmware-logo-display-time 5000: HOLD the EFI firmware VirtualBox splash ~5s (default
+   ## ~0.6s) so the host-side grim WINDOW grab lands on it -- firmware-logo is then a normal
+   ## window shot (VM window on the host), not a bare guest framebuffer. (Despite the "BIOS logo"
+   ## help text, this controls the EFI logo too in VBox 7.x -- verified empirically.)
+   modify_args+=( --mouse usbtablet --usb-ohci on --nic1 nat --audio-driver none \
+      --firmware-logo-display-time 5000 )
    "${VBOXMANAGE}" modifyvm "${vm}" "${modify_args[@]}" >/dev/null
    apply_firmware
    "${VBOXMANAGE}" createmedium disk --filename "${disk}" --size 25600 \
@@ -1927,15 +1934,15 @@ main() {
    ## Start the coreboot COM1 drain as soon as the VM is up (a no-op without --coreboot-rom). One
    ## reconnecting drainer survives every later power-cycle (reboot_installed / mok_host_enroll).
    cb_drain_start
-   ## Firmware logo: the VBox EFI firmware draws a ~1024x768 VirtualBox logo ~1s after power-on
-   ## (efi + efi-secureboot), then blacks out ~1s later for the GRUB mode switch. CAPTURE MODE =
-   ## framebuffer: the logo renders in the GUEST framebuffer, but grim's GUI window grab LAGS the
-   ## brief splash and records a black guest region (confirmed: the guest capture shows the logo
-   ## while the same-moment window grab is black). So publish the guest framebuffer directly, and
-   ## POLL fast over the first few seconds to land on the frame that rendered. On a genuine miss
-   ## story_snap_nonblank DISCARDS the black leftover (no misleading firmware-logo published);
-   ## `|| true`: the universal floor owns the verdict (and keeps errexit off the timeout path).
-   story_snap_nonblank 11 firmware-logo 6 0.4 content discard framebuffer || true
+   ## Firmware logo: the VBox EFI firmware draws a ~1024x768 VirtualBox logo shortly after power-on
+   ## (efi + efi-secureboot). --firmware-logo-display-time 5000 (set at VM create) HOLDS the splash
+   ## ~5s -- long enough for the host-side grim WINDOW grab to land on it -- so firmware-logo is a
+   ## normal WINDOW shot (the VM window on the host), like every other milestone, not a bare guest
+   ## framebuffer. POLL over the hold window; the guest sibling gates on the logo actually rendering
+   ## (the published window grab carries chrome, never uniform). On a genuine miss story_snap_nonblank
+   ## DISCARDS the black leftover (no misleading firmware-logo published); `|| true`: the universal
+   ## floor owns the verdict (and keeps errexit off the timeout path).
+   story_snap_nonblank 11 firmware-logo 8 0.4 content discard || true
    ## No "live-kernel-boot" capture: Kicksecure boots SILENTLY (security-misc; no plymouth, no
    ## console), so the whole window between the GRUB menu and the painted desktop is black BY
    ## DESIGN -- there is no non-black kernel-boot frame to publish. The boot is evidenced by the
