@@ -224,8 +224,14 @@ remote_tip="$(git ls-remote origin refs/heads/master 2>/dev/null | cut -f1)" || 
 if [ -n "${remote_tip}" ] && [ "${remote_tip}" = "$(git rev-parse HEAD)" ]; then
    printf '%s\n' "${me}: already pushed; confirming the live site reflects it."
 else
-   printf '%s\n' "${me}: publishing via site-deploy"
-   "${site_deploy}" || die "site-deploy failed (results committed locally; not published)"
+   ## Scope the website-tests gate to the ONE site we publish: an unrelated regression on a
+   ## sibling family site (output-lies / secure-terminal / the CSR _site build) must NOT block
+   ## publishing the clean results plane. Default-valued so the safe scope needs no flag to
+   ## recall; overridable by a pre-set WEBSITE_TESTS_ONLY_SITES. Flows through site-deploy's
+   ## `env ..._REPO=... website-tests` untouched, so site-deploy's general path is unchanged.
+   printf '%s\n' "${me}: publishing via site-deploy (gate scoped to org-ai-assisted.github.io)"
+   WEBSITE_TESTS_ONLY_SITES="${WEBSITE_TESTS_ONLY_SITES:-org-ai-assisted.github.io}" \
+      "${site_deploy}" || die "site-deploy failed (results committed locally; not published)"
 fi
 
 ## A pushed commit is not yet a live site (Pages builds async, and can error): confirm the build
