@@ -58,6 +58,11 @@ iface_rc=0
 ( parse_args --interface bogus ) >/dev/null 2>&1 || iface_rc=$?
 assert "--interface bogus rejected (SETUP_RC)" test "${iface_rc}" -eq 2
 
+## --interface with NO value must fail SETUP_RC (2), not crash with a bare $2-unbound (exit 1).
+noval_rc=0
+( parse_args --interface ) >/dev/null 2>&1 || noval_rc=$?
+assert "--interface with no value rejected (SETUP_RC)" test "${noval_rc}" -eq 2
+
 ## --- behavioral dispatch: stub both drivers, skip the VM lock re-exec, call main ---
 export DM_VM_LOCK_HELD=1
 DISPATCHED=''
@@ -88,12 +93,34 @@ assert "ws_func_cli_exec runs the check over gc_run (not run_check/OCR)" \
    grep --quiet --fixed-strings 'gc_run "$2" "$3" "$4"' "${tool}"
 assert "main_functional_cli drives the battery with the CLI callbacks" \
    grep --quiet --fixed-strings 'run_release_check_battery ws_func_cli_exec ws_func_cli_reboot_sysmaint' "${tool}"
-assert "CLI reboot uses the headless boot_installed sysmaint" \
-   grep --quiet --fixed-strings 'boot_installed sysmaint' "${tool}"
+# shellcheck disable=SC2016  ## intentional literal match of the source text (no expansion)
+assert "CLI reboot confirms power-off before restart (wait_vm_off guard)" \
+   grep --quiet --fixed-strings 'wait_vm_off "${ws}" 20' "${tool}"
+assert "CLI reboot reaches sysmaint via guestcontrol (headless, no OCR terminal)" \
+   grep --quiet --fixed-strings 'wait_guestcontrol_ready sysmaint 300' "${tool}"
 assert "CLI driver routes-skips the GUI-login check (6)" \
    grep --quiet --fixed-strings 'RELEASE_CHECK_SKIP_REASON[6]=' "${tool}"
 assert "CLI driver routes-skips the systemcheck check (8)" \
    grep --quiet --fixed-strings 'RELEASE_CHECK_SKIP_REASON[8]=' "${tool}"
+
+## --- a FAILED CLI check appends its in-guest output to --check-log (so dm-release-test can
+##     publish the failure tail). Stub gc_run to fail with recognizable output. ---
+cl="$(mktemp)"
+# shellcheck disable=SC2317  ## called indirectly by ws_func_cli_exec
+gc_run() {
+   printf '%s\n' "boom-output-xyz"
+   return 7
+}
+# shellcheck disable=SC2034  ## read by ws_func_cli_exec
+check_log="${cl}"
+clrc=0
+ws_func_cli_exec 4 user 'failing-cmd' 60 >/dev/null 2>&1 || clrc=$?
+assert "failed CLI check returns nonzero" test "${clrc}" -ne 0
+assert "failed CLI check captures in-guest output to check_log" \
+   grep --quiet --fixed-strings 'boom-output-xyz' "${cl}"
+assert "failed CLI check records the check number + cmd" \
+   grep --quiet --fixed-strings 'check 4 (failing-cmd) FAILED' "${cl}"
+safe-rm --force -- "${cl}"
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 [ "${fail}" -eq 0 ] || exit 1

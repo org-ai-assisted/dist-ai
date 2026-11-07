@@ -150,6 +150,18 @@ VIT_ARGS="${args}" "${bin}" --print-lanes >/dev/null 2>&1 || pl_rc=$?
 want "${pl_rc}" 0 "--print-lanes alias exits 0"
 if [ -s "${args}" ]; then fail "--print-lanes wrongly invoked vbox-image-test"; else pass "--print-lanes did not invoke vbox-image-test"; fi
 
+# --- an invalid --channel is rejected (exit 64) in BOTH a normal run and --dry-run, so
+#     --dry-run never prints lanes carrying a channel a real run would reject. Canary: the
+#     old parser accepted any --channel value and (with --dry-run) printed bogus-channel lanes. ---
+ch_rc=0
+true > "${args}"
+VIT_ARGS="${args}" "${bin}" --channel bogus >/dev/null 2>&1 || ch_rc=$?
+want "${ch_rc}" 64 "invalid --channel rejected (exit 64)"
+chd_rc=0
+true > "${args}"
+VIT_ARGS="${args}" "${bin}" --dry-run --channel bogus >/dev/null 2>&1 || chd_rc=$?
+want "${chd_rc}" 64 "invalid --channel rejected even with --dry-run (exit 64)"
+
 printf '%s\n' "----"
 printf '%s\n' "passed=${pass_count} failed=${fail_count}"
 [ "${fail_count}" -eq 0 ]

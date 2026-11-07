@@ -140,6 +140,18 @@ while [ "$#" -ge 1 ]; do
    esac
 done
 
+## Validate the channel enum locally so a real run AND --dry-run reject the same inputs -- else
+## --dry-run would print lanes carrying an invalid --channel that every lane then rejects.
+case "${channel}" in
+   stable | developers)
+      true
+      ;;
+   *)
+      printf '%s\n' "${me}: --channel must be stable|developers, got '${channel}'" >&2
+      exit 64
+      ;;
+esac
+
 ## Whonix developers builds publish OVAs, not an auto-discoverable ISO index, so dm-release-test
 ## cannot resolve a whonix developers version without --version. Reject early (before a HOURS-long
 ## batch) rather than emit whonix lanes that die at version resolution.

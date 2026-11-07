@@ -55,6 +55,10 @@ mkdir --parents -- "${stubbin}"
 
 ## Files the stubs read/write at runtime (exported so the stub bodies stay expansion-free).
 export MARKER_RESPONSE_FILE="${work}/marker.response"
+## The firmware marker the getextradata stub returns for the pair-firmware key -- static at the
+## default firmware (efi-secureboot), which is what rt_whonix_pair_require verifies against.
+export FW_MARKER_RESPONSE_FILE="${work}/fwmarker.response"
+printf '%s\n' 'Value: efi-secureboot' > "${FW_MARKER_RESPONSE_FILE}"
 export SETEXTRA_LOG="${work}/setextradata.log"
 export PAIR_ARGV="${work}/dm-whonix-pair.argv"
 export DIST_ARGV="${work}/dist-installer-cli.argv"
@@ -91,7 +95,12 @@ EOF
 cat > "${stubbin}/VBoxManage" <<'EOF'
 #!/bin/bash
 case "$1" in
-  getextradata) cat -- "${MARKER_RESPONSE_FILE}";;
+  getextradata)
+    case "$3" in
+      *pair-firmware) cat -- "${FW_MARKER_RESPONSE_FILE}";;
+      *) cat -- "${MARKER_RESPONSE_FILE}";;
+    esac
+    ;;
   setextradata) printf '%s %s %s\n' "$2" "$3" "$4" >> "${SETEXTRA_LOG}";;
   import|controlvm|unregistervm|modifyvm) printf '%s\n' "$*" >> "${VBOX_LOG}";;
 esac
@@ -331,6 +340,13 @@ check "built provision: firmware applied to the GW VM" \
    "$(grep --quiet -- 'modifyvm Whonix-Gateway-CLI --firmware' "${VBOX_LOG}" && printf '%s' "true" || printf '%s' "false")"
 check "built provision: firmware applied to the WS VM" \
    "$(grep --quiet -- 'modifyvm Whonix-Workstation-CLI --firmware' "${VBOX_LOG}" && printf '%s' "true" || printf '%s' "false")"
+## #28/codex#1: the firmware is also PINNED as a marker on both VMs, so a later test run verifies
+## + publishes the pair's actual firmware (never a mismatched --firmware label). Default firmware
+## here is efi-secureboot.
+check "built provision: firmware marker pinned on the GW VM" \
+   "$(grep --quiet -- 'Whonix-Gateway-CLI leaktest/pair-firmware efi-secureboot' "${SETEXTRA_LOG}" && printf '%s' "true" || printf '%s' "false")"
+check "built provision: firmware marker pinned on the WS VM" \
+   "$(grep --quiet -- 'Whonix-Workstation-CLI leaktest/pair-firmware efi-secureboot' "${SETEXTRA_LOG}" && printf '%s' "true" || printf '%s' "false")"
 
 ## Case H2 (built pair, unreadable ova): the account-readability precheck must abort SETUP_RC
 ## BEFORE any destructive unregister/import, so an unreadable ova never destroys the existing

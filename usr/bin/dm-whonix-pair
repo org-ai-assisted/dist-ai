@@ -274,14 +274,17 @@ parse_args() {
    while [ "$#" -gt 0 ]; do
       case "$1" in
          --gw)
+            [ "$#" -ge 2 ] || die "${SETUP_RC}" "--gw needs a value"
             gw="$2"
             shift 2
             ;;
          --ws)
+            [ "$#" -ge 2 ] || die "${SETUP_RC}" "--ws needs a value"
             ws="$2"
             shift 2
             ;;
          --mode)
+            [ "$#" -ge 2 ] || die "${SETUP_RC}" "--mode needs a value"
             case "$2" in
                leak|functional)
                   mode="$2"
@@ -293,6 +296,7 @@ parse_args() {
             shift 2
             ;;
          --interface)
+            [ "$#" -ge 2 ] || die "${SETUP_RC}" "--interface needs a value"
             case "$2" in
                gui|cli)
                   interface="$2"
@@ -306,12 +310,14 @@ parse_args() {
          --check-log)
             ## functional mode: a CALLER-owned file for a failed release check's in-guest
             ## output (the caller creates, reads + reclaims it; ocr-session writes it).
+            [ "$#" -ge 2 ] || die "${SETUP_RC}" "--check-log needs a value"
             check_log="$2"
             shift 2
             ;;
          --shot-dir)
             ## CALLER-owned dir for the leak run's milestone story (NN-<name>.png / .card.txt).
             ## The caller creates, publishes + reclaims it; empty/unset => no story captured.
+            [ "$#" -ge 2 ] || die "${SETUP_RC}" "--shot-dir needs a value"
             shot_dir="$2"
             shift 2
             ;;
@@ -961,21 +967,44 @@ main_functional() {
 ## executor's contract, which owns that green line).
 ws_func_cli_exec() {
    vm="${ws}"
-   if gc_run "$2" "$3" "$4"; then
+   local out rc=0
+   out="$(gc_run "$2" "$3" "$4" 2>&1)" || rc=$?
+   if [ "${rc}" -eq 0 ]; then
       printf '%s\n' "${me}: check $1 PASS"
       return 0
    fi
-   return 1
+   ## Capture the FAILED check's in-guest output to the caller-owned --check-log (the headless
+   ## parallel of the GUI run_check_report_failure), so dm-release-test can publish the failure
+   ## tail. Empty check_log (a standalone run) -> skip, like the GUI path. Also echo to stderr.
+   if [ -n "${check_log:-}" ]; then
+      {
+         printf '%s\n' "=== check $1 ($3) FAILED rc=${rc} ==="
+         printf '%s\n' "${out}"
+      } >> "${check_log}"
+   fi
+   printf '%s\n' "${out}" >&2
+   return "${rc}"
 }
 
 ## CLI battery reboot callback (reboot_sysmaint_fn): the user->sysmaint transition for checks
-## 2, 3. Headless -- boot_installed (vbox-session.bsh) clean-reboots the WS into the sysmaint
-## GRUB entry (GRUB selection is pre-OS scancode/OCR, independent of the OS desktop) and waits
-## for guestcontrol as sysmaint, with NO on-screen terminal. boot_installed already honors the
-## return-nonzero-on-failure contract the battery needs (a GRUB/boot failure fails the battery).
+## 2, 3. Mirrors the GUI ws_func_reboot_sysmaint guards but HEADLESS. clean_poweroff is async and
+## its hard fallback returns WITHOUT waiting, so wait_vm_off CONFIRMS the off-state before startvm
+## (else startvm races a still-powering-off VM and a healthy image reads as a failed reboot).
+## select_installed_sysmaint drives the pre-OS GRUB entry (framebuffer, independent of the OS
+## desktop); readiness is guestcontrol, not an on-screen terminal. Every stage die()s on failure,
+## so run the sequence in a SUBSHELL converted to return 1 -- the battery's reboot_sysmaint_fn
+## contract is return-nonzero, never exit (a GRUB/boot failure fails the battery with its reason).
 ws_func_cli_reboot_sysmaint() {
-   vm="${ws}"
-   boot_installed sysmaint
+   (
+      vm="${ws}"
+      clean_poweroff
+      wait_vm_off "${ws}" 20 \
+         || die "${FAIL_RC}" "${ws}: did not power off before the sysmaint reboot -- cannot restart the Workstation"
+      "${VBOXMANAGE}" startvm "${ws}" --type headless >/dev/null
+      select_installed_sysmaint
+      wait_guestcontrol_ready sysmaint 300 \
+         || die "${FAIL_RC}" "${ws}: guestcontrol not ready as sysmaint after reboot -- cannot run the sysmaint checks"
+   ) || return 1
 }
 
 ## functional mode, CLI edition: the SAME pair boot + Tor gate as the GUI path, but the numbered

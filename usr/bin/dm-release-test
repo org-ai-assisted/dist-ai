@@ -97,6 +97,11 @@ rt_session_env=(env
 ## time (rt_provision_pair) and read back by rt_whonix_pair_require (both lanes), which
 ## REFUSES to attribute a verdict to a version the pair was not provisioned with.
 PAIR_VERSION_KEY="${PAIR_VERSION_KEY:-leaktest/pair-version}"
+## VBox extradata key pinning the firmware the pair was PROVISIONED with. Set on BOTH VMs at
+## provision (rt_provision_pair, right after vbox_apply_firmware) and verified by
+## rt_whonix_pair_require, so a test run can NEVER publish a firmware label the pair does not
+## actually have (firmware is applied at provision, not re-applied per test run).
+PAIR_FIRMWARE_KEY="${PAIR_FIRMWARE_KEY:-leaktest/pair-firmware}"
 ## Best-effort host-firewall fleet-set refresh so a freshly-created eph account's
 ## leak-probe egress is dropped; the tool is a private-ai-config server script,
 ## not on PATH by default -- warn (do not fail) when absent.
@@ -816,6 +821,20 @@ rt_set_pair_version() {
       || die "${SETUP_RC}" "failed to set ${PAIR_VERSION_KEY} on '$2'"
 }
 
+## Read the pair's firmware marker off VM (as ACCOUNT). Prints the pinned firmware, or returns
+## 1 when the key is unset. Needs root.
+rt_pair_firmware() {
+   local out
+   out="$(sudo -u "$1" -- "${VBOXMANAGE}" getextradata "$2" "${PAIR_FIRMWARE_KEY}" 2>/dev/null)" || return 1
+   rt_parse_extradata "${out}"
+}
+
+## Pin FIRMWARE onto VM's pair marker (as ACCOUNT). Needs root.
+rt_set_pair_firmware() {
+   sudo -u "$1" -- "${VBOXMANAGE}" setextradata "$2" "${PAIR_FIRMWARE_KEY}" "$3" \
+      || die "${SETUP_RC}" "failed to set ${PAIR_FIRMWARE_KEY} on '$2'"
+}
+
 ## Import ONE locally-built OVA as VM under ACCOUNT, idempotently (needs root; runs VBox as
 ## the account -- state is per-$HOME). Reuses build_import_argv's canonical argv shape from
 ## ${DM_SMBIOS_READER_VBOX} (single source for `import <ova> --vsys 0 --vmname <vm>`) rather
@@ -916,7 +935,11 @@ rt_provision_pair() {
    vbox_apply_firmware "${ws}" "${firmware}" enable-now
    rt_set_pair_version "${account}" "${gw}" "${version}"
    rt_set_pair_version "${account}" "${ws}" "${version}"
-   log info "pair ${version} imported + firmware '${firmware}' applied + version-pinned under ${account}"
+   ## Pin the firmware marker so a later test run verifies (rt_whonix_pair_require) + publishes the
+   ## firmware the pair ACTUALLY has, never a mismatched --firmware label.
+   rt_set_pair_firmware "${account}" "${gw}" "${firmware}"
+   rt_set_pair_firmware "${account}" "${ws}" "${firmware}"
+   log info "pair ${version} imported + firmware '${firmware}' applied/pinned + version-pinned under ${account}"
    log info "NEXT (one-time, per VM, in a booted sysmaint session): run 'dev-root force' (needed by the leak lane; harmless for inst), power off, then '${VBOXMANAGE} snapshot <vm> take clean-live' so dm-whonix-pair restore_fresh has a pristine, root-capable pair"
 }
 
@@ -1351,7 +1374,7 @@ rt_lane_kicksecure() {
 ## mislabels a verdict for the wrong version. Reads both VMs (a half-reprovisioned pair with
 ## one stale VM is caught too). $1=account $2=version $3=gw $4=ws.
 rt_whonix_pair_require() {
-   local account version gw ws gw_ver ws_ver reprovision
+   local account version gw ws gw_ver ws_ver reprovision gw_fw ws_fw
    account="$1"
    version="$2"
    gw="$3"
@@ -1368,6 +1391,13 @@ rt_whonix_pair_require() {
    fi
    rt_pair_version_ok "${version}" "${gw_ver}" "${ws_ver}" \
       || die "${SETUP_RC}" "whonix pair version mismatch: requested '${version}', GW marked '${gw_ver}', WS marked '${ws_ver}' -- re-provision with '${reprovision}' or pass the matching --version"
+   ## Firmware is applied at PROVISION, not per test run, so verify the pair actually carries the
+   ## requested firmware before a verdict is attributed + published under a -${firmware} cell --
+   ## else a bios pair tested with --firmware efi-secureboot would publish a FALSE Secure Boot pass.
+   gw_fw="$(rt_pair_firmware "${account}" "${gw}")" || gw_fw=""
+   ws_fw="$(rt_pair_firmware "${account}" "${ws}")" || ws_fw=""
+   { [ "${gw_fw}" = "${firmware}" ] && [ "${ws_fw}" = "${firmware}" ]; } \
+      || die "${SETUP_RC}" "whonix pair firmware mismatch: requested '${firmware}', GW marked '${gw_fw}', WS marked '${ws_fw}' -- re-provision with the matching --firmware, or pass the firmware the pair was provisioned with"
 }
 
 ## leak lane: the anon-leak-test battery on the dedicated persist-leak- pair.
@@ -1512,6 +1542,14 @@ parse_args() {
             ## CWD but then fails in VBoxManage run as the account (different CWD) AFTER the import
             ## has already deleted the existing VM -- #814.
             ova_gw="$(realpath -m -- "$2")" || die "${SETUP_RC}" "cannot canonicalize --ova-gw path '$2'"
+            ## Re-reject control chars on the CANONICALIZED path: realpath follows symlinks, so a
+            ## symlink whose target carries a newline would reintroduce one past the pre-realpath
+            ## check and split the one-token-per-line emit-argv output (inject VBoxManage args).
+            case "${ova_gw}" in
+               *[[:cntrl:]]*)
+                  die "${SETUP_RC}" "--ova-gw resolves to a path containing a control character"
+                  ;;
+            esac
             shift 2
             ;;
          --ova-ws)
@@ -1523,6 +1561,11 @@ parse_args() {
                   ;;
             esac
             ova_ws="$(realpath -m -- "$2")" || die "${SETUP_RC}" "cannot canonicalize --ova-ws path '$2'"
+            case "${ova_ws}" in
+               *[[:cntrl:]]*)
+                  die "${SETUP_RC}" "--ova-ws resolves to a path containing a control character"
+                  ;;
+            esac
             shift 2
             ;;
          --coreboot-rom)

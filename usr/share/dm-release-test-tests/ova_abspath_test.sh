@@ -87,6 +87,26 @@ case "${ova_ws}" in
       ;;
 esac
 
+## codex#3: a symlink whose TARGET carries a newline must be rejected AFTER canonicalization --
+## realpath follows the symlink and reintroduces the newline past the pre-realpath control-char
+## check, which would otherwise split the one-token-per-line emit-argv output. die exits, so run
+## parse_args in a subshell and capture the rc. Canary: without the post-realpath recheck, the
+## newline-bearing canonical path is accepted.
+nl_target="${work}/gw"$'\n'"inject.ova"
+touch -- "${nl_target}"
+ln --symbolic -- "${nl_target}" "${work}/gw-link.ova"
+nl_rc=0
+( parse_args whonix cli --source built --ova-gw "${work}/gw-link.ova" --ova-ws plain.ova \
+   --lane inst --version 18.2.3.0-g1 --provision ) >/dev/null 2>&1 || nl_rc=$?
+case "${nl_rc}" in
+   2)
+      check "symlink target with a newline rejected (SETUP_RC)" true
+      ;;
+   *)
+      check "symlink target with a newline rejected (SETUP_RC)" false "rc=${nl_rc}"
+      ;;
+esac
+
 printf '%s\n' "" "$(basename -- "$0"): ${pass} pass, ${fail} fail"
 [ "${fail}" -eq 0 ] || exit 1
 exit 0
