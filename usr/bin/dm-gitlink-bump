@@ -178,6 +178,15 @@ for path in "${sub_paths[@]}"; do
    ## (assisted-by-ai, gitlab-adrelanos) or upstream lives under a DIFFERENT
    ## remote name, so its tracking ref is not consulted and the pin is refused --
    ## CI cannot fetch it ('not our ref'). Local ref only, no network.
+   ##
+   ## The remote NAME is trusted as the canonical signal; the resolved URL is
+   ## deliberately NOT re-verified. dm-git-sync / dm-submodule-ai-sync set both
+   ## the name AND the github.com/org-ai-assisted destination together, so a
+   ## remote correctly named org-ai-assisted yet pointing elsewhere (local path,
+   ## mirror, stale url) is a hand-misconfiguration outside the supported
+   ## workflow -- an accepted, unlikely risk. A URL check here would re-add the
+   ## url parser dropped for its own bugs (look-alike hosts, '..' tricks,
+   ## false-rejected case/port variants); not worth it for that accident.
    at_published_tip="false"
    rt_tip="$( git -C "${sub}" rev-parse --verify --quiet "refs/remotes/${AI_REMOTE}/${AI_BRANCH}" 2>/dev/null || true )"
    if [ "${rt_tip}" = "${head_sha}" ]; then
