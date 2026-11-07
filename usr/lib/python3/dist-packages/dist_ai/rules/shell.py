@@ -587,7 +587,9 @@ def _chmod_mode_target(call, source):
         ## The first '--' ends options AND option permutation, so every later word
         ## is a literal file -- even a '--reference=...'-named one. command_tokens
         ## labels a '--' past the first operand 'operand', not 'opt', so match on the
-        ## TEXT, not the kind.
+        ## TEXT, not the kind. SCOPE: this assumes default GNU getopt; under
+        ## POSIXLY_CORRECT option parsing stops at the first operand, so a later '--'
+        ## is itself a file -- an exotic env with option-named files, out of scope.
         if text == "--":
             after_ddash = True
             continue
