@@ -26,7 +26,7 @@ import os
 import subprocess
 import unittest
 
-HARDENED_TMPFS = '/run/security-misc'
+HARDENED_TMPFS = '/run/pam-namespace'
 NS_CONF = '/etc/security/namespace.d/30_security-misc.conf'
 USERS = ('smnse2e1', 'smnse2e2')
 HARDEN_OPTS = ('nosuid', 'nodev', 'noexec')
