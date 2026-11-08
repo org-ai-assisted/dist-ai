@@ -5,12 +5,13 @@
 
 ## AI-Assisted
 
-## Runs security-misc's dist-ai tests via pytest. Currently the SSH client and
-## server hardening validation (test_ssh_config.py), which drives the real
-## shipped ssh-audit-test tool and ssh-audit against a throwaway sshd / client
-## built from security-misc's actual config. The security-misc checkout is
-## resolved by SECURITY_MISC_REPO (wired by dist-ai-tests-all). Works installed
-## (/usr/share/security-misc-tests) or from a git checkout.
+## Runs security-misc's dist-ai tests via pytest: the SSH client/server
+## hardening validation (test_ssh_config.py, driving the shipped ssh-audit-test
+## tool and ssh-audit against a throwaway sshd / client built from the real
+## config) and the PAM config checks (test_pam_configs_prerm_sync.py). The
+## security-misc checkout is resolved by SECURITY_MISC_REPO (wired by
+## dist-ai-tests-all). Works installed (/usr/share/security-misc-tests) or from
+## a git checkout.
 
 set -o errexit
 set -o nounset
@@ -28,16 +29,17 @@ else
    tests_dir='/usr/share/security-misc-tests'
 fi
 
-## Resolve the subject: security-misc's shipped SSH config, from the checkout
-## (SECURITY_MISC_REPO, wired by dist-ai-tests-all) or the installed package.
-## Absent both, security-misc is not present to test -- an OPTIONAL target, so
-## skip cleanly rather than fail, matching the rest of the registry's
-## unresolved-target contract.
+## Resolve the subject by a FEATURE-AGNOSTIC marker (the security-misc libexec
+## dir), from the checkout (SECURITY_MISC_REPO, wired by dist-ai-tests-all) or
+## the installed package, so every test runs -- not only the SSH ones that a
+## single-config sentinel would gate. Absent both, security-misc is not present
+## to test -- an OPTIONAL target, so skip cleanly rather than fail, matching the
+## rest of the registry's unresolved-target contract.
 subject_present="false"
 if [ -n "${SECURITY_MISC_REPO:-}" ] \
-   && [ -e "${SECURITY_MISC_REPO}/etc/ssh/sshd_config.d/30_security-misc.conf#security-misc-shared" ]; then
+   && [ -d "${SECURITY_MISC_REPO}/usr/libexec/security-misc" ]; then
    subject_present="true"
-elif [ -e "/etc/ssh/sshd_config.d/30_security-misc.conf" ]; then
+elif [ -d "/usr/libexec/security-misc" ]; then
    subject_present="true"
 fi
 if [ "${subject_present}" = "false" ]; then
