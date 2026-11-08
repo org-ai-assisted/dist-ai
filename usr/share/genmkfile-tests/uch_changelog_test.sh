@@ -31,44 +31,15 @@ error_handler() {
 }
 trap error_handler ERR
 
-locate_helper() {
-   local candidate from_bin=''
-   if [ -n "${GENMKFILE_BIN:-}" ]; then
-      from_bin="$(dirname -- "$(dirname -- "${GENMKFILE_BIN}")")/share/genmkfile/make-helper-one.bsh"
-   fi
-   for candidate in \
-      "${GENMKFILE_SHARE:-}/make-helper-one.bsh" \
-      "${from_bin}" \
-      "${HOME:-}/derivative-maker/packages/kicksecure/genmkfile/usr/share/genmkfile/make-helper-one.bsh" \
-      "/usr/share/genmkfile/make-helper-one.bsh"
-   do
-      [ -n "${candidate}" ] || continue
-      case "${candidate}" in
-         '/make-helper-one.bsh' )
-            continue
-            ;;
-      esac
-      if test -r "${candidate}"; then
-         printf '%s\n' "${candidate}"
-         return 0
-      fi
-   done
-   return 1
-}
-
-if ! helper_file="$(locate_helper)"; then
-   printf '%s\n' 'FATAL: make-helper-one.bsh not found (set GENMKFILE_SHARE).' >&2
-   exit 1
-fi
-
-## Capability gate: test the genmkfile CHECKOUT (wired via GENMKFILE_BIN or GENMKFILE_SHARE).
-## If only the installed /usr/share/genmkfile helper resolved -- which drifts from the tree
-## under review -- SKIP rather than FAIL against a possibly-stale subject nobody is changing.
-if [ -z "${GENMKFILE_SHARE:-}" ] && [ -z "${GENMKFILE_BIN:-}" ] \
-   && [ "${helper_file}" = "/usr/share/genmkfile/make-helper-one.bsh" ]; then
-   printf '%s\n' "SKIP: no genmkfile checkout wired (set GENMKFILE_BIN); not testing the installed copy." >&2
-   exit 77  ## style-ok: allow-skip: no wired checkout -> subject not under review, not a regression
-fi
+## Shared genmkfile library discovery + checkout capability gate (sibling suites
+## source the same helper, so they cannot drift to different subjects/skips).
+_common_dir="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")/../dist-ai-tests-common"
+[ -r "${_common_dir}/genmkfile-locate.bash" ] || _common_dir="/usr/share/dist-ai-tests-common"
+# shellcheck source=../dist-ai-tests-common/genmkfile-locate.bash
+source "${_common_dir}/genmkfile-locate.bash"
+genmkfile_require_helper
+# shellcheck disable=SC2154  ## set by genmkfile_require_helper in the sourced helper
+helper_file="${genmkfile_helper_file}"
 
 GENMKFILE_PATH="$(dirname -- "${helper_file}")"
 export GENMKFILE_PATH
@@ -110,32 +81,27 @@ run_uch() {
    ) >/dev/null 2>&1
 }
 
-## Assert the generated changelog.upstream: SPDX header with the expected per-package email,
-## the license tag, exactly the one pointer sentence, and zero git-log residue.
+## Assert the generated changelog.upstream is EXACTLY the per-package REUSE header plus the
+## single pointer sentence. A whole-file compare (not a per-pattern grep) so ANY extra line
+## -- indented, comment-prefixed, or a git-log dump -- fails instead of slipping past.
 assert_changelog() {
-   local label="$1" chl="$2" want_email="$3"
-   local header_ok='no' license_ok='no' sentence_ok='no' residue='no' sentence_count=0
+   local label="$1" chl="$2" want_email="$3" expected actual
    tests_total=$(( tests_total + 1 ))
    if [ ! -f "${chl}" ]; then
       fail "${label}: changelog.upstream not created"
       return
    fi
-   grep --quiet --fixed-strings -- "## SPDX-FileCopyrightText: ENCRYPTED SUPPORT LLC <${want_email}>" "${chl}" && header_ok='yes'
-   grep --quiet --fixed-strings -- '## SPDX-License-Identifier: AGPL-3.0-or-later' "${chl}" && license_ok='yes'
-   grep --quiet --fixed-strings --line-regexp -- 'See git history for full changelog.' "${chl}" && sentence_ok='yes'
-   ## Zero git-log residue: no 'commit <sha>' / 'Author:' / 'Date:' lines.
-   if grep --quiet --extended-regexp -- '^(commit [0-9a-f]|Author:|Date:)' "${chl}"; then
-      residue='yes'
-   fi
-   ## Exactly one non-header, non-blank content line: "1 sentence only".
-   sentence_count="$(grep --count --extended-regexp -- '^[^#[:space:]]' "${chl}" || true)"
-   if [ "${header_ok}" = 'yes' ] && [ "${license_ok}" = 'yes' ] \
-      && [ "${sentence_ok}" = 'yes' ] && [ "${residue}" = 'no' ] \
-      && [ "${sentence_count}" -eq 1 ]; then
-      pass "${label}: SPDX header <${want_email}> + one sentence, no git-log dump"
+   expected="$(printf '%s\n' \
+      "## SPDX-FileCopyrightText: ENCRYPTED SUPPORT LLC <${want_email}>" \
+      "## SPDX-License-Identifier: AGPL-3.0-or-later" \
+      "" \
+      "See git history for full changelog.")"
+   actual="$(cat -- "${chl}")"
+   if [ "${actual}" = "${expected}" ]; then
+      pass "${label}: changelog.upstream is exactly the REUSE header <${want_email}> + pointer"
    else
-      fail "${label}: wrong header=${header_ok} license=${license_ok} sentence=${sentence_ok} residue=${residue} content_lines=${sentence_count}"
-      printf '%s\n' "--- file ---" >&2
+      fail "${label}: changelog.upstream content mismatch"
+      printf '%s\n' "--- expected ---" "${expected}" "--- actual ---" >&2
       cat -- "${chl}" >&2
       printf '%s\n' "------------" >&2
    fi
