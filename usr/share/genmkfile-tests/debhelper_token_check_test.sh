@@ -36,41 +36,25 @@ cleanup_handler() {
 }
 trap cleanup_handler EXIT
 
-locate_lib() {
-   local candidate
-   for candidate in \
-      "${GENMKFILE_MAKE_HELPER_ONE:-}" \
-      "${GENMKFILE_SHARE:-}/make-helper-one.bsh" \
-      "${HOME}/derivative-maker/packages/kicksecure/genmkfile/usr/share/genmkfile/make-helper-one.bsh" \
-      "/usr/share/genmkfile/make-helper-one.bsh"; do
-      case "${candidate}" in
-         ""|"/make-helper-one.bsh")
-            continue
-            ;;
-      esac
-      if [ -r "${candidate}" ]; then
-         printf '%s\n' "${candidate}"
-         return 0
-      fi
-   done
-   return 1
-}
-
-if ! lib="$(locate_lib)"; then
-   ## No checkout wired -> the subject is not under review; skip, do not falsely pass.
-   printf '%s\n' "SKIP: genmkfile make-helper-one.bsh not found (set GENMKFILE_SHARE)." >&2
-   exit 77  ## style-ok: allow-skip: no genmkfile checkout -> subject not under review
-fi
+## Shared genmkfile library discovery + checkout capability gate (sibling suites
+## source the same helper, so they cannot drift to different subjects/skips).
+_common_dir="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")/../dist-ai-tests-common"
+[ -r "${_common_dir}/genmkfile-locate.bash" ] || _common_dir="/usr/share/dist-ai-tests-common"
+# shellcheck source=../dist-ai-tests-common/genmkfile-locate.bash
+source "${_common_dir}/genmkfile-locate.bash"
+genmkfile_require_helper
+# shellcheck disable=SC2154  ## set by genmkfile_require_helper in the sourced helper
+helper_file="${genmkfile_helper_file}"
 
 ## Referenced by make_output_error inside the sourced library; shellcheck cannot
 ## see that cross-file use.
 # shellcheck disable=SC2034
 make_source_package_name="debhelper-token-check-test"
 # shellcheck disable=SC1090
-source "${lib}"
+source "${helper_file}"
 
 if ! declare -F make_debhelper_token_check >/dev/null; then
-   printf '%s\n' "FAIL: make_debhelper_token_check not defined after sourcing ${lib}."
+   printf '%s\n' "FAIL: make_debhelper_token_check not defined after sourcing ${helper_file}."
    exit 1
 fi
 

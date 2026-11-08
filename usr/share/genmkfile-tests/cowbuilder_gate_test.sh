@@ -21,45 +21,15 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
-locate_helper() {
-   local candidate from_bin=''
-   if [ -n "${GENMKFILE_BIN:-}" ]; then
-      from_bin="$(dirname -- "$(dirname -- "${GENMKFILE_BIN}")")/share/genmkfile/make-helper-one.bsh"
-   fi
-   for candidate in \
-      "${GENMKFILE_SHARE:-}/make-helper-one.bsh" \
-      "${from_bin}" \
-      "${HOME:-}/derivative-maker/packages/kicksecure/genmkfile/usr/share/genmkfile/make-helper-one.bsh" \
-      "/usr/share/genmkfile/make-helper-one.bsh"
-   do
-      [ -n "${candidate}" ] || continue
-      case "${candidate}" in
-         '/make-helper-one.bsh')
-            continue
-            ;;
-      esac
-      if test -r "${candidate}"; then
-         printf '%s\n' "${candidate}"
-         return 0
-      fi
-   done
-   return 1
-}
-
-if ! helper_file="$(locate_helper)"; then
-   printf '%s\n' 'FATAL: make-helper-one.bsh not found (set GENMKFILE_SHARE).' >&2
-   exit 1
-fi
-
-## Capability gate: this suite tests the genmkfile CHECKOUT (wired via GENMKFILE_BIN or
-## GENMKFILE_SHARE). If nothing was wired and only the installed /usr/share/genmkfile helper
-## resolved -- which drifts from the tree under review -- SKIP rather than report a confusing
-## FAIL against a possibly-stale subject nobody is changing.
-if [ -z "${GENMKFILE_SHARE:-}" ] && [ -z "${GENMKFILE_BIN:-}" ] \
-   && [ "${helper_file}" = "/usr/share/genmkfile/make-helper-one.bsh" ]; then
-   printf '%s\n' "SKIP: no genmkfile checkout wired (set GENMKFILE_BIN); not testing the installed copy." >&2
-   exit 77  ## style-ok: allow-skip: no wired checkout -> subject not under review, not a regression
-fi
+## Shared genmkfile library discovery + checkout capability gate (sibling suites
+## source the same helper, so they cannot drift to different subjects/skips).
+_common_dir="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")/../dist-ai-tests-common"
+[ -r "${_common_dir}/genmkfile-locate.bash" ] || _common_dir="/usr/share/dist-ai-tests-common"
+# shellcheck source=../dist-ai-tests-common/genmkfile-locate.bash
+source "${_common_dir}/genmkfile-locate.bash"
+genmkfile_require_helper
+# shellcheck disable=SC2154  ## set by genmkfile_require_helper in the sourced helper
+helper_file="${genmkfile_helper_file}"
 
 ## GENMKFILE_PATH so any runtime source inside the file resolves; sourcing does
 ## NOT run the was_executed-guarded main, so only function definitions load.

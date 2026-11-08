@@ -31,33 +31,15 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
-locate_genmkfile() {
-   local candidate
-   if [ -n "${GENMKFILE_BIN:-}" ]; then
-      printf '%s\n' "${GENMKFILE_BIN}"
-      return 0
-   fi
-   for candidate in \
-      "${HOME}/derivative-maker/packages/kicksecure/genmkfile/usr/bin/genmkfile" \
-      "/usr/bin/genmkfile"; do
-      if [ -x "${candidate}" ]; then
-         printf '%s\n' "${candidate}"
-         return 0
-      fi
-   done
-   return 1
-}
-
-genmkfile_bin="$(locate_genmkfile)" || {
-   printf '%s\n' "FATAL: no genmkfile found (set GENMKFILE_BIN, install genmkfile, or check out derivative-maker)" >&2
-   exit 1
-}
-
-## Test the CHECKOUT, not a possibly-stale installed copy nobody is changing.
-if [ -z "${GENMKFILE_BIN:-}" ] && [ "${genmkfile_bin}" = "/usr/bin/genmkfile" ]; then
-   printf '%s\n' "SKIP: no genmkfile checkout wired (set GENMKFILE_BIN); not testing the installed copy." >&2
-   exit 77  ## style-ok: allow-skip: no wired checkout -> subject not under review, not a regression
-fi
+## Shared genmkfile binary discovery + checkout capability gate (sibling suites
+## resolve the same binary, so they cannot drift to different subjects/skips).
+_common_dir="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")/../dist-ai-tests-common"
+[ -r "${_common_dir}/genmkfile-locate.bash" ] || _common_dir="/usr/share/dist-ai-tests-common"
+# shellcheck source=../dist-ai-tests-common/genmkfile-locate.bash
+source "${_common_dir}/genmkfile-locate.bash"
+genmkfile_require_bin
+# shellcheck disable=SC2154  ## set by genmkfile_require_bin in the sourced helper
+genmkfile_bin="${genmkfile_bin_path}"
 
 ## The bug only manifests as a non-root user; root reads every file regardless
 ## of mode, so an unreadable installed file cannot be reproduced here as root.

@@ -26,35 +26,15 @@ export LC_ALL=C
 
 ## Resolve the genmkfile binary under test. The runner exports GENMKFILE_BIN;
 ## fall back to a derivative-maker checkout.
-locate_genmkfile() {
-   local candidate
-   for candidate in \
-      "${GENMKFILE_BIN:-}" \
-      "${HOME:-}/derivative-maker/packages/kicksecure/genmkfile/usr/bin/genmkfile"
-   do
-      [ -n "${candidate}" ] || continue
-      if test -x "${candidate}"; then
-         printf '%s\n' "${candidate}"
-         return 0
-      fi
-   done
-   return 1
-}
-
-if ! genmkfile_bin="$(locate_genmkfile)"; then
-   ## genmkfile is the REQUIRED unit under test; absent = env bug, not a skip.
-   printf '%s\n' 'FATAL: genmkfile binary not found (set GENMKFILE_BIN).' >&2
-   exit 1
-fi
-
-## Capability gate: this suite tests the genmkfile CHECKOUT (wired via GENMKFILE_BIN). If
-## nothing was wired and only the installed /usr/bin/genmkfile resolved -- which drifts from the
-## tree under review -- SKIP rather than report a confusing FAIL against a possibly-stale
-## subject nobody is changing.
-if [ -z "${GENMKFILE_BIN:-}" ] && [ "${genmkfile_bin}" = "/usr/bin/genmkfile" ]; then
-   printf '%s\n' "SKIP: no genmkfile checkout wired (set GENMKFILE_BIN); not testing the installed copy." >&2
-   exit 77  ## style-ok: allow-skip: no wired checkout -> subject not under review, not a regression
-fi
+## Shared genmkfile binary discovery + checkout capability gate (sibling suites
+## resolve the same binary, so they cannot drift to different subjects/skips).
+_common_dir="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")/../dist-ai-tests-common"
+[ -r "${_common_dir}/genmkfile-locate.bash" ] || _common_dir="/usr/share/dist-ai-tests-common"
+# shellcheck source=../dist-ai-tests-common/genmkfile-locate.bash
+source "${_common_dir}/genmkfile-locate.bash"
+genmkfile_require_bin
+# shellcheck disable=SC2154  ## set by genmkfile_require_bin in the sourced helper
+genmkfile_bin="${genmkfile_bin_path}"
 
 if ! test -r /usr/libexec/helper-scripts/parallel.bsh; then
    ## helper-scripts is a REQUIRED runtime dep of the target; absent = env bug.

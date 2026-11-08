@@ -32,24 +32,6 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
-locate_genmkfile() {
-   if [ -n "${GENMKFILE_BIN:-}" ]; then
-      printf '%s\n' "${GENMKFILE_BIN}"
-      return 0
-   fi
-   local checkout
-   checkout="${HOME}/derivative-maker/packages/kicksecure/genmkfile/usr/bin/genmkfile"
-   if [ -x "${checkout}" ]; then
-      printf '%s\n' "${checkout}"
-      return 0
-   fi
-   if [ -x /usr/bin/genmkfile ]; then
-      printf '%s\n' /usr/bin/genmkfile
-      return 0
-   fi
-   return 1
-}
-
 make_fixture() {
    ## Distinguishable build-only and runtime-only deps so the -echo variants can be told
    ## apart. Fake names are fine: -echo never installs, it only parses + prints.
@@ -77,14 +59,15 @@ gmf-echo-test-pkg (1.0-1) unstable; urgency=medium
 CHANGELOG
 }
 
-genmkfile_bin="$(locate_genmkfile)" || {
-   printf '%s\n' "FATAL: no genmkfile found (set GENMKFILE_BIN, install genmkfile, or check out derivative-maker)" >&2
-   exit 1
-}
-if [ -z "${GENMKFILE_BIN:-}" ] && [ "${genmkfile_bin}" = "/usr/bin/genmkfile" ]; then
-   printf '%s\n' "SKIP: no genmkfile checkout wired (set GENMKFILE_BIN); not testing the installed copy." >&2
-   exit 77  ## style-ok: allow-skip: no wired checkout -> subject not under review, not a regression
-fi
+## Shared genmkfile binary discovery + checkout capability gate (sibling suites
+## resolve the same binary, so they cannot drift to different subjects/skips).
+_common_dir="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")/../dist-ai-tests-common"
+[ -r "${_common_dir}/genmkfile-locate.bash" ] || _common_dir="/usr/share/dist-ai-tests-common"
+# shellcheck source=../dist-ai-tests-common/genmkfile-locate.bash
+source "${_common_dir}/genmkfile-locate.bash"
+genmkfile_require_bin
+# shellcheck disable=SC2154  ## set by genmkfile_require_bin in the sourced helper
+genmkfile_bin="${genmkfile_bin_path}"
 printf '%s\n' "INFO: genmkfile under test: ${genmkfile_bin}"
 
 workdir="$(mktemp --directory)"

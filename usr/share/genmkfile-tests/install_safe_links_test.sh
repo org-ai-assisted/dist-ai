@@ -46,39 +46,15 @@ export LC_ALL=C
 ## after the feature lands, and it claims ahead-of-package after it is removed.
 ## Keyed on the die message, so the test starts running by itself the moment that
 ## block is uncommented.
-locate_helper() {
-   local candidate
-   ## GENMKFILE_BIN is how CI points at the component checkout, which lives at neither
-   ## the dm path nor /usr. Derive the share dir from it, or every share-based test
-   ## SKIPs there -- reporting nothing while looking green.
-   local from_bin=''
-   if [ -n "${GENMKFILE_BIN:-}" ]; then
-      from_bin="$(dirname -- "$(dirname -- "${GENMKFILE_BIN}")")/share/genmkfile/make-helper-one.bsh"
-   fi
-   for candidate in \
-      "${GENMKFILE_SHARE:-}/make-helper-one.bsh" \
-      "${from_bin}" \
-      "${HOME}/derivative-maker/packages/kicksecure/genmkfile/usr/share/genmkfile/make-helper-one.bsh" \
-      "/usr/share/genmkfile/make-helper-one.bsh"
-   do
-      [ -n "${candidate}" ] || continue
-      case "${candidate}" in
-         '/make-helper-one.bsh' )
-            continue
-            ;;
-      esac
-      if test -r "${candidate}"; then
-         printf '%s\n' "${candidate}"
-         return 0
-      fi
-   done
-   return 1
-}
-
-if ! subject_helper="$(locate_helper)"; then
-   printf '%s\n' 'FATAL: make-helper-one.bsh not found (set GENMKFILE_SHARE).' >&2
-   exit 1
-fi
+## Shared genmkfile library discovery + checkout capability gate (sibling suites
+## source the same helper, so they cannot drift to different subjects/skips).
+_common_dir="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")/../dist-ai-tests-common"
+[ -r "${_common_dir}/genmkfile-locate.bash" ] || _common_dir="/usr/share/dist-ai-tests-common"
+# shellcheck source=../dist-ai-tests-common/genmkfile-locate.bash
+source "${_common_dir}/genmkfile-locate.bash"
+genmkfile_require_helper
+# shellcheck disable=SC2154  ## set by genmkfile_require_helper in the sourced helper
+subject_helper="${genmkfile_helper_file}"
 
 ## An ACTIVE (non-comment) die on a dropped symlink means the handling is live.
 if ! grep --quiet --extended-regexp \
@@ -88,29 +64,6 @@ then
       "SKIP: genmkfile's dropped-symlink handling is still commented out in ${subject_helper} ('## TODO: review'); this test runs automatically once it is enabled." >&2
    exit 77  ## style-ok: allow-skip: feature under test still gated behind an upstream '## TODO: review'; self-activates when enabled
 fi
-
-locate_genmkfile() {
-   if [ -n "${GENMKFILE_BIN:-}" ]; then
-      printf '%s\n' "${GENMKFILE_BIN}"
-      return 0
-   fi
-   ## The CHECKOUT wins over the installed copy. The installed engine is a
-   ## released package and drifts from the tree under review -- observed 776
-   ## differing lines -- so preferring it made the suite report green for code
-   ## nobody was changing, which is the exact silent-wrong class these tests
-   ## exist to catch. Set GENMKFILE_BIN to test an installed copy deliberately.
-   local checkout
-   checkout="${HOME}/derivative-maker/packages/kicksecure/genmkfile/usr/bin/genmkfile"
-   if [ -x "${checkout}" ]; then
-      printf '%s\n' "${checkout}"
-      return 0
-   fi
-   if [ -x /usr/bin/genmkfile ]; then
-      printf '%s\n' /usr/bin/genmkfile
-      return 0
-   fi
-   return 1
-}
 
 ## helper-scripts 'has' for the rsync presence check (R-090).
 # shellcheck disable=SC1091
@@ -123,19 +76,9 @@ if ! has rsync; then
    exit 1
 fi
 
-genmkfile_bin="$(locate_genmkfile)" || {
-   printf '%s\n' "FATAL: no genmkfile found (set GENMKFILE_BIN, install genmkfile, or check out derivative-maker)" >&2
-   exit 1
-}
-
-## Capability gate: this suite tests the genmkfile CHECKOUT (wired via GENMKFILE_BIN). If
-## nothing was wired and only the installed /usr/bin/genmkfile resolved -- which drifts from the
-## tree under review -- SKIP rather than report a confusing FAIL against a possibly-stale
-## subject nobody is changing.
-if [ -z "${GENMKFILE_BIN:-}" ] && [ "${genmkfile_bin}" = "/usr/bin/genmkfile" ]; then
-   printf '%s\n' "SKIP: no genmkfile checkout wired (set GENMKFILE_BIN); not testing the installed copy." >&2
-   exit 77  ## style-ok: allow-skip: no wired checkout -> subject not under review, not a regression
-fi
+genmkfile_require_bin
+# shellcheck disable=SC2154  ## set by genmkfile_require_bin in the sourced helper
+genmkfile_bin="${genmkfile_bin_path}"
 printf '%s\n' "INFO: genmkfile under test: ${genmkfile_bin}"
 
 cleanup_workdir() {

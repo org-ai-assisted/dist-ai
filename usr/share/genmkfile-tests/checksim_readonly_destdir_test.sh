@@ -26,32 +26,15 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
-locate_genmkfile() {
-   if [ -n "${GENMKFILE_BIN:-}" ]; then
-      printf '%s\n' "${GENMKFILE_BIN}"
-      return 0
-   fi
-   local checkout
-   checkout="${HOME}/derivative-maker/packages/kicksecure/genmkfile/usr/bin/genmkfile"
-   if [ -x "${checkout}" ]; then
-      printf '%s\n' "${checkout}"
-      return 0
-   fi
-   if [ -x /usr/bin/genmkfile ]; then
-      printf '%s\n' /usr/bin/genmkfile
-      return 0
-   fi
-   return 1
-}
-
-genmkfile_bin="$(locate_genmkfile)" || {
-   printf '%s\n' 'FATAL: genmkfile not found (set GENMKFILE_BIN).' >&2
-   exit 1
-}
-if [ -z "${GENMKFILE_BIN:-}" ] && [ "${genmkfile_bin}" = "/usr/bin/genmkfile" ]; then
-   printf '%s\n' "SKIP: no genmkfile checkout wired (set GENMKFILE_BIN); not testing the installed copy." >&2
-   exit 77  ## style-ok: allow-skip: no wired checkout -> subject not under review, not a regression
-fi
+## Shared genmkfile binary discovery + checkout capability gate (sibling suites
+## resolve the same binary, so they cannot drift to different subjects/skips).
+_common_dir="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")/../dist-ai-tests-common"
+[ -r "${_common_dir}/genmkfile-locate.bash" ] || _common_dir="/usr/share/dist-ai-tests-common"
+# shellcheck source=../dist-ai-tests-common/genmkfile-locate.bash
+source "${_common_dir}/genmkfile-locate.bash"
+genmkfile_require_bin
+# shellcheck disable=SC2154  ## set by genmkfile_require_bin in the sourced helper
+genmkfile_bin="${genmkfile_bin_path}"
 printf '%s\n' "INFO: genmkfile under test: ${genmkfile_bin}"
 
 ## A non-writable DESTDIR must not be created as root (root ignores the write bit, so the
@@ -96,8 +79,7 @@ chmod 0755 -- "${pkg_dir}/usr/bin/realtool"
 
 ## A DESTDIR the test user cannot write (mode 0555): exists + readable, but 'test -w' is false.
 ro_dest="${work_dir}/ro-dest"
-mkdir --parents -- "${ro_dest}"
-chmod 0555 -- "${ro_dest}"
+install -d -m 0555 -- "${ro_dest}"
 if test -w "${ro_dest}"; then
    printf '%s\n' "SKIP: '${ro_dest}' is unexpectedly writable (unusual fs/ACLs); cannot exercise the gate." >&2
    exit 77  ## style-ok: allow-skip: premise (a non-writable dir) not achievable here
