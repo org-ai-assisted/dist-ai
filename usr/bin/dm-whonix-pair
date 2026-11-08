@@ -969,11 +969,12 @@ ws_func_cli_exec() {
    vm="${ws}"
    local tmp rc=0
    tmp="$(mktemp)"
-   ## Bound the captured guest output (head --bytes) so a check that spews unbounded output cannot
-   ## OOM the host or fill the disk. PIPESTATUS preserves gc_run's REAL exit code; a check whose
-   ## output overruns the cap gets SIGPIPE and is treated as a fail -- which a multi-GB-output
-   ## check legitimately is.
-   if gc_run "$2" "$3" "$4" 2>&1 | head --bytes 65536 > "${tmp}"; then
+   ## Cap the captured guest output at a GENEROUS 16 MiB so a check that spews unbounded output
+   ## cannot OOM the host or fill the disk, while a legitimately verbose but PASSING check (e.g.
+   ## upgrade-nonroot's apt output, well under 16 MiB) is never SIGPIPE'd into a false failure.
+   ## PIPESTATUS preserves gc_run's REAL exit code; only a pathological >16 MiB-output check gets
+   ## SIGPIPE'd (treated as a fail, which such a check legitimately is).
+   if gc_run "$2" "$3" "$4" 2>&1 | head --bytes 16777216 > "${tmp}"; then
       rc=0
    else
       rc="${PIPESTATUS[0]}"
@@ -983,16 +984,16 @@ ws_func_cli_exec() {
       printf '%s\n' "${me}: check $1 PASS"
       return 0
    fi
-   ## Capture the FAILED check's (bounded) in-guest output to the caller-owned --check-log (the
-   ## headless parallel of the GUI run_check_report_failure) so dm-release-test can publish the
-   ## failure tail. Empty check_log (a standalone run) -> skip, like the GUI path. Also to stderr.
+   ## Capture the FAILED check's in-guest output (bounded to 64 KiB for the record) to the
+   ## caller-owned --check-log (the headless parallel of the GUI run_check_report_failure) so
+   ## dm-release-test can publish the failure tail. Empty check_log (standalone) -> skip. Also stderr.
    if [ -n "${check_log:-}" ]; then
       {
          printf '%s\n' "=== check $1 ($3) FAILED rc=${rc} ==="
-         cat -- "${tmp}"
+         head --bytes 65536 -- "${tmp}"
       } >> "${check_log}"
    fi
-   cat -- "${tmp}" >&2
+   head --bytes 65536 -- "${tmp}" >&2
    safe-rm --force -- "${tmp}"
    return "${rc}"
 }
@@ -1029,51 +1030,88 @@ ws_func_cli_reboot_sysmaint() {
 ## -> INCONCLUSIVE (SETUP_RC), never a false green; a non-zero rc -> FAIL with the captured log.
 ws_cli_console_systemcheck() {
    vm="${ws}"
-   local acct='user' rc_file log_file deadline sc_rc
-   rc_file="/home/${acct}/.dm-cli-systemcheck.rc"
-   log_file="/home/${acct}/.dm-cli-systemcheck.log"
-   ## Clear stale sinks over guestcontrol (a file op needs no logind session).
-   gc_run "${acct}" "rm -f ${rc_file} ${log_file}" 60 >/dev/null 2>&1 || true
+   local acct='user' home nonce rc_file log_file who_file attempt tries retry_sleep deadline sc_rc sc_who
+   home="/home/${acct}"
+   ## Per-run nonce in the sink names so a STALE file, or one a hostile/odd ~/.profile recreates
+   ## after cleanup, can never be mistaken for THIS run's result (a premature read -> false pass).
+   nonce="$(date +%s)-$$-${RANDOM}"
+   rc_file="${home}/.dm-cli-systemcheck-${nonce}.rc"
+   log_file="${home}/.dm-cli-systemcheck-${nonce}.log"
+   who_file="${home}/.dm-cli-systemcheck-${nonce}.who"
+   ## Reuse check 8's shared retry policy (release-checks.bsh) -- running it here must not lose the
+   ## battery's retry-across-the-just-booted-transient-window behavior.
+   tries="${RELEASE_CHECK_RETRIES[8]:-1}"
+   retry_sleep="${RELEASE_CHECK_RETRY_SLEEP[8]:-0}"
    printf '%s\n' "${me}: [functional-cli] check 8: console login + systemcheck (real logind session)"
-   ## Dismiss any pending getty prompt, log in (passwordless), then run systemcheck in that session.
-   ## Robust to both a getty-login and an auto-login console: a stray 'user' line simply errors in
-   ## an already-logged-in shell, and the systemcheck command still runs in the logind session.
-   "${GUESTCTL}" "${ws}" chord enter >/dev/null 2>&1 || true
-   sleep 2
-   printf '%s' "${acct}" | "${GUESTCTL}" "${ws}" type-stdin >/dev/null 2>&1 || true
-   "${GUESTCTL}" "${ws}" chord enter >/dev/null 2>&1 || true
-   sleep 5
-   ## $? must expand IN-GUEST -> single-quote on the host so it is typed literally.
-   # shellcheck disable=SC2016
-   printf '%s' "systemcheck --cli --ci > ${log_file} 2>&1; echo \$? > ${rc_file}" \
-      | "${GUESTCTL}" "${ws}" type-stdin >/dev/null 2>&1 || true
-   "${GUESTCTL}" "${ws}" chord enter >/dev/null 2>&1 || true
-   ## Poll (over guestcontrol) for the rc file -- its appearance proves the login + command ran.
-   deadline=$(( SECONDS + 420 ))
-   while [ "${SECONDS}" -lt "${deadline}" ]; do
-      if gc_run "${acct}" "test -f ${rc_file}" 60 >/dev/null 2>&1; then
-         break
+   for (( attempt = 1; attempt <= tries; attempt++ )); do
+      gc_run "${acct}" "rm -f ${rc_file} ${log_file} ${who_file}" 60 >/dev/null 2>&1 || true
+      ## Dismiss any pending getty prompt, log in (passwordless), then run systemcheck in that
+      ## session. Robust to a getty-login OR an auto-login console: a stray 'user' line simply
+      ## errors in an already-logged-in shell. whoami records the ACTUAL account (an autologin-root
+      ## console must not be credited as 'user'); head -c bounds the guest log; PIPESTATUS keeps
+      ## systemcheck's REAL exit code; $? / PIPESTATUS expand IN-GUEST (single-quoted on the host).
+      "${GUESTCTL}" "${ws}" chord enter >/dev/null 2>&1 || true
+      sleep 2
+      printf '%s' "${acct}" | "${GUESTCTL}" "${ws}" type-stdin >/dev/null 2>&1 || true
+      "${GUESTCTL}" "${ws}" chord enter >/dev/null 2>&1 || true
+      sleep 5
+      # shellcheck disable=SC2016
+      printf '%s' "whoami > ${who_file}; systemcheck --cli --ci 2>&1 | head -c 1048576 > ${log_file}; echo \${PIPESTATUS[0]} > ${rc_file}" \
+         | "${GUESTCTL}" "${ws}" type-stdin >/dev/null 2>&1 || true
+      "${GUESTCTL}" "${ws}" chord enter >/dev/null 2>&1 || true
+      ## Poll (over guestcontrol -- a file read needs no user session) for the rc file; read it.
+      deadline=$(( SECONDS + 420 ))
+      sc_rc=""
+      while [ "${SECONDS}" -lt "${deadline}" ]; do
+         if gc_run "${acct}" "test -f ${rc_file}" 60 >/dev/null 2>&1; then
+            sc_rc="$(gc_run "${acct}" "cat ${rc_file}" 60 2>/dev/null)" || sc_rc=""
+            break
+         fi
+         sleep 10
+      done
+      sc_who="$(gc_run "${acct}" "cat ${who_file} 2>/dev/null" 60 2>/dev/null)" || sc_who=""
+      ## Log out of the console (back to the getty).
+      printf '%s' 'exit' | "${GUESTCTL}" "${ws}" type-stdin >/dev/null 2>&1 || true
+      "${GUESTCTL}" "${ws}" chord enter >/dev/null 2>&1 || true
+      ## No rc read (file never appeared, or the cat failed mid-channel) = a drive/transport
+      ## failure, NOT a release verdict -> INCONCLUSIVE (retry if attempts remain).
+      if [ -z "${sc_rc}" ]; then
+         if [ "${attempt}" -lt "${tries}" ]; then
+            printf '%s\n' "${me}: check 8 produced no result (attempt ${attempt}); retrying" >&2
+            sleep "${retry_sleep}"
+            continue
+         fi
+         die "${SETUP_RC}" "check 8: no systemcheck result after the console login -- could not drive the getty login / read the result (INCONCLUSIVE, not a release FAIL)"
       fi
-      sleep 10
+      ## The session MUST have run as 'user' -- an autologin-root (or other) console cannot be
+      ## credited as a user-session systemcheck pass.
+      if [ "${sc_who}" != "${acct}" ]; then
+         if [ "${attempt}" -lt "${tries}" ]; then
+            printf '%s\n' "${me}: check 8 console ran as '${sc_who:-?}' not '${acct}' (attempt ${attempt}); retrying" >&2
+            sleep "${retry_sleep}"
+            continue
+         fi
+         die "${SETUP_RC}" "check 8: console session ran as '${sc_who:-unknown}', not '${acct}' -- cannot attribute the result (INCONCLUSIVE)"
+      fi
+      if [ "${sc_rc}" = '0' ]; then
+         printf '%s\n' "${me}: check 8 PASS (systemcheck --cli --ci via real console login as ${acct})"
+         return 0
+      fi
+      ## A genuine non-zero result: retry across the just-booted transient window, else FAIL.
+      if [ "${attempt}" -lt "${tries}" ]; then
+         printf '%s\n' "${me}: check 8 rc=${sc_rc} (attempt ${attempt}); retrying" >&2
+         sleep "${retry_sleep}"
+         continue
+      fi
+      ## Capture the (already in-guest-bounded) systemcheck output to --check-log for publishing.
+      if [ -n "${check_log:-}" ]; then
+         {
+            printf '%s\n' "=== check 8 (systemcheck --cli --ci via console login) FAILED rc=${sc_rc} ==="
+            gc_run "${acct}" "cat ${log_file} 2>/dev/null || true" 120 2>/dev/null || true
+         } >> "${check_log}"
+      fi
+      die "${FAIL_RC}" "check 8 (systemcheck --cli --ci via real console login) FAILED (rc=${sc_rc})"
    done
-   gc_run "${acct}" "test -f ${rc_file}" 60 >/dev/null 2>&1 \
-      || die "${SETUP_RC}" "check 8: no systemcheck result after the console login -- could not drive the getty login / command (INCONCLUSIVE, not a release FAIL)"
-   sc_rc="$(gc_run "${acct}" "cat ${rc_file}" 60 2>/dev/null)" || sc_rc=""
-   ## Log out of the console (back to the getty).
-   printf '%s' 'exit' | "${GUESTCTL}" "${ws}" type-stdin >/dev/null 2>&1 || true
-   "${GUESTCTL}" "${ws}" chord enter >/dev/null 2>&1 || true
-   if [ "${sc_rc}" = '0' ]; then
-      printf '%s\n' "${me}: check 8 PASS (systemcheck via real console login)"
-      return 0
-   fi
-   ## Capture the (bounded) systemcheck output to the caller-owned --check-log for publishing.
-   if [ -n "${check_log:-}" ]; then
-      {
-         printf '%s\n' "=== check 8 (systemcheck --cli --ci via console login) FAILED rc=${sc_rc:-unknown} ==="
-         gc_run "${acct}" "head --bytes 65536 ${log_file} 2>/dev/null || true" 120 2>/dev/null || true
-      } >> "${check_log}"
-   fi
-   die "${FAIL_RC}" "check 8 (systemcheck --cli --ci via real console login) FAILED (rc=${sc_rc:-unknown})"
 }
 
 ## functional mode, CLI edition: the SAME pair boot + Tor gate as the GUI path, but the numbered

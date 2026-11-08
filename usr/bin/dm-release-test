@@ -903,8 +903,10 @@ rt_provision_pair() {
    ## Whonix is BIOS-only (forced in main): a prebuilt OVA's firmware cannot be cleanly re-applied
    ## beyond a plain modifyvm -- enrolling Secure Boot keys (inituefivarstore) would WIPE the
    ## installed pair's NVRAM/MOK and brick it, so non-bios whonix firmware is rejected upstream.
-   sudo -u "${account}" -- "${DM_VBOX_FIRMWARE}" "${gw}" "${firmware}"
-   sudo -u "${account}" -- "${DM_VBOX_FIRMWARE}" "${ws}" "${firmware}"
+   ## Forward VBOXMANAGE explicitly (sudo env_reset strips it) so dm-vbox-firmware uses the SAME
+   ## binary the import + marker ops use, not a stray stock VBoxManage.
+   sudo -u "${account}" -- env "VBOXMANAGE=${VBOXMANAGE}" "${DM_VBOX_FIRMWARE}" "${gw}" "${firmware}"
+   sudo -u "${account}" -- env "VBOXMANAGE=${VBOXMANAGE}" "${DM_VBOX_FIRMWARE}" "${ws}" "${firmware}"
    rt_set_pair_version "${account}" "${gw}" "${version}"
    rt_set_pair_version "${account}" "${ws}" "${version}"
    log info "pair ${version} imported + firmware '${firmware}' applied + version-pinned under ${account}"

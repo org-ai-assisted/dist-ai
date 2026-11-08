@@ -106,9 +106,17 @@ assert "CLI driver routes-skips check 8 in the guestcontrol battery" \
 assert "main_functional_cli runs check 8 via a real console login" \
    grep --quiet --fixed-strings 'ws_cli_console_systemcheck' "${tool}"
 assert "console systemcheck runs the real systemcheck --cli --ci" \
-   grep --quiet --fixed-strings 'systemcheck --cli --ci >' "${tool}"
-assert "console systemcheck logs in via type-stdin (getty) and reads the rc over gc_run" \
+   grep --quiet --fixed-strings 'systemcheck --cli --ci 2>&1' "${tool}"
+assert "console systemcheck logs in via type-stdin (getty)" \
    grep --quiet --fixed-strings 'type-stdin' "${tool}"
+## hardening canaries: verify the session account, use a per-run nonce, apply check 8's retries.
+assert "console systemcheck verifies the session account (whoami)" \
+   grep --quiet --fixed-strings 'whoami >' "${tool}"
+assert "console systemcheck applies check 8's shared retry policy" \
+   grep --quiet --fixed-strings 'RELEASE_CHECK_RETRIES[8]' "${tool}"
+# shellcheck disable=SC2016  ## intentional literal match of the source text (no expansion)
+assert "console systemcheck uses a per-run nonce in its result sinks" \
+   grep --quiet --fixed-strings 'systemcheck-${nonce}' "${tool}"
 
 ## --- a FAILED CLI check appends its in-guest output to --check-log (so dm-release-test can
 ##     publish the failure tail). Stub gc_run to fail with recognizable output. ---
