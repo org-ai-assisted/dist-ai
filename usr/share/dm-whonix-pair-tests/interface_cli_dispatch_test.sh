@@ -118,6 +118,15 @@ assert "console systemcheck applies check 8's shared retry policy" \
 # shellcheck disable=SC2016  ## intentional literal match of the source text (no expansion)
 assert "console systemcheck uses a per-run nonce in its result sinks" \
    grep --quiet --fixed-strings 'systemcheck-${nonce}' "${tool}"
+## PER-ATTEMPT sink names (nonce carries the attempt index) so a timed-out prior attempt's late
+## write cannot be read by a later attempt as a stale FAIL that masks a passing retry.
+# shellcheck disable=SC2016  ## intentional literal match of the source text (no expansion)
+assert "console systemcheck result sinks are per-attempt (nonce includes the attempt)" \
+   grep --quiet --fixed-strings -- '-a${attempt}' "${tool}"
+## restore_fresh verifies the RESTORED firmware (authoritative run-time state) so a stale EFI-baked
+## snapshot cannot run under a mislabeled -bios result.
+assert "restore_fresh verifies the restored firmware is the expected type" \
+   grep --quiet --fixed-strings 'restored snapshot firmware' "${tool}"
 
 ## --- a FAILED CLI check appends its in-guest output to --check-log (so dm-release-test can
 ##     publish the failure tail). Stub gc_run to fail with recognizable output. ---

@@ -162,6 +162,14 @@ true > "${args}"
 VIT_ARGS="${args}" "${bin}" --dry-run --channel bogus >/dev/null 2>&1 || chd_rc=$?
 want "${chd_rc}" 64 "invalid --channel rejected even with --dry-run (exit 64)"
 
+# --- a newline-bearing --add lane is rejected (exit 64) BEFORE the --dry-run preview, so --dry-run
+#     agrees with a real run (which vbox-image-test rejects). Canary: old code printed the
+#     newline-bearing lane as multiple lines under --dry-run and exited 0. ---
+nlp_rc=0
+true > "${args}"
+VIT_ARGS="${args}" "${bin}" --dry-run --add "whonix cli"$'\n'"malicious" >/dev/null 2>&1 || nlp_rc=$?
+want "${nlp_rc}" 64 "newline-bearing --add rejected under --dry-run (exit 64)"
+
 printf '%s\n' "----"
 printf '%s\n' "passed=${pass_count} failed=${fail_count}"
 [ "${fail_count}" -eq 0 ]

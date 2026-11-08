@@ -58,6 +58,11 @@ gw='Whonix-Gateway-LXQt'
 ws='Whonix-Workstation-LXQt'
 ## committed clean-desktop snapshot each VM is restored to before a run.
 SNAPSHOT="${SNAPSHOT:-clean-live}"
+## Whonix is bios-only (an imported OVA's firmware cannot be cleanly re-applied), so a RESTORED
+## snapshot must present BIOS firmware. A VBox snapshot captures the firmware TYPE, so a restore
+## REVERTS it -- restore_fresh verifies the restored firmware here, catching a stale EFI-baked
+## snapshot that would otherwise run under a mislabeled -bios result. Overridable for a future lane.
+EXPECT_FIRMWARE="${EXPECT_FIRMWARE:-BIOS}"
 ## Run mode: leak (the anon-leak-test battery, default) | functional (the numbered
 ## release-check battery on the WS, parallel to the kicksecure install gate). Set by --mode.
 mode='leak'
@@ -74,6 +79,9 @@ check_log=""
 ## Calamares install lane uses. Empty => every story_snap/story_card call is a no-op, so a run
 ## without --shot-dir is byte-unchanged.
 shot_dir=""
+## Active CLI-check capture temp (set by ws_func_cli_exec); on_exit removes it so a signal or
+## lock-timeout mid-check cannot leave the host mktemp file behind across repeated interruptions.
+cli_capture_tmp=""
 ## Captured anon-leak-test battery JSON (set by ws_battery), carded by main as the battery stage.
 battery_json_last=""
 ## anon-leak-test checkout ON THIS HOST, pushed into the WS (the single authoritative
@@ -263,9 +271,10 @@ usage() {
        battery (release-checks.bsh, >= the kicksecure install coverage incl. the full
        systemcheck) in the Workstation via an OCR real-session executor.
 --interface (functional mode) gui (default): the OCR real-session battery (needs a desktop).
-       cli: a CLI edition has no desktop, so run the battery headless over guestcontrol;
-       the GUI-login and systemcheck checks (which need a graphical / logind user session)
-       are routed-skipped with a loud reason, never silently passed.
+       cli: a CLI edition has no desktop, so run the battery headless over guestcontrol. The
+       GUI-login check (needs a compositor) is genuinely N/A and routed-skipped with a loud
+       reason. systemcheck (check 8) needs a logind user session guestcontrol cannot provide, so
+       it is run SEPARATELY via a real console login and IS REQUIRED for a pass -- not skipped.
 
 Exit 0 = PASS."
 }
@@ -375,6 +384,11 @@ on_exit() {
    if [ -n "${gw_relay_cache}" ]; then
       safe-rm --force -- "${gw_relay_cache}" 2>/dev/null || true
    fi
+   ## Remove a CLI-check capture still in flight (ws_func_cli_exec interrupted by a signal / lock
+   ## timeout before its own cleanup) so repeated interruptions cannot accumulate host temp files.
+   if [ -n "${cli_capture_tmp}" ]; then
+      safe-rm --force -- "${cli_capture_tmp}" 2>/dev/null || true
+   fi
    ## Leave the NIC trace off so a later run / other use is not silently captured.
    "${VBOXMANAGE}" modifyvm "${gw}" --nictrace1 off >/dev/null 2>&1 || true
    ## The GW-NIC pcap is the leak oracle's evidence. On a clean PASS it is noise -> drop it.
@@ -418,6 +432,14 @@ restore_fresh() {
    "${VBOXMANAGE}" snapshot "${target}" restore "${SNAPSHOT}" >/dev/null 2>&1 \
       || die "${SETUP_RC}" "${target}: cannot restore snapshot '${SNAPSHOT}' -- a provisioning failure, not a WS leak"
    "${VBOXMANAGE}" discardstate "${target}" >/dev/null 2>&1 || true
+   ## Verify the RESTORED firmware (the authoritative run-time state, AFTER the restore reverted it)
+   ## -- a stale pair snapshotted as EFI would otherwise run as EFI under a -bios cell. A mismatch is
+   ## a provisioning/snapshot-staleness bug (firmware must be applied BEFORE the clean-live snapshot)
+   ## -> INCONCLUSIVE (SETUP_RC), never a mislabeled firmware result.
+   local fw_actual
+   fw_actual="$("${VBOXMANAGE}" showvminfo "${target}" --machinereadable 2>/dev/null | sed -n 's/^firmware="\(.*\)"$/\1/p')"
+   [ "${fw_actual}" = "${EXPECT_FIRMWARE}" ] \
+      || die "${SETUP_RC}" "${target}: restored snapshot firmware='${fw_actual}', expected '${EXPECT_FIRMWARE}' -- re-provision the pair (apply firmware before the clean-live snapshot); not running a mislabeled firmware lane"
 }
 
 ## Boot the Gateway fresh in its default (user) role. TWO boots: the first UNtraced, only to PIN
@@ -969,6 +991,7 @@ ws_func_cli_exec() {
    vm="${ws}"
    local tmp rc=0
    tmp="$(mktemp)"
+   cli_capture_tmp="${tmp}"   ## track for on_exit: a signal/lock-timeout mid-check must not leak it
    ## Capture to a FILE, not through a pipe: piping gc_run into `head` SIGPIPE-kills the external
    ## writer (vbox-exec-local, not a shell builtin) the instant the cap is hit, so a verbose but
    ## PASSING check (e.g. upgrade-nonroot's ~200 KiB apt output) would be misreported rc 141. A
@@ -977,7 +1000,7 @@ ws_func_cli_exec() {
    ## right after, so there is no lingering disk growth).
    gc_run "$2" "$3" "$4" > "${tmp}" 2>&1 || rc=$?
    if [ "${rc}" -eq 0 ]; then
-      safe-rm --force -- "${tmp}"
+      safe-rm --force -- "${tmp}"; cli_capture_tmp=""
       printf '%s\n' "${me}: check $1 PASS"
       return 0
    fi
@@ -991,7 +1014,7 @@ ws_func_cli_exec() {
       } >> "${check_log}"
    fi
    head --bytes 65536 -- "${tmp}" >&2
-   safe-rm --force -- "${tmp}"
+   safe-rm --force -- "${tmp}"; cli_capture_tmp=""
    return "${rc}"
 }
 
@@ -1029,18 +1052,21 @@ ws_cli_console_systemcheck() {
    vm="${ws}"
    local acct='user' home nonce rc_file log_file who_file attempt tries retry_sleep deadline sc_rc sc_who
    home="/home/${acct}"
-   ## Per-run nonce in the sink names so a STALE file, or one a hostile/odd ~/.profile recreates
-   ## after cleanup, can never be mistaken for THIS run's result (a premature read -> false pass).
-   nonce="$(date +%s)-$$-${RANDOM}"
-   rc_file="${home}/.dm-cli-systemcheck-${nonce}.rc"
-   log_file="${home}/.dm-cli-systemcheck-${nonce}.log"
-   who_file="${home}/.dm-cli-systemcheck-${nonce}.who"
    ## Reuse check 8's shared retry policy (release-checks.bsh) -- running it here must not lose the
    ## battery's retry-across-the-just-booted-transient-window behavior.
    tries="${RELEASE_CHECK_RETRIES[8]:-1}"
    retry_sleep="${RELEASE_CHECK_RETRY_SLEEP[8]:-0}"
    printf '%s\n' "${me}: [functional-cli] check 8: console login + systemcheck (real logind session)"
    for (( attempt = 1; attempt <= tries; attempt++ )); do
+      ## PER-ATTEMPT sink names (nonce + attempt index): a timed-out systemcheck from an EARLIER
+      ## attempt can still be running and write its rc AFTER this attempt's cleanup, so distinct
+      ## files per attempt are what stop this attempt reading a PRIOR attempt's late result (a stale
+      ## FAIL masking a passing retry). The nonce also defeats a STALE file, or one a hostile/odd
+      ## ~/.profile recreates after cleanup, being mistaken for THIS run's result (false pass).
+      nonce="$(date +%s)-$$-${RANDOM}-a${attempt}"
+      rc_file="${home}/.dm-cli-systemcheck-${nonce}.rc"
+      log_file="${home}/.dm-cli-systemcheck-${nonce}.log"
+      who_file="${home}/.dm-cli-systemcheck-${nonce}.who"
       gc_run "${acct}" "rm -f ${rc_file} ${log_file} ${who_file}" 60 >/dev/null 2>&1 || true
       ## Dismiss any pending getty prompt, log in (passwordless), then run systemcheck in that
       ## session. Robust to a getty-login OR an auto-login console: a stray 'user' line simply

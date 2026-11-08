@@ -81,6 +81,17 @@ for spec in "${lanes[@]}"; do
          exit 64
          ;;
    esac
+   ## A lane is whitespace-SPLIT (read -r -a) before each token is %q-quoted for the remote shell, so
+   ## a quoted path with spaces cannot survive: read -r -a splits on the space and keeps the quote as
+   ## a literal, and dm-release-test then rejects the stray token. Rather than reinvent a shell quote
+   ## parser, reject a lane containing a quote -- a clear error here beats a confusing downstream arg
+   ## failure. A path in a lane must be space-free (vbox-image-test-default enforces this upstream).
+   case "${spec}" in
+      *[\"\']*)
+         printf '%s\n' "${me}: lane spec must not contain quotes; a path in a lane must be space-free: '${spec}'" >&2
+         exit 64
+         ;;
+   esac
 done
 
 ## Publish exactly once, on ANY exit (success, a lane failure, or an interrupt) -- the whole point

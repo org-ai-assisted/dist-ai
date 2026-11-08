@@ -70,6 +70,16 @@ vbox_calls="${work}/vbox-calls"
 cat > "${vboxmanage_stub}" <<'STUB'
 #!/bin/bash
 printf '%s\n' "$*" >> "${VBOX_CALLS}"
+## Optional forced failure for a specific op (exercises the efi SB-scrub's error handling): when
+## VBOX_FAIL_MATCH is set and the args contain it, emit VBOX_FAIL_MSG on stderr and fail.
+if [ -n "${VBOX_FAIL_MATCH:-}" ]; then
+   case "$*" in
+      *"${VBOX_FAIL_MATCH}"*)
+         printf '%s\n' "${VBOX_FAIL_MSG:-stub forced failure}" >&2
+         exit 1
+         ;;
+   esac
+fi
 exit 0
 STUB
 chmod +x "${vboxmanage_stub}"
@@ -148,10 +158,24 @@ bad_rc=0
 got=0; [ "${bad_rc}" -eq 64 ] || got=1
 check "unknown mode rejected (exit 64)" "${got}"
 
+## --- efi SB-scrub error handling: tolerate ONLY an uninitialized-varstore disable failure, else
+##     report it (a silent-tolerate would let SB stay enforcing and reject the unsigned live GA) ---
+VBOX_FAIL_MATCH='secureboot --disable' \
+   VBOX_FAIL_MSG='VBoxManage: error: The UEFI NVRAM file is not existing for this machine' \
+   run_fw testvm efi && got=0 || got=$?
+check "efi tolerates a disable failure on an uninitialized varstore (exit 0)" "${got}"
+VBOX_FAIL_MATCH='secureboot --disable' \
+   VBOX_FAIL_MSG='VBoxManage: error: some other disable failure' \
+   run_fw testvm efi 2>/dev/null && got=1 || got=0
+check "efi REPORTS a non-uninitialized disable failure (exit != 0)" "${got}"
+
 ## --- canary: dm-calamares-install apply_firmware defers enforcement for efi-secureboot ---
 # shellcheck disable=SC2016  ## intentional literal match of the source text
 got=0; grep --quiet --fixed-strings 'fw_args+=( --defer-enforcement )' "${calamares_install}" || got=1
 check "dm-calamares-install defers enforcement via dm-vbox-firmware" "${got}"
+## --- canary: apply_firmware retries a transient VM-session lock around dm-vbox-firmware (fw_tries) ---
+got=0; grep --quiet --fixed-strings 'fw_tries' "${calamares_install}" || got=1
+check "dm-calamares-install apply_firmware retries a transient lock" "${got}"
 
 printf '%s\n' "" "$(basename -- "$0"): ${pass} pass, ${fail} fail"
 [ "${fail}" -eq 0 ] || exit 1

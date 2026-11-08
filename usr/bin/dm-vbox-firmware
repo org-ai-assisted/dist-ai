@@ -95,9 +95,23 @@ case "${mode}" in
       ;;
    efi)
       "${VBOXMANAGE}" modifyvm "${vm}" --firmware efi >/dev/null
-      ## Scrub Secure Boot state inherited from a prior efi-secureboot config so plain EFI really
-      ## is plain; tolerated on a fresh VM whose varstore is uninitialized (no-op there).
-      "${VBOXMANAGE}" modifynvram "${vm}" secureboot --disable >/dev/null 2>&1 || true
+      ## Scrub Secure Boot inherited from a prior efi-secureboot config so plain EFI really is plain.
+      ## Empirically `secureboot --disable` fails ONLY on an uninitialized varstore ("UEFI NVRAM file
+      ## is not existing") -- a fresh VM with no SB to enforce, which is tolerable; on an initialized
+      ## varstore it always succeeds (idempotent even when already off). So a failure for ANY OTHER
+      ## reason is real: SB may still enforce and reject the unsigned live GA on a plain-EFI reinstall.
+      if ! sb_err="$("${VBOXMANAGE}" modifynvram "${vm}" secureboot --disable 2>&1 >/dev/null)"; then
+         case "${sb_err}" in
+            *'UEFI NVRAM file is not existing'*)
+               ## uninitialized varstore -- nothing to disable, tolerate
+               true
+               ;;
+            *)
+               printf '%s\n' "${me}: failed to disable Secure Boot on '${vm}': ${sb_err}" >&2
+               exit 1
+               ;;
+         esac
+      fi
       ;;
    efi-secureboot)
       "${VBOXMANAGE}" modifyvm "${vm}" --firmware efi >/dev/null

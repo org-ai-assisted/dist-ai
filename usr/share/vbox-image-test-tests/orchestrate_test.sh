@@ -120,6 +120,15 @@ SE_LANES="${lanes}" TRD_CALLS="${calls}" "${bin}" "${nlspec}" >/dev/null 2>&1 ||
 want "${rc}" 64 "newline-bearing lane rejected (exit 64)"
 want "$(n_calls)" 0 "newline rejection does not publish"
 
+# --- a lane spec with a quote is rejected (exit 64) before any publish -- read -r -a keeps the
+#     quote as a literal and splits a spaced path, so a clear reject here beats a confusing
+#     downstream dm-release-test arg error (a path in a lane must be space-free). ---
+reset
+rc=0
+SE_LANES="${lanes}" TRD_CALLS="${calls}" "${bin}" 'kicksecure lxqt --iso "/built image.iso"' >/dev/null 2>&1 || rc=$?
+want "${rc}" 64 "quoted lane spec rejected (exit 64)"
+want "$(n_calls)" 0 "quote rejection does not publish"
+
 printf '%s\n' "----"
 printf '%s\n' "passed=${pass_count} failed=${fail_count}"
 [ "${fail_count}" -eq 0 ]

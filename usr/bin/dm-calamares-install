@@ -1747,7 +1747,29 @@ parse_args() {
 apply_firmware() {
    local -a fw_args=( "${vm}" "${firmware}" )
    [ "${firmware}" = 'efi-secureboot' ] && fw_args+=( --defer-enforcement )
-   VBOXMANAGE="${VBOXMANAGE}" "${DM_VBOX_FIRMWARE}" "${fw_args[@]}"
+   ## --reinstall calls this right after a poweroff whose session-unlock is ASYNC (the fixed sleep
+   ## before it is not deterministic on a loaded host), so dm-vbox-firmware's first modifyvm can hit
+   ## a transient "being unlocked"/"already locked" and abort before ISO attachment. Retry ONLY that
+   ## lock class (the firmware ops are idempotent); surface any other failure. (Same lock-error set as
+   ## vbox_config_retry, which wraps VBoxManage directly; here the subject is the external tool.)
+   local fw_tries=0 fw_out
+   while :; do
+      if fw_out="$( VBOXMANAGE="${VBOXMANAGE}" "${DM_VBOX_FIRMWARE}" "${fw_args[@]}" 2>&1 )"; then
+         [ -z "${fw_out}" ] || printf '%s\n' "${fw_out}"
+         break
+      fi
+      case "${fw_out}" in
+         *'being unlocked'*|*'already locked'*|*VBOX_E_INVALID_OBJECT_STATE*)
+            fw_tries=$(( fw_tries + 1 ))
+            [ "${fw_tries}" -lt 30 ] || die "${FAIL_RC}" "dm-vbox-firmware: VM '${vm}' stayed locked after retries"
+            sleep 1
+            ;;
+         *)
+            printf '%s\n' "${fw_out}" >&2
+            die "${FAIL_RC}" "dm-vbox-firmware ${firmware} failed for '${vm}': ${fw_out}"
+            ;;
+      esac
+   done
    ## coreboot layers ON the efi device (a generic EFI firmware, NOT a 4th --firmware token):
    ## the patched CorebootRom-aware VBoxManage loads EfiRom as a coreboot image instead of OVMF.
    ## Same VBoxInternal/Devices/efi/0/Config/ namespace as the EFI DMI overrides. Set here so the
