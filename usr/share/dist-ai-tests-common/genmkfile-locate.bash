@@ -31,7 +31,7 @@
 ## exits 1 (FATAL) when an explicitly selected helper is unreadable or none is
 ## found. Call it NOT inside a command substitution, so its exit reaches the test.
 genmkfile_require_helper() {
-   local from_bin candidate
+   local from_bin candidate dm_candidate
    ## GENMKFILE_BIN is how CI points at the component checkout (neither the dm path
    ## nor /usr). Derive the share dir from it; honor it exactly.
    if [ -n "${GENMKFILE_BIN:-}" ]; then
@@ -52,10 +52,15 @@ genmkfile_require_helper() {
       return 0
    fi
    ## Nothing wired: the dm checkout BEFORE the installed copy (the installed copy
-   ## drifts from the tree under review).
+   ## drifts from the tree under review). Only consider the dm candidate when HOME is
+   ## set -- an empty HOME would otherwise build a bogus root-level '/derivative-maker'
+   ## path that must never be trusted; with no HOME, fall through to the installed skip.
+   dm_candidate=""
+   [ -n "${HOME:-}" ] && dm_candidate="${HOME}/derivative-maker/packages/kicksecure/genmkfile/usr/share/genmkfile/make-helper-one.bsh"
    for candidate in \
-      "${HOME:-}/derivative-maker/packages/kicksecure/genmkfile/usr/share/genmkfile/make-helper-one.bsh" \
+      "${dm_candidate}" \
       "/usr/share/genmkfile/make-helper-one.bsh"; do
+      [ -n "${candidate}" ] || continue
       [ -r "${candidate}" ] || continue
       if [ "${candidate}" = "/usr/share/genmkfile/make-helper-one.bsh" ]; then
          printf '%s\n' "SKIP: no genmkfile checkout wired (set GENMKFILE_BIN); not testing the installed copy." >&2
@@ -74,7 +79,7 @@ genmkfile_require_helper() {
 ## library. Same exact-honor / skip / FATAL contract as genmkfile_require_helper.
 ## Call it NOT inside a command substitution, so its exit reaches the test.
 genmkfile_require_bin() {
-   local candidate
+   local candidate dm_candidate
    ## GENMKFILE_BIN is how CI points at the component checkout's binary; honor it
    ## exactly -- a set-but-non-executable path is an env bug, not a reason to test
    ## an unrelated checkout.
@@ -87,10 +92,15 @@ genmkfile_require_bin() {
       return 0
    fi
    ## Nothing wired: the dm checkout BEFORE the installed copy (the installed copy
-   ## drifts from the tree under review).
+   ## drifts from the tree under review). Only consider the dm candidate when HOME is
+   ## set -- an empty HOME would otherwise build a bogus root-level '/derivative-maker'
+   ## path that must never be trusted; with no HOME, fall through to the installed skip.
+   dm_candidate=""
+   [ -n "${HOME:-}" ] && dm_candidate="${HOME}/derivative-maker/packages/kicksecure/genmkfile/usr/bin/genmkfile"
    for candidate in \
-      "${HOME:-}/derivative-maker/packages/kicksecure/genmkfile/usr/bin/genmkfile" \
+      "${dm_candidate}" \
       "/usr/bin/genmkfile"; do
+      [ -n "${candidate}" ] || continue
       [ -x "${candidate}" ] || continue
       if [ "${candidate}" = "/usr/bin/genmkfile" ]; then
          printf '%s\n' "SKIP: no genmkfile checkout wired (set GENMKFILE_BIN); not testing the installed copy." >&2
