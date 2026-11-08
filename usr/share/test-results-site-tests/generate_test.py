@@ -835,6 +835,24 @@ check("per-rect redaction ignores a zero-width rect (masks no pixels)",
 check("per-rect redaction ignores a negative-height rect",
       "KEEPNEG" in _gen._redact_ocr_text([(40, 50, 140, 26, "KEEPNEG")], [[0, 0, 500, -5]]))
 
+## A firmware-distinct lane identity (whonix-lxqt-leak-bios) must inherit the BASE lane's privacy
+## rects, or the -<firmware> suffix silently drops the operator's masks and PUBLISHES hidden content
+## (a privacy regression -- the base-keyed config no longer matches the suffixed lane).
+_mcfg = {"whonix-lxqt-leak": [[1, 2, 3, 4]], "kicksecure-masked-efi": [[5, 6, 7, 8]]}
+check("mask: exact lane key wins",
+      _gen.mask_rects_for_lane("whonix-lxqt-leak", _mcfg) == [[1, 2, 3, 4]])
+check("mask: -bios lane inherits the base lane's rects",
+      _gen.mask_rects_for_lane("whonix-lxqt-leak-bios", _mcfg) == [[1, 2, 3, 4]])
+check("mask: -efi-secureboot strips the whole suffix (not to -secureboot)",
+      _gen.mask_rects_for_lane("whonix-lxqt-leak-efi-secureboot", _mcfg) == [[1, 2, 3, 4]])
+check("mask: an explicit firmware-specific entry wins over the base",
+      _gen.mask_rects_for_lane("kicksecure-masked-efi", _mcfg) == [[5, 6, 7, 8]])
+check("mask: a lane with no entry and no base match -> None (default clock mask)",
+      _gen.mask_rects_for_lane("kicksecure-other-bios", _mcfg) is None)
+## The security-facing wrapper rects_for must apply the fallback, not the bare default clock mask.
+check("rects_for: a -bios leak lane masks the base rects, not just the clock",
+      _gen.rects_for("whonix-lxqt-leak-bios", (1280, 800), _mcfg) == [(1, 2, 3, 4)])
+
 ## The cache fingerprint folds the OCR-engine id, so a masked-lane OCR sidecar is NOT reused across
 ## a tesseract appear/disappear or version bump (a cached fail-closed no-sidecar must not persist
 ## once tesseract returns). Stub the engine id and assert the shared fingerprint changes.

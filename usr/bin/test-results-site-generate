@@ -275,8 +275,30 @@ def _load_result(path):
     return result
 
 
+## A firmware-distinct lane identity (e.g. whonix-lxqt-leak-bios) must inherit the BASE lane's
+## privacy rects when no firmware-specific entry exists. Otherwise a lane gaining a -<firmware>
+## suffix silently drops the operator's configured masks and PUBLISHES content meant to be hidden
+## (only the default clock mask applies). Longest suffix first so -efi-secureboot is not mistaken
+## for a bare -efi. An EXPLICIT entry for the suffixed lane (even an empty list) wins over the base.
+MASK_FIRMWARE_SUFFIXES = ("-efi-secureboot", "-efi", "-bios")
+
+
+def mask_rects_for_lane(lane, mask_config):
+    """Configured privacy rects for a lane, or None. A firmware-suffixed lane with no entry of its
+    own falls back to its base lane, so masks are not silently lost when a lane gains a -<firmware>
+    identity (a privacy regression)."""
+    if lane in mask_config:
+        return mask_config[lane]
+    for suffix in MASK_FIRMWARE_SUFFIXES:
+        if lane.endswith(suffix):
+            base = lane[:-len(suffix)]
+            if base in mask_config:
+                return mask_config[base]
+    return None
+
+
 def rects_for(lane, image_size, mask_config):
-    rects = mask_config.get(lane)
+    rects = mask_rects_for_lane(lane, mask_config)
     if rects:
         return [tuple(rect) for rect in rects]
     ## No configured rect: blank the usual top-right clock corner.
@@ -346,8 +368,10 @@ def process_run(run_dir, result, run_id, out_root, mask_config, now_unix, stale_
     ## (the mask hides image regions; the text is not spatial). A lane with CONFIGURED privacy rects
     ## gets PER-RECT redaction: re-OCR the shot and drop only the tokens that overlap a rect, still
     ## publishing the rest (operator decision). A lane with only the default clock mask (no entry)
-    ## is not sensitive, so its run-time OCR sidecar is published verbatim.
-    lane_rects = mask_config.get(lane)
+    ## is not sensitive, so its run-time OCR sidecar is published verbatim. A firmware-suffixed lane
+    ## inherits the base lane's rects (mask_rects_for_lane) so a -bios/-efi suffix cannot silently
+    ## drop OCR redaction and publish tokens the operator masked on the base lane.
+    lane_rects = mask_rects_for_lane(lane, mask_config)
     for step in result["steps"]:
         ## `seq` is each attachment's index in attachments[], carried onto shots/cards so an
         ## equal-NN tie breaks in attachments[] order (not "all shots then all cards").
