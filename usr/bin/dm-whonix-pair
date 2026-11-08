@@ -1045,15 +1045,19 @@ ws_cli_console_systemcheck() {
       ## Dismiss any pending getty prompt, log in (passwordless), then run systemcheck in that
       ## session. Robust to a getty-login OR an auto-login console: a stray 'user' line simply
       ## errors in an already-logged-in shell. whoami records the ACTUAL account (an autologin-root
-      ## console must not be credited as 'user'); head -c bounds the guest log; PIPESTATUS keeps
-      ## systemcheck's REAL exit code; $? / PIPESTATUS expand IN-GUEST (single-quoted on the host).
+      ## console must not be credited as 'user'). The result capture is detailed at the command below.
       "${GUESTCTL}" "${ws}" chord enter >/dev/null 2>&1 || true
       sleep 2
       printf '%s' "${acct}" | "${GUESTCTL}" "${ws}" type-stdin >/dev/null 2>&1 || true
       "${GUESTCTL}" "${ws}" chord enter >/dev/null 2>&1 || true
       sleep 5
+      ## Redirect systemcheck to a FILE in-guest (NOT piped into head): a pipe would SIGPIPE-kill
+      ## systemcheck on a >1 MiB write, recording rc 141 instead of its real exit (a verbose-but-
+      ## passing systemcheck would deterministically FAIL every retry). echo $? captures the REAL
+      ## exit; the output is bounded only on the read-back below. $? expands IN-GUEST (single-quoted
+      ## on the host); the in-guest log lives on the disposable (restore_fresh'd) WS disk.
       # shellcheck disable=SC2016
-      printf '%s' "whoami > ${who_file}; systemcheck --cli --ci 2>&1 | head -c 1048576 > ${log_file}; echo \${PIPESTATUS[0]} > ${rc_file}" \
+      printf '%s' "whoami > ${who_file}; systemcheck --cli --ci > ${log_file} 2>&1; echo \$? > ${rc_file}" \
          | "${GUESTCTL}" "${ws}" type-stdin >/dev/null 2>&1 || true
       "${GUESTCTL}" "${ws}" chord enter >/dev/null 2>&1 || true
       ## Poll (over guestcontrol -- a file read needs no user session) for the rc file; read it.
@@ -1100,11 +1104,12 @@ ws_cli_console_systemcheck() {
          sleep "${retry_sleep}"
          continue
       fi
-      ## Capture the (already in-guest-bounded) systemcheck output to --check-log for publishing.
+      ## Capture the failed systemcheck output to --check-log, bounded to 64 KiB ON THE READ-BACK
+      ## (the in-guest log is unbounded by design -- a file redirect, no SIGPIPE -- so bound here).
       if [ -n "${check_log:-}" ]; then
          {
             printf '%s\n' "=== check 8 (systemcheck --cli --ci via console login) FAILED rc=${sc_rc} ==="
-            gc_run "${acct}" "cat ${log_file} 2>/dev/null || true" 120 2>/dev/null || true
+            gc_run "${acct}" "head --bytes 65536 ${log_file} 2>/dev/null || true" 120 2>/dev/null || true
          } >> "${check_log}"
       fi
       die "${FAIL_RC}" "check 8 (systemcheck --cli --ci via real console login) FAILED (rc=${sc_rc})"

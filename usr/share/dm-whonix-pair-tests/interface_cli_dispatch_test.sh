@@ -105,8 +105,9 @@ assert "CLI driver routes-skips check 8 in the guestcontrol battery" \
 ## ...but check 8 is RUN via a real console login, not left uncovered.
 assert "main_functional_cli runs check 8 via a real console login" \
    grep --quiet --fixed-strings 'ws_cli_console_systemcheck' "${tool}"
-assert "console systemcheck runs the real systemcheck --cli --ci" \
-   grep --quiet --fixed-strings 'systemcheck --cli --ci 2>&1' "${tool}"
+# shellcheck disable=SC2016  ## intentional literal match of the source text (no expansion)
+assert "console systemcheck runs the real systemcheck --cli --ci, captured to a FILE (no SIGPIPE)" \
+   grep --quiet --fixed-strings 'systemcheck --cli --ci > ${log_file}' "${tool}"
 assert "console systemcheck logs in via type-stdin (getty)" \
    grep --quiet --fixed-strings 'type-stdin' "${tool}"
 ## hardening canaries: verify the session account, use a per-run nonce, apply check 8's retries.
