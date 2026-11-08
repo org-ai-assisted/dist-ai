@@ -10,9 +10,9 @@
 ##     value is REJECTED (SETUP_RC).
 ##   - functional mode dispatches main_functional_cli when interface=cli, main_functional (GUI)
 ##     otherwise -- asserted BEHAVIORALLY by stubbing both drivers and calling main.
-##   - the CLI executor runs over guestcontrol (gc_run), NOT the OCR run_check, and the CLI
-##     driver routes-skips the GUI-login (6) and systemcheck (8) checks (which need a graphical
-##     / logind user session) with a loud reason -- never a silent green.
+##   - the CLI executor runs over guestcontrol (gc_run), NOT the OCR run_check; the CLI driver
+##     routes-skips the GUI-login check (6, no compositor) in the guestcontrol battery, and runs
+##     check 8 (systemcheck) via a REAL console login rather than skipping it -- never a silent green.
 ## Sources the REAL script define-only (EOF guard); no VM, no root.
 
 set -o errexit
@@ -100,8 +100,15 @@ assert "CLI reboot reaches sysmaint via guestcontrol (headless, no OCR terminal)
    grep --quiet --fixed-strings 'wait_guestcontrol_ready sysmaint 300' "${tool}"
 assert "CLI driver routes-skips the GUI-login check (6)" \
    grep --quiet --fixed-strings 'RELEASE_CHECK_SKIP_REASON[6]=' "${tool}"
-assert "CLI driver routes-skips the systemcheck check (8)" \
+assert "CLI driver routes-skips check 8 in the guestcontrol battery" \
    grep --quiet --fixed-strings 'RELEASE_CHECK_SKIP_REASON[8]=' "${tool}"
+## ...but check 8 is RUN via a real console login, not left uncovered.
+assert "main_functional_cli runs check 8 via a real console login" \
+   grep --quiet --fixed-strings 'ws_cli_console_systemcheck' "${tool}"
+assert "console systemcheck runs the real systemcheck --cli --ci" \
+   grep --quiet --fixed-strings 'systemcheck --cli --ci >' "${tool}"
+assert "console systemcheck logs in via type-stdin (getty) and reads the rc over gc_run" \
+   grep --quiet --fixed-strings 'type-stdin' "${tool}"
 
 ## --- a FAILED CLI check appends its in-guest output to --check-log (so dm-release-test can
 ##     publish the failure tail). Stub gc_run to fail with recognizable output. ---

@@ -1018,16 +1018,72 @@ ws_func_cli_reboot_sysmaint() {
    ) || return 1
 }
 
+## Run check 8 (systemcheck --cli --ci) in a REAL logind user session on the CLI Workstation.
+## systemcheck queries `systemctl --user`, which has NO user manager under a VBoxService-spawned
+## guestcontrol process, so instead drive a genuine getty CONSOLE LOGIN via host-side scancode
+## injection (GUESTCTL type-stdin + chord, the same primitives as dm-calamares-install's VT lane;
+## Whonix console login is passwordless `user`), run systemcheck in that session redirecting its
+## exit code to a HOME file, and read that file back over guestcontrol (a file read needs no user
+## session). Writing to ABSOLUTE /home/${acct} (not /tmp) dodges libpam-tmpdir's per-session
+## private tmp, which the guestcontrol reader cannot see. A failed login / drive leaves NO rc file
+## -> INCONCLUSIVE (SETUP_RC), never a false green; a non-zero rc -> FAIL with the captured log.
+ws_cli_console_systemcheck() {
+   vm="${ws}"
+   local acct='user' rc_file log_file deadline sc_rc
+   rc_file="/home/${acct}/.dm-cli-systemcheck.rc"
+   log_file="/home/${acct}/.dm-cli-systemcheck.log"
+   ## Clear stale sinks over guestcontrol (a file op needs no logind session).
+   gc_run "${acct}" "rm -f ${rc_file} ${log_file}" 60 >/dev/null 2>&1 || true
+   printf '%s\n' "${me}: [functional-cli] check 8: console login + systemcheck (real logind session)"
+   ## Dismiss any pending getty prompt, log in (passwordless), then run systemcheck in that session.
+   ## Robust to both a getty-login and an auto-login console: a stray 'user' line simply errors in
+   ## an already-logged-in shell, and the systemcheck command still runs in the logind session.
+   "${GUESTCTL}" "${ws}" chord enter >/dev/null 2>&1 || true
+   sleep 2
+   printf '%s' "${acct}" | "${GUESTCTL}" "${ws}" type-stdin >/dev/null 2>&1 || true
+   "${GUESTCTL}" "${ws}" chord enter >/dev/null 2>&1 || true
+   sleep 5
+   ## $? must expand IN-GUEST -> single-quote on the host so it is typed literally.
+   # shellcheck disable=SC2016
+   printf '%s' "systemcheck --cli --ci > ${log_file} 2>&1; echo \$? > ${rc_file}" \
+      | "${GUESTCTL}" "${ws}" type-stdin >/dev/null 2>&1 || true
+   "${GUESTCTL}" "${ws}" chord enter >/dev/null 2>&1 || true
+   ## Poll (over guestcontrol) for the rc file -- its appearance proves the login + command ran.
+   deadline=$(( SECONDS + 420 ))
+   while [ "${SECONDS}" -lt "${deadline}" ]; do
+      if gc_run "${acct}" "test -f ${rc_file}" 60 >/dev/null 2>&1; then
+         break
+      fi
+      sleep 10
+   done
+   gc_run "${acct}" "test -f ${rc_file}" 60 >/dev/null 2>&1 \
+      || die "${SETUP_RC}" "check 8: no systemcheck result after the console login -- could not drive the getty login / command (INCONCLUSIVE, not a release FAIL)"
+   sc_rc="$(gc_run "${acct}" "cat ${rc_file}" 60 2>/dev/null)" || sc_rc=""
+   ## Log out of the console (back to the getty).
+   printf '%s' 'exit' | "${GUESTCTL}" "${ws}" type-stdin >/dev/null 2>&1 || true
+   "${GUESTCTL}" "${ws}" chord enter >/dev/null 2>&1 || true
+   if [ "${sc_rc}" = '0' ]; then
+      printf '%s\n' "${me}: check 8 PASS (systemcheck via real console login)"
+      return 0
+   fi
+   ## Capture the (bounded) systemcheck output to the caller-owned --check-log for publishing.
+   if [ -n "${check_log:-}" ]; then
+      {
+         printf '%s\n' "=== check 8 (systemcheck --cli --ci via console login) FAILED rc=${sc_rc:-unknown} ==="
+         gc_run "${acct}" "head --bytes 65536 ${log_file} 2>/dev/null || true" 120 2>/dev/null || true
+      } >> "${check_log}"
+   fi
+   die "${FAIL_RC}" "check 8 (systemcheck --cli --ci via real console login) FAILED (rc=${sc_rc:-unknown})"
+}
+
 ## functional mode, CLI edition: the SAME pair boot + Tor gate as the GUI path, but the numbered
-## battery runs headless over guestcontrol (no desktop, no OCR). Two checks cannot run FAITHFULLY
-## over guestcontrol and are routed-skipped with a loud reason (printed as ROUTED, never a green
-## PASS -- release-checks.bsh's RELEASE_CHECK_SKIP_REASON), matching how dm-upgrade-regression's
-## guestcontrol fast-path routes check 8:
-##   - check 6 (GUI login = pgrep labwc): a CLI edition has no compositor.
-##   - check 8 (systemcheck --cli --ci): it calls `systemctl --user`, which has no user manager
-##     under a VBoxService-spawned guestcontrol process (no logind user session). The GUI edition
-##     covers it in the real LXQt login; a CLI edition has no GUI-OCR gate to route it to, so CLI
-##     systemcheck coverage is a documented follow-up (a console/serial-login transport).
+## battery runs headless over guestcontrol (no desktop, no OCR), plus check 8 via a real console
+## login. Two checks cannot run over the guestcontrol battery and are routed-skipped there with a
+## loud reason (printed as ROUTED, never a green PASS -- release-checks.bsh's
+## RELEASE_CHECK_SKIP_REASON):
+##   - check 6 (GUI login = pgrep labwc): a CLI edition has no compositor -- legitimately N/A.
+##   - check 8 (systemcheck --cli --ci): needs a logind user manager, absent over guestcontrol, so
+##     it is run SEPARATELY via ws_cli_console_systemcheck (a genuine getty login) -- NOT skipped.
 ## Everything else runs faithfully headless: user/sysmaint boot-role (checks 1, 2), CLI login
 ## (5, whoami), networking over the Gateway's Tor (4), and upgrade-nonroot (3).
 main_functional_cli() {
@@ -1038,15 +1094,17 @@ main_functional_cli() {
    boot_workstation_user
    printf '%s\n' "${me}: [functional-cli] wait for Tor egress (systemcheck SocksPort + TransPort)"
    ws_func_tor_gate
+   ## check 8 in the user phase (before the sysmaint reboot), via a real console login.
+   ws_cli_console_systemcheck
    RELEASE_CHECK_SKIP_REASON[6]='CLI edition has no graphical session (no labwc compositor)'
-   RELEASE_CHECK_SKIP_REASON[8]='systemcheck needs a logind user session; guestcontrol has no user manager and a CLI edition has no GUI-OCR gate -- coverage is a follow-up (console/serial-login transport)'
+   RELEASE_CHECK_SKIP_REASON[8]='run separately via a real console login (ws_cli_console_systemcheck); guestcontrol has no logind user manager'
    printf '%s\n' "${me}: [functional-cli] run the release-check battery over guestcontrol (no OCR)"
    ## No verify_fn ('' skips the OCR render pre-check -- there is no desktop to cross-check); the
    ## authoritative signal is each check's in-guest exit code over guestcontrol.
    if ! run_release_check_battery ws_func_cli_exec ws_func_cli_reboot_sysmaint ''; then
       die "${FAIL_RC}" "release check ${RELEASE_CHECK_FAILED_NUM:-?} (${RELEASE_CHECK_FAILED_REASON:-unknown}) FAILED"
    fi
-   printf '%s\n' "${me}: [functional-cli] PASS -- Workstation passed the CLI release-check battery"
+   printf '%s\n' "${me}: [functional-cli] PASS -- Workstation passed the CLI release-check battery + console-login systemcheck"
    return "${PASS_RC}"
 }
 
