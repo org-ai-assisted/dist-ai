@@ -216,6 +216,20 @@ while [ "$#" -gt 0 ]; do
    esac
 done
 
+## A scrubbed environment -- HOME unset AND no explicit site override -- is an UNEXPECTED
+## broken env, not a legitimate no-checkout host. Catch it HERE, before the required unit
+## tests below: those run python/tooling that may need a usable HOME, so under a scrubbed
+## HOME one could fail with its own FATAL and MASK the real cause, reporting a misleading
+## unit-test failure instead of 'HOME is unset'. An explicit override (resolved further
+## below) legitimately proceeds with HOME unset, so it is exempt. The roots-empty branch
+## no longer needs to re-assert this: it is provably caught here first.
+if { [ ! -v HOME ] || [ -z "${HOME}" ]; } \
+      && [ -z "${OUTPUT_LIES_REPO:-}" ] && [ -z "${SECURE_TERMINAL_SITE_REPO:-}" ] \
+      && [ -z "${ORG_AI_ASSISTED_REPO:-}" ] && [ -z "${COMPUTER_SECURITY_RESEARCH_REPO:-}" ]; then
+   printf '%s\n' "website-tests: FATAL: HOME is unset and no site override (OUTPUT_LIES_REPO / SECURE_TERMINAL_SITE_REPO / ORG_AI_ASSISTED_REPO) given -- unexpected scrubbed environment; refusing to silently SKIP" >&2
+   exit 1
+fi
+
 ## Unit regression for check_site's own logic (the image-format gate + the
 ## render-source recognition it depends on). Fixture-based, no site checkout or
 ## image tools needed; a failure here is a real logic regression, so it fails the
@@ -341,13 +355,9 @@ if { [ -z "${requested_site}" ] || [ "${requested_site}" = 'secure-terminal.gith
 fi
 
 if [ "${#roots[@]}" -eq 0 ]; then
-   if [ -n "${home_unset}" ]; then
-      ## Unset HOME + no explicit site override: a scrubbed/broken environment, not a
-      ## legitimate no-checkout host. FAIL loudly rather than silently SKIP (no unauthorized
-      ## skips). A valid explicit override would have populated roots above and never reach here.
-      printf '%s\n' "website-tests: FATAL: HOME is unset and no site override (OUTPUT_LIES_REPO / SECURE_TERMINAL_SITE_REPO / ORG_AI_ASSISTED_REPO) given -- unexpected scrubbed environment; refusing to silently SKIP" >&2
-      exit 1
-   fi
+   ## Honest no-checkout host (HOME set, no override, no default tree) -- a legitimate no-op.
+   ## The scrubbed-env case (HOME unset + no override) already FATAL'd before the unit tests
+   ## above, so it cannot reach here; this branch is only the genuine no-checkout SKIP.
    printf '%s\n' 'website-tests: SKIP (no site checkout found; set OUTPUT_LIES_REPO / SECURE_TERMINAL_SITE_REPO / ORG_AI_ASSISTED_REPO)' >&2
    ## style-ok: allow-skip: no site checkout resolved -- there is nothing to verify, and site-deploy already treats this SKIP as a publish failure.
    exit 77
