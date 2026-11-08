@@ -127,6 +127,13 @@ assert "console systemcheck result sinks are per-attempt (nonce includes the att
 ## snapshot cannot run under a mislabeled -bios result.
 assert "restore_fresh verifies the restored firmware is the expected type" \
    grep --quiet --fixed-strings 'restored snapshot firmware' "${tool}"
+## Before a (re)login the code interrupts a prior attempt's still-running systemcheck (Ctrl-C), so
+## this attempt's keystrokes drive a fresh login + run instead of interleaving with a hung command.
+assert "console systemcheck restores a known prompt before retry (Ctrl-C)" \
+   grep --quiet --fixed-strings 'chord ctrl c' "${tool}"
+## A failed check-8 read-back records a diagnostic (not a bare header) when the guest log is unreadable.
+assert "console systemcheck notes an empty/unreadable check-8 log" \
+   grep --quiet --fixed-strings 'empty or unreadable over guestcontrol' "${tool}"
 
 ## --- a FAILED CLI check appends its in-guest output to --check-log (so dm-release-test can
 ##     publish the failure tail). Stub gc_run to fail with recognizable output. ---
@@ -146,6 +153,66 @@ assert "failed CLI check captures in-guest output to check_log" \
 assert "failed CLI check records the check number + cmd" \
    grep --quiet --fixed-strings 'check 4 (failing-cmd) FAILED' "${cl}"
 safe-rm --force -- "${cl}"
+
+## --- behavioral: drive ws_cli_console_systemcheck with a SIMULATED console (stub GUESTCTL +
+##     gc_run) so this EXERCISES the command the code actually types, not just the source text. A
+##     source-grep canary passes even if the live command pipes systemcheck into head (the SIGPIPE
+##     regression); this does not. Checks the recorded verdict for a verbose PASS and a FAIL. ---
+guestctl_stub="$(mktemp)"
+cat > "${guestctl_stub}" <<'STUB'
+#!/bin/bash
+## record only the typed command text (type-stdin stdin); chord/shot are no-ops
+[ "$2" = 'type-stdin' ] && cat >> "${GUESTCTL_RECORD}"
+exit 0
+STUB
+chmod +x "${guestctl_stub}"
+gc_rec="$(mktemp)"
+export GUESTCTL="${guestctl_stub}" GUESTCTL_RECORD="${gc_rec}"
+# shellcheck disable=SC2034  ## read as ${ws} inside the sourced function
+ws='TESTVM'
+# shellcheck disable=SC2034  ## read by the function (empty -> skip the check-log capture)
+check_log=''
+RELEASE_CHECK_RETRIES[8]=1
+RELEASE_CHECK_RETRY_SLEEP[8]=0
+## Simulated guest: whoami='user', rc-file present, rc=${SIM_RC}, a verbose log tail.
+# shellcheck disable=SC2317  ## called indirectly by ws_cli_console_systemcheck
+gc_run() {
+   case "$2" in
+      *'test -f'*)
+         return 0
+         ;;
+      *'cat '*'.who'*)
+         printf '%s\n' 'user'
+         ;;
+      *'cat '*'.rc'*)
+         printf '%s\n' "${SIM_RC}"
+         ;;
+      *'head '*'.log'*)
+         printf '%s\n' 'simulated verbose log tail'
+         ;;
+      *)
+         return 0
+         ;;
+   esac
+}
+true > "${gc_rec}"
+SIM_RC=0
+ok_ret=0
+ws_cli_console_systemcheck >/dev/null 2>&1 || ok_ret=$?
+assert "console systemcheck returns 0 on a guest rc 0 (verbose pass, no false SIGPIPE 141)" \
+   test "${ok_ret}" -eq 0
+assert "console systemcheck TYPES a file-redirect command to the guest" \
+   grep --quiet --fixed-strings 'systemcheck --cli --ci > ' "${gc_rec}"
+sigpipe=0
+grep --quiet --fixed-strings 'systemcheck --cli --ci 2>&1 | head' "${gc_rec}" && sigpipe=1
+assert "console systemcheck does NOT pipe systemcheck into head (SIGPIPE regression)" \
+   test "${sigpipe}" -eq 0
+true > "${gc_rec}"
+SIM_RC=1
+bad_ret=0
+( ws_cli_console_systemcheck ) >/dev/null 2>&1 || bad_ret=$?
+assert "console systemcheck FAILS (nonzero exit) on a guest rc 1" test "${bad_ret}" -ne 0
+safe-rm --force -- "${guestctl_stub}" "${gc_rec}"
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 [ "${fail}" -eq 0 ] || exit 1

@@ -1050,7 +1050,7 @@ ws_func_cli_reboot_sysmaint() {
 ## -> INCONCLUSIVE (SETUP_RC), never a false green; a non-zero rc -> FAIL with the captured log.
 ws_cli_console_systemcheck() {
    vm="${ws}"
-   local acct='user' home nonce rc_file log_file who_file attempt tries retry_sleep deadline sc_rc sc_who
+   local acct='user' home nonce rc_file log_file who_file attempt tries retry_sleep deadline sc_rc sc_who log_tail
    home="/home/${acct}"
    ## Reuse check 8's shared retry policy (release-checks.bsh) -- running it here must not lose the
    ## battery's retry-across-the-just-booted-transient-window behavior.
@@ -1068,6 +1068,11 @@ ws_cli_console_systemcheck() {
       log_file="${home}/.dm-cli-systemcheck-${nonce}.log"
       who_file="${home}/.dm-cli-systemcheck-${nonce}.who"
       gc_run "${acct}" "rm -f ${rc_file} ${log_file} ${who_file}" 60 >/dev/null 2>&1 || true
+      ## Restore a KNOWN console state before (re)login: a PRIOR attempt's systemcheck may still be
+      ## running (it timed out), so interrupt it (Ctrl-C) and settle -- otherwise this attempt's
+      ## keystrokes interleave with the running command instead of driving a fresh login + run.
+      "${GUESTCTL}" "${ws}" chord ctrl c >/dev/null 2>&1 || true
+      sleep 2
       ## Dismiss any pending getty prompt, log in (passwordless), then run systemcheck in that
       ## session. Robust to a getty-login OR an auto-login console: a stray 'user' line simply
       ## errors in an already-logged-in shell. whoami records the ACTUAL account (an autologin-root
@@ -1133,9 +1138,15 @@ ws_cli_console_systemcheck() {
       ## Capture the failed systemcheck output to --check-log, bounded to 64 KiB ON THE READ-BACK
       ## (the in-guest log is unbounded by design -- a file redirect, no SIGPIPE -- so bound here).
       if [ -n "${check_log:-}" ]; then
+         log_tail="$(gc_run "${acct}" "head --bytes 65536 ${log_file} 2>/dev/null || true" 120 2>/dev/null)" || log_tail=""
          {
             printf '%s\n' "=== check 8 (systemcheck --cli --ci via console login) FAILED rc=${sc_rc} ==="
-            gc_run "${acct}" "head --bytes 65536 ${log_file} 2>/dev/null || true" 120 2>/dev/null || true
+            if [ -n "${log_tail}" ]; then
+               printf '%s\n' "${log_tail}"
+            else
+               ## A suppressed empty read would leave only the header, with no hint WHY; say so.
+               printf '%s\n' "(check 8 log ${log_file} was empty or unreadable over guestcontrol -- no in-guest output captured; the guest may have been mid-write or the session wedged)"
+            fi
          } >> "${check_log}"
       fi
       die "${FAIL_RC}" "check 8 (systemcheck --cli --ci via real console login) FAILED (rc=${sc_rc})"
