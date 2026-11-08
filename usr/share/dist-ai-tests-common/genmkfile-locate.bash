@@ -54,7 +54,7 @@ genmkfile_require_helper() {
    ## Nothing wired: the dm checkout BEFORE the installed copy (the installed copy
    ## drifts from the tree under review).
    for candidate in \
-      "${HOME}/derivative-maker/packages/kicksecure/genmkfile/usr/share/genmkfile/make-helper-one.bsh" \
+      "${HOME:-}/derivative-maker/packages/kicksecure/genmkfile/usr/share/genmkfile/make-helper-one.bsh" \
       "/usr/share/genmkfile/make-helper-one.bsh"; do
       [ -r "${candidate}" ] || continue
       if [ "${candidate}" = "/usr/share/genmkfile/make-helper-one.bsh" ]; then
@@ -89,7 +89,7 @@ genmkfile_require_bin() {
    ## Nothing wired: the dm checkout BEFORE the installed copy (the installed copy
    ## drifts from the tree under review).
    for candidate in \
-      "${HOME}/derivative-maker/packages/kicksecure/genmkfile/usr/bin/genmkfile" \
+      "${HOME:-}/derivative-maker/packages/kicksecure/genmkfile/usr/bin/genmkfile" \
       "/usr/bin/genmkfile"; do
       [ -x "${candidate}" ] || continue
       if [ "${candidate}" = "/usr/bin/genmkfile" ]; then
