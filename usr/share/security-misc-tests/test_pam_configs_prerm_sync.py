@@ -34,27 +34,33 @@ def _security_misc_repo():
 
 def _shipped_profiles(pam_configs_dir):
     """Installed profile names: the basename with the '#<package>' install tag
-    stripped (the tag is not part of the installed name)."""
+    stripped, restricted to the '-security-misc' naming the prerm removes by, so
+    a stray non-profile file (README, editor backup) cannot skew the comparison."""
     names = set()
     for entry in os.listdir(pam_configs_dir):
         if not os.path.isfile(os.path.join(pam_configs_dir, entry)):
             continue
-        names.add(entry.split('#', 1)[0])
+        name = entry.split('#', 1)[0]
+        if name.endswith(PROFILE_SUFFIX):
+            names.add(name)
     return names
 
 
 def _prerm_remove_list(prerm_path):
-    """Names passed to the prerm '--package --remove' call: tokens ending in
-    '-security-misc' on the backslash-continued lines after the marker."""
+    """Names passed to the prerm '--package --remove' call: every token ending
+    in '-security-misc', scanning the marker line's own remainder (the first
+    profile may sit on it) and the backslash-continued lines after it."""
     names = set()
     collecting = False
     with open(prerm_path, encoding='utf-8') as handle:
         for raw in handle:
             line = raw.rstrip('\n')
             if not collecting:
-                if REMOVE_MARKER in line:
-                    collecting = True
-                continue
+                marker = line.find(REMOVE_MARKER)
+                if marker == -1:
+                    continue
+                collecting = True
+                line = line[marker + len(REMOVE_MARKER):]
             has_continuation = line.rstrip().endswith('\\')
             for token in line.rstrip().rstrip('\\').split():
                 if token.endswith(PROFILE_SUFFIX):
