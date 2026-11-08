@@ -55,6 +55,10 @@ mkdir --parents -- "${stubbin}"
 
 ## Files the stubs read/write at runtime (exported so the stub bodies stay expansion-free).
 export MARKER_RESPONSE_FILE="${work}/marker.response"
+## The firmware the showvminfo stub reports for the ACTUAL-firmware verify (default BIOS, what a
+## bios-only whonix pair carries; a case below flips it to EFI to exercise the mismatch guard).
+export FW_ACTUAL_FILE="${work}/fw-actual.response"
+printf '%s\n' 'firmware="BIOS"' > "${FW_ACTUAL_FILE}"
 export SETEXTRA_LOG="${work}/setextradata.log"
 export PAIR_ARGV="${work}/dm-whonix-pair.argv"
 export DIST_ARGV="${work}/dist-installer-cli.argv"
@@ -92,6 +96,7 @@ cat > "${stubbin}/VBoxManage" <<'EOF'
 #!/bin/bash
 case "$1" in
   getextradata) cat -- "${MARKER_RESPONSE_FILE}";;
+  showvminfo) cat -- "${FW_ACTUAL_FILE}";;
   setextradata) printf '%s %s %s\n' "$2" "$3" "$4" >> "${SETEXTRA_LOG}";;
   import|controlvm|unregistervm|modifyvm|modifynvram) printf '%s\n' "$*" >> "${VBOX_LOG}";;
 esac
@@ -241,6 +246,20 @@ check "inst match: passed --mode functional" \
    "$(grep --quiet -- '--mode functional' "${PAIR_ARGV}" && printf '%s' "true" || printf '%s' "false")"
 check "inst match: did NOT pass --mode leak" \
    "$(grep --quiet -- '--mode leak' "${PAIR_ARGV}" && printf '%s' "false" || printf '%s' "true")"
+
+## #2 (grok/codex firmware honesty): the version marker matches but the pair's ACTUAL firmware is
+## EFI (a stale pair) -> the lane must REFUSE (SETUP_RC) before dm-whonix-pair, never publishing a
+## mislabeled -bios cell. Canary: without the showvminfo firmware verify, the lane proceeds + runs.
+printf '%s\n' 'Value: 18.2.3.5' > "${MARKER_RESPONSE_FILE}"
+printf '%s\n' 'firmware="EFI"' > "${FW_ACTUAL_FILE}"
+printf '%s' "" > "${PAIR_ARGV}"
+rc_fw="$(run_lane rt_lane_whonix_inst persist-inst-whonix)"
+check "firmware mismatch (actual EFI): lane refuses SETUP_RC(2)" \
+   "$([ "${rc_fw}" = '2' ] && printf '%s' "true" || printf '%s' "false")"
+check "firmware mismatch: dm-whonix-pair NOT invoked" \
+   "$([ ! -s "${PAIR_ARGV}" ] && printf '%s' "true" || printf '%s' "false")"
+## Restore BIOS for the remaining cases.
+printf '%s\n' 'firmware="BIOS"' > "${FW_ACTUAL_FILE}"
 
 ## Case B (both lanes): marker differs -> SETUP_RC, dm-whonix-pair NEVER reached (no verdict
 ## mislabel). Checked on BOTH lanes since they share rt_whonix_pair_require.

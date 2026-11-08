@@ -969,16 +969,13 @@ ws_func_cli_exec() {
    vm="${ws}"
    local tmp rc=0
    tmp="$(mktemp)"
-   ## Cap the captured guest output at a GENEROUS 16 MiB so a check that spews unbounded output
-   ## cannot OOM the host or fill the disk, while a legitimately verbose but PASSING check (e.g.
-   ## upgrade-nonroot's apt output, well under 16 MiB) is never SIGPIPE'd into a false failure.
-   ## PIPESTATUS preserves gc_run's REAL exit code; only a pathological >16 MiB-output check gets
-   ## SIGPIPE'd (treated as a fail, which such a check legitimately is).
-   if gc_run "$2" "$3" "$4" 2>&1 | head --bytes 16777216 > "${tmp}"; then
-      rc=0
-   else
-      rc="${PIPESTATUS[0]}"
-   fi
+   ## Capture to a FILE, not through a pipe: piping gc_run into `head` SIGPIPE-kills the external
+   ## writer (vbox-exec-local, not a shell builtin) the instant the cap is hit, so a verbose but
+   ## PASSING check (e.g. upgrade-nonroot's ~200 KiB apt output) would be misreported rc 141. A
+   ## plain redirect preserves gc_run's REAL exit code; the output is bounded only when READ into
+   ## the check-log below (a release check's output is bounded in practice, and ${tmp} is removed
+   ## right after, so there is no lingering disk growth).
+   gc_run "$2" "$3" "$4" > "${tmp}" 2>&1 || rc=$?
    if [ "${rc}" -eq 0 ]; then
       safe-rm --force -- "${tmp}"
       printf '%s\n' "${me}: check $1 PASS"

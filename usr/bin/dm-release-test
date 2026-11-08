@@ -1342,7 +1342,7 @@ rt_lane_kicksecure() {
 ## mislabels a verdict for the wrong version. Reads both VMs (a half-reprovisioned pair with
 ## one stale VM is caught too). $1=account $2=version $3=gw $4=ws.
 rt_whonix_pair_require() {
-   local account version gw ws gw_ver ws_ver reprovision
+   local account version gw ws gw_ver ws_ver reprovision gw_fw_actual ws_fw_actual
    account="$1"
    version="$2"
    gw="$3"
@@ -1359,6 +1359,16 @@ rt_whonix_pair_require() {
    fi
    rt_pair_version_ok "${version}" "${gw_ver}" "${ws_ver}" \
       || die "${SETUP_RC}" "whonix pair version mismatch: requested '${version}', GW marked '${gw_ver}', WS marked '${ws_ver}' -- re-provision with '${reprovision}' or pass the matching --version"
+   ## The published -${firmware} cell must match the pair's ACTUAL firmware, not just the requested
+   ## value (firmware is applied at --provision, not re-applied per test run). whonix is BIOS-only,
+   ## so verify both VMs really carry BIOS; a stale EFI pair is INCONCLUSIVE, never a mislabeled
+   ## '-bios' pass (grok/codex firmware-honesty finding).
+   if [ "${firmware}" = 'bios' ]; then
+      gw_fw_actual="$(sudo -u "${account}" -- "${VBOXMANAGE}" showvminfo "${gw}" --machinereadable 2>/dev/null | sed -n 's/^firmware="\(.*\)"$/\1/p')"
+      ws_fw_actual="$(sudo -u "${account}" -- "${VBOXMANAGE}" showvminfo "${ws}" --machinereadable 2>/dev/null | sed -n 's/^firmware="\(.*\)"$/\1/p')"
+      { [ "${gw_fw_actual}" = 'BIOS' ] && [ "${ws_fw_actual}" = 'BIOS' ]; } \
+         || die "${SETUP_RC}" "whonix pair firmware mismatch: lane is bios-only but GW firmware='${gw_fw_actual}' WS firmware='${ws_fw_actual}' -- re-provision the pair (firmware is applied at --provision), not publishing a mislabeled -bios cell"
+   fi
 }
 
 ## leak lane: the anon-leak-test battery on the dedicated persist-leak- pair.
