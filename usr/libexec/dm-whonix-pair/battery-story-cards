@@ -21,49 +21,80 @@ on PASS and on FAIL/INCONCLUSIVE alike.
 The battery JSON (anon-leak-test --json) is:
   {"results": [{"probe", "status", "message", "detail"}, ...],
    "leak_detected": bool, "exit_code": int}
-Transport (guestcontrol) may wrap it in noise, so the object is extracted by a
-decoder scan, not a bare json.loads.
+Transport (guestcontrol) may wrap it in noise AND emit earlier, irrelevant
+objects (e.g. an empty '{"results": []}' warning) before the real verdict, so
+the object is both extracted by a decoder scan AND pinned to the SAME verdict
+dm-whonix-pair's probe_verdict classifies the run from -- the object carrying
+the LAST line-anchored "exit_code". A real leak must never be silently replaced
+by an earlier object: if the authoritative object cannot be matched, the helper
+exits 2 and the caller keeps the raw JSON, so the evidence is never lost.
 
 Argv: <base-nn> <summary-name>. Output (stdout), one card per line:
   <nn> <name> <b64-title> <b64-body>
 where nn = base (summary) then base+1, base+2, ... (runtime order), name is a
 publisher-safe label, and title/body are base64 (line-framed, newline-safe).
 
-Exit: 0 one-or-more records emitted; 2 no parseable battery verdict (the caller
-falls back to a single raw-JSON card, so the evidence is never lost).
+Exit: 0 one-or-more records emitted; 2 no authoritative battery verdict to card
+(the caller falls back to a single raw-JSON card, so the evidence is never lost).
 """
 
 import base64
 import json
+import re
+import string
 import sys
+
+## probe_verdict (dm-whonix-pair) keys the run on the LAST line-anchored "exit_code": N (any
+## indent). Match that EXACTLY so the story cannot disagree with the published verdict.
+_EXIT_CODE_LINE = re.compile(r'(?m)^[ \t]*"exit_code"[ \t]*:[ \t]*(\d+)')
+
+## The publisher (results-publish.bsh) drops any card milestone outside ASCII [A-Za-z0-9._-],
+## plus a leading '-' and a bare '.' / '..'. Mirror that charset so every per-probe card publishes.
+_SAFE_CHARS = frozenset(string.ascii_letters + string.digits + "._-")
+
+
+def authoritative_exit_code(text):
+    """The exit_code probe_verdict classifies from: the LAST line-anchored "exit_code": N
+    (any indent). None when absent -> no verdict (the caller keeps the raw JSON)."""
+    matches = _EXIT_CODE_LINE.findall(text)
+    return int(matches[-1]) if matches else None
 
 
 def extract_verdict(text):
-    """Return the first JSON object in text that has a 'results' list, or None."""
+    """Return the JSON object carrying the LAST top-level integer 'exit_code' -- the SAME object
+    probe_verdict classifies the run from. Not merely the first object with a 'results' list: an
+    earlier empty/irrelevant object must never win and drop the real verdict. None if no object
+    carries an integer exit_code."""
     decoder = json.JSONDecoder()
     index = 0
     length = len(text)
-    while True:
+    chosen = None
+    while index < length:
         start = text.find("{", index)
         if start == -1:
-            return None
+            break
         try:
             obj, end = decoder.raw_decode(text, start)
         except ValueError:
             index = start + 1
             continue
-        if isinstance(obj, dict) and isinstance(obj.get("results"), list):
-            return obj
+        if isinstance(obj, dict) and isinstance(obj.get("exit_code"), int):
+            ## Keep scanning: the LAST such object wins (matches probe_verdict's tail -1).
+            chosen = obj
         index = end if end > start else start + 1
+    return chosen
 
 
 def safe_label(name, fallback):
-    """Collapse a probe name to the publisher's safe-label charset [A-Za-z0-9._-],
-    never leading '-' (argparse-eatable) -- so every per-probe card publishes."""
-    cleaned = "".join(char if char.isalnum() or char in "._-" else "_"
-                      for char in str(name))
+    """Collapse a probe name to the publisher's EXACT safe-label charset (results-publish.bsh):
+    ASCII [A-Za-z0-9._-], every other char (incl. non-ASCII letters) mapped to '_', never a
+    leading '-' (argparse-eatable) and never a bare '.' / '..' -- the publisher drops all three,
+    so without this a card would parse locally yet vanish from the published story."""
+    cleaned = "".join(char if char in _SAFE_CHARS else "_" for char in str(name))
     cleaned = cleaned.lstrip("-")
-    return cleaned or fallback
+    if cleaned in ("", ".", ".."):
+        return fallback
+    return cleaned
 
 
 def encode(text):
@@ -82,10 +113,19 @@ def main(argv):
     base = int(argv[0])
     summary_name = safe_label(argv[1], "leak-battery")
 
-    verdict = extract_verdict(sys.stdin.read())
-    if verdict is None:
+    text = sys.stdin.read()
+    authoritative = authoritative_exit_code(text)
+    verdict = extract_verdict(text)
+    ## Publish ONLY a story that agrees with the verdict probe_verdict classifies the run from.
+    ## If no authoritative exit_code, or the extracted object does not carry it, keep the raw JSON
+    ## (exit 2) -- an earlier/irrelevant object must never silently replace the real verdict, so a
+    ## real leak can never vanish from the published story.
+    if (authoritative is None or verdict is None
+            or verdict.get("exit_code") != authoritative):
         return 2
-    results = verdict["results"]
+    results = verdict.get("results")
+    if not isinstance(results, list):
+        results = []
 
     exit_code = verdict.get("exit_code")
     leak_detected = verdict.get("leak_detected")

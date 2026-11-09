@@ -182,12 +182,57 @@ done < <(cards_in "${work}/pass"; cards_in "${work}/fail")
 ## --- a probe with an unusual name is sanitized to a publishable label -----------------------
 shot_dir="${work}/odd"
 mkdir --parents -- "${shot_dir}"
-story_battery_cards 60 leak-battery '{"results":[{"probe":"weird/probe name","status":"PASS","message":"m","detail":{}}],"leak_detected":false,"exit_code":0}'
+story_battery_cards 60 leak-battery '{"results":[{"probe":"weird/probe name","status":"PASS","message":"m","detail":{}}],
+"leak_detected":false,
+"exit_code":0}'
 assert "an odd probe name is sanitized to a safe-label card" \
    test "$(find "${shot_dir}" -maxdepth 1 -name '61-*.card.txt' | grep --count .)" -eq 1
 while IFS= read -r card; do
    base="${card##*/}"
    assert "sanitized card name '${base}' is publishable" label_ok "${base%.card.txt}"
+done < <(cards_in "${shot_dir}")
+
+## --- Finding 1: an earlier empty/irrelevant object must NOT replace the real verdict --------
+## probe_verdict classifies from the LAST line-anchored exit_code; the story must card the SAME
+## object. Canary: the pre-fix helper returned the FIRST object with a results list (the empty
+## warning), dropped the real leak, and exited 0 -- no fallback, a real leak published as none.
+shot_dir="${work}/earlier-empty"
+mkdir --parents -- "${shot_dir}"
+earlier_empty="$(printf '%s\n' 'guest warning {"results": []}' "${fail_json}")"
+story_battery_cards 60 leak-battery "${earlier_empty}"
+assert "an earlier empty results object does NOT replace the real leak verdict" \
+   grep --quiet --fixed-strings 'icmp-clearnet -- FAIL' "${shot_dir}/62-icmp-clearnet.card.txt"
+assert "the real leak detail survives an earlier empty object (leaked_to published)" \
+   grep --quiet --fixed-strings '1.1.1.1' "${shot_dir}/62-icmp-clearnet.card.txt"
+assert "summary carries the real leak verdict (exit_code=1), not the empty object" \
+   grep --quiet --fixed-strings 'exit_code=1' "${shot_dir}/60-leak-battery.card.txt"
+
+## --- Finding 2: a bare '.'/'..' or non-ASCII probe name must map to a PUBLISHABLE label ------
+## Canary: the pre-fix safe_label kept '.'/'..' and non-ASCII isalnum chars, so the publisher
+## silently dropped the card (and no raw-JSON fallback) -- the probe's evidence vanished.
+shot_dir="${work}/dotdot"
+mkdir --parents -- "${shot_dir}"
+story_battery_cards 60 leak-battery '{"results":[{"probe":"..","status":"PASS","message":"m","detail":{}}],
+"leak_detected":false,
+"exit_code":0}'
+while IFS= read -r card; do
+   base="${card##*/}"
+   assert "a '..' probe name is sanitized to a publishable label '${base}'" label_ok "${base%.card.txt}"
+done < <(cards_in "${shot_dir}")
+
+shot_dir="${work}/nonascii"
+mkdir --parents -- "${shot_dir}"
+## A non-ASCII probe name (UTF-8 o-umlaut, injected from ASCII octal so the SOURCE stays ASCII):
+## str.isalnum() accepts non-ASCII letters, so the pre-fix safe_label kept it and the publisher
+## (ASCII [A-Za-z0-9._-] only) dropped the card.
+oe=$'\303\266'
+nonascii_json='{"results":[{"probe":"prOEbe","status":"PASS","message":"m","detail":{}}],
+"leak_detected":false,
+"exit_code":0}'
+story_battery_cards 60 leak-battery "${nonascii_json/OE/${oe}}"
+while IFS= read -r card; do
+   base="${card##*/}"
+   assert "a non-ASCII probe name is sanitized to a publishable label '${base}'" label_ok "${base%.card.txt}"
 done < <(cards_in "${shot_dir}")
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
