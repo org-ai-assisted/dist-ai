@@ -143,6 +143,14 @@ to_bump_paths=()
 to_bump_shas=()
 skipped_notes=()
 
+## Sample the compare-and-swap anchor BEFORE classification, so a concurrent sibling commit that
+## lands DURING the validation window (between reading a pin below and installing the bump) is
+## caught by the update-ref CAS at the end -- a post-validation sample would miss it and let the
+## bump REGRESS a gitlink the sibling just advanced. Tolerant: a --check / no-op run off 'ai'
+## never commits, so a missing branch is fine here; the commit path re-requires it non-empty.
+branch_ref="refs/heads/${AI_BRANCH}"
+old_tip="$( git -C "${top}" rev-parse --verify --quiet "${branch_ref}" 2>/dev/null || true )"
+
 for path in "${sub_paths[@]}"; do
    [ -n "${path}" ] || continue
    sub="${top}/${path}"
@@ -280,8 +288,11 @@ done
 ## GIT_AUTHOR_NAME / GIT_COMMITTER_NAME with a session-id suffix that would
 ## otherwise land in the public object; email stays git config (noreply), never
 ## set here (PII risk).
-branch_ref="refs/heads/${AI_BRANCH}"
-old_tip="$( git -C "${top}" rev-parse --verify "${branch_ref}" )"
+## branch_ref/old_tip were sampled BEFORE classification (so the CAS spans the whole validation
+## window); old_tip is non-empty here because the superproject-on-'ai' guard above proved
+## refs/heads/ai exists.
+[ -n "${old_tip}" ] \
+   || { printf '%s\n' "${0##*/}: '${branch_ref}' not found; refusing to bump." >&2; exit 2; }
 
 ## shellcheck cannot see the trap invocation below.
 # shellcheck disable=SC2317
