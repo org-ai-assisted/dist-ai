@@ -106,8 +106,11 @@ settle_partitions() {
          return 0
       fi
       ## Whole-disk signature = a TYPE= line (filesystem/crypto_LUKS) with NO PTTYPE= line
-      ## (no partition table). Then there are no partitions to wait for.
-      probe="$(blkid --output export -- "${dev}" 2>/dev/null || true)"
+      ## (no partition table). Then there are no partitions to wait for. --probe forces a
+      ## LIVE low-level probe of the device: plain blkid serves a ~2s /run/blkid cache, and
+      ## free_nbd reuses the same /dev/nbdN, so a stale TYPE= from a prior image on that node
+      ## would satisfy this predicate and return before the new image's partition node exists.
+      probe="$(blkid --probe --output export -- "${dev}" 2>/dev/null || true)"
       if grep --quiet '^TYPE=' <<< "${probe}" && ! grep --quiet '^PTTYPE=' <<< "${probe}"; then
          return 0
       fi
