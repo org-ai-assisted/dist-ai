@@ -88,9 +88,13 @@ fi
 ## so match `whonix cli ` + a `--lane inst` token; leave every other lane untouched.
 if [ -n "${local_repo}" ]; then
    for i in "${!lanes[@]}"; do
-      ## Two independent matches (one glob cannot do AND without space-overlap bugs): the lane must
-      ## START `whonix cli ` AND carry a `--lane inst ` token (subject space-wrapped so the token
-      ## matches at the end too). Every other lane is left byte-unchanged.
+      ## The lane must START `whonix cli ` (only the split-free CLI edition's root `user` can
+      ## repo-add-local) AND carry a `--lane inst` token. Match the token AFTER the SAME whitespace
+      ## split dm-release-test applies to the lane (read -r -a, below), not against the literal
+      ## spacing: a lane written `--lane  inst` (repeated spaces) still word-splits to `--lane inst`
+      ## downstream, so a literal-space glob would silently drop --local-repo while the inst lane
+      ## still ran -- testing the PUBLISHED packages, not the local build. Every other lane is left
+      ## byte-unchanged.
       case "${lanes[i]}" in
          "whonix cli "*)
             ;;
@@ -98,11 +102,15 @@ if [ -n "${local_repo}" ]; then
             continue
             ;;
       esac
-      case " ${lanes[i]} " in
-         *" --lane inst "*)
+      read -r -a lr_argv <<< "${lanes[i]}"
+      lr_k=0
+      while [ "${lr_k}" -lt "$(( ${#lr_argv[@]} - 1 ))" ]; do
+         if [ "${lr_argv[lr_k]}" = '--lane' ] && [ "${lr_argv[lr_k+1]}" = 'inst' ]; then
             lanes[i]="${lanes[i]} --local-repo ${local_repo}"
-            ;;
-      esac
+            break
+         fi
+         lr_k=$(( lr_k + 1 ))
+      done
    done
 fi
 

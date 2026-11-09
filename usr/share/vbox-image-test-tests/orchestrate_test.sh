@@ -106,6 +106,27 @@ want "${rc}" 0 "metachar lane -> rc 0"
 if grep --quiet --fixed-strings 'a\;b' "${lanes}"; then pass "metachar token %q-escaped in the remote cmd"; else fail "metachar token NOT escaped -- a raw ';' would execute on the server as root"; fi
 if grep --quiet --fixed-strings 'version a;b' "${lanes}"; then fail "raw unescaped 'a;b' spliced into the remote cmd"; else pass "no raw unescaped metachar token in the remote cmd"; fi
 
+# --- D: --local-repo is appended to a `whonix cli --lane  inst` lane with REPEATED spaces.
+#     Canary: the old match globbed the literal " --lane inst " (single spaces), so a lane with
+#     `--lane  inst` dropped --local-repo while the inst lane still ran -- silently testing the
+#     PUBLISHED packages instead of the local build. Match after the same whitespace split
+#     dm-release-test applies, so spacing cannot drop the flag. ---
+reset
+rc=0
+SE_LANES="${lanes}" TRD_CALLS="${calls}" "${bin}" --no-publish --local-repo whonix 'whonix cli --lane  inst --version 18' || rc=$?
+want "${rc}" 0 "double-space inst lane -> rc 0"
+if grep --quiet --fixed-strings -- '--local-repo whonix' "${lanes}"; then pass "double-space --lane inst got --local-repo appended"; else fail "double-space --lane inst DROPPED --local-repo (would test published packages, not the local build)"; fi
+
+# --- D companion: a single-space inst lane also gets it; a NON-inst whonix cli lane does not. ---
+reset
+rc=0
+SE_LANES="${lanes}" TRD_CALLS="${calls}" "${bin}" --no-publish --local-repo whonix 'whonix cli --lane inst --version 18' || rc=$?
+if grep --quiet --fixed-strings -- '--local-repo whonix' "${lanes}"; then pass "single-space --lane inst got --local-repo appended"; else fail "single-space --lane inst did not get --local-repo"; fi
+reset
+rc=0
+SE_LANES="${lanes}" TRD_CALLS="${calls}" "${bin}" --no-publish --local-repo whonix 'whonix cli --version 18' || rc=$?
+if grep --quiet --fixed-strings -- '--local-repo whonix' "${lanes}"; then fail "non-inst whonix cli lane wrongly got --local-repo"; else pass "non-inst whonix cli lane left unchanged"; fi
+
 # --- no lanes: usage error ---
 rc=0
 SE_LANES="${lanes}" TRD_CALLS="${calls}" "${bin}" >/dev/null 2>&1 || rc=$?
