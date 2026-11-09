@@ -172,5 +172,94 @@ boot_workstation_user >/dev/null 2>&1
 assert "no --local-repo -> boot_workstation_user does not attach a share" \
    test ! -s "${rec_attach}"
 
+## --- #1: ws_func_verify_local_repo_installed force-installs the local payload and asserts it is
+##     actually installed (a same-version rebuild is a check-3 NO-OP -> false green otherwise).
+##     EXECUTE the real guest snippet against stub apt-get/dpkg-query/dsudo + a fixture Packages, so
+##     the shell logic is tested, not just the command string. ---
+vstub="$(mktemp --directory)"
+# shellcheck disable=SC2317  ## runs via the EXIT trap
+cleanup_all() { cleanup; safe-rm --recursive --force -- "${vstub}"; }
+trap cleanup_all EXIT
+
+## Fixture local Packages at the exact in-guest path the snippet reads.
+pkgs_dir="${vstub}/mnt/aptrepo_local/whonix/dists/local/main/binary-amd64"
+mkdir --parents -- "${pkgs_dir}"
+cat > "${pkgs_dir}/Packages" <<'EOF'
+Package: anon-apps-config
+Version: 7:18.1-1
+Architecture: all
+
+Package: whonix-gw-network-conf
+Version: 3:18.2-1
+Architecture: all
+EOF
+
+## Stub tools on PATH: dpkg-query reads an installed-version map; apt-get records argv + succeeds;
+## dsudo execs the rest.
+stub_bin="${vstub}/bin"
+mkdir --parents -- "${stub_bin}"
+cat > "${stub_bin}/dpkg-query" <<'STUB'
+#!/bin/bash
+fmt=""; name=""
+for a in "$@"; do
+   case "$a" in -f=*) fmt="${a#-f=}" ;; -*) : ;; *) name="$a" ;; esac
+done
+ver="$(awk -v n="${name}" '$1==n{print $2}' "${DPKG_MAP}")"
+[ -n "${ver}" ] || exit 1
+case "${fmt}" in
+   *Status*) printf 'install ok installed\n' ;;
+   *Version*) printf '%s\n' "${ver}" ;;
+esac
+STUB
+cat > "${stub_bin}/apt-get" <<'STUB'
+#!/bin/bash
+printf '%s\n' "$*" >> "${APT_LOG}"
+exit 0
+STUB
+cat > "${stub_bin}/dsudo" <<'STUB'
+#!/bin/bash
+exec "$@"
+STUB
+chmod +x "${stub_bin}/dpkg-query" "${stub_bin}/apt-get" "${stub_bin}/dsudo"
+
+## gc_run: capture the guest command, then EXECUTE it (so the real snippet logic runs here).
+# shellcheck disable=SC2317  ## called indirectly by ws_func_verify_local_repo_installed
+gc_run() { printf '%s' "$2" > "${GC_CMD}"; bash -c "$2"; }
+
+export PATH="${stub_bin}:${PATH}"
+export DPKG_MAP="${vstub}/dpkg.map"
+export APT_LOG="${vstub}/apt.log"
+export GC_CMD="${vstub}/gc.cmd"
+# shellcheck disable=SC2034  ## read as globals by the sourced function
+GUEST_SHARE_MOUNT="${vstub}/mnt"
+# shellcheck disable=SC2034
+local_repo='whonix'
+
+## PASS: both local packages installed at the local versions -> verification succeeds, and apt-get
+## force-reinstalled them from the 'local' suite.
+true > "${APT_LOG}"
+printf '%s\n' 'anon-apps-config 7:18.1-1' 'whonix-gw-network-conf 3:18.2-1' > "${DPKG_MAP}"
+v_rc=0
+( ws_func_verify_local_repo_installed ) >/dev/null 2>&1 || v_rc=$?
+assert "verify passes when the local payloads are installed at the local versions" test "${v_rc}" -eq 0
+assert "verify force-reinstalls from the local suite (--reinstall -t local)" \
+   grep -q -- 'install --reinstall --yes --allow-downgrades -t local' "${APT_LOG}"
+assert "verify force-installs the exact local version" \
+   grep -q -- 'anon-apps-config=7:18.1-1' "${APT_LOG}"
+assert "the generated guest command is syntactically valid" bash -n "${GC_CMD}"
+
+## MISMATCH: an installed package reports a DIFFERENT version than the local build -> INCONCLUSIVE
+## (SETUP_RC), never a PASS. This is the false-green the finding closes.
+printf '%s\n' 'anon-apps-config 7:18.1-1' 'whonix-gw-network-conf 9:99.9-9' > "${DPKG_MAP}"
+mm_rc=0
+( ws_func_verify_local_repo_installed ) >/dev/null 2>&1 || mm_rc=$?
+assert "verify FAILS SETUP_RC on an installed-vs-local version mismatch" test "${mm_rc}" -eq 2
+
+## NONE installed: no local-repo package is on the system -> INCONCLUSIVE, not a vacuous PASS.
+true > "${DPKG_MAP}"
+none_rc=0
+( ws_func_verify_local_repo_installed ) >/dev/null 2>&1 || none_rc=$?
+assert "verify FAILS SETUP_RC when no local-repo package is installed" test "${none_rc}" -eq 2
+
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 [ "${fail}" -eq 0 ] || exit 1

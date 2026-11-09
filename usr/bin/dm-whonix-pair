@@ -1337,6 +1337,47 @@ ws_func_enable_local_repo() {
       || die "${SETUP_RC}" "${ws}: could not enable the local apt repo (${local_repo}) in the WS -- repo-add-local / apt-get update / policy check failed (INCONCLUSIVE, not a release FAIL)"
 }
 
+## Verify the local build payloads were ACTUALLY installed, not merely AVAILABLE. apt-cache policy
+## (ws_func_enable_local_repo) proves the SOURCE is live; it proves nothing about installed content.
+## check 3 (upgrade-nonroot = apt-get full-upgrade) is a NO-OP for a package whose local build equals
+## the already-installed version -- and dm "replaces content at the same version string" on a rebuild
+## -- so the battery could pass on the IMAGE's payload while the run reports THIS build: a false
+## local-build verdict. Force the local payload onto the system for every local-repo package that is
+## already installed (--reinstall --allow-downgrades pins the exact local version regardless of
+## version equality or ordering) and assert the installed version matches the local build. ANY
+## mismatch, or no local package installed at all -> SETUP_RC (INCONCLUSIVE), never a release PASS:
+## the lane must never claim a local-build upgrade it did not install. local_repo is enum-validated
+## (kicksecure|whonix) and GUEST_SHARE_MOUNT is a fixed constant, so both are safe to interpolate;
+## the guest-side $-vars stay literal (escaped in the heredoc), evaluated in the WS.
+ws_func_verify_local_repo_installed() {
+   vm="${ws}"
+   local pkgs_path verify_cmd
+   pkgs_path="${GUEST_SHARE_MOUNT}/aptrepo_local/${local_repo}/dists/local/main/binary-amd64/Packages"
+   read -r -d '' verify_cmd <<GUEST || true
+set -eu
+pkgs='${pkgs_path}'
+[ -r "\$pkgs" ] || { echo "local Packages index not readable in the guest: \$pkgs" >&2; exit 1; }
+specs=\$(awk '/^Package: /{p=\$2} /^Version: /{if(p!=""){print p"="\$2; p=""}}' "\$pkgs")
+[ -n "\$specs" ] || { echo 'local repo lists no packages' >&2; exit 1; }
+installed=''
+for s in \$specs; do
+  n=\${s%%=*}
+  if dpkg-query -W -f='\${Status}' "\$n" 2>/dev/null | grep -q 'install ok installed'; then
+    installed="\$installed \$s"
+  fi
+done
+[ -n "\$installed" ] || { echo 'no local-repo package is installed in the guest -- this build was not exercised' >&2; exit 1; }
+dsudo apt-get install --reinstall --yes --allow-downgrades -t local \$installed
+for s in \$installed; do
+  n=\${s%%=*}; v=\${s#*=}
+  got=\$(dpkg-query -W -f='\${Version}' "\$n")
+  [ "\$got" = "\$v" ] || { echo "local payload NOT installed: \$n want \$v got \${got:-<none>}" >&2; exit 1; }
+done
+GUEST
+   gc_run user "${verify_cmd}" 600 \
+      || die "${SETUP_RC}" "${ws}: local payload verification failed -- the locally-built packages were not actually installed (INCONCLUSIVE, not a release FAIL)"
+}
+
 ## Everything else runs faithfully headless: user/sysmaint boot-role (checks 1, 2), CLI login
 ## (5, whoami), networking over the Gateway's Tor (4), and upgrade-nonroot (3).
 main_functional_cli() {
@@ -1352,6 +1393,10 @@ main_functional_cli() {
    if [ -n "${local_repo}" ]; then
       printf '%s\n' "${me}: [functional-cli] enable the local apt repo (${local_repo}) in the Workstation"
       ws_func_enable_local_repo
+      ## Before the battery: prove the local payloads are actually INSTALLED (not just available), so
+      ## check 3's verdict genuinely applies to THIS build and not the image's same-version payload.
+      printf '%s\n' "${me}: [functional-cli] verify the local build payloads are installed in the Workstation"
+      ws_func_verify_local_repo_installed
    fi
    ## check 8 in the user phase (before the sysmaint reboot), via a real console login.
    ws_cli_console_systemcheck
