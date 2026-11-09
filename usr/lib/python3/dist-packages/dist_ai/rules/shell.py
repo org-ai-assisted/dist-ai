@@ -646,6 +646,26 @@ def _mkdir_fix_shape(call, source):
     return has_parents
 
 
+def _mkdir_parents_flag(call, source):
+    """True if the mkdir carries a parents flag ('-p'/'--parents') at all,
+    regardless of any OTHER option. Distinguishes a plain 'mkdir DIR' (the lock-dir
+    idiom, which relies on mkdir FAILING when DIR exists) from an idempotent
+    '--parents' create, so detect() can steer a plain mkdir to 'mkdir --mode=' (NOT
+    'install -d', which reuses an existing dir). _mkdir_fix_shape is the stricter
+    parents-ONLY gate the autofix itself needs."""
+    for kind, _word, text in bash_ast.command_tokens(
+            call, source, frozenset("m"), frozenset({"mode"})):
+        if kind != "opt" or text == "--":
+            continue
+        name = _long_name(text)
+        if name is not None and bash_ast.resolve_long(name, MKDIR_LONG) \
+                == "parents":
+            return True
+        if text == "-p":
+            return True
+    return False
+
+
 def _chmod_fix_shape(call, source):
     """True iff the chmod carries NO option flag (just MODE and the target,
     optional '--'). The reconstruction reproduces only the mode and dir, so any
@@ -700,10 +720,12 @@ def _mkdir_then_chmod_pairs(ctx):
 
     Each record carries: mkdir_offset (the raw mkdir CallExpr's byte offset, for
     R-172 correlation and the finding line), mkdir_call (for the finding),
-    span_start/span_end (the collapse span), mode_lit, dir_source, and fixable
-    (the mechanical subset: unwrapped, no redirection, numeric mode, the mkdir has
-    no mode option of its own, nothing but a plain separator between the two, and
-    not inside a here-document body)."""
+    span_start/span_end (the collapse span), mode_lit, dir_source, dir_multi (the
+    target is a multi-component path -- contains '/'), mkdir_parents (a '-p'/
+    '--parents' flag is present; detect() steers its guidance by these two), and
+    fixable (the mechanical subset: unwrapped, no redirection, numeric mode, the
+    mkdir has no mode option of its own, a SINGLE-component target, nothing but a
+    plain separator between the two, and not inside a here-document body)."""
     source = ctx.source
     tree = ctx.tree
     data = source.encode("utf-8")
@@ -736,8 +758,8 @@ def _mkdir_then_chmod_pairs(ctx):
             return None
         dir_word = dirs[0]
         mode_word, target_word, target_protected = mode_target
-        if bash_ast.word_source(dir_word, source) \
-                != bash_ast.word_source(target_word, source):
+        dir_src = bash_ast.word_source(dir_word, source)
+        if dir_src != bash_ast.word_source(target_word, source):
             return None
         s1_start = (s1.get("Pos") or {}).get("Offset")
         s1_end = (s1.get("End") or {}).get("Offset")
@@ -775,6 +797,16 @@ def _mkdir_then_chmod_pairs(ctx):
             ## detect-only.
             and ((dir_lit is not None and not dir_lit.startswith("-"))
                  or target_protected)
+            ## A MULTI-COMPONENT target ('a/b/c', '/run/x/y') is NOT auto-fixed:
+            ## 'install -d -m' modes only the FINAL component and makes any PARENT
+            ## it creates 0755 (ignoring -m AND the umask), so a 'mkdir --parents
+            ## a/b/c; chmod 0700 a/b/c' whose parents were umask-private (0700) would
+            ## be silently EXPOSED. A '/' in the operand source is the conservative
+            ## discriminator (a filename cannot contain '/'); a pure expansion
+            ## ('"$dir"') carries no literal '/' and stays fixable -- the tool cannot
+            ## see its runtime value either way. Even a '--'-guarded 'mkdir -p --
+            ## a/b/c' declines: the parent exposure is independent of dash-guarding.
+            and "/" not in dir_src
             and _mkdir_fix_shape(eff1, source)
             and _chmod_fix_shape(eff2, source)
             and not any(a <= s1_start < b for a, b in heredocs))
@@ -784,7 +816,9 @@ def _mkdir_then_chmod_pairs(ctx):
             "span_start": s1_start,
             "span_end": span_end,
             "mode_lit": mode_lit,
-            "dir_source": bash_ast.word_source(dir_word, source),
+            "dir_source": dir_src,
+            "dir_multi": "/" in dir_src,
+            "mkdir_parents": _mkdir_parents_flag(eff1, source),
             "fixable": fixable,
         }
 
@@ -829,22 +863,46 @@ class MkdirThenChmod(Rule):
     'install -d -m' creates and modes in one call, re-modes an existing directory
     (fixing messed-up perms), and -- being 'install', not 'mkdir --parents
     --mode=' -- never trips SC2174, so no '# shellcheck disable' is needed. The
-    unwrapped, numeric-mode, cleanly-adjacent subset is auto-fixed; a symbolic
-    mode, a wrapper ('sudo mkdir; sudo chmod'), a redirection, an intervening
-    comment, or a mkdir that already carries its own mode leaves the pair for a
-    human."""
+    unwrapped, numeric-mode, single-component, cleanly-adjacent subset is
+    auto-fixed; a symbolic mode, a wrapper ('sudo mkdir; sudo chmod'), a
+    redirection, an intervening comment, or a mkdir that already carries its own
+    mode leaves the pair for a human. So does a MULTI-COMPONENT target ('a/b/c'):
+    'install -d -m' makes any parent it creates 0755 regardless of -m/umask, which
+    would expose a private path -- and a PLAIN 'mkdir DIR' (no --parents), whose
+    atomic form is 'mkdir --mode=', not 'install -d'. detect() tailors its guidance
+    to each; fix() only rewrites the auto-fixable subset."""
 
     id = "R-173"
     waiver_tag = "allow-mkdir-then-chmod"
 
     def detect(self, ctx):
         for record in _mkdir_then_chmod_pairs(ctx):
-            yield _fail(
-                ctx, "R-173",
-                "R-173 mkdir then chmod of the same dir: create and set the mode "
-                "atomically with 'install -d -m MODE -- DIR' (install -d is "
-                "SC2174-free and re-modes an existing dir)",
-                record["mkdir_call"])
+            if not record["mkdir_parents"]:
+                ## A plain 'mkdir DIR' (no --parents) is the lock-dir idiom: it must
+                ## FAIL if DIR exists. 'install -d' reuses an existing dir, so steer
+                ## to 'mkdir --mode=' (atomic, same fail-on-exists), never install.
+                message = (
+                    "R-173 mkdir then chmod of the same dir: set the mode "
+                    "atomically with 'mkdir --mode=MODE -- DIR' (a plain mkdir "
+                    "fails if DIR exists -- the lock-dir idiom; 'install -d' would "
+                    "reuse it)")
+            elif record["dir_multi"]:
+                ## 'install -d -m' modes only the final component and makes any
+                ## PARENT it creates 0755 (ignoring -m and the umask), so blindly
+                ## recommending it for a multi-component private path would expose
+                ## the parents -- the exact bug. Leave it to a human.
+                message = (
+                    "R-173 mkdir then chmod of the same dir: a multi-component "
+                    "target is left for a human -- 'install -d -m' modes only the "
+                    "final component and makes any PARENT it creates 0755 "
+                    "(ignoring -m and the umask), exposing a private path; set the "
+                    "parents' perms deliberately")
+            else:
+                message = (
+                    "R-173 mkdir then chmod of the same dir: create and set the "
+                    "mode atomically with 'install -d -m MODE -- DIR' (install -d "
+                    "is SC2174-free and re-modes an existing dir)")
+            yield _fail(ctx, "R-173", message, record["mkdir_call"])
 
     def fix(self, ctx):
         for record in _mkdir_then_chmod_pairs(ctx):

@@ -1144,4 +1144,57 @@ for body in '"-v"' "\$'--silent'" '"$1"' ; do
    fi
 done
 
+## --- 7w: a MULTI-COMPONENT target is detect-only (parents would be exposed) -----
+## 'install -d -m MODE a/b/c' modes only the FINAL component and makes any PARENT
+## it creates 0755 (ignoring -m AND the umask), so collapsing 'mkdir --parents
+## a/b/c; chmod 0700 a/b/c' -- whose umask-private parents were 0700 -- would
+## silently EXPOSE a and b. Only a single-component target is auto-fixed; a '/' in
+## the operand leaves the pair detect-only.
+f="${test_dir}/mkdirchmodmulti.sh"
+printf '%s\n' "#!/bin/bash" "mkdir --parents a/b/c" "chmod 0700 a/b/c" >"${f}"
+## Canary: the pair is still FLAGGED by the gate's detect side (capture first, THEN
+## grep -- '--check' exits 1 on findings and pipefail would mis-read it; see 7k).
+r173m_pre="$("${GATE}" --check -- "${f}" 2>&1)" || true
+if grep --quiet --fixed-strings -- 'R-173' <<< "${r173m_pre}" ; then
+   note_pass "R-173 flags a multi-component pair (canary)"
+else
+   note_fail "R-173 did not flag a multi-component pair -- canary broken"
+fi
+before="$(cksum < "${f}")"
+run_fix "${f}" >/dev/null 2>&1
+if [ "$(cksum < "${f}")" = "${before}" ] ; then
+   note_pass "R-173 leaves a multi-component target detect-only (parents not exposed)"
+else
+   note_fail "R-173 collapsed a multi-component target, exposing its created parents"
+fi
+## A '/' anywhere declines -- an absolute path and a '--'-guarded one too (the
+## parent exposure is independent of dash-guarding; the '--'-guarded single-dir
+## form is otherwise fixed by 7k).
+for name_body in \
+   "abs__mkdir -p /run/foo/bar; chmod 700 /run/foo/bar" \
+   "ddash__mkdir -p -- a/b/c; chmod 700 -- a/b/c" ; do
+   name="${name_body%%__*}"
+   body="${name_body#*__}"
+   f="${test_dir}/mkdirchmod_multi_${name}.sh"
+   printf '%s\n' "#!/bin/bash" "${body}" >"${f}"
+   before="$(cksum < "${f}")"
+   run_fix "${f}" >/dev/null 2>&1
+   if [ "$(cksum < "${f}")" = "${before}" ] ; then
+      note_pass "R-173 leaves the multi-component ${name} form detect-only"
+   else
+      note_fail "R-173 collapsed the multi-component ${name} form, exposing parents"
+   fi
+done
+## Contrast: a SINGLE-component target STILL auto-fixes -- the '/' guard must not be
+## over-broad and silently stop fixing the common case.
+f="${test_dir}/mkdirchmodsingle.sh"
+printf '%s\n' "#!/bin/bash" "mkdir --parents x" "chmod 700 x" >"${f}"
+run_fix "${f}" >/dev/null 2>&1
+if grep --quiet --fixed-strings -- 'install -d -m 700 -- x' "${f}" \
+   && ! grep --quiet --extended-regexp -- '(^|[[:space:]])(mkdir|chmod)([[:space:]]|$)' "${f}" ; then
+   note_pass "R-173 still auto-fixes a single-component target"
+else
+   note_fail "R-173 wrongly declined a single-component target"
+fi
+
 exit_gate
