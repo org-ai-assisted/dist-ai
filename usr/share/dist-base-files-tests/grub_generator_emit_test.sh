@@ -48,9 +48,14 @@ fail=0
 skipped=0
 checked=0
 
-for generator in 10_05_linux_main 10_55_linux_main_advanced; do
+## 10_05_linux_main must also export boot_mode_id=user so 10_00_linux_dist scopes
+## the USER menuentry's --id distinctly (shared ids make id-based boot-mode
+## selection hit the first entry only). The advanced wrapper carries no such token.
+for spec in '10_05_linux_main:boot_mode_id=user' '10_55_linux_main_advanced:'; do
+   generator="${spec%%:*}"
+   must_contain="${spec#*:}"
    rc=0
-   "${checker}" "${grub_d}/${generator}" "${generator}" || rc=$?
+   "${checker}" "${grub_d}/${generator}" "${generator}" "${must_contain}" || rc=$?
    if [ "${rc}" -eq 77 ]; then
       skipped=$(( skipped + 1 ))
    elif [ "${rc}" -ne 0 ]; then

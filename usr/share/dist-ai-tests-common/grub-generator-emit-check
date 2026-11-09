@@ -68,12 +68,14 @@ chmod 0755 -- "${stub_dir}/ischroot"
 
 ## 10_05_linux_main and 10_55_linux_main_advanced each exec a dist script from
 ## /etc/grub.d. Stubbing both keeps the pair deterministic and stops the host
-## leaking into the result.
+## leaking into the result. The stub also echoes the inherited boot_mode_id, so a
+## caller can assert (via <must-contain>) that a wrapper exports the right per-mode
+## token -- the value 10_00_linux_dist scopes each menuentry --id by.
 for dist_script in 10_00_linux_dist 10_50_linux_dist_advanced; do
    {
       printf '%s\n' '#!/bin/sh'
-      # shellcheck disable=SC2016  # literal stub body; make_boot_entry stays literal
-      printf '%s\n' 'printf "%s\n" "STUB '"${dist_script}"' ran; make_boot_entry=${make_boot_entry:-unset}"'
+      # shellcheck disable=SC2016  # literal stub body; the wrapper's exports stay literal
+      printf '%s\n' 'printf "%s\n" "STUB '"${dist_script}"' ran; make_boot_entry=${make_boot_entry:-unset}; boot_mode_id=${boot_mode_id:-unset}"'
    } >"${grubd_dir}/${dist_script}"
    chmod 0755 -- "${grubd_dir}/${dist_script}"
 done
@@ -92,6 +94,9 @@ done
 ## stderr is captured too: several generators take an early-exit path whose
 ## only output is a diagnostic on fd 2, and discarding it made them look as
 ## though they had emitted nothing.
+## Execute the generator by its own shebang, exactly as grub-mkconfig's run-parts
+## does -- NOT `sh <file>`, which would run a `#!/bin/bash` generator (e.g.
+## user-sysmaint-split's) under dash and die on `shopt`.
 output="$(bwrap --dev-bind / / \
    --bind "${grubd_dir}" /etc/grub.d \
    -- env --ignore-environment \
@@ -99,7 +104,7 @@ output="$(bwrap --dev-bind / / \
    pkgdatadir=/usr/share/grub \
    datarootdir=/usr/share \
    "${grub_env[@]}" \
-   sh "${generator}" 2>&1)" || true
+   "${generator}" 2>&1)" || true
 
 fail=0
 
