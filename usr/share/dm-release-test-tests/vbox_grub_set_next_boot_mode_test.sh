@@ -44,7 +44,7 @@ created='false'
 
 cleanup() {
    if [ "${created}" = 'true' ]; then
-      safe-rm --force -- "${req}/disk" "${req}/passphrase" "${req}/mode" "${req}/format" "${req}/fakedisk" "${req}/other_owned" "${req}/ok.vmdk" "${req}/bad.vmdk" "${req}/bad.qcow2" 2>/dev/null || true
+      safe-rm --force -- "${req}/disk" "${req}/passphrase" "${req}/mode" "${req}/format" "${req}/fakedisk" "${req}/other_owned" "${req}/ok.vmdk" "${req}/bad.vmdk" "${req}/multi.vmdk" "${req}/bad.qcow2" 2>/dev/null || true
       if [ "${req_preexisted}" = 'false' ]; then
          rmdir -- "${req}" 2>/dev/null || true
       fi
@@ -64,7 +64,7 @@ check() {
 }
 
 [ -L "${req}" ] && { printf '%s\n' "FATAL: ${req} is a symlink; refusing" >&2; exit 1; }
-for leaf in disk passphrase mode format fakedisk ok.vmdk bad.vmdk bad.qcow2; do
+for leaf in disk passphrase mode format fakedisk ok.vmdk bad.vmdk multi.vmdk bad.qcow2; do
    if [ -e "${req}/${leaf}" ] || [ -L "${req}/${leaf}" ]; then
       printf '%s\n' "FATAL: ${req}/${leaf} exists; refusing to clobber a concurrent request" >&2
       exit 1
@@ -178,6 +178,25 @@ if has qemu-img; then
       "$([ "${rc}" != '0' ] && printf '%s' true || printf '%s' false)"
    check "malicious vmdk did NOT call vbox-disk-mount (no root open of the extent)" \
       "$([ ! -e "${argv_log}" ] && printf '%s' true || printf '%s' false)"
+
+   ## Malicious MULTI-EXTENT (split) vmdk: one extent references an OUTSIDE file (the root-owned
+   ## -extent privesc). The recursive walk checks EVERY extent, so a descriptor that mixes a
+   ## self extent with an external one is still refused -- no mount.
+   self_ext="${work}/self.bin"; ext_victim="${work}/ext_victim.bin"
+   printf '%s' '' > "${self_ext}"; printf '%s' SECRET-EXTENT > "${ext_victim}"
+   multi_vmdk="${req}/multi.vmdk"
+   { printf '%s\n' '# Disk DescriptorFile' 'version=1' 'CID=fffffffe' 'parentCID=ffffffff' \
+       'createType="twoGbMaxExtentFlat"' "RW 2048 FLAT \"${self_ext}\" 0" "RW 2048 FLAT \"${ext_victim}\" 0" \
+       'ddb.virtualHWVersion = "4"'; } > "${multi_vmdk}"
+   printf '%s\n' "${multi_vmdk}" > "${req}/disk"
+   printf '%s' 'vmdk' > "${req}/format"
+   safe-rm --force -- "${argv_log}"
+   rc="$(run_wrapper "${uid}")"
+   check "malicious multi-extent vmdk (external extent) refused (rc!=0, got ${rc})" \
+      "$([ "${rc}" != '0' ] && printf '%s' true || printf '%s' false)"
+   check "malicious multi-extent vmdk did NOT call vbox-disk-mount" \
+      "$([ ! -e "${argv_log}" ] && printf '%s' true || printf '%s' false)"
+   safe-rm --force -- "${req}/format" "${req}/multi.vmdk"
 
    ## Malicious qcow2 with an external data-file (NOT a backing file / extent) -> MUST be
    ## refused. The data-file lives at format-specific.data.data-file, so a field-specific
