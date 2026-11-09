@@ -265,5 +265,75 @@ class TestUpdatecheckRegressions(UpdatecheckTestBase):
         self.assertNotIn('leaprun_check_output', self.text)
 
 
+class TestExitTrapPreservesStatus(UpdatecheckTestBase):
+    """exit_trap must NOT force 'exit 0'.
+
+    Under the W^X-hardened unit the permission-denied popup can be killed/error
+    out; forcing 'exit 0' in the EXIT trap would mask that as success (a
+    fabricated green). The trap must preserve the real exit status.
+    """
+
+    def test_exit_trap_propagates_nonzero(self) -> None:
+        ## errexit off so '( exit 42 )' sets $?=42 without aborting the shell
+        ## before exit_trap runs; exit_trap must then exit 42, not 0.
+        res = self.run_sourced('set +o errexit\n( exit 42 )\nexit_trap')
+        self.assertEqual(res.returncode, 42)
+
+    def test_exit_trap_preserves_zero(self) -> None:
+        res = self.run_sourced('set +o errexit\ntrue\nexit_trap')
+        self.assertEqual(res.returncode, 0)
+
+
+class TestPermissionDeniedPopupSurfacing(UpdatecheckTestBase):
+    """The 'lacks privleap permission' branch (leaprun --check fails) shows a
+    popup then exits. If the popup fails (e.g. SIGSYS-killed under the W^X
+    filter, exit 159), updatecheck must SURFACE that failure, not fabricate a
+    success -- the real-world bug this change fixes.
+
+    Drives the real main() through that branch with the readiness probes stubbed
+    to pass, leaprun_check_function stubbed to fail, and show_permission_popup
+    stubbed to a chosen exit code (the single seam the popup call was wrapped in).
+    """
+
+    def _run_perm_denied(self, popup_rc: int):
+        stubs = (
+            'light_sleep() { :; }\n'
+            'system_ready_check_function() { return 0; }\n'
+            'leaprun_availability_test() { return 0; }\n'
+            'leaprun_check_function() { return 1; }\n'
+            f'show_permission_popup() {{ return {popup_rc}; }}\n'
+        )
+        ## HOME -> throwaway: the branch does 'mkdir -p ~/.systemcheck/...'.
+        body = 'export HOME="$(mktemp -d)"\nmain\n'
+        return self.run_sourced(body, stubs=stubs, strings=True)
+
+    def test_killed_popup_surfaces_nonzero_not_fabricated_success(self) -> None:
+        ## 159 == 128 + SIGSYS, what a memfd_create-denied Qt popup exits with
+        ## under the default (no SystemCallErrorNumber) filter. The EXIT trap
+        ## must not turn this into 0.
+        res = self._run_perm_denied(159)
+        self.assertEqual(res.returncode, 159)
+        ## The error is still logged to the journal regardless of popup fate.
+        self.assertIn('lacks privleap permission', res.stdout)
+
+    def test_erroring_popup_surfaces_its_code(self) -> None:
+        res = self._run_perm_denied(1)
+        self.assertEqual(res.returncode, 1)
+
+    def test_successful_popup_exits_zero(self) -> None:
+        ## When the popup renders fine, the branch's own 'exit 0' stands.
+        res = self._run_perm_denied(0)
+        self.assertEqual(res.returncode, 0)
+
+    def test_branch_uses_wrapper_not_raw_popup_path(self) -> None:
+        ## main() must call the stubbable wrapper, not the raw absolute path, so
+        ## the popup failure mode is testable and MSGCOLLECTOR_REPO-overridable.
+        self.assertIn('show_permission_popup ', self.text)
+        self.assertNotIn(
+            '/usr/libexec/msgcollector/one-time-popup.py '
+            '~/.systemcheck/status-files',
+            self.text)
+
+
 if __name__ == '__main__':
     unittest.main()

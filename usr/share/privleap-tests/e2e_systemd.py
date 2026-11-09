@@ -274,6 +274,74 @@ def install_repo_dropin(repo: str, restorer: Restorer) -> None:
     sh(['systemctl', 'daemon-reload'])
 
 
+## systemd renders an unset SystemCallErrorNumber= as this sentinel (INT_MAX-1):
+## it means "no errno override" -- a denied syscall is SIGSYS-KILLED, not failed
+## soft. A real errno (EPERM -> 1) renders as its own number.
+SCMP_ERRNO_KILL_SENTINEL: str = '2147483646'
+
+
+def run_wx_phase(user: str, results: Results) -> None:
+    """F: the unit's W^X hardening is declared correctly AND actually inherited
+    by a spawned action, failing SOFT (EPERM) rather than SIGSYS-killing it.
+
+    This is the only backend that can prove it: the filter is installed by the
+    systemd unit, so the subprocess backend (no unit) never sees it.
+    """
+
+    print('== F: W^X hardening present, inherited by actions, EPERM soft-fail ==')
+
+    ## Static: the unit carries the hardening directives.
+    results.check('MemoryDenyWriteExecute enabled',
+                  svc_prop('MemoryDenyWriteExecute') == 'yes')
+    results.check('SystemCallArchitectures=native',
+                  svc_prop('SystemCallArchitectures') == 'native')
+    results.check('LockPersonality enabled',
+                  svc_prop('LockPersonality') == 'yes')
+    results.check('NoExecPaths set', bool(svc_prop('NoExecPaths')))
+
+    ## systemd forces PR_SET_NO_NEW_PRIVS=1 whenever MDWE/SystemCallFilter= is
+    ## set, so NoNewPrivileges=false is a silent no-op; the unit must DECLARE it
+    ## yes to match the enforced reality (a declared false misleads the reader).
+    results.check('NoNewPrivileges declared yes (false would be a void no-op)',
+                  svc_prop('NoNewPrivileges') == 'yes')
+
+    ## memfd_create must be denied via EPERM, not the default SIGSYS kill, so an
+    ## inherited action (or GUI child) fails soft instead of dying by signal.
+    scmp_errno: str = svc_prop('SystemCallErrorNumber')
+    results.check(
+        'memfd denial is a soft errno, not a SIGSYS kill '
+        '(SystemCallErrorNumber set)',
+        scmp_errno not in ('', SCMP_ERRNO_KILL_SENTINEL),
+    )
+
+    ## Runtime: the filter is genuinely inherited into the spawned action, and
+    ## it fails SOFT. Under the OLD unit (default action) memfd_create SIGSYS-
+    ## kills the python child -> bash reports 159. Under EPERM it raises a
+    ## catchable PermissionError -> exit 1. Both prove inheritance; only the
+    ## latter proves the soft-fail.
+    names, _out, err, code = e2e_lib.run_action_result(user, 'e2e-memfd')
+    err_text: str = err.decode('utf-8', errors='replace')
+    results.check('memfd action reported an exit code (not killed mid-protocol)',
+                  'RESULT_EXITCODE' in names)
+    results.check('memfd_create denied inside the spawned action '
+                  '(filter inherited across fork+exec)',
+                  code is not None and code != 0)
+    results.check('memfd denied via EPERM soft-fail, NOT SIGSYS kill (exit != 159)',
+                  code != 159)
+    results.check('memfd denial surfaced as a catchable PermissionError',
+                  'PermissionError' in err_text
+                  or 'Operation not permitted' in err_text)
+
+    ## Canary: a python action that does NOT call memfd runs cleanly under the
+    ## very same hardened unit -- isolating the block to memfd, not python.
+    c_names, c_out, _cerr, c_code = e2e_lib.run_action_result(
+        user, 'e2e-memfd-canary')
+    results.check('non-memfd python action runs cleanly under the same unit '
+                  '(exit 0)',
+                  'RESULT_EXITCODE' in c_names and c_code == 0
+                  and b'ok' in c_out)
+
+
 def main() -> int:
     user: str = current_username()
     try:
@@ -406,6 +474,8 @@ def main() -> int:
             for line in env_text.splitlines()
         ),
     )
+
+    run_wx_phase(user, results)
 
     print()
     code: int = results.report('live-daemon e2e (systemd)')

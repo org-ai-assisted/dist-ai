@@ -332,6 +332,14 @@ AuthorizedUsers=root
 [action:e2e-rootenv]
 Command=env
 AuthorizedUsers={user}
+
+[action:e2e-memfd]
+Command=python3 -c "import os; os.memfd_create('wx-probe')"
+AuthorizedUsers={user}
+
+[action:e2e-memfd-canary]
+Command=python3 -c "print('ok')"
+AuthorizedUsers={user}
 """
 
 
@@ -361,13 +369,18 @@ def wait_for_socket(sock_path: str, timeout_s: float = 10.0) -> bool:
     return False
 
 
-def run_signal(user: str, action: str) -> tuple[list[str], bytes]:
-    """Drive a real SIGNAL to completion via the genuine client API; return
-    the ordered server message-type names and the action's concatenated
-    stdout."""
+def run_action_result(
+    user: str, action: str
+) -> tuple[list[str], bytes, bytes, int | None]:
+    """Drive a real SIGNAL to completion via the genuine client API; return the
+    ordered server message-type names, the action's concatenated stdout and
+    stderr, and its exit code (None if the action never reported one, e.g.
+    UNAUTHORIZED)."""
 
     names: list[str] = []
     stdout: bytearray = bytearray()
+    stderr: bytearray = bytearray()
+    exit_code: int | None = None
     session: Any = pl.PrivleapSession(user, is_control_session=False)
     try:
         session.send_msg(pl.PrivleapCommClientSignalMsg(action))
@@ -379,14 +392,28 @@ def run_signal(user: str, action: str) -> tuple[list[str], bytes]:
             names.append(msg.name)
             if msg.name == 'RESULT_STDOUT':
                 stdout += msg.stdout_bytes
-            if msg.name in ('RESULT_EXITCODE', 'UNAUTHORIZED', 'TRIGGER_ERROR'):
+            elif msg.name == 'RESULT_STDERR':
+                stderr += msg.stderr_bytes
+            elif msg.name == 'RESULT_EXITCODE':
+                exit_code = msg.exit_code
+                break
+            elif msg.name in ('UNAUTHORIZED', 'TRIGGER_ERROR'):
                 break
     finally:
         try:
             session.close_session()
         except Exception:  # pylint: disable=broad-exception-caught
             pass
-    return names, bytes(stdout)
+    return names, bytes(stdout), bytes(stderr), exit_code
+
+
+def run_signal(user: str, action: str) -> tuple[list[str], bytes]:
+    """Drive a real SIGNAL to completion; return the ordered server
+    message-type names and the action's concatenated stdout. Thin wrapper over
+    run_action_result() for callers that only need names + stdout."""
+
+    names, stdout, _stderr, _exit_code = run_action_result(user, action)
+    return names, stdout
 
 
 def fuzz_socket_once(sock_path: str, payload: bytes) -> None:

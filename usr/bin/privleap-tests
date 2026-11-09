@@ -136,6 +136,9 @@ printf '%s\n' ''
 printf '%s\n' '################ config parser tests ######################'
 run_one "${tests_dir}/config_test.py"
 printf '%s\n' ''
+printf '%s\n' '############ privleapd.service W^X static lint ############'
+run_one "${tests_dir}/service_hardening_test.py"
+printf '%s\n' ''
 printf '%s\n' '################# client tool tests #######################'
 run_one "${tests_dir}/client_test.py"
 printf '%s\n' ''
