@@ -62,7 +62,11 @@ if [ -z "${vbox_pkg}" ]; then
    result_skip_env_unmet "no virtualbox-N package in the apt index (Oracle repo not configured here); cannot read its Recommends"
 fi
 
-recommends="$(apt-cache show --no-all-versions "${vbox_pkg}" 2>/dev/null | grep-dctrl --show-field=Recommends --no-field-names '' | head -1 || true)"
+## grep-dctrl PRESERVES deb822 line folding: a Recommends field wrapped across continuation
+## lines (as Oracle's control writes it) comes back multi-line. Flatten to one logical line
+## with 'tr' -- a 'head -1' would silently drop every continuation and miss build deps.
+## --no-all-versions yields a single stanza, so this is the one package's whole field.
+recommends="$(apt-cache show --no-all-versions "${vbox_pkg}" 2>/dev/null | grep-dctrl --show-field=Recommends --no-field-names '' | tr '\n' ' ' || true)"
 if [ -z "${recommends}" ]; then
    printf '%s\n' "FAIL: ${vbox_pkg} has no Recommends field (unexpected for an Oracle VirtualBox package)" >&2
    result_fail

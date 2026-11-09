@@ -534,6 +534,10 @@ wire() {
          ## dry-run wiring lane sources the self-contained standalone, whose inlined
          ## log_run needs stecho / sanitize-string from helper-scripts.
          wire_env=( "USABILITY_MISC_REPO=$( pkg_dir usability-misc )" )
+         ## The virtualbox-host toolchain drift guards also read the
+         ## kicksecure-meta-packages control from a derivative-maker checkout; wire it
+         ## so they run here instead of skipping target-absent.
+         wire_env+=( "DERIVATIVE_MAKER_DIR=$( pkg_dir derivative-maker )" )
          ## helper-scripts is AUXILIARY here (stecho / sanitize-string for the
          ## inlined log_run), not the subject. Wire it ONLY when a checkout
          ## resolved, like every other auxiliary case -- an empty ${hs} must not

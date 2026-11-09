@@ -20,7 +20,7 @@
 vbox_installer_path() {
    local repo="${USABILITY_MISC_REPO:-}"
    if [ -z "${repo}" ]; then
-      repo="${HOME}/derivative-maker/packages/kicksecure/usability-misc"
+      repo="${HOME:-}/derivative-maker/packages/kicksecure/usability-misc"
    fi
    printf '%s\n' "${repo}/usr/bin/dist-installer-cli"
 }
@@ -29,19 +29,24 @@ vbox_installer_path() {
 vbox_meta_control_path() {
    local dm="${DERIVATIVE_MAKER_DIR:-}"
    if [ -z "${dm}" ]; then
-      dm="${HOME}/derivative-maker"
+      dm="${HOME:-}/derivative-maker"
    fi
    printf '%s\n' "${dm}/packages/kicksecure/kicksecure-meta-packages/debian/control"
 }
 
 ## Normalize a package-name list into a sorted space-delimited set. Folds any
-## linux-headers-<arch>/<flavour> to the family token 'linux-headers' (the installer
-## uses linux-headers-$(dpkg --print-architecture), the meta uses linux-headers-amd64,
-## Oracle Recommends a long alternative chain -- all mean "the kernel headers meta").
-## Drops linux-image* (a kernel image, not build toolchain) and substvars.
+## linux-headers-<arch>/<flavour> to the family token 'linux-headers': the installer uses
+## linux-headers-$(dpkg --print-architecture) (the arch is only known at runtime, so it
+## cannot be compared literally), the meta uses linux-headers-amd64, and Oracle Recommends a
+## long alternative chain -- all mean "the kernel headers meta". A deliberate limitation:
+## an arch MISMATCH (e.g. a meta typo'd to linux-headers-arm64) is not caught here; the
+## package build / lintian is the backstop for a wrong-arch headers dep. Strips a Multi-Arch
+## ':qualifier' (make:any -> make), drops linux-image* (a kernel image, not build toolchain)
+## and substvars.
 normalize_set() {
    local token out=""
    for token in $1; do
+      token="${token%%:*}"
       case "${token}" in
          linux-headers*)
             token="linux-headers"
@@ -68,10 +73,13 @@ vbox_installer_toolchain_set() {
       return 1
    fi
    args="${lines##*install_pkg }"
-   if grep --quiet --extended-regexp 'linux_headers="linux-headers-\$\(dpkg --print-architecture\)"' -- "${installer}"; then
+   ## Verify the ACTUAL headers install call, not merely the linux_headers assignment -- a
+   ## removed install_pkg that left the assignment behind would otherwise read as covered.
+   # shellcheck disable=SC2016  # literal '${linux_image}'/'${linux_headers}' match the installer source text
+   if grep --quiet --fixed-strings 'install_pkg "${linux_image}" "${linux_headers}"' -- "${installer}"; then
       args="${args} linux-headers-ARCH"
    else
-      printf '%s\n' "installer: linux_headers assignment not found in expected form (shape changed -- update the guard)" >&2
+      printf '%s\n' "installer: linux headers install line not found in expected form (shape changed -- update the guard)" >&2
       return 1
    fi
    normalize_set "${args}"
@@ -91,7 +99,9 @@ vbox_meta_toolchain_set() {
       | sed -e 's/,/ /g' -e 's/([^)]*)//g' -e 's/\[[^]]*\]//g' -e 's/|/ /g' -e 's/${[^}]*}//g')"
    for token in ${flat}; do
       case "${token}" in
-         virtualbox-*)
+         virtualbox*)
+            ## Drop every VirtualBox host alternative: the versioned virtualbox-7.x/8.x AND a
+            ## bare unversioned 'virtualbox' (Debian's package name) -- neither is toolchain.
             continue
             ;;
          *)
