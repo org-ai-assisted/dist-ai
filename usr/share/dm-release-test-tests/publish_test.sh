@@ -358,7 +358,17 @@ image_test_results_publish "${results_root}" "${owner}" \
    --origin downloaded --expect release-checks --provenance-local-repo '{not valid json' >/dev/null 2>&1 || badlr_rc=$?
 check "localRepo: malformed JSON fails the publish (nonzero)" "$([ "${badlr_rc}" -ne 0 ] && printf '%s' true || printf '%s' false)"
 check "localRepo: no result.json for the malformed run" "$([ -z "$(find "${results_root}/whonix-badlr-18-2-3-5" -name result.json 2>/dev/null)" ] && printf '%s' true || printf '%s' false)"
-check "localRepo: latest not advanced for the malformed run" "$([ ! -e "${results_root}/whonix-badlr-18-2-3-5/latest" ] && printf '%s' true || printf '%s' false)"
+check "localRepo: latest not advanced for the malformed run" "$([ ! -e "${results_root}/whonix-badlr-18-2-3-5/latest" ] && [ ! -L "${results_root}/whonix-badlr-18-2-3-5/latest" ] && printf '%s' true || printf '%s' false)"
+
+## A DANGLING 'latest' symlink (link present, target absent) is a malformed advance that `[ ! -e ]`
+## alone MISSES: -e follows the link, so a dangling link reads as "does not exist" and the weak
+## assertion wrongly reports "not advanced". The `[ ! -L ]` above rejects any symlink regardless of
+## its target. Canary: craft a dangling latest and confirm the hardened predicate flags it ADVANCED
+## (with only `[ ! -e ]` this assertion FAILS, proving the `! -L` is load-bearing).
+dangling_latest="${results_root}/whonix-dangling-18-2-3-5"
+mkdir --parents -- "${dangling_latest}"
+ln --symbolic -- 'missing-run-target' "${dangling_latest}/latest"
+check "localRepo: a dangling 'latest' symlink is caught as advanced (not masked by -e)" "$([ ! -e "${dangling_latest}/latest" ] && [ ! -L "${dangling_latest}/latest" ] && printf '%s' false || printf '%s' true)"
 
 if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "" "${failures} publish assertion(s) failed" >&2
