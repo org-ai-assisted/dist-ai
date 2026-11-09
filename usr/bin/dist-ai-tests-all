@@ -1436,6 +1436,12 @@ effective_timeout() {
          ## that with margin yet still catches a genuinely wedged payload.
          floor=900
          ;;
+      private-ai-config-tests)
+         ## ~418 tests; the core lane oversubscribes the (few) CI cores, but on a slow
+         ## shared runner the whole suite still lands ~540-600s -- flaky right at the 600s
+         ## core cap. 900s clears it with margin while still catching a wedged suite.
+         floor=900
+         ;;
    esac
    case "${tmo}" in
       *[!0-9]*)
