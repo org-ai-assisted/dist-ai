@@ -89,6 +89,10 @@ def test_guestctl_chord_scancodes():
     assert GC.chord_scancodes(['Ctrl', 'Alt', 'F1']) == [0x1d, 0x38, 0x3b, 0xbb, 0xb8, 0x9d]
     ## A single named key still makes+breaks.
     assert GC.chord_scancodes(['enter']) == [0x1c, 0x9c]
+    ## A printable key combines with a modifier: Ctrl-C (interrupt a running command) is
+    ## ctrl 0x1d, c 0x2e, then breaks c 0xae, ctrl 0x9d. Without this a bare 'c' had no
+    ## chord scancode and 'chord ctrl c' raised, so the interrupt was a silent no-op.
+    assert GC.chord_scancodes(['ctrl', 'c']) == [0x1d, 0x2e, 0xae, 0x9d]
 
 
 def test_guestctl_chord_scancodes_rejects_unmapped():

@@ -132,11 +132,15 @@ def text_scancodes(text):
 def chord_scancodes(keys):
     """Set-1 scancodes to press KEYS together then release them: MAKE in the given order,
     BREAK in REVERSE order (so a modifier is held around the inner key's press+release and
-    released last). KEYS are names from _CHORD_MAKE, e.g. ['ctrl','alt','f2'] to switch to
-    a virtual terminal. Raises ValueError on an unknown key. No VM needed -- unit-testable."""
+    released last). A KEY is a name from _CHORD_MAKE (modifiers, function/navigation keys)
+    OR a single printable key from _MAKE, e.g. ['ctrl','alt','f2'] to switch a virtual
+    terminal or ['ctrl','c'] to interrupt a running command. Raises ValueError on an
+    unknown key. No VM needed -- unit-testable."""
     makes = []
     for key in keys:
         code = _CHORD_MAKE.get(key.lower())
+        if code is None:
+            code = _MAKE.get(key.lower())
         if code is None:
             raise ValueError('no scancode for chord key %r' % (key,))
         makes.append(code)

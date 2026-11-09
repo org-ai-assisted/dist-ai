@@ -469,6 +469,10 @@ restore_fresh() {
    ## -- a stale pair snapshotted as EFI would otherwise run as EFI under a -bios cell. A mismatch is
    ## a provisioning/snapshot-staleness bug (firmware must be applied BEFORE the clean-live snapshot)
    ## -> INCONCLUSIVE (SETUP_RC), never a mislabeled firmware result.
+   ## A showvminfo FAILURE here yields an EMPTY fw_actual (a command-sub assignment does not trip
+   ## errexit; the pipeline's tail sed exits 0): the equality check below then fails (EXPECT_FIRMWARE
+   ## is never empty -- ':-BIOS') and dies SETUP_RC. So a read failure is already INCONCLUSIVE, never
+   ## a mislabeled leak FAIL. Do NOT "fix" this with a '|| die' guard -- it is redundant.
    local fw_actual
    fw_actual="$("${VBOXMANAGE}" showvminfo "${target}" --machinereadable 2>/dev/null | sed -n 's/^firmware="\(.*\)"$/\1/p')"
    [ "${fw_actual}" = "${EXPECT_FIRMWARE}" ] \

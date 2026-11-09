@@ -170,6 +170,18 @@ true > "${args}"
 VIT_ARGS="${args}" "${bin}" --dry-run --add "whonix cli"$'\n'"malicious" >/dev/null 2>&1 || nlp_rc=$?
 want "${nlp_rc}" 64 "newline-bearing --add rejected under --dry-run (exit 64)"
 
+# --- a quote-bearing --add lane is rejected (exit 64) BEFORE the --dry-run preview, so --dry-run
+#     agrees with a real run: vbox-image-test rejects a lane with a quote (a path must be
+#     space-free), so previewing it as valid would mislead. ---
+qp_rc=0
+true > "${args}"
+VIT_ARGS="${args}" "${bin}" --dry-run --add "whonix cli --iso '/a b.iso'" >/dev/null 2>&1 || qp_rc=$?
+want "${qp_rc}" 64 "quote-bearing --add rejected under --dry-run (exit 64)"
+qpd_rc=0
+true > "${args}"
+VIT_ARGS="${args}" "${bin}" --dry-run --add 'whonix cli --iso "/a b.iso"' >/dev/null 2>&1 || qpd_rc=$?
+want "${qpd_rc}" 64 "double-quote-bearing --add rejected under --dry-run (exit 64)"
+
 printf '%s\n' "----"
 printf '%s\n' "passed=${pass_count} failed=${fail_count}"
 [ "${fail_count}" -eq 0 ]

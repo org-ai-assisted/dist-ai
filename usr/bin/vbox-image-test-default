@@ -188,14 +188,18 @@ lanes=(
 args=()
 [ "${no_publish}" = "false" ] || args+=( --no-publish )
 
-## Reject a newline-bearing lane BEFORE the dry-run preview, so --dry-run and a real run AGREE: a
-## newline-bearing --add otherwise prints as multiple lines and exits 0 under --dry-run, while the
-## real run's vbox-image-test rejects it (exit 64). Mirror that newline reject here.
+## Reject a newline- or quote-bearing lane BEFORE the dry-run preview, so --dry-run and a real run
+## AGREE: such an --add otherwise previews and exits 0 under --dry-run, while the real run's
+## vbox-image-test rejects it (exit 64). Mirror both of vbox-image-test's rejects here.
 nl=$'\n'
 for _lane in "${lanes[@]}"; do
    case "${_lane}" in
       *"${nl}"*)
          printf '%s\n' "${me}: lane must not contain a newline: '${_lane}'" >&2
+         exit 64
+         ;;
+      *[\"\']*)
+         printf '%s\n' "${me}: lane must not contain quotes; a path in a lane must be space-free: '${_lane}'" >&2
          exit 64
          ;;
    esac
