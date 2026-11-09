@@ -1155,11 +1155,13 @@ wire() {
          ## The live-widget fuzzer's cost per iteration climbs as the widget's
          ## retained output grows toward its re-render cap, so its 6000-iteration
          ## default runs for tens of minutes -- past timeout_fuzz, i.e. a
-         ## guaranteed TIMEOUT verdict rather than a fuzz run. Bound it to a
-         ## count that fits the budget (measured ~130s). A deep run stays
-         ## available by hand: secure-terminal-tests-fuzz-gui --iterations N.
+         ## guaranteed TIMEOUT verdict rather than a fuzz run. Bound it to a count
+         ## that fits the 600s per-suite cap on the SLOW shared GitHub runner, not
+         ## just a fast dev host: 1200 consistently exceeded 600s there (~750 iters
+         ## reached in 602s before the climbing tail), so cap below that tail. A
+         ## deep run stays available by hand: secure-terminal-tests-fuzz-gui --iterations N.
          if [ "${suite}" = 'secure-terminal-tests-fuzz-gui' ]; then
-            wire_args=( '--iterations' '1200' )
+            wire_args=( '--iterations' '400' )
          fi
          ;;
       terminal-poc-corpus)
