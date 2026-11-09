@@ -50,7 +50,9 @@ sleep() { :; }
 # shellcheck disable=SC2317
 clean_poweroff() { :; }
 # shellcheck disable=SC2317
-select_installed_sysmaint() { :; }
+installed_disk_path() { printf '%s\n' '/fake.vmdk'; }
+# shellcheck disable=SC2317
+select_installed_sysmaint_offline() { :; }
 # shellcheck disable=SC2317
 wait_guestcontrol_ready() { :; }
 # shellcheck disable=SC2317
@@ -98,7 +100,7 @@ assert "guestcontrol-not-ready reboot RETURNS 1 (does not die/exit)" test "${rc}
 # shellcheck disable=SC2317
 wait_guestcontrol_ready() { :; }   ## restore the passing stub
 
-## Case C: a LATER reboot stage that die()s (the shared select_installed_sysmaint / wait_ready /
+## Case C: a LATER reboot stage that die()s (the offline selector / wait_ready /
 ## open_terminal all die on timeout) must still RETURN 1, not exit the process -- the subshell
 ## wrap converts the exit. Canary: a fix touching only wait_vm_off/guestcontrol leaves this exit.
 # shellcheck disable=SC2317

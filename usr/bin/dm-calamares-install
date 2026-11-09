@@ -1114,9 +1114,11 @@ fi
 # shellcheck source=./usr/share/dm-smbios-reader-boot-tests/release-checks.bsh
 source "${release_checks_lib}"
 
-## select_installed_sysmaint: the single-source GRUB boot-mode selector, shared with
-## dm-upgrade-regression's vbox-session.bsh so the install gate and the upgrade gate
-## drive the installed system's boot menu identically (one source, no drift copy).
+## grub-boot-select.bsh: the single-source offline GRUB boot-mode selector
+## (installed_disk_path + select_installed_sysmaint_offline), shared with
+## dm-upgrade-regression's vbox-session.bsh and dm-whonix-pair so every lane drives the
+## installed system's SYSMAINT selection identically and deterministically (one source,
+## no OCR, no drift copy).
 if [ -f "${lib_dir}/../share/dm-smbios-reader-boot-tests/grub-boot-select.bsh" ]; then
    grub_boot_select_lib="${lib_dir}/../share/dm-smbios-reader-boot-tests/grub-boot-select.bsh"
 else
@@ -1129,7 +1131,7 @@ source "${grub_boot_select_lib}"
 ## dm-upgrade-regression. The live ISO squashfs ships VBoxService (Guest Additions
 ## installed from the bundled virtualbox-guest-additions-iso at build), so install-host
 ## launches DIRECTLY via guestcontrol -- no fragile OCR terminal + blind-typed line.
-## Sourced after gui-drive.bsh + grub-boot-select.bsh (it uses gui_* + select_installed_sysmaint).
+## Sourced after gui-drive.bsh + grub-boot-select.bsh (it uses gui_* + the offline selector).
 if [ -f "${lib_dir}/../share/dm-smbios-reader-boot-tests/vbox-session.bsh" ]; then
    vbox_session_lib="${lib_dir}/../share/dm-smbios-reader-boot-tests/vbox-session.bsh"
 else
@@ -1280,11 +1282,17 @@ reboot_installed() {
    sleep 3
    cb_reset_nvram
    ## Deterministic SYSMAINT selection: set grubenv next_entry OFFLINE (VM powered off)
-   ## so the power-on below autoboots the SYSMAINT entry by its unique --id -- no OCR of
-   ## the "Choose boot mode" menu, no autoboot-countdown race (the dev1424 wedge). The
-   ## in-guest LUKS unlock at the dracut prompt below is unchanged. USER boots the default.
+   ## so the power-on below autoboots the SYSMAINT entry by its unique --id (or, on a
+   ## pre-patch image, its menu title) -- no OCR of the "Choose boot mode" menu, no
+   ## autoboot-countdown race (the dev1424 wedge). The in-guest LUKS unlock at the dracut
+   ## prompt below is unchanged. USER boots the default.
    if [ "${role}" = 'sysmaint' ]; then
-      select_installed_sysmaint_offline "${disk}" "${passphrase_file}"
+      ## --reinstall without --disk leaves ${disk} empty (the VM already has its disk), but
+      ## the offline selector needs the disk path. Resolve it from the powered-off VM so the
+      ## selection stays deterministic -- no OCR fallback (OCR is fully retired).
+      local sysmaint_disk="${disk}"
+      [ -n "${sysmaint_disk}" ] || sysmaint_disk="$(installed_disk_path "${vm}")"
+      select_installed_sysmaint_offline "${sysmaint_disk}" "${passphrase_file}"
    fi
    start_vm_frontend
    gui_wait_for 'passphrase for disk|please unlock|luks' 120 "LUKS unlock (${role})"

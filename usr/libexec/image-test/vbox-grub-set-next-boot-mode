@@ -22,9 +22,12 @@
 ##     mode as [a-z-]+ and fails loud on a missing id -- never a blind/arbitrary value).
 ##   * the caller is PRIVLEAP_CALLER_UID (kernel SO_PEERCRED via privleap; not spoofable),
 ##     NOT a request field.
-## The request (disk path + LUKS passphrase + mode) is handed over in the caller-owned
-## request dir; a crafted passphrase-file only feeds a LUKS key, and the mode only selects
-## among entries already on the caller's own disk, so nothing is leaked or escalated.
+## The request (disk path + mode, plus an OPTIONAL LUKS passphrase and an OPTIONAL disk
+## format) is handed over in the caller-owned request dir; a crafted passphrase-file only
+## feeds a LUKS key, and the mode only selects among entries already on the caller's own
+## disk, so nothing is leaked or escalated. The passphrase is OPTIONAL so an unencrypted
+## image (a Whonix OVA .vmdk) is supported -- absent, the mount skips LUKS; the format is
+## OPTIONAL (default vdi), set to 'vmdk' for an OVA disk.
 
 set -o errexit
 set -o nounset
@@ -59,26 +62,79 @@ caller_pw="$(getent passwd "${PRIVLEAP_CALLER_UID}")" \
    || die "no account for caller uid ${PRIVLEAP_CALLER_UID}" 2
 caller_home="$(printf '%s' "${caller_pw}" | cut -d: -f6)"
 [ -n "${caller_home}" ] || die "caller uid ${PRIVLEAP_CALLER_UID} has no home directory" 2
+caller_gid="$(printf '%s' "${caller_pw}" | cut -d: -f4)"
+[ -n "${caller_gid}" ] || die "caller uid ${PRIVLEAP_CALLER_UID} has no primary group" 2
+
+## Read a caller-owned request file with the CALLER's privileges, never root's. The [ -L ]
+## checks below are check-then-open (TOCTOU): a caller owning the request dir can swap a file
+## for a symlink AFTER the check and BEFORE we read it. Reading as the caller closes the
+## escalation -- a symlink to a root-only file is then EACCES (the caller cannot read it),
+## so this root process never discloses a root file (via an error echo or as a LUKS key).
+## Only drop when we are actually root AND the caller is not root; a non-root run (the unit
+## test) is already the caller, so a plain read is already unprivileged and safe.
+read_req_as_caller() {
+   if [ "$(id -u)" -eq 0 ] && [ "${PRIVLEAP_CALLER_UID}" != '0' ]; then
+      setpriv --reuid="${PRIVLEAP_CALLER_UID}" --regid="${caller_gid}" --clear-groups -- cat -- "$1"
+   else
+      cat -- "$1"
+   fi
+}
+
+## Root-owned scratch for the passphrase we hand to vbox-disk-mount: it opens --passphrase-file
+## as root LATER (a wide TOCTOU window on a caller-owned path), so we copy the passphrase into a
+## root-only file NOW, read as the caller, and pass that instead -- the caller cannot swap it.
+work_dir=""
+cleanup() {
+   [ -n "${work_dir}" ] && safe-rm --recursive --force -- "${work_dir}" 2>/dev/null
+   return 0
+}
+trap cleanup EXIT
 
 req_dir="${caller_home}/.cache/vbox-grub-set-next-boot-mode"
 disk_file="${req_dir}/disk"
 pass_file="${req_dir}/passphrase"
 mode_file="${req_dir}/mode"
+format_file="${req_dir}/format"
 ## Each request file must be a REGULAR file, NOT a symlink: the caller owns the request
 ## dir, so a symlinked request file would redirect this root process's read onto a
 ## root-only file (leaking its content back via an error, or feeding it as a LUKS key).
-## O_NOFOLLOW-equivalent: refuse a symlink outright rather than read through it.
-for req_file in "${disk_file}" "${pass_file}" "${mode_file}"; do
+## O_NOFOLLOW-equivalent: refuse a symlink outright rather than read through it. disk + mode
+## are REQUIRED; passphrase + format are OPTIONAL -- but if present must still be regular
+## files (a symlinked optional file is the same redirect attack, so refuse it either way).
+for req_file in "${disk_file}" "${mode_file}"; do
    [ -L "${req_file}" ] \
       && die "refused: request file '${req_file}' is a symlink (must be a regular file)" 2
    [ -f "${req_file}" ] || die "no request: '${req_file}' does not exist" 2
 done
+for req_file in "${pass_file}" "${format_file}"; do
+   [ -L "${req_file}" ] \
+      && die "refused: request file '${req_file}' is a symlink (must be a regular file)" 2
+done
 
-disk="$(cat -- "${disk_file}")"
+disk="$(read_req_as_caller "${disk_file}")"
 [ -n "${disk}" ] || die "request disk path is empty" 2
-mode="$(cat -- "${mode_file}")"
+mode="$(read_req_as_caller "${mode_file}")"
 ## Constrain mode here too (defence in depth; grub-select-next-boot-mode re-validates).
 [[ "${mode}" =~ ^[a-z][a-z-]*$ ]] || die "invalid mode '${mode}' (expected [a-z-]+)" 2
+
+## OPTIONAL disk format (default vdi in vbox-disk-mount). Constrain to a qemu-nbd format
+## token so a crafted value cannot smuggle extra argv.
+format=""
+if [ -f "${format_file}" ]; then
+   format="$(read_req_as_caller "${format_file}")"
+   [[ "${format}" =~ ^[a-z0-9]+$ ]] || die "invalid format '${format}' (expected [a-z0-9]+)" 2
+fi
+
+## OPTIONAL passphrase, copied NOW into a root-owned file (read as the caller) so vbox-disk-mount's
+## later root open cannot be redirected by a caller-side swap of the request file.
+pass_arg=""
+if [ -f "${pass_file}" ]; then
+   work_dir="$(mktemp --directory)" || die "cannot create scratch dir" 2
+   pass_arg="${work_dir}/passphrase"
+   ( umask 077; read_req_as_caller "${pass_file}" > "${pass_arg}"; ) \
+      || die "cannot read the request passphrase as the caller (symlinked to an unreadable file?)" 2
+   chmod 0600 -- "${pass_arg}" || die "cannot secure the passphrase scratch file" 2
+fi
 
 ## The disk (after realpath, so a symlink/hardlink cannot escape) MUST be OWNED by the
 ## caller -- a caller can retarget only a disk IT owns, never root's or another user's.
@@ -97,7 +153,16 @@ disk_owner_uid="$(stat --format='%u' -- "${disk_real}")" \
 
 ## rw-mount the caller's own disk and set next_entry. vbox-disk-mount is already root
 ## here (privleap ran us as root, no sudo), tears the mount down on its own EXIT trap,
-## and grub-select-next-boot-mode fails loud if the mode's gnulinux-<mode>-* id is absent.
-"${VBOX_DISK_MOUNT}" run --disk "${disk_real}" --passphrase-file "${pass_file}" \
+## and grub-select-next-boot-mode fails loud if the mode is absent from the disk's menu.
+## --passphrase-file is added ONLY for an encrypted disk (its file present); an unencrypted
+## image (Whonix OVA .vmdk) omits it so the mount skips LUKS. --format is added when given.
+mount_args=(run --disk "${disk_real}")
+if [ -n "${pass_arg}" ]; then
+   mount_args+=(--passphrase-file "${pass_arg}")
+fi
+if [ -n "${format}" ]; then
+   mount_args+=(--format "${format}")
+fi
+"${VBOX_DISK_MOUNT}" "${mount_args[@]}" \
    -- "${GRUB_SELECT_NEXT_BOOT_MODE}" "${mode}" \
    || die "could not set next_entry for mode '${mode}' on '${disk_real}'" 3

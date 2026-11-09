@@ -51,7 +51,7 @@ confine_grubenv_path() {
       confined="$(realpath -- "${path}")" \
          || { printf '%s\n' "${me}: ERROR: ${label} does not resolve" >&2; exit 1; }
       case "${confined}/" in
-         "${root}/"*)
+         "${root_prefix}"*)
             true
             ;;
          *)
@@ -63,7 +63,7 @@ confine_grubenv_path() {
 }
 
 main() {
-   local mode root grubdir grub_cfg grubenv confined id
+   local mode root root_prefix grubdir grub_cfg grubenv confined
    mode="${1:?usage: ${me} <mode> (e.g. persistent-sysmaint)}"
    ## MODE is interpolated into the ERE below, so constrain it to the id charset
    ## (lowercase + hyphen). Rejects a typo/metachar mode (e.g. 'live.sysmaint', whose
@@ -79,10 +79,14 @@ main() {
    ## by confining grubdir; a pre-existing grubenv is re-checked.
    root="$(realpath -- "${MOUNTPOINT:-$(pwd)}")" \
       || { printf '%s\n' "${me}: ERROR: mount root does not resolve" >&2; exit 1; }
+   ## Containment prefix. realpath strips a trailing slash, so root='/' would make "${root}/"*
+   ## = '//'* and reject every in-mount path (a real FP when MOUNTPOINT=/). '${root%/}/' yields
+   ## '/' for root='/' and '/mnt/x/' for root='/mnt/x' -- correct for both, no sibling-prefix match.
+   root_prefix="${root%/}/"
    grubdir="$(realpath -- "${root}/boot/grub")" \
       || { printf '%s\n' "${me}: ERROR: no '${root}/boot/grub' (separate /boot not on the mounted root?)" >&2; exit 1; }
    case "${grubdir}/" in
-      "${root}/"*)
+      "${root_prefix}"*)
          true
          ;;
       *)
@@ -94,7 +98,7 @@ main() {
    { [ -n "${grub_cfg}" ] && [ -r "${grub_cfg}" ]; } \
       || { printf '%s\n' "${me}: ERROR: no readable grub.cfg under '${grubdir}'" >&2; exit 1; }
    case "${grub_cfg}/" in
-      "${root}/"*)
+      "${root_prefix}"*)
          true
          ;;
       *)
@@ -111,28 +115,67 @@ main() {
    grubenv="${confined}"
    confine_grubenv_path "${grubenv}.new" "grubenv.new"
 
-   ## The simple boot-mode entry's --id for MODE, taken ONLY from a top-level menuentry
-   ## line (so an earlier textual reference cannot be mistaken for the id). The advanced
-   ## submenus are indented and keep the stock gnulinux-advanced-<dev> /
-   ## gnulinux-<version>-advanced-<dev> scheme, so this cannot match one. No match -> the
-   ## image lacks the per-mode --id patch (a pre-patch image shares gnulinux-simple-<dev>
-   ## across modes) -> fail loud, never select blindly.
-   ## Anchor the id tail to the device-id charset (a UUID: hex + hyphens). MODE is a COMPLETE
-   ## id field here, never a prefix of a longer one: 'gnulinux-${mode}-[^' ]+' is a PREFIX match,
-   ## so mode=persistent would wrongly select gnulinux-persistent-sysmaint-<uuid> (and live ->
-   ## live-sysmaint). A real mode is followed by the hex device-id (matches); an invalid prefix
-   ## is followed by 'sysmaint' (non-hex -> no match -> fail loud below, never a mis-select).
-   id="$(grep --extended-regexp '^menuentry ' "${grub_cfg}" \
+   ## Resolve a one-shot next_entry selector for MODE that works on EVERY image, preferring the
+   ## robust machine key and falling back to the title so a pre-patch released image is covered
+   ## too (both are offline grubenv edits -- no OCR, no live-menu timing). GRUB's next_entry
+   ## matches a menuentry by --id OR by exact title.
+   ##
+   ## 1. The per-mode --id (dist-base-files per-mode --id patch), taken ONLY from a top-level
+   ##    menuentry line (so an earlier textual reference cannot be mistaken for the id). The
+   ##    advanced submenus are indented and keep the stock gnulinux-advanced-<dev> scheme, so
+   ##    this cannot match one. Anchor the id tail to the device-id charset (hex + hyphens):
+   ##    MODE is a COMPLETE id field, never a prefix -- a real mode is followed by the hex
+   ##    device-id (matches), an invalid prefix like 'persistent' is followed by 'sysmaint'
+   ##    (non-hex -> no match -> drops to the title fallback, which also rejects it).
+   local selector=''
+   selector="$(grep --extended-regexp '^menuentry ' "${grub_cfg}" \
       | grep --only-matching --extended-regexp "gnulinux-${mode}-[0-9a-fA-F][0-9a-fA-F-]*" \
       | head -n 1)" || true
-   [ -n "${id}" ] || {
-      printf '%s\n' "${me}: ERROR: no menuentry id 'gnulinux-${mode}-*' in '${grub_cfg}'" >&2
-      printf '%s\n' "${me}: (image must carry the dist-base-files per-mode --id patch)" >&2
+   if [ -z "${selector}" ]; then
+      ## 2. Fallback: select by the menuentry TITLE. Part A changed the --id, never the title,
+      ##    so the per-mode title is unique on every image, including a pre-patch one that
+      ##    shares gnulinux-simple-<dev> across modes. Match STABLE semantic markers (persistence
+      ##    mode + session), then use the ACTUAL full title from this grub.cfg verbatim, so a
+      ##    reworded title tail still resolves. A mode with no marker mapping (e.g. the bare
+      ##    prefix 'persistent'/'live') falls through to the fail-loud below -- never a mis-select.
+      local -a markers=()
+      case "${mode}" in
+         persistent-sysmaint)
+            markers=('PERSISTENT Mode' 'SYSMAINT Session')
+            ;;
+         live-sysmaint)
+            markers=('LIVE Mode' 'SYSMAINT Session')
+            ;;
+         remove-sysmaint)
+            markers=('REMOVE user-sysmaint-split')
+            ;;
+         user)
+            markers=('PERSISTENT Mode' 'USER Session')
+            ;;
+         *)
+            markers=()
+            ;;
+      esac
+      if [ "${#markers[@]}" -gt 0 ]; then
+         local lines marker
+         lines="$(grep --extended-regexp '^menuentry ' "${grub_cfg}")" || lines=''
+         for marker in "${markers[@]}"; do
+            lines="$(printf '%s\n' "${lines}" | grep --fixed-strings -- "${marker}")" || lines=''
+         done
+         ## First matching top-level menuentry's title (single- OR double-quoted).
+         selector="$(printf '%s\n' "${lines}" | head -n 1 \
+            | sed -n -e "s/^menuentry '\\([^']*\\)'.*/\\1/p" -e 's/^menuentry "\([^"]*\)".*/\1/p' \
+            | head -n 1)"
+      fi
+   fi
+   [ -n "${selector}" ] || {
+      printf '%s\n' "${me}: ERROR: no 'gnulinux-${mode}-*' id and no menuentry titled for mode '${mode}' in '${grub_cfg}'" >&2
+      printf '%s\n' "${me}: (image needs the dist-base-files per-mode --id patch, or a per-mode boot menu)" >&2
       exit 1
    }
 
-   grub-editenv "${grubenv}" set "next_entry=${id}"
-   printf '%s\n' "${me}: set next_entry=${id}"
+   grub-editenv "${grubenv}" set "next_entry=${selector}"
+   printf '%s\n' "${me}: set next_entry=${selector}"
 }
 
 ## Sourced (a unit test) -> expose main without running; executed -> run.

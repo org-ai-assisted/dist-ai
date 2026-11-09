@@ -5,9 +5,11 @@
 
 ## AI-Assisted
 
-## grub-select-next-boot-mode sets grubenv next_entry to the per-mode menuentry --id,
-## so an installed system boots a chosen mode deterministically (no OCR). Drives the
-## REAL helper end-to-end against a fixture mounted root + a real grubenv (grub-editenv).
+## grub-select-next-boot-mode sets grubenv next_entry to the per-mode menuentry, so an
+## installed system boots a chosen mode deterministically (no OCR). It prefers the per-mode
+## --id (patched image) and falls back to the exact menuentry TITLE (pre-patch image with a
+## shared gnulinux-simple-<dev>) -- GRUB next_entry matches either. Drives the REAL helper
+## end-to-end against a fixture mounted root + a real grubenv (grub-editenv).
 ##
 ## Needs grub-editenv (grub-common); absent -> SKIP 77. No root, no VM, no network.
 
@@ -58,6 +60,27 @@ make_root() {
    done > "${root}/boot/grub/grub.cfg"
 }
 
+## Write a fixture mounted root modelling a PRE-PATCH installed menu: the real per-mode
+## TITLES (Template:BootEntries) but a SINGLE shared gnulinux-simple-<dev> id across every
+## entry, so id-based selection is impossible and only the title fallback can resolve a mode.
+make_root_titled() {
+   local root="$1" shared_id="$2"
+   mkdir --parents -- "${root}/boot/grub"
+   local title
+   for title in \
+      'PERSISTENT Mode | USER Session | daily activities' \
+      'PERSISTENT Mode | SYSMAINT Session | system maintenance tasks' \
+      'LIVE Mode | USER Session | disposable use' \
+      'LIVE Mode | SYSMAINT Session | maintenance testing' \
+      'REMOVE user-sysmaint-split | enable unrestricted admin mode'
+   do
+      printf '%s\n' \
+         "menuentry '${title}' --class os \$menuentry_id_option '${shared_id}' {" \
+         "	true" \
+         "}"
+   done > "${root}/boot/grub/grub.cfg"
+}
+
 next_entry_of() {
    grub-editenv "${1}/boot/grub/grubenv" list 2>/dev/null | sed -n 's/^next_entry=//p'
 }
@@ -90,20 +113,34 @@ MOUNTPOINT="${root1}" "${helper}" live-sysmaint >/dev/null
 check "selects live-sysmaint distinctly" \
    "gnulinux-live-sysmaint-${dev}" "$(next_entry_of "${root1}")"
 
-## 2. CANARY: a pre-patch image shares gnulinux-simple-<dev> across modes, so there is
-## no gnulinux-persistent-sysmaint-* id -> the helper MUST fail loud, never select blindly.
+## 2. CANARY: an image with NEITHER a per-mode id NOR a per-mode menu title (shared
+## gnulinux-simple-<dev> and only a generic 'Kicksecure GNU/Linux' title) -> the helper
+## MUST fail loud, never select blindly.
 root2="${work_dir}/sharedid"
 make_root "${root2}" "gnulinux-simple-${dev}" "gnulinux-simple-${dev}"
 rc=0
 MOUNTPOINT="${root2}" "${helper}" persistent-sysmaint >/dev/null 2>&1 || rc=$?
 envdump="$(grub-editenv "${root2}/boot/grub/grubenv" list 2>/dev/null || true)"
 if [ "${rc}" -ne 0 ] && [[ "${envdump}" != *"next_entry="* ]]; then
-   printf '%s\n' "PASS: shared-id image -> helper fails, next_entry left unset"
+   printf '%s\n' "PASS: no id and no titled menu -> helper fails, next_entry left unset"
    pass=$(( pass + 1 ))
 else
-   printf '%s\n' "FAIL: shared-id image: helper rc=${rc}, envdump='${envdump}'"
+   printf '%s\n' "FAIL: no-id/no-title image: helper rc=${rc}, envdump='${envdump}'"
    fail=$(( fail + 1 ))
 fi
+
+## 2b. TITLE FALLBACK: a pre-patch image shares gnulinux-simple-<dev> across modes (no
+## per-mode id) but carries the real per-mode TITLES -> the helper selects by the exact
+## full title, which GRUB next_entry matches, so every lane works before Part A ships in a
+## release. persistent-sysmaint and live-sysmaint must resolve to their OWN distinct titles.
+root2b="${work_dir}/sharedid_titled"
+make_root_titled "${root2b}" "gnulinux-simple-${dev}"
+MOUNTPOINT="${root2b}" "${helper}" persistent-sysmaint >/dev/null
+check "title fallback selects the persistent-sysmaint menu title" \
+   'PERSISTENT Mode | SYSMAINT Session | system maintenance tasks' "$(next_entry_of "${root2b}")"
+MOUNTPOINT="${root2b}" "${helper}" live-sysmaint >/dev/null
+check "title fallback selects the live-sysmaint menu title distinctly" \
+   'LIVE Mode | SYSMAINT Session | maintenance testing' "$(next_entry_of "${root2b}")"
 
 ## 3. A mode with a regex metachar must be REJECTED, not matched against a valid entry
 ## ('.' would otherwise match the hyphen in gnulinux-live-sysmaint).

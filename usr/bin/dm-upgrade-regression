@@ -225,10 +225,11 @@ validate_args() {
 
 ## --- VM lifecycle -----------------------------------------------------------
 
-## The recipe must boot the VM fresh THROUGH GRUB (to select a role). Accept only a
-## fully powered-down state: a 'saved' VM would RESUME on startvm (no GRUB menu), so
-## select_installed_sysmaint would never find the menu -- reject it (discard the
-## saved state first). A 'running'/'paused' VM may be another session's -- refuse.
+## The recipe sets the SYSMAINT selection OFFLINE (grubenv next_entry) then boots the VM
+## fresh THROUGH GRUB. Accept only a fully powered-down state: a 'saved' VM would RESUME on
+## startvm (no fresh GRUB boot), so next_entry would never be read -- and its disk may be
+## locked against the offline mount. Reject it (discard the saved state first). A
+## 'running'/'paused' VM may be another session's -- refuse.
 require_vm_idle() {
    local state
    "${VBOXMANAGE}" showvminfo "${vm}" >/dev/null 2>&1 \
@@ -355,9 +356,9 @@ switch_and_upgrade() {
 ## pipeline): (1) the battery's check 3 re-runs upgrade-nonroot to prove the updater
 ## still works post-upgrade -- normally a no-op; if upstream publishes NEW packages
 ## between switch_and_upgrade and check 3, check 3 applies them and the final state is
-## not independently re-booted (narrow race, out of scope). (2) A GRUB-OCR failure in the
-## sysmaint boot (select_installed_sysmaint cannot OCR the "Choose boot mode" menu) returns
-## nonzero from boot_installed -- its die is subshell-wrapped there -- so it flows to the
+## not independently re-booted (narrow race, out of scope). (2) An offline-selection failure in the
+## sysmaint boot (installed_disk_path / select_installed_sysmaint_offline cannot set next_entry)
+## returns nonzero from boot_installed -- its die is subshell-wrapped there -- so it flows to the
 ## DEGRADED result with REASON set, the same path as a guest that never returns
 ## (wait_guestcontrol_ready). A GRUB-bricked upgrade thus reaches write_report, not a hard
 ## exit past it; no accepted hard-die path remains here. (3) VM exclusivity is coordinated

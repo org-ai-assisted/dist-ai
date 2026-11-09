@@ -6,22 +6,24 @@
 ## AI-Assisted
 
 ## Sourceable VBox boot-role + in-guest-exec helpers for the upgrade-regression
-## recipe (dm-upgrade-regression). Reaching a boot role (GRUB menu) and unlocking
-## LUKS are pre-OS, so they are unavoidably screenshot+scancode (gui-drive.bsh);
-## once the guest is up, commands run via VBoxManage guestcontrol (a shipped VM
-## image has Guest Additions / VBoxService -- a Calamares-installed disk does not,
-## which is why the Calamares gate uses the OCR terminal instead).
+## recipe (dm-upgrade-regression). The SYSMAINT boot role is selected DETERMINISTICALLY
+## offline (grubenv next_entry, no OCR); only the LUKS unlock at boot remains pre-OS and
+## screenshot+scancode (gui-drive.bsh). Once the guest is up, commands run via VBoxManage
+## guestcontrol (a shipped VM image has Guest Additions / VBoxService -- a Calamares-installed
+## disk does not, which is why the Calamares gate uses the OCR terminal instead).
 ##
-## MUST be sourced AFTER gui-drive.bsh (uses gui_ocr/gui_scan + the caller's die).
-## Caller globals: vm, VBOXMANAGE, GUESTCTL, FAIL_RC, me, and (optional) passphrase.
+## MUST be sourced AFTER gui-drive.bsh (uses gui_* + the caller's die).
+## Caller globals: vm, VBOXMANAGE, GUESTCTL, FAIL_RC, me, and (optional) passphrase +
+## passphrase_file (the 0600 file, for the offline SYSMAINT selection on an encrypted disk).
 ##
-## select_installed_sysmaint lives in grub-boot-select.bsh -- the single source shared
-## with dm-calamares-install -- which the sourcing tool loads before this fragment.
-## boot_installed wraps that call so its die() cannot escape (return-nonzero contract).
+## installed_disk_path + select_installed_sysmaint_offline live in grub-boot-select.bsh --
+## the single source shared with dm-calamares-install -- which the sourcing tool loads before
+## this fragment. boot_installed wraps those calls so their die() cannot escape (return-nonzero
+## contract).
 ##
 ## style-ok: no-strict -- sourced-only fragment; a top-level 'set -o errexit'/
 ## 'nounset'/'pipefail' would leak into (and could kill) the sourcing shell.
-# shellcheck disable=SC2154  ## vm/VBOXMANAGE/GUESTCTL/FAIL_RC/me/passphrase are set by the sourcing tool
+# shellcheck disable=SC2154  ## vm/VBOXMANAGE/GUESTCTL/FAIL_RC/me/passphrase[_file] are set by the sourcing tool
 
 ## Map a boot ROLE to the guest account that may authenticate in it. In a sysmaint
 ## boot security-misc block-unsafe-logins rejects `user` (and vice versa), so the
@@ -173,24 +175,27 @@ unlock_luks() {
    gui_scan 1c 9c
 }
 
-## Power-cycle the installed disk into ROLE (user = default GRUB entry; sysmaint =
-## entry 2), unlock LUKS if encrypted, and wait until guestcontrol is reachable as
-## the role's account. Returns nonzero (NOT die) if the guest never comes back, so a
-## bricked-by-upgrade boot flows to the gate result. No terminal is opened. The
+## Power-cycle the installed disk into ROLE (user = default GRUB entry; sysmaint selected
+## DETERMINISTICALLY offline), unlock LUKS if encrypted, and wait until guestcontrol is
+## reachable as the role's account. Returns nonzero (NOT die) if the guest never comes
+## back, so a bricked-by-upgrade boot flows to the gate result. No terminal is opened. The
 ## shutdown is CLEAN (clean_poweroff) to protect the persisted on-disk state.
 boot_installed() {
-   local role="$1" account
+   local role="$1" account disk
    account="$(gc_account_for_role "${role}")"
    clean_poweroff
-   "${VBOXMANAGE}" startvm "${vm}" --type headless >/dev/null
    if [ "${role}" = 'sysmaint' ]; then
-      ## select_installed_sysmaint die()s if the GRUB menu never OCRs; a subshell keeps
-      ## that exit from escaping boot_installed, honoring the return-nonzero contract (a
-      ## GRUB-bricked upgrade flows to the degraded gate result, not a hard exit past
-      ## write_report). It only sends scancodes -- no shell-var side effects the rest of
-      ## boot_installed reads -- so the subshell is semantically free.
-      ( select_installed_sysmaint ) || return 1
+      ## Deterministic OFFLINE selection with the VM powered off: resolve the system disk and
+      ## set grubenv next_entry=sysmaint BEFORE power-on (no OCR, no live-menu race). Both
+      ## helpers die() on failure; the command-substitution subshell (disk=) and the explicit
+      ## subshell keep that exit from escaping boot_installed, honoring the return-nonzero
+      ## contract (a selection failure flows to the degraded gate result, not a hard exit past
+      ## write_report). The installed disk is a .vdi (default format); pass the passphrase file
+      ## for an encrypted install, omit for an unencrypted one.
+      disk="$(installed_disk_path "${vm}")" || return 1
+      ( select_installed_sysmaint_offline "${disk}" "${passphrase_file:-}" ) || return 1
    fi
+   "${VBOXMANAGE}" startvm "${vm}" --type headless >/dev/null
    unlock_luks "${role}"
    wait_guestcontrol_ready "${account}" 300
 }

@@ -5,99 +5,84 @@
 
 ## AI-Assisted
 
-## Sourceable GRUB boot-mode selection shared by dm-calamares-install (install gate)
-## and vbox-session.bsh (dm-upgrade-regression). TWO selectors, SINGLE source:
-##   * select_installed_sysmaint_offline -- DETERMINISTIC (preferred): with the VM
-##     powered OFF, set grubenv next_entry to the per-mode menuentry id via the
-##     vbox-grub-set-next-boot-mode privleap action (host-side, no boot, no OCR). Relies
-##     on the per-mode --id (dist-base-files 10_00_linux_dist). Use this on an ENCRYPTED
-##     install where the disk path + LUKS passphrase file are in hand.
-##   * select_installed_sysmaint -- LEGACY OCR+scancode on the live "Choose boot mode"
-##     menu, still used by the lanes not yet migrated (vbox-session/dm-upgrade-regression,
-##     dm-whonix-pair -- they resolve the disk from the VM and/or run unencrypted VMDK OVAs,
-##     a migration tracked separately). Retire once every caller uses the offline selector.
+## Sourceable GRUB boot-mode selection shared by every installed-VM lane
+## (dm-calamares-install, vbox-session.bsh / dm-upgrade-regression, dm-whonix-pair).
+## ONE deterministic mechanism, no OCR:
+##   * select_installed_sysmaint_offline -- with the VM powered OFF, set grubenv next_entry
+##     to the SYSMAINT boot entry via the vbox-grub-set-next-boot-mode privleap action
+##     (host-side, no boot, no live-menu timing). The action prefers the per-mode menuentry
+##     --id (dist-base-files 10_00_linux_dist) and falls back to the exact menuentry title,
+##     so it resolves on a patched AND a pre-patch released image alike. Works on an
+##     ENCRYPTED install (pass the LUKS passphrase file) and an unencrypted image (omit it);
+##     pass the disk format for a non-vdi disk (vmdk for an OVA).
+##   * installed_disk_path -- resolve a VM's attached system disk image from VBoxManage, so a
+##     lane that only knows the VM name can hand the disk to the selector.
 ##
-## MUST be sourced AFTER gui-drive.bsh (uses gui_ocr/gui_scan + the caller's die).
-## Caller globals: FAIL_RC (plus gui-drive.bsh's vm/GUESTCTL/VBOXMANAGE/TESSERACT/me).
+## Uses the caller's die + FAIL_RC (die-on-failure contract) and VBOXMANAGE (gui-drive.bsh).
+# shellcheck disable=SC2154  ## FAIL_RC (+ VBOXMANAGE) are set by the sourcing tool
 
-## Deterministic offline SYSMAINT selection. Args: <disk-path> <luks-passphrase-file>.
+## Resolve the first attached writable disk image of VM $1 (skip none/emptydrive and optical
+## .iso media), so a lane holding only the VM name can select offline. die()s on no disk.
+installed_disk_path() {
+   local vm="$1" info line path
+   info="$("${VBOXMANAGE:-VBoxManage}" showvminfo "${vm}" --machinereadable)" \
+      || die "${FAIL_RC}" "could not read VM info for '${vm}' (installed_disk_path)"
+   while IFS= read -r line; do
+      ## A storage attachment with an absolute-path value: "<controller>-<p>-<d>"="/path".
+      case "${line}" in
+         '"'*'"="/'*)
+            true
+            ;;
+         *)
+            continue
+            ;;
+      esac
+      path="${line#*=\"}"
+      path="${path%\"}"
+      case "${path}" in
+         *.vdi|*.VDI|*.vmdk|*.VMDK|*.vhd|*.VHD|*.qcow2|*.img|*.raw)
+            printf '%s\n' "${path}"
+            return 0
+            ;;
+      esac
+   done <<< "${info}"
+   die "${FAIL_RC}" "no attached disk image found for VM '${vm}' (installed_disk_path)"
+}
+
+## Deterministic offline SYSMAINT selection.
+## Args: <disk-path> [<luks-passphrase-file>] [<disk-format>].
+##   * pass a passphrase file for an ENCRYPTED install; omit (or '') for an unencrypted image.
+##   * pass a format ('vmdk') for a non-vdi disk; omit (or '') for the vdi default.
 ## The VM MUST be powered off (vbox-disk-mount refuses a VM-locked disk). Hands the request
-## (disk + passphrase + mode) to the narrow vbox-grub-set-next-boot-mode privleap action in
-## the caller-owned request dir (mirrors dm-calamares-install's mok_host_enroll), which sets
-## next_entry so the next power-on autoboots SYSMAINT. die()s on failure (FAIL_RC contract).
-# shellcheck disable=SC2154  ## FAIL_RC is set by the sourcing tool
+## to the narrow vbox-grub-set-next-boot-mode privleap action in the caller-owned request dir
+## (mirrors dm-calamares-install's mok_host_enroll), which sets next_entry so the next
+## power-on autoboots SYSMAINT. die()s on failure (FAIL_RC contract).
 select_installed_sysmaint_offline() {
-   local disk="$1" pass_file="$2" req_dir
+   local disk="$1" pass_file="${2:-}" format="${3:-}" req_dir
    req_dir="$(getent passwd "$(id -u)" | cut -d: -f6)/.cache/vbox-grub-set-next-boot-mode"
    # shellcheck disable=SC2174  ## --mode on mkdir --parents applies to the leaf, which is what we want
    mkdir --parents --mode=0700 -- "${req_dir}"
+   ## Clear any stale optional files first: the action treats their PRESENCE as meaningful
+   ## (passphrase present -> LUKS unlock; format present -> non-vdi), so a leftover from a
+   ## prior request would wrongly apply to this one.
+   safe-rm --force -- "${req_dir}/passphrase" "${req_dir}/format" 2>/dev/null || true
    printf '%s' "${disk}" > "${req_dir}/disk"
-   cp --force -- "${pass_file}" "${req_dir}/passphrase"
    printf '%s' 'persistent-sysmaint' > "${req_dir}/mode"
-   chmod 0600 -- "${req_dir}/disk" "${req_dir}/passphrase" "${req_dir}/mode"
-   if ! leaprun vbox-grub-set-next-boot-mode; then
-      safe-rm --force -- "${req_dir}/disk" "${req_dir}/passphrase" "${req_dir}/mode" 2>/dev/null || true
-      die "${FAIL_RC}" "could not set SYSMAINT next_entry offline via the 'vbox-grub-set-next-boot-mode' privleap action (installed? runner in vboxusers? per-mode --id in the image?)"
+   chmod 0600 -- "${req_dir}/disk" "${req_dir}/mode"
+   if [ -n "${pass_file}" ]; then
+      cp --force -- "${pass_file}" "${req_dir}/passphrase"
+      chmod 0600 -- "${req_dir}/passphrase"
    fi
-   safe-rm --force -- "${req_dir}/disk" "${req_dir}/passphrase" "${req_dir}/mode" 2>/dev/null || true
+   if [ -n "${format}" ]; then
+      printf '%s' "${format}" > "${req_dir}/format"
+      chmod 0600 -- "${req_dir}/format"
+   fi
+   if ! leaprun vbox-grub-set-next-boot-mode; then
+      safe-rm --force -- "${req_dir}/disk" "${req_dir}/passphrase" "${req_dir}/mode" "${req_dir}/format" 2>/dev/null || true
+      die "${FAIL_RC}" "could not set SYSMAINT next_entry offline via the 'vbox-grub-set-next-boot-mode' privleap action (installed? runner in vboxusers? disk/passphrase/format correct?)"
+   fi
+   safe-rm --force -- "${req_dir}/disk" "${req_dir}/passphrase" "${req_dir}/mode" "${req_dir}/format" 2>/dev/null || true
 }
 ##
 ## style-ok: no-strict -- sourced-only fragment; a top-level 'set -o errexit'/
 ## 'nounset'/'pipefail' would leak into (and could kill) the sourcing shell.
-# shellcheck disable=SC2154  ## FAIL_RC (+ gui-drive.bsh globals) are set by the sourcing tool
-
-## Select the INSTALLED system's GRUB "Choose boot mode" entry 2 (PERSISTENT Mode |
-## SYSMAINT Session), tolerant of slow/late OCR on a BIOS VM. The flat menu autoboots the
-## default entry 1 (USER) after ~5s; entry 2 is one Down away.
-##
-## catch-halt-confirm: the instant the menu OCRs, send ONE Down. A Down HALTS GRUB's
-## autoboot countdown AND moves the highlight entry1 -> entry2 -- and a Down can never
-## submit anything, so it is safe even if we OCR'd a hair late. Only AFTER re-OCR confirms
-## the menu is STILL on screen do we press Enter. If the menu is gone we were too late (GRUB
-## already autobooting into USER); an Enter then would land on the dracut LUKS passphrase
-## prompt and submit an EMPTY passphrase -- wedging the unlock -- so Enter fires ONLY on a
-## confirmed menu, never blindly. Exactly one Down from the always-entry1 default lands
-## entry2 = SYSMAINT; no second Down (it would overshoot into LIVE / REMOVE user-sysmaint-split).
-##
-## Match the "Choose boot mode" theme HEADER only -- NOT the entry titles ("PERSISTENT
-## Mode", "SYSMAINT Session"). Those titles ALSO appear in GRUB's post-autoboot "Booting
-## '<entry>'" banner and the booted console, so matching them would fire Down/Enter at an
-## already-booting system (the empty-passphrase wedge). The header is unique to the live
-## menu, so a match means the menu is genuinely displayed; if OCR garbles it we safe-fail
-## (die) rather than act on a booting screen.
-##
-## die()s if the menu is never caught+confirmed -- a caller with a return-nonzero contract
-## (boot_installed) wraps the call in a subshell so the die cannot escape it. Timeouts are
-## overridable (GRUB_SELECT_TIMEOUT_S / GRUB_SELECT_CONFIRM_S) with production-safe
-## defaults, so a unit test can drive the safe-fail path quickly.
-select_installed_sysmaint() {
-   local deadline confirm_deadline text
-   local menu_re='choose[[:space:]]boot[[:space:]]mode'
-   local timeout_s="${GRUB_SELECT_TIMEOUT_S:-60}"
-   local confirm_s="${GRUB_SELECT_CONFIRM_S:-10}"
-   deadline=$(( SECONDS + timeout_s ))
-   while [ "${SECONDS}" -lt "${deadline}" ]; do
-      text="$(gui_ocr)"
-      if [[ "${text,,}" =~ ${menu_re} ]]; then
-         ## Halt the countdown + move entry1 -> entry2, then let the highlight settle.
-         gui_scan e0 50 e0 d0
-         sleep 1
-         ## Confirm the menu is still up, then Enter. Retry briefly to ride out a transient
-         ## blank screenshot; a halted menu stays put. Send NO further Down here.
-         confirm_deadline=$(( SECONDS + confirm_s ))
-         while [ "${SECONDS}" -lt "${confirm_deadline}" ]; do
-            text="$(gui_ocr)"
-            if [[ "${text,,}" =~ ${menu_re} ]]; then
-               gui_scan 1c 9c
-               return 0
-            fi
-            sleep 1
-         done
-         ## Down sent but the menu never re-confirmed: caught too late, GRUB is already
-         ## booting the default. Do NOT press Enter (it would hit the LUKS prompt).
-         break
-      fi
-      sleep 1
-   done
-   die "${FAIL_RC}" "installed GRUB menu not detected (sysmaint select)"
-}

@@ -6,12 +6,13 @@
 ## AI-Assisted
 
 ## Assert boot_installed (vbox-session.bsh) honors its documented return-nonzero
-## contract: when the sysmaint GRUB-menu selection die()s (menu never OCRs, e.g. an
-## upgrade bricked boot), boot_installed must RETURN nonzero -- NOT exit the process --
-## so dm-upgrade-regression's `if ! boot_installed sysmaint` catches it and reaches
+## contract: when the offline sysmaint selection die()s (e.g. an upgrade bricked the boot
+## entry, or the disk cannot be mounted), boot_installed must RETURN nonzero -- NOT exit the
+## process -- so dm-upgrade-regression's `if ! boot_installed sysmaint` catches it and reaches
 ## write_report (degraded result) instead of a hard exit past it. No VM, no network.
-## select_installed_sysmaint is forced via a stub (its real body is drift-free single
-## source in grub-boot-select.bsh); this tests the CALL-SITE subshell wrap in boot_installed.
+## installed_disk_path + select_installed_sysmaint_offline are forced via stubs (their real
+## bodies are drift-free single source in grub-boot-select.bsh); this tests the CALL-SITE
+## subshell / command-substitution wrap in boot_installed.
 
 set -o errexit
 set -o nounset
@@ -55,8 +56,12 @@ TESSERACT="${stub}"
 me='boot_installed_test'
 FAIL_RC=5
 
+## Caller globals the offline selector / disk resolver consume.
+# shellcheck disable=SC2034
+passphrase_file=''
+
 ## The caller-provided die: prints to stderr and EXITs (mirrors dm-upgrade-regression's
-## die). select_installed_sysmaint calls `die "${FAIL_RC}" "..."`, so $1 is the exit code.
+## die). The offline selector calls `die "${FAIL_RC}" "..."`, so $1 is the exit code.
 die() {
    printf '%s\n' "${2:-}" >&2
    exit "$1"
@@ -89,11 +94,18 @@ assert_eq() {
    fi
 }
 
-## --- negative: select die()s -> boot_installed must RETURN nonzero, not exit --------
-## Force the failure branch: a selection that die()s like the real menu-not-detected path.
+## Resolve the disk to a stable sentinel so the sysmaint branch reaches the selector; the
+## stub below decides pass/fail. Overridden per-case where the resolver itself is under test.
 # shellcheck disable=SC2317  ## invoked indirectly by boot_installed, not called directly
-select_installed_sysmaint() {
-   die "${FAIL_RC}" "simulated: installed GRUB menu not detected (sysmaint select)"
+installed_disk_path() {
+   printf '%s\n' "${tmp}/fake.vdi"
+}
+
+## --- negative: select die()s -> boot_installed must RETURN nonzero, not exit --------
+## Force the failure branch: an offline selection that die()s like a real unmountable disk.
+# shellcheck disable=SC2317  ## invoked indirectly by boot_installed, not called directly
+select_installed_sysmaint_offline() {
+   die "${FAIL_RC}" "simulated: offline next_entry selection failed (sysmaint)"
 }
 ## Run inside a command substitution with a sentinel: the printf executes ONLY if
 ## boot_installed RETURNED. If die escapes (unwrapped call site), the $( ) subshell
@@ -111,7 +123,7 @@ wait_guestcontrol_ready() {
    return 0
 }
 # shellcheck disable=SC2317  ## invoked indirectly by boot_installed, not called directly
-select_installed_sysmaint() {
+select_installed_sysmaint_offline() {
    return 0
 }
 rc=0
@@ -120,7 +132,7 @@ assert_eq 'boot_installed sysmaint returns 0 on a clean select' "${rc}" '0'
 
 ## --- positive: user role never calls select (and returns 0) -------------------------
 # shellcheck disable=SC2317  ## invoked indirectly by boot_installed's sysmaint branch only
-select_installed_sysmaint() {
+select_installed_sysmaint_offline() {
    touch -- "${tmp}/select_called"
    return 0
 }
@@ -128,9 +140,9 @@ rc=0
 boot_installed user || rc=$?
 assert_eq 'boot_installed user returns 0' "${rc}" '0'
 if [ -e "${tmp}/select_called" ]; then
-   assert_eq 'boot_installed user does NOT call select_installed_sysmaint' 'called' 'not-called'
+   assert_eq 'boot_installed user does NOT call the offline selector' 'called' 'not-called'
 else
-   assert_eq 'boot_installed user does NOT call select_installed_sysmaint' 'not-called' 'not-called'
+   assert_eq 'boot_installed user does NOT call the offline selector' 'not-called' 'not-called'
 fi
 
 printf '%s\n' "" "${pass} pass, ${fail} fail"

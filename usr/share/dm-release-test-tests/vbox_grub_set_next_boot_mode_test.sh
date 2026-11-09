@@ -41,7 +41,7 @@ created='false'
 
 cleanup() {
    if [ "${created}" = 'true' ]; then
-      safe-rm --force -- "${req}/disk" "${req}/passphrase" "${req}/mode" "${req}/fakedisk" "${req}/other_owned" 2>/dev/null || true
+      safe-rm --force -- "${req}/disk" "${req}/passphrase" "${req}/mode" "${req}/format" "${req}/fakedisk" "${req}/other_owned" 2>/dev/null || true
       if [ "${req_preexisted}" = 'false' ]; then
          rmdir -- "${req}" 2>/dev/null || true
       fi
@@ -81,10 +81,26 @@ set +o noclobber
 ## Stub vbox-disk-mount: record argv, do NOT mount. GRUB_SELECT path need not exist (the
 ## stub never runs it), but set it to a stable sentinel so the delegated argv is assertable.
 argv_log="${work}/vdm.argv"
+pass_log="${work}/vdm.pass"
+rawpf_log="${work}/vdm.rawpf"
 stub="${work}/vbox-disk-mount-stub"
+## Record argv with the --passphrase-file VALUE normalized to <PASSFILE> (it is a random
+## root-owned temp the wrapper copies the passphrase into, to defeat a request-file swap),
+## dump the passphrase CONTENT (verify it was passed through), and the RAW path (verify the
+## mounter is handed a path OUTSIDE the caller-owned request dir, so a swap cannot redirect it).
 cat > "${stub}" <<STUB
 #!/bin/bash
-printf '%s\n' "\$@" > "${argv_log}"
+args=()
+pf=""
+while [ "\$#" -gt 0 ]; do
+   if [ "\$1" = '--passphrase-file' ]; then
+      pf="\$2"; args+=('--passphrase-file' '<PASSFILE>'); shift 2; continue
+   fi
+   args+=("\$1"); shift
+done
+printf '%s\n' "\${args[@]}" > "${argv_log}"
+printf '%s' "\$pf" > "${rawpf_log}"
+if [ -n "\$pf" ]; then cat -- "\$pf" > "${pass_log}"; else printf '<none>' > "${pass_log}"; fi
 exit 0
 STUB
 chmod +x "${stub}"
@@ -100,14 +116,53 @@ run_wrapper() {
    printf '%s' "${rc}"
 }
 
-## 1. Happy path: caller owns the disk + valid mode -> delegates the exact invocation.
-safe-rm --force -- "${argv_log}"
+## 1. Happy path: caller owns the disk + valid mode -> delegates the exact invocation, with
+## the passphrase copied into the root-owned scratch file (<PASSFILE>) and passed through.
+safe-rm --force -- "${argv_log}" "${pass_log}"
 rc="$(run_wrapper "${uid}")"
 check "caller-owned disk + valid mode: wrapper succeeds (rc=0, got ${rc})" \
    "$([ "${rc}" = '0' ] && printf '%s' true || printf '%s' false)"
 argv="$(tr '\n' ' ' < "${argv_log}" 2>/dev/null || true)"
-check "delegates: run --disk <realpath> --passphrase-file <req/passphrase> -- <helper> persistent-sysmaint" \
-   "$([ "${argv}" = "run --disk $(realpath -- "${disk}") --passphrase-file ${req}/passphrase -- ${helper_sentinel} persistent-sysmaint " ] && printf '%s' true || printf '%s' false)"
+check "delegates: run --disk <realpath> --passphrase-file <PASSFILE> -- <helper> persistent-sysmaint" \
+   "$([ "${argv}" = "run --disk $(realpath -- "${disk}") --passphrase-file <PASSFILE> -- ${helper_sentinel} persistent-sysmaint " ] && printf '%s' true || printf '%s' false)"
+check "passphrase passed through unchanged (via the root-owned scratch file)" \
+   "$([ "$(cat -- "${pass_log}" 2>/dev/null)" = 'irrelevant' ] && printf '%s' true || printf '%s' false)"
+## TOCTOU canary: the passphrase path handed to the (root) mounter must NOT be the
+## caller-owned request file -- else a caller could swap it for a symlink before the root
+## open. It must be an out-of-request-dir scratch path the caller cannot touch.
+rawpf="$(cat -- "${rawpf_log}" 2>/dev/null || true)"
+check "mounter passphrase path is OUTSIDE the caller-owned request dir (swap-proof)" \
+   "$([ -n "${rawpf}" ] && [ "${rawpf#"${req}/"}" = "${rawpf}" ] && printf '%s' true || printf '%s' false)"
+
+## 1b. OPTIONAL passphrase: no passphrase file (an unencrypted .vmdk image) -> the wrapper
+## still delegates, OMITTING --passphrase-file so vbox-disk-mount skips LUKS.
+safe-rm --force -- "${req}/passphrase" "${argv_log}"
+rc="$(run_wrapper "${uid}")"
+check "no passphrase: wrapper succeeds (rc=0, got ${rc})" \
+   "$([ "${rc}" = '0' ] && printf '%s' true || printf '%s' false)"
+argv="$(tr '\n' ' ' < "${argv_log}" 2>/dev/null || true)"
+check "no passphrase: delegates without --passphrase-file" \
+   "$([ "${argv}" = "run --disk $(realpath -- "${disk}") -- ${helper_sentinel} persistent-sysmaint " ] && printf '%s' true || printf '%s' false)"
+printf '%s' 'irrelevant' > "${req}/passphrase"
+
+## 1c. OPTIONAL format: a format file (vmdk) -> the wrapper adds --format <fmt>.
+printf '%s' 'vmdk' > "${req}/format"
+safe-rm --force -- "${argv_log}"
+rc="$(run_wrapper "${uid}")"
+argv="$(tr '\n' ' ' < "${argv_log}" 2>/dev/null || true)"
+check "format file: delegates with --format vmdk" \
+   "$([ "${argv}" = "run --disk $(realpath -- "${disk}") --passphrase-file <PASSFILE> --format vmdk -- ${helper_sentinel} persistent-sysmaint " ] && printf '%s' true || printf '%s' false)"
+safe-rm --force -- "${req}/format"
+
+## 1d. Invalid format (shell/argv metachars) -> refuse, no mount.
+printf '%s' 'vmdk; rm -rf /' > "${req}/format"
+safe-rm --force -- "${argv_log}"
+rc="$(run_wrapper "${uid}")"
+check "invalid format refused (rc!=0, got ${rc})" \
+   "$([ "${rc}" != '0' ] && printf '%s' true || printf '%s' false)"
+check "invalid format did NOT call vbox-disk-mount" \
+   "$([ ! -e "${argv_log}" ] && printf '%s' true || printf '%s' false)"
+safe-rm --force -- "${req}/format"
 
 ## 2. Ownership refusal: a disk owned by someone OTHER than the caller -> refuse, no mount.
 ## Pick an other-owned path robustly in both runner contexts: non-root uses root-owned

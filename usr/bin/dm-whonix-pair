@@ -569,11 +569,16 @@ boot_workstation_sysmaint() {
    ## it, so (re)attach every run.
    "${VBOXMANAGE}" sharedfolder add "${ws}" --name shared --hostpath "${share_dir}" --readonly \
       || die "${SETUP_RC}" "${ws}: cannot attach the battery shared folder"
+   ## Select "PERSISTENT Mode | SYSMAINT Session" DETERMINISTICALLY offline (grubenv next_entry)
+   ## BEFORE power-on -- no OCR, no ~5s live-menu race into USER. The Workstation OVA disk is an
+   ## UNENCRYPTED .vmdk (no passphrase; format vmdk); restore_fresh left the VM powered off, so
+   ## the current disk is unlocked for the offline mount.
+   local ws_disk
+   ws_disk="$(installed_disk_path "${ws}")" \
+      || die "${SETUP_RC}" "${ws}: cannot resolve the system disk for offline SYSMAINT selection"
+   select_installed_sysmaint_offline "${ws_disk}" "" vmdk
    "${VBOXMANAGE}" startvm "${ws}" --type headless >/dev/null
    ws_started='true'
-   ## Select "PERSISTENT Mode | SYSMAINT Session" at the GRUB "Choose boot mode" menu
-   ## before its ~5s autoboot into USER (single-source selector, shared with the gates).
-   select_installed_sysmaint
    wait_guestcontrol_ready sysmaint 300 \
       || die "${SETUP_RC}" "${ws}: guestcontrol not ready as sysmaint -- a provisioning failure, not a WS leak"
    ## Story: the Workstation sysmaint desktop is up -- capture the "workstation booted to desktop"
@@ -1011,9 +1016,9 @@ ws_func_reboot_sysmaint() {
    ## Runs as the battery's reboot_sysmaint_fn: it MUST return nonzero (never exit) on ANY
    ## reboot-stage failure, so run_release_check_battery records check 2's reboot failure
    ## (number + reason) and main_functional's `if ! run_release_check_battery` reports it. Every
-   ## stage here dies on failure (wait_vm_off, and the shared select_installed_sysmaint /
-   ## wait_ready / open_terminal), so run the whole sequence in a SUBSHELL and convert any exit
-   ## into `return 1` -- the dying stage's own stderr still names what failed.
+   ## stage here dies on failure (wait_vm_off, the offline SYSMAINT selection, wait_ready /
+   ## open_terminal), so run the whole sequence in a SUBSHELL and convert any exit into
+   ## `return 1` -- the dying stage's own stderr still names what failed.
    (
       clean_poweroff
       ## Confirm the WS actually powered off before restarting it -- clean_poweroff (ACPI) is
@@ -1021,8 +1026,12 @@ ws_func_reboot_sysmaint() {
       ## still-running VM (the slow-poweroff case seen at bake time).
       wait_vm_off "${ws}" 20 \
          || die "${FAIL_RC}" "${ws}: did not power off before the sysmaint reboot -- cannot restart the Workstation"
+      ## Deterministic OFFLINE SYSMAINT selection (grubenv next_entry) with the WS powered off,
+      ## BEFORE restart -- no OCR, no live-menu race. Unencrypted .vmdk (no passphrase; vmdk).
+      ws_disk="$(installed_disk_path "${ws}")" \
+         || die "${FAIL_RC}" "${ws}: cannot resolve the system disk for offline SYSMAINT selection on reboot"
+      select_installed_sysmaint_offline "${ws_disk}" "" vmdk
       "${VBOXMANAGE}" startvm "${ws}" --type headless >/dev/null
-      select_installed_sysmaint
       wait_guestcontrol_ready sysmaint 300 \
          || die "${FAIL_RC}" "${ws}: guestcontrol not ready as sysmaint after reboot -- cannot run the sysmaint checks"
       wait_ready 300
