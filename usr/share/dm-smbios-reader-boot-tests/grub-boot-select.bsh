@@ -49,16 +49,22 @@ installed_disk_path() {
    die "${FAIL_RC}" "no attached disk image found for VM '${vm}' (installed_disk_path)"
 }
 
-## Deterministic offline SYSMAINT selection.
-## Args: <disk-path> [<luks-passphrase-file>] [<disk-format>].
+## Deterministic offline boot-mode selection: set grubenv next_entry to MODE's entry.
+## Args: <mode> <disk-path> [<luks-passphrase-file>] [<disk-format>].
+##   * mode: 'user' / 'persistent-sysmaint' / ... (the per-mode menuentry grub-select resolves).
 ##   * pass a passphrase file for an ENCRYPTED install; omit (or '') for an unencrypted image.
 ##   * pass a format ('vmdk') for a non-vdi disk; omit (or '') for the vdi default.
-## The VM MUST be powered off (vbox-disk-mount refuses a VM-locked disk). Hands the request
-## to the narrow vbox-grub-set-next-boot-mode privleap action in the caller-owned request dir
-## (mirrors dm-calamares-install's mok_host_enroll), which sets next_entry so the next
-## power-on autoboots SYSMAINT. die()s on failure (FAIL_RC contract).
-select_installed_sysmaint_offline() {
-   local disk="$1" pass_file="${2:-}" format="${3:-}" req_dir
+## The VM MUST be powered off (vbox-disk-mount refuses a VM-locked disk). Hands the request to
+## the narrow vbox-grub-set-next-boot-mode privleap action in the caller-owned request dir
+## (mirrors dm-calamares-install's mok_host_enroll), which sets next_entry so the next power-on
+## autoboots MODE. die()s on failure (FAIL_RC contract).
+##
+## Select for EVERY boot, both roles: on an encrypted disk GRUB cannot write grubenv back
+## (no save_env through LUKS), so a one-shot next_entry PERSISTS; selecting the target mode
+## explicitly before each boot overwrites any stale prior selection (e.g. a SYSMAINT run
+## followed by a USER boot, or a reused --reinstall VM).
+select_installed_mode_offline() {
+   local mode="$1" disk="$2" pass_file="${3:-}" format="${4:-}" req_dir
    req_dir="$(getent passwd "$(id -u)" | cut -d: -f6)/.cache/vbox-grub-set-next-boot-mode"
    # shellcheck disable=SC2174  ## --mode on mkdir --parents applies to the leaf, which is what we want
    mkdir --parents --mode=0700 -- "${req_dir}"
@@ -67,7 +73,7 @@ select_installed_sysmaint_offline() {
    ## prior request would wrongly apply to this one.
    safe-rm --force -- "${req_dir}/passphrase" "${req_dir}/format" 2>/dev/null || true
    printf '%s' "${disk}" > "${req_dir}/disk"
-   printf '%s' 'persistent-sysmaint' > "${req_dir}/mode"
+   printf '%s' "${mode}" > "${req_dir}/mode"
    chmod 0600 -- "${req_dir}/disk" "${req_dir}/mode"
    if [ -n "${pass_file}" ]; then
       cp --force -- "${pass_file}" "${req_dir}/passphrase"
@@ -79,9 +85,15 @@ select_installed_sysmaint_offline() {
    fi
    if ! leaprun vbox-grub-set-next-boot-mode; then
       safe-rm --force -- "${req_dir}/disk" "${req_dir}/passphrase" "${req_dir}/mode" "${req_dir}/format" 2>/dev/null || true
-      die "${FAIL_RC}" "could not set SYSMAINT next_entry offline via the 'vbox-grub-set-next-boot-mode' privleap action (installed? runner in vboxusers? disk/passphrase/format correct?)"
+      die "${FAIL_RC}" "could not set next_entry=${mode} offline via the 'vbox-grub-set-next-boot-mode' privleap action (installed? runner in vboxusers? disk/passphrase/format correct?)"
    fi
    safe-rm --force -- "${req_dir}/disk" "${req_dir}/passphrase" "${req_dir}/mode" "${req_dir}/format" 2>/dev/null || true
+}
+
+## Thin SYSMAINT wrapper (the whonix lane selects only this mode).
+## Args: <disk-path> [<luks-passphrase-file>] [<disk-format>].
+select_installed_sysmaint_offline() {
+   select_installed_mode_offline persistent-sysmaint "$@"
 }
 ##
 ## style-ok: no-strict -- sourced-only fragment; a top-level 'set -o errexit'/

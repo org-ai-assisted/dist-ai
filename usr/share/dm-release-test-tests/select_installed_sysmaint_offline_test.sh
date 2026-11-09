@@ -100,6 +100,11 @@ check "format vmdk written to the request" "$([ "$(field format)" = 'vmdk' ] && 
 check "disk is the unencrypted .vmdk path" "$([ "$(field disk)" = '/home/eph/VirtualBox VMs/ws/ws.vmdk' ] && printf '%s' true || printf '%s' false)"
 check "format file removed afterwards" "$([ ! -e "${req}/format" ] && printf '%s' true || printf '%s' false)"
 
+## 2b. The generic select_installed_mode_offline writes the GIVEN mode (the USER-reset path
+## that stops a stale SYSMAINT one-shot leaking into a USER boot on an encrypted disk).
+PATH="${tmp}:${PATH}" select_installed_mode_offline user '/home/eph/VirtualBox VMs/x/x.vdi' "${pass_file}"
+check "generic selector writes the requested mode (user)" "$([ "$(field mode)" = 'user' ] && printf '%s' true || printf '%s' false)"
+
 ## 3. A stale optional file from a prior request must NOT leak into a later one: plant a
 ## passphrase, then run WITHOUT one -> it must be cleared (passphrase absent).
 printf '%s' 'stale' > "${req}/passphrase"

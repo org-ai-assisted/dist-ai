@@ -1281,19 +1281,27 @@ reboot_installed() {
    "${VBOXMANAGE}" controlvm "${vm}" poweroff 2>/dev/null || true
    sleep 3
    cb_reset_nvram
-   ## Deterministic SYSMAINT selection: set grubenv next_entry OFFLINE (VM powered off)
-   ## so the power-on below autoboots the SYSMAINT entry by its unique --id (or, on a
-   ## pre-patch image, its menu title) -- no OCR of the "Choose boot mode" menu, no
-   ## autoboot-countdown race (the dev1424 wedge). The in-guest LUKS unlock at the dracut
-   ## prompt below is unchanged. USER boots the default.
-   if [ "${role}" = 'sysmaint' ]; then
-      ## --reinstall without --disk leaves ${disk} empty (the VM already has its disk), but
-      ## the offline selector needs the disk path. Resolve it from the powered-off VM so the
-      ## selection stays deterministic -- no OCR fallback (OCR is fully retired).
-      local sysmaint_disk="${disk}"
-      [ -n "${sysmaint_disk}" ] || sysmaint_disk="$(installed_disk_path "${vm}")"
-      select_installed_sysmaint_offline "${sysmaint_disk}" "${passphrase_file}"
-   fi
+   ## Deterministic boot-mode selection: set grubenv next_entry OFFLINE (VM powered off) for
+   ## the TARGET role so the power-on below autoboots it by its unique --id (or, on a pre-patch
+   ## image, its menu title) -- no OCR of the "Choose boot mode" menu, no autoboot-countdown
+   ## race (the dev1424 wedge). BOTH roles are selected every boot: on an encrypted disk GRUB
+   ## cannot clear the one-shot next_entry (no save_env through LUKS), so a stale SYSMAINT
+   ## selection (e.g. from a reused --reinstall VM) would otherwise leak into a USER boot. The
+   ## in-guest LUKS unlock at the dracut prompt below is unchanged.
+   local boot_disk boot_mode
+   ## --reinstall without --disk leaves ${disk} empty (the VM already has its disk); resolve it
+   ## from the powered-off VM so the offline selector always has a disk -- no OCR fallback.
+   boot_disk="${disk}"
+   [ -n "${boot_disk}" ] || boot_disk="$(installed_disk_path "${vm}")"
+   case "${role}" in
+      sysmaint)
+         boot_mode='persistent-sysmaint'
+         ;;
+      *)
+         boot_mode='user'
+         ;;
+   esac
+   select_installed_mode_offline "${boot_mode}" "${boot_disk}" "${passphrase_file}"
    start_vm_frontend
    gui_wait_for 'passphrase for disk|please unlock|luks' 120 "LUKS unlock (${role})"
    if [ "${role}" = 'sysmaint' ]; then

@@ -10,9 +10,10 @@
 ## entry, or the disk cannot be mounted), boot_installed must RETURN nonzero -- NOT exit the
 ## process -- so dm-upgrade-regression's `if ! boot_installed sysmaint` catches it and reaches
 ## write_report (degraded result) instead of a hard exit past it. No VM, no network.
-## installed_disk_path + select_installed_sysmaint_offline are forced via stubs (their real
+## installed_disk_path + select_installed_mode_offline are forced via stubs (their real
 ## bodies are drift-free single source in grub-boot-select.bsh); this tests the CALL-SITE
-## subshell / command-substitution wrap in boot_installed.
+## subshell / command-substitution wrap in boot_installed AND that BOTH roles select offline
+## (user resets any stale one-shot a prior sysmaint boot left on an encrypted disk).
 
 set -o errexit
 set -o nounset
@@ -104,8 +105,8 @@ installed_disk_path() {
 ## --- negative: select die()s -> boot_installed must RETURN nonzero, not exit --------
 ## Force the failure branch: an offline selection that die()s like a real unmountable disk.
 # shellcheck disable=SC2317  ## invoked indirectly by boot_installed, not called directly
-select_installed_sysmaint_offline() {
-   die "${FAIL_RC}" "simulated: offline next_entry selection failed (sysmaint)"
+select_installed_mode_offline() {
+   die "${FAIL_RC}" "simulated: offline next_entry selection failed (${1})"
 }
 ## Run inside a command substitution with a sentinel: the printf executes ONLY if
 ## boot_installed RETURNED. If die escapes (unwrapped call site), the $( ) subshell
@@ -122,28 +123,27 @@ unlock_luks() {
 wait_guestcontrol_ready() {
    return 0
 }
+## Record the mode the selector was asked for (both roles now select offline).
 # shellcheck disable=SC2317  ## invoked indirectly by boot_installed, not called directly
-select_installed_sysmaint_offline() {
+select_installed_mode_offline() {
+   printf '%s' "${1}" > "${tmp}/select_mode"
    return 0
 }
+safe-rm --force -- "${tmp}/select_mode"
 rc=0
 boot_installed sysmaint || rc=$?
 assert_eq 'boot_installed sysmaint returns 0 on a clean select' "${rc}" '0'
+assert_eq 'boot_installed sysmaint selects the persistent-sysmaint mode' \
+   "$(cat -- "${tmp}/select_mode" 2>/dev/null)" 'persistent-sysmaint'
 
-## --- positive: user role never calls select (and returns 0) -------------------------
-# shellcheck disable=SC2317  ## invoked indirectly by boot_installed's sysmaint branch only
-select_installed_sysmaint_offline() {
-   touch -- "${tmp}/select_called"
-   return 0
-}
+## --- USER role ALSO selects offline (mode=user), so a stale SYSMAINT one-shot on an
+## encrypted disk cannot leak into the USER boot (the false-brick regression). ----------
+safe-rm --force -- "${tmp}/select_mode"
 rc=0
 boot_installed user || rc=$?
 assert_eq 'boot_installed user returns 0' "${rc}" '0'
-if [ -e "${tmp}/select_called" ]; then
-   assert_eq 'boot_installed user does NOT call the offline selector' 'called' 'not-called'
-else
-   assert_eq 'boot_installed user does NOT call the offline selector' 'not-called' 'not-called'
-fi
+assert_eq 'boot_installed user selects the user mode offline (resets any stale one-shot)' \
+   "$(cat -- "${tmp}/select_mode" 2>/dev/null)" 'user'
 
 printf '%s\n' "" "${pass} pass, ${fail} fail"
 [ "${fail}" -eq 0 ] || exit 1

@@ -181,20 +181,29 @@ unlock_luks() {
 ## back, so a bricked-by-upgrade boot flows to the gate result. No terminal is opened. The
 ## shutdown is CLEAN (clean_poweroff) to protect the persisted on-disk state.
 boot_installed() {
-   local role="$1" account disk
+   local role="$1" account disk mode
    account="$(gc_account_for_role "${role}")"
    clean_poweroff
-   if [ "${role}" = 'sysmaint' ]; then
-      ## Deterministic OFFLINE selection with the VM powered off: resolve the system disk and
-      ## set grubenv next_entry=sysmaint BEFORE power-on (no OCR, no live-menu race). Both
-      ## helpers die() on failure; the command-substitution subshell (disk=) and the explicit
-      ## subshell keep that exit from escaping boot_installed, honoring the return-nonzero
-      ## contract (a selection failure flows to the degraded gate result, not a hard exit past
-      ## write_report). The installed disk is a .vdi (default format); pass the passphrase file
-      ## for an encrypted install, omit for an unencrypted one.
-      disk="$(installed_disk_path "${vm}")" || return 1
-      ( select_installed_sysmaint_offline "${disk}" "${passphrase_file:-}" ) || return 1
-   fi
+   ## Deterministic OFFLINE selection with the VM powered off: resolve the system disk and set
+   ## grubenv next_entry for the TARGET role BEFORE power-on (no OCR, no live-menu race). BOTH
+   ## roles are selected every boot: on an encrypted disk GRUB cannot clear the one-shot
+   ## next_entry (no save_env through LUKS), so a prior SYSMAINT selection would otherwise
+   ## persist into this USER boot and wait_guestcontrol_ready would time out as a false brick.
+   ## Both helpers die() on failure; the command-substitution subshell (disk=) and the explicit
+   ## subshell keep that exit from escaping boot_installed, honoring the return-nonzero contract
+   ## (a selection failure flows to the degraded gate result, not a hard exit past write_report).
+   ## The installed disk is a .vdi (default format); pass the passphrase file for an encrypted
+   ## install, omit for an unencrypted one.
+   case "${role}" in
+      sysmaint)
+         mode='persistent-sysmaint'
+         ;;
+      *)
+         mode='user'
+         ;;
+   esac
+   disk="$(installed_disk_path "${vm}")" || return 1
+   ( select_installed_mode_offline "${mode}" "${disk}" "${passphrase_file:-}" ) || return 1
    "${VBOXMANAGE}" startvm "${vm}" --type headless >/dev/null
    unlock_luks "${role}"
    wait_guestcontrol_ready "${account}" 300

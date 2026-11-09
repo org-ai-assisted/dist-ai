@@ -41,6 +41,7 @@ cleanup() { safe-rm --recursive --force -- "${work}"; }
 trap cleanup EXIT
 
 select_log="${work}/select.disk"
+mode_log="${work}/select.mode"
 resolve_log="${work}/resolve.called"
 
 ## Globals the sourced subject reads; seeded here (shellcheck cannot see across the source).
@@ -66,8 +67,9 @@ sleep() { :; }
 cb_reset_nvram() { :; }
 # shellcheck disable=SC2317
 installed_disk_path() { printf '%s\n' "${resolve_log}" >> "${resolve_log}"; printf '%s\n' '/resolved/from/vm.vdi'; }
+## Record the selected mode ($1) and disk ($2) the offline selector was handed.
 # shellcheck disable=SC2317
-select_installed_sysmaint_offline() { printf '%s' "$1" > "${select_log}"; }
+select_installed_mode_offline() { printf '%s' "$1" > "${mode_log}"; printf '%s' "$2" > "${select_log}"; }
 # shellcheck disable=SC2317
 start_vm_frontend() { :; }
 # shellcheck disable=SC2317
@@ -97,23 +99,26 @@ check() {
 
 ## 1. --reinstall without --disk: ${disk} empty -> resolve from the VM, feed the selector.
 disk=""
-safe-rm --force -- "${select_log}" "${resolve_log}"
+safe-rm --force -- "${select_log}" "${mode_log}" "${resolve_log}"
 reboot_installed sysmaint
 check "empty disk: installed_disk_path consulted" "$([ -e "${resolve_log}" ] && printf '%s' yes || printf '%s' no)" 'yes'
 check "empty disk: selector receives the RESOLVED disk" "$(cat -- "${select_log}" 2>/dev/null)" '/resolved/from/vm.vdi'
+check "sysmaint role selects persistent-sysmaint" "$(cat -- "${mode_log}" 2>/dev/null)" 'persistent-sysmaint'
 
 ## 2. explicit --disk: that path reaches the selector, no VM resolution needed.
 disk='/explicit/install.vdi'
-safe-rm --force -- "${select_log}" "${resolve_log}"
+safe-rm --force -- "${select_log}" "${mode_log}" "${resolve_log}"
 reboot_installed sysmaint
 check "explicit disk: selector receives the given disk" "$(cat -- "${select_log}" 2>/dev/null)" '/explicit/install.vdi'
 check "explicit disk: installed_disk_path NOT consulted" "$([ -e "${resolve_log}" ] && printf '%s' yes || printf '%s' no)" 'no'
 
-## 3. user role never selects SYSMAINT at all.
+## 3. user role ALSO selects offline (mode=user), so a stale SYSMAINT one-shot on an
+## encrypted disk cannot leak into the USER boot (resets the one-shot every boot).
 disk=""
-safe-rm --force -- "${select_log}" "${resolve_log}"
+safe-rm --force -- "${select_log}" "${mode_log}" "${resolve_log}"
 reboot_installed user
-check "user role: selector NOT called" "$([ -e "${select_log}" ] && printf '%s' yes || printf '%s' no)" 'no'
+check "user role selects the user mode offline" "$(cat -- "${mode_log}" 2>/dev/null)" 'user'
+check "user role resolves the disk from the VM too" "$(cat -- "${select_log}" 2>/dev/null)" '/resolved/from/vm.vdi'
 
 printf '%s\n' "" "${pass} pass, ${fail} fail"
 [ "${fail}" -eq 0 ]
