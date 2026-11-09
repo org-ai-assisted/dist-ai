@@ -14,9 +14,10 @@
 ## unmounts -- without booting the VM. Optionally unlocks a single LUKS volume (pass the install
 ## passphrase file). The VM MUST be powered off (image-mount refuses a VM-locked disk).
 ##
-## VBoxManage (the VM-disk resolution) runs as the invoking user who owns the VM; image-mount
-## (qemu-nbd / cryptsetup / mount) must run as root, so invoke this via sudo in a context where
-## the VM is still resolvable. It has NO privleap action of its own.
+## Invoke via sudo: image-mount (qemu-nbd / cryptsetup / mount) must run as root. VBoxManage is
+## PER-USER, so the VM-disk resolution is run as the INVOKING user (SUDO_USER) -- a sudo run's
+## euid-0 / HOME=/root would otherwise read root's registry and miss the caller's VM (or hit a
+## same-named root VM). The mount still runs as root. It has NO privleap action of its own.
 
 set -o errexit
 set -o nounset
@@ -27,8 +28,19 @@ shopt -s shift_verbose
 export LC_ALL=C
 
 me="${0##*/}"
-VBOXMANAGE="${VBOXMANAGE:-VBoxManage}"
 FAIL_RC=1
+
+## VBoxManage reads the per-user registry. When run under sudo (root + SUDO_USER), resolve the VM
+## as the invoking user so the right registry is read; a direct (non-sudo) run uses the caller's
+## own VBoxManage. A unit test overrides VBOXMANAGE with a stub path, which is used as-is.
+vbox_manage() {
+   if [ "$(id -u)" = '0' ] && [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER}" != 'root' ]; then
+      runuser -u "${SUDO_USER}" -- VBoxManage "$@"
+   else
+      VBoxManage "$@"
+   fi
+}
+VBOXMANAGE="${VBOXMANAGE:-vbox_manage}"
 
 vm=""
 passphrase_file=""

@@ -74,6 +74,20 @@ STUB
 chmod +x "${VBOXMANAGE}"
 check "installed_disk_path resolves a .vmdk OVA disk" "$([ "$(installed_disk_path ws)" = '/home/eph/VirtualBox VMs/ws/ws-disk001.vmdk' ] && printf '%s' true || printf '%s' false)"
 
+## 2b. installed_disk_path: an UPPERCASE extension (.IMG) resolves too -- the match is
+## case-insensitive, consistent with disk_format_for (which lowercases). A case-sensitive match
+## would reject it and die, leaving a valid disk unmountable.
+cat > "${VBOXMANAGE}" <<'STUB'
+#!/bin/bash
+cat <<'OUT'
+name="upper"
+"SATA-0-0"="/home/eph/VirtualBox VMs/upper/upper.IMG"
+VMState="poweroff"
+OUT
+STUB
+chmod +x "${VBOXMANAGE}"
+check "installed_disk_path resolves an uppercase .IMG disk (case-insensitive)" "$([ "$(installed_disk_path upper)" = '/home/eph/VirtualBox VMs/upper/upper.IMG' ] && printf '%s' true || printf '%s' false)"
+
 ## 3. installed_disk_path: no writable disk (only optical / none) -> die loud, never empty.
 cat > "${VBOXMANAGE}" <<'STUB'
 #!/bin/bash

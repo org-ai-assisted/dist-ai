@@ -33,8 +33,11 @@ installed_disk_path() {
       esac
       path="${line#*=\"}"
       path="${path%\"}"
-      case "${path}" in
-         *.vdi|*.VDI|*.vmdk|*.VMDK|*.vhd|*.VHD|*.qcow2|*.img|*.raw)
+      ## Match the extension case-INSENSITIVELY (lowercase a copy), so an uppercase .IMG / .RAW /
+      ## .QCOW2 disk resolves too -- consistent with disk_format_for, which lowercases. Print the
+      ## ORIGINAL path, not the lowercased copy.
+      case "${path,,}" in
+         *.vdi|*.vmdk|*.vhd|*.qcow2|*.img|*.raw)
             printf '%s\n' "${path}"
             return 0
             ;;
