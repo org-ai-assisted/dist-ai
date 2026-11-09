@@ -50,6 +50,13 @@ TRUE_VALUES = {'true', 'yes', '1', 'on'}
 ## systemd accepts an errno name or a number 1..4095; anything else (empty,
 ## 'kill', 0, out of range, junk) is NOT a soft-fail errno.
 _ERRNO_MIN, _ERRNO_MAX = 1, 4095
+## Retryable errnos are a BAD soft-deny: the caller re-issues the blocked syscall
+## in a tight loop instead of giving up, so memfd_create never settles. Reject them
+## by name (the form units use); a real soft deny is a terminal errno like EPERM.
+_RETRYABLE_ERRNOS = {
+    'EINTR', 'EAGAIN', 'EWOULDBLOCK',
+    'ERESTART', 'ERESTARTSYS', 'ERESTARTNOINTR', 'ERESTARTNOHAND',
+}
 
 
 def service_lines(text: str) -> list:
@@ -77,14 +84,23 @@ def service_lines(text: str) -> list:
 
 
 def service_values(lines: list, key: str) -> list:
-    prefix = key + '='
-    return [line[len(prefix):].strip() for line in lines
-            if line.startswith(prefix)]
+    ## Split on the FIRST '=' and strip both sides: systemd ignores whitespace
+    ## around '=' ("Key = value"), so a prefix-only match would miss a spaced
+    ## assignment -- and for NoNewPrivileges that is a false PASS (value not found
+    ## -> the all() over an empty list is vacuously true).
+    out: list = []
+    for line in lines:
+        name, sep, value = line.partition('=')
+        if sep and name.strip() == key:
+            out.append(value.strip())
+    return out
 
 
 def errno_is_soft(value: str) -> bool:
     val = value.strip()
     if not val or val.lower() == 'kill':
+        return False
+    if val.upper() in _RETRYABLE_ERRNOS:
         return False
     if val.isdigit():
         return _ERRNO_MIN <= int(val) <= _ERRNO_MAX
@@ -154,15 +170,26 @@ def main() -> int:
     lines = service_lines(text)
     results = Results()
 
+    ## Parser-fidelity self-checks (crafted inputs; no unit needed) -- guard the
+    ## directive parser the lint below trusts against a silent regression.
+    results.check('service_values tolerates whitespace around =',
+                  service_values(['MemoryDenyWriteExecute = yes'],
+                                 'MemoryDenyWriteExecute') == ['yes'])
+    results.check('errno_is_soft rejects EINTR (retryable -> spins, not a soft deny)',
+                  not errno_is_soft('EINTR'))
+
     ## Hardening intact (section-aware: directives outside [Service] are inert).
-    results.expect_eq('MemoryDenyWriteExecute enabled',
-                      service_values(lines, 'MemoryDenyWriteExecute')[-1:],
-                      ['true'])
+    ## systemd treats true/yes/on/1 as enabled, so accept any of them (TRUE_VALUES),
+    ## not only the literal 'true'.
+    mdwe = service_values(lines, 'MemoryDenyWriteExecute')
+    results.check('MemoryDenyWriteExecute enabled',
+                  bool(mdwe) and mdwe[-1].lower() in TRUE_VALUES)
     results.expect_eq('SystemCallArchitectures=native',
                       service_values(lines, 'SystemCallArchitectures')[-1:],
                       ['native'])
-    results.expect_eq('LockPersonality enabled',
-                      service_values(lines, 'LockPersonality')[-1:], ['true'])
+    lockp = service_values(lines, 'LockPersonality')
+    results.check('LockPersonality enabled',
+                  bool(lockp) and lockp[-1].lower() in TRUE_VALUES)
     ## Effective value: an empty 'NoExecPaths=' resets it, so the LAST
     ## assignment must be non-empty, not merely present.
     noexec = service_values(lines, 'NoExecPaths')

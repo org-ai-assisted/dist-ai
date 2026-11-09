@@ -45,6 +45,13 @@ from systemcheck_testlib import read, systemcheck_dir
 ## systemd accepts an errno name or a number 1..4095; anything else (empty,
 ## 'kill', 0, out of range, junk) is NOT a soft-fail errno.
 _ERRNO_MIN, _ERRNO_MAX = 1, 4095
+## Retryable errnos are a BAD soft-deny: the caller re-issues the blocked syscall in
+## a tight loop instead of giving up, so memfd_create never settles. Reject them by
+## name (the form units use); a real soft deny is a terminal errno like EPERM.
+_RETRYABLE_ERRNOS = {
+    'EINTR', 'EAGAIN', 'EWOULDBLOCK',
+    'ERESTART', 'ERESTARTSYS', 'ERESTARTNOINTR', 'ERESTARTNOHAND',
+}
 
 ## user-scope units that spawn a memfd-using GUI helper as a direct child.
 GUI_UNITS = ('updatecheck.service', 'systemcheck.service')
@@ -79,14 +86,22 @@ def _service_lines(text: str) -> list:
 
 
 def _service_values(lines: list, key: str) -> list:
-    prefix = key + '='
-    return [line[len(prefix):].strip() for line in lines
-            if line.startswith(prefix)]
+    ## Split on the FIRST '=' and strip both sides: systemd ignores whitespace
+    ## around '=' ("Key = value"), so a prefix-only match would miss a spaced
+    ## assignment and silently under-read the effective filter.
+    out: list = []
+    for line in lines:
+        name, sep, value = line.partition('=')
+        if sep and name.strip() == key:
+            out.append(value.strip())
+    return out
 
 
 def _errno_is_soft(value: str) -> bool:
     val = value.strip()
     if not val or val.lower() == 'kill':
+        return False
+    if val.upper() in _RETRYABLE_ERRNOS:
         return False
     if val.isdigit():
         return _ERRNO_MIN <= int(val) <= _ERRNO_MAX
@@ -130,10 +145,10 @@ def memfd_denial(text: str) -> str:
 
 class WxSeccompErrnoTest(unittest.TestCase):
     def _unit_text(self, unit: str) -> str:
+        ## systemcheck_dir() is FATAL without SYSTEMCHECK_REPO, so this always runs
+        ## against the checkout, which ships these units. A missing REQUIRED unit is
+        ## a broken subject -> read() raises (FAIL), never a vacuous skip.
         path = os.path.join(_usr_dir(), 'lib', 'systemd', 'user', unit)
-        if not os.path.isfile(path):
-            ## style-ok: allow-skip: systemd unit absent (not a --component run)
-            raise unittest.SkipTest(f"{path} not found -- set SYSTEMCHECK_REPO")
         return read(path)
 
     def test_gui_units_deny_memfd_soft_not_sigsys(self) -> None:
@@ -147,6 +162,51 @@ class WxSeccompErrnoTest(unittest.TestCase):
                     '-- otherwise the inherited GUI child (yad/PyQt) is killed. '
                     "memfd_denial reported it as not 'soft' (see effective "
                     'filter / per-syscall action / errno).')
+
+
+class WxParserFidelityTest(unittest.TestCase):
+    """Guards the directive parser the lint trusts -- whitespace-around-'=', a
+    retryable errno, empty-reset, and an exact syscall match -- against a silent
+    regression that would weaken the memfd verdict."""
+
+    def test_service_values_tolerates_whitespace_around_eq(self) -> None:
+        self.assertEqual(
+            _service_values(['SystemCallFilter = ~memfd_create'],
+                            'SystemCallFilter'),
+            ['~memfd_create'])
+
+    def test_errno_is_soft_rejects_eintr(self) -> None:
+        self.assertFalse(_errno_is_soft('EINTR'))
+
+    def test_memfd_denial_eintr_is_kill_not_soft(self) -> None:
+        unit = ('[Service]\n'
+                'SystemCallFilter=~memfd_create\n'
+                'SystemCallErrorNumber=EINTR\n')
+        self.assertEqual(memfd_denial(unit), 'kill')
+
+    def test_memfd_denial_honors_whitespace_filter(self) -> None:
+        unit = '[Service]\nSystemCallFilter = ~memfd_create:EPERM\n'
+        self.assertEqual(memfd_denial(unit), 'soft')
+
+    def test_memfd_denial_empty_reset_clears_earlier_filter(self) -> None:
+        unit = ('[Service]\n'
+                'SystemCallFilter=~memfd_create:EPERM\n'
+                'SystemCallFilter=\n')
+        self.assertEqual(memfd_denial(unit), 'none')
+
+    def test_memfd_denial_requires_exact_syscall_name(self) -> None:
+        unit = '[Service]\nSystemCallFilter=~memfd_create_secret:EPERM\n'
+        self.assertEqual(memfd_denial(unit), 'none')
+
+    def test_missing_required_unit_fails_not_skips(self) -> None:
+        ## A missing REQUIRED unit must be an error, never a vacuous skip.
+        probe = WxSeccompErrnoTest('test_gui_units_deny_memfd_soft_not_sigsys')
+        try:
+            probe._unit_text('definitely-not-a-real-unit.service')  # pylint: disable=protected-access
+        except unittest.SkipTest:
+            self.fail('a missing REQUIRED unit raised SkipTest (vacuous skip)')
+        except FileNotFoundError:
+            pass
 
 
 if __name__ == '__main__':

@@ -280,6 +280,39 @@ def install_repo_dropin(repo: str, restorer: Restorer) -> None:
 SCMP_ERRNO_KILL_SENTINEL: str = '2147483646'
 
 
+def _checkout_unit_directive(repo: str, key: str) -> str:
+    """Last effective value of a [Service] scalar directive in the CHECKOUT
+    privleapd unit, normalized to systemd's rendered boolean form. Lets the W^X
+    STATIC checks evaluate the unit UNDER TEST (PRIVLEAP_REPO) rather than the
+    installed service's live properties -- otherwise a checkout that changes the
+    hardening is tested against the installed unit and the change is never
+    exercised. '' when absent/unreadable (the check then fails, not a false pass)."""
+    path = os.path.join(repo, 'usr/lib/systemd/system/privleapd.service')
+    value = ''
+    in_service = False
+    try:
+        with open(path, encoding='utf-8') as handle:
+            for raw in handle:
+                stripped = raw.strip()
+                if stripped.startswith('[') and stripped.endswith(']'):
+                    in_service = stripped.lower() == '[service]'
+                    continue
+                if (not in_service or stripped.startswith('#')
+                        or '=' not in stripped):
+                    continue
+                name, _, val = stripped.partition('=')
+                if name.strip() == key:
+                    value = val.strip()
+    except OSError:
+        return ''
+    low = value.lower()
+    if low in ('yes', 'true', 'on', '1'):
+        return 'yes'
+    if low in ('no', 'false', 'off', '0'):
+        return 'no'
+    return value
+
+
 def run_wx_phase(user: str, results: Results) -> None:
     """F: the unit's W^X hardening is declared correctly AND actually inherited
     by a spawned action, failing SOFT (EPERM) rather than SIGSYS-killing it.
@@ -290,14 +323,23 @@ def run_wx_phase(user: str, results: Results) -> None:
 
     print('== F: W^X hardening present, inherited by actions, EPERM soft-fail ==')
 
+    repo: str | None = os.environ.get('PRIVLEAP_REPO')
+
+    def prop(name: str) -> str:
+        ## Evaluate the unit UNDER TEST: the checkout unit's declared directive
+        ## when PRIVLEAP_REPO drives a checkout, else the installed service's live
+        ## property. The runtime (seccomp-inherited action) checks below stay on the
+        ## live service -- they verify actual behavior, not a declaration.
+        return _checkout_unit_directive(repo, name) if repo else svc_prop(name)
+
     ## Static: the unit carries the hardening directives.
     results.check('MemoryDenyWriteExecute enabled',
-                  svc_prop('MemoryDenyWriteExecute') == 'yes')
+                  prop('MemoryDenyWriteExecute') == 'yes')
     results.check('SystemCallArchitectures=native',
-                  svc_prop('SystemCallArchitectures') == 'native')
+                  prop('SystemCallArchitectures') == 'native')
     results.check('LockPersonality enabled',
-                  svc_prop('LockPersonality') == 'yes')
-    results.check('NoExecPaths set', bool(svc_prop('NoExecPaths')))
+                  prop('LockPersonality') == 'yes')
+    results.check('NoExecPaths set', bool(prop('NoExecPaths')))
 
     ## privleapd is a root service WITH CAP_SYS_ADMIN, so systemd installs the
     ## seccomp filter via that capability -- no_new_privs is NOT forced on, and
@@ -307,7 +349,7 @@ def run_wx_phase(user: str, results: Results) -> None:
     ## would instead have NNP forced on.)
     results.check('NoNewPrivileges=no (honored for this root+CAP_SYS_ADMIN '
                   'service; yes would break SUID actions)',
-                  svc_prop('NoNewPrivileges') == 'no')
+                  prop('NoNewPrivileges') == 'no')
 
     ## memfd_create must be denied via EPERM, not the default SIGSYS kill, so an
     ## inherited action (or GUI child) fails soft instead of dying by signal.
