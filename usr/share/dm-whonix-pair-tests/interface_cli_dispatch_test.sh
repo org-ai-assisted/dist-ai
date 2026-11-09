@@ -90,14 +90,14 @@ assert "functional default dispatches the GUI driver" test "${DISPATCHED}" = 'gu
 ## --- source canaries: the CLI path runs over guestcontrol, not the OCR terminal ---
 # shellcheck disable=SC2016  ## intentional literal match of the source text
 assert "ws_func_cli_exec runs the check over gc_run (not run_check/OCR)" \
-   grep --quiet --fixed-strings 'gc_run "$2" "$3" "$4"' "${tool}"
+   grep --quiet --fixed-strings 'gc_run "${session}" "$3" "$4"' "${tool}"
 assert "main_functional_cli drives the battery with the CLI callbacks" \
    grep --quiet --fixed-strings 'run_release_check_battery ws_func_cli_exec ws_func_cli_reboot_sysmaint' "${tool}"
 # shellcheck disable=SC2016  ## intentional literal match of the source text (no expansion)
 assert "CLI reboot confirms power-off before restart (wait_vm_off guard)" \
    grep --quiet --fixed-strings 'wait_vm_off "${ws}" 20' "${tool}"
-assert "CLI reboot reaches sysmaint via guestcontrol (headless, no OCR terminal)" \
-   grep --quiet --fixed-strings 'wait_guestcontrol_ready sysmaint 300' "${tool}"
+assert "CLI reboot waits for the user guestcontrol channel after sysmaint boot (no sysmaint account)" \
+   grep --quiet --fixed-strings 'wait_guestcontrol_ready user 300' "${tool}"
 assert "CLI driver routes-skips the GUI-login check (6)" \
    grep --quiet --fixed-strings 'RELEASE_CHECK_SKIP_REASON[6]=' "${tool}"
 assert "CLI driver routes-skips check 8 in the guestcontrol battery" \

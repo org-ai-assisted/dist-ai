@@ -1031,7 +1031,14 @@ ws_func_cli_exec() {
    ## plain redirect preserves gc_run's REAL exit code; the output is bounded only when READ into
    ## the check-log below (a release check's output is bounded in practice, and ${tmp} is removed
    ## right after, so there is no lingering disk growth).
-   gc_run "$2" "$3" "$4" > "${tmp}" 2>&1 || rc=$?
+   ## CLI edition has NO user/sysmaint account split (wiki/sysmaint): sysmaint-BOOT elevates the
+   ## `user` account (dsudo -> root); there is no `sysmaint` account to guestcontrol into. Checks
+   ## 2/3 carry SESSION=sysmaint (shared with the GUI edition, which DOES split) -- map it to the
+   ## `user` account, run in the same sysmaint-boot context (check 2 reads /proc/cmdline; check 3
+   ## upgrade-nonroot self-elevates via dsudo).
+   local session="$2"
+   [ "${session}" = 'sysmaint' ] && session='user'
+   gc_run "${session}" "$3" "$4" > "${tmp}" 2>&1 || rc=$?
    if [ "${rc}" -eq 0 ]; then
       safe-rm --force -- "${tmp}"; cli_capture_tmp=""
       printf '%s\n' "${me}: check $1 PASS"
@@ -1067,8 +1074,10 @@ ws_func_cli_reboot_sysmaint() {
          || die "${FAIL_RC}" "${ws}: did not power off before the sysmaint reboot -- cannot restart the Workstation"
       "${VBOXMANAGE}" startvm "${ws}" --type headless >/dev/null
       select_installed_sysmaint
-      wait_guestcontrol_ready sysmaint 300 \
-         || die "${FAIL_RC}" "${ws}: guestcontrol not ready as sysmaint after reboot -- cannot run the sysmaint checks"
+      ## CLI edition: no sysmaint account; sysmaint-BOOT elevates `user` (dsudo -> root). Wait for
+      ## the `user` guestcontrol channel (the account checks 2/3 run as), not a sysmaint account.
+      wait_guestcontrol_ready user 300 \
+         || die "${FAIL_RC}" "${ws}: guestcontrol not ready as user after the sysmaint reboot -- cannot run checks 2/3"
    ) || return 1
 }
 
