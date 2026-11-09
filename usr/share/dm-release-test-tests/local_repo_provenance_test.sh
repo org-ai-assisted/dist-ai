@@ -190,6 +190,50 @@ check "no --local-repo: dm-whonix-pair NOT handed --local-repo" \
 check "no --local-repo: NO provenance block forwarded" \
    "$([ ! -s "${prov_file}" ] && printf '%s' true || printf '%s' false)"
 
+## --- G: sourceSha is the BUILD-TIME dm-source-state, never the live checkout HEAD ---
+## A source home whose git HEAD DIFFERS from the build-time dm-source-state: the sha must come from
+## dm-source-state (the commit the packages were BUILT at), not the advanced HEAD -- a checkout that
+## moved after the build no longer matches the packages in the local repo.
+g_home="${work}/ghome"
+mkdir --parents -- "${g_home}/derivative-binary" "${g_home}/derivative-maker"
+printf '%s\n' 'buildtimesha0000' > "${g_home}/derivative-binary/dm-source-state"
+git -C "${g_home}/derivative-maker" init --quiet
+git -C "${g_home}/derivative-maker" -c user.email=t@t -c user.name=t commit --quiet --allow-empty -m x
+# shellcheck disable=SC2034  ## read as a global by the sourced rt_source_home
+DM_SOURCE_HOME="${g_home}"
+g_sha="$(rt_local_repo_source_sha)"
+check "G: sourceSha is the build-time dm-source-state, not the live git HEAD" \
+   "$([ "${g_sha}" = 'buildtimesha0000' ] && printf '%s' true || printf '%s' false)" "${g_sha}"
+# shellcheck disable=SC2034
+DM_SOURCE_HOME="${src_home}"
+
+## --- #3: a rebuild landing DURING the test window (the repo's Packages changes between the
+## pre-upgrade generation capture and the provenance read) must OMIT provenance -- never bind the
+## verdict to a generation the guest did not test. Simulate with a dm-whonix-pair that rewrites the
+## Packages index (as a concurrent rebuild would) while the "guest upgrade" runs. ---
+true > "${pair_argv}"
+true > "${prov_file}"
+mutating_pair="${work}/dm-whonix-pair-mutate"
+cat > "${mutating_pair}" <<EOF
+#!/bin/bash
+printf '%s\n' "\$*" >> "\${PAIR_ARGV}"
+printf '%s\n' 'Package: anon-apps-config' 'Version: 9:99.9-9' 'Architecture: all' > "${pkgs_dir}/Packages"
+exit 0
+EOF
+chmod +x "${mutating_pair}"
+# shellcheck disable=SC2034  ## read as a global by the sourced rt_lane_whonix_inst
+DM_WHONIX_PAIR="${mutating_pair}"
+# shellcheck disable=SC2034
+local_repo='whonix'
+mut_rc=0
+( rt_lane_whonix_inst persist-inst-whonix 18.2.3.5 ) >/dev/null 2>&1 || mut_rc=$?
+check "#3: lane still returns 0 when the generation changed mid-test" \
+   "$([ "${mut_rc}" = '0' ] && printf '%s' true || printf '%s' false)" "${mut_rc}"
+check "#3: provenance OMITTED when the repo generation changed mid-test" \
+   "$([ ! -s "${prov_file}" ] && printf '%s' true || printf '%s' false)"
+# shellcheck disable=SC2034
+DM_WHONIX_PAIR="${pair_stub}"
+
 printf '%s\n' "" "$(basename -- "$0"): ${pass} pass, ${fail} fail, 0 skip"
 [ "${fail}" -eq 0 ] || exit 1
 exit 0
