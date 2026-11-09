@@ -1,0 +1,72 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Sourceable VBox VM-disk helpers: resolve a VM's system disk image and its qemu-nbd format.
+## These are a DISK concern (consumed by the vbox-disk-mount VM wrapper + the offline boot-mode
+## selector), co-located at the image-test disk layer next to vbox-disk-lib.bsh / the
+## qemu-image-self-contained probe -- NOT in the boot-selection fragment. Sourced by
+## vbox-disk-mount (the VM-name wrapper) AND grub-boot-select.bsh (so the unprivileged offline
+## selector can state the format for its privleap request).
+##
+## Uses the caller's die + FAIL_RC (die-on-failure contract) and VBOXMANAGE.
+# shellcheck disable=SC2154  ## FAIL_RC (+ VBOXMANAGE) are set by the sourcing tool
+
+## Resolve the first attached writable disk image of VM $1 (skip none/emptydrive and optical
+## .iso media), so a lane holding only the VM name can select offline. die()s on no disk.
+installed_disk_path() {
+   local vm="$1" info line path
+   info="$("${VBOXMANAGE:-VBoxManage}" showvminfo "${vm}" --machinereadable)" \
+      || die "${FAIL_RC}" "could not read VM info for '${vm}' (installed_disk_path)"
+   while IFS= read -r line; do
+      ## A storage attachment with an absolute-path value: "<controller>-<p>-<d>"="/path".
+      case "${line}" in
+         '"'*'"="/'*)
+            true
+            ;;
+         *)
+            continue
+            ;;
+      esac
+      path="${line#*=\"}"
+      path="${path%\"}"
+      case "${path}" in
+         *.vdi|*.VDI|*.vmdk|*.VMDK|*.vhd|*.VHD|*.qcow2|*.img|*.raw)
+            printf '%s\n' "${path}"
+            return 0
+            ;;
+      esac
+   done <<< "${info}"
+   die "${FAIL_RC}" "no attached disk image found for VM '${vm}' (installed_disk_path)"
+}
+
+## Map a disk path to its qemu-nbd format by extension, so a lane that resolves the disk from
+## the VM (installed_disk_path) passes the RIGHT format and the mount is never forced to a wrong
+## format on a .vmdk/.qcow2 image. Unknown/.vdi -> vdi.
+disk_format_for() {
+   case "${1,,}" in
+      *.vmdk)
+         printf '%s' vmdk
+         ;;
+      *.qcow2)
+         printf '%s' qcow2
+         ;;
+      *.vhd)
+         ## QEMU's VHD driver is 'vpc', not 'vhd'; installed_disk_path accepts *.vhd, so a bare
+         ## vdi default here would make qemu-nbd reject it AND skip the self-containment probe.
+         printf '%s' vpc
+         ;;
+      *.raw|*.img)
+         printf '%s' raw
+         ;;
+      *)
+         printf '%s' vdi
+         ;;
+   esac
+}
+##
+## style-ok: no-strict -- sourced-only fragment; a top-level 'set -o errexit'/
+## 'nounset'/'pipefail' would leak into (and could kill) the sourcing shell.

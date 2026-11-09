@@ -5,7 +5,7 @@
 
 ## AI-Assisted
 
-## vbox-disk-mount runs the caller's command as ROOT with CWD inside the guest filesystem. A
+## image-mount runs the caller's command as ROOT with CWD inside the guest filesystem. A
 ## hostile guest symlink (e.g. a file that points at a host path) must NOT let that root command
 ## write out of the mount -- the mount carries 'nosymfollow', so following any guest symlink
 ## fails. End-to-end: build a GPT+ext4 VDI holding a symlink 'evil' -> a HOST sentinel, run a
@@ -39,15 +39,15 @@ if [ ! -b /dev/nbd0 ]; then
 fi
 
 test_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
-subject="${VBOX_DISK_MOUNT_BIN:-}"
+subject="${IMAGE_MOUNT_BIN:-}"
 if [ -z "${subject}" ]; then
-   if [ -x "${test_dir}/../../bin/vbox-disk-mount" ]; then
-      subject="${test_dir}/../../bin/vbox-disk-mount"
+   if [ -x "${test_dir}/../../bin/image-mount" ]; then
+      subject="${test_dir}/../../bin/image-mount"
    else
-      subject='/usr/bin/vbox-disk-mount'
+      subject='/usr/bin/image-mount'
    fi
 fi
-[ -x "${subject}" ] || { printf '%s\n' "FATAL: vbox-disk-mount not executable at ${subject}" >&2; exit 1; }
+[ -x "${subject}" ] || { printf '%s\n' "FATAL: image-mount not executable at ${subject}" >&2; exit 1; }
 
 work="$(mktemp --directory)"
 loop_devs=()
@@ -102,7 +102,7 @@ qemu-img convert -f raw -O vdi -- "${raw}" "${img}"
 
 ## Act: a root command tries to write THROUGH the guest symlink. With nosymfollow the open
 ## fails (ELOOP), so the command fails and the host sentinel is untouched.
-"${subject}" run --disk "${img}" -- sh -c 'echo PWNED > evil' >/dev/null 2>&1 || true
+"${subject}" run --disk "${img}" --format vdi -- sh -c 'echo PWNED > evil' >/dev/null 2>&1 || true
 
 check 'host sentinel NOT written through the guest symlink (nosymfollow blocks the escape)' \
    "$(cat -- "${sentinel}")" 'ORIGINAL'

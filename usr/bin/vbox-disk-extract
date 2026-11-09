@@ -37,13 +37,13 @@ format=""
 usage() {
    printf '%s\n' "usage: ${me} --disk PATH --source IN-DISK-PATH --dest HOST-PATH [--passphrase-file PATH] [--format FMT]
 
---disk             VirtualBox disk image (a .vdi by default; see --format).
+--disk             disk image (see --format).
 --source           absolute path of the file to read, inside the disk's filesystem.
 --dest             host path to write the extracted file to.
 --passphrase-file  0600 file with the LUKS passphrase; given -> the disk's single
                    LUKS volume is opened read-only before the filesystem search.
---format           qemu-nbd disk format, pinned (never probed): default 'vdi'. A probed
-                   format lets a crafted image redirect reads onto a host path.
+--format           qemu-nbd disk format, pinned (never probed); REQUIRED (no default). A
+                   probed format lets a crafted image redirect reads onto a host path.
 
 Read-only throughout. Run as root (via sudo)." >&2
 }
@@ -54,7 +54,7 @@ die() {
 }
 
 ## Shared host-side disk plumbing (cleanup, luks_open, settle_partitions, free_nbd,
-## candidate_filesystems) + its cleanup-state globals -- single source with vbox-disk-mount.
+## candidate_filesystems) + its cleanup-state globals -- single source with image-mount.
 lib_dir="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")"
 if [ -r "${lib_dir}/../libexec/image-test/vbox-disk-lib.bsh" ]; then
    vbox_disk_lib="${lib_dir}/../libexec/image-test/vbox-disk-lib.bsh"
@@ -97,8 +97,8 @@ parse_args() {
             ;;
       esac
    done
-   format="${format:-vdi}"
    [ -n "${disk}" ]        || { usage; die "--disk required"; }
+   [ -n "${format}" ]      || { usage; die "--format required (pinned, never probed; no default)"; }
    [ -n "${source_path}" ] || { usage; die "--source required"; }
    [ -n "${dest_path}" ]   || { usage; die "--dest required"; }
    [ -r "${disk}" ]        || die "disk not readable: '${disk}'"

@@ -10,7 +10,7 @@
 ## external data-file -- resolves to the disk file itself. Exit 1 otherwise, AND on ANY error
 ## or if no path at all is found (fail-closed).
 ##
-## Rationale: vbox-disk-mount's qemu-nbd opens those referenced files AS ROOT, so a crafted
+## Rationale: image-mount's / vbox-disk-extract's qemu-nbd opens those referenced files AS ROOT, so a crafted
 ## descriptor (monolithicFlat `RW 1 FLAT "/etc/shadow"`, a qcow2 backing /etc/shadow, or a qcow2
 ## `data_file=/etc/shadow`) would let a non-root caller read/write a host path as root.
 ## vbox-grub-set-next-boot-mode runs this as the CALLER (so even the probe cannot open a

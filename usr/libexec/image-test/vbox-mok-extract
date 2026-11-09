@@ -92,8 +92,12 @@ tmp_der="$(mktemp)"
 ## so only the final `cat` writes the cert. (A stray diagnostic prepended to the DER
 ## corrupts the MokListRT enrollment -> kernel rejects the key -> signed modules fail
 ## under Secure Boot.)
+## --format is pinned vdi: the MOK read path is the kicksecure install disk, which is always a
+## .vdi (vbox-disk-extract's --format is mandatory, no default). A non-vdi MOK source would need
+## the format threaded through the request, which this vdi-only path deliberately does not do.
 "${VBOX_DISK_EXTRACT}" \
    --disk "${disk_real}" \
+   --format vdi \
    --passphrase-file "${pass_file}" \
    --source /var/lib/dkms/mok.pub \
    --dest "${tmp_der}" >&2 \

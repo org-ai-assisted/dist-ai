@@ -93,7 +93,7 @@ mkdir --mode=1777 -- "${TMPDIR}"
 
 ## main dies "not found" (the stub mount exposes no real file); that is expected -- we only
 ## need it to have reached the mount with its 0700-parent mountpoint.
-( main --disk "${disk}" --source /nonexistent --dest "${work}/out" ) >/dev/null 2>&1 || true
+( main --disk "${disk}" --format vdi --source /nonexistent --dest "${work}/out" ) >/dev/null 2>&1 || true
 
 [ -f "${parent_mode_log}" ] || { printf '%s\n' "FAIL: mount was never reached" >&2; exit 1; }
 check 'vbox-disk-extract mounts inside a 0700 parent (decrypted tree not world-traversable)' \

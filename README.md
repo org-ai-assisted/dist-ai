@@ -739,6 +739,12 @@ scancode helpers stay unit-testable without the bindings. It is the default `GUE
 - `vbox-disk-extract` -- reads one file out of a VBox disk image on the HOST, read-only, without
   booting the VM (optional single-LUKS unlock, handles plain or LVM-in-LUKS). Reusable host-side
   inspection, e.g. lifting the installed system's MOK public cert for host-side enroll.
+- `image-mount` -- generic offline image-mount ENGINE: mounts a disk image read-write over
+  qemu-nbd (explicit `--disk` + mandatory `--format`, pinned/never-probed, self-containment gated
+  for every format), runs one trusted command against the filesystem, then always unmounts.
+  Image-agnostic, not VBox-aware; optional single-LUKS unlock + LVM-in-LUKS.
+- `vbox-disk-mount` -- thin VBox/VM-aware wrapper over `image-mount`: takes a VM NAME, resolves the
+  VM's system disk + its qemu-nbd format, then calls `image-mount`.
 
 ## coreboot firmware swap (opt-in, Dasharo-in-VirtualBox port)
 

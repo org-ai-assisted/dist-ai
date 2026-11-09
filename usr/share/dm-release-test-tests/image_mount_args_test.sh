@@ -5,10 +5,10 @@
 
 ## AI-Assisted
 
-## Unit-test vbox-disk-mount's argument contract and teardown-safety seam without root, a
-## VM, or a real disk: source the real tool (its BASH_SOURCE guard keeps main from running)
-## and drive parse_args + cleanup directly. The real read-write mount is covered separately
-## in the sandbox (vbox_disk_mount_roundtrip, root + loopback LUKS).
+## Unit-test image-mount's argument contract and teardown-safety seam without root or a real
+## disk: source the real tool (its BASH_SOURCE guard keeps main from running) and drive
+## parse_args + cleanup directly. The real read-write mount is covered separately in the sandbox
+## (image_mount_roundtrip, root + loopback LUKS). --format is MANDATORY (no default).
 
 set -o errexit
 set -o nounset
@@ -19,16 +19,16 @@ shopt -s shift_verbose
 export LC_ALL=C
 
 test_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
-subject="${VBOX_DISK_MOUNT_BIN:-}"
+subject="${IMAGE_MOUNT_BIN:-}"
 if [ -z "${subject}" ]; then
-   if [ -f "${test_dir}/../../bin/vbox-disk-mount" ]; then
-      subject="${test_dir}/../../bin/vbox-disk-mount"
+   if [ -f "${test_dir}/../../bin/image-mount" ]; then
+      subject="${test_dir}/../../bin/image-mount"
    else
-      subject='/usr/bin/vbox-disk-mount'
+      subject='/usr/bin/image-mount'
    fi
 fi
-[ -r "${subject}" ] || { printf '%s\n' "FATAL: vbox-disk-mount not found at ${subject}" >&2; exit 1; }
-# shellcheck source=../../bin/vbox-disk-mount
+[ -r "${subject}" ] || { printf '%s\n' "FATAL: image-mount not found at ${subject}" >&2; exit 1; }
+# shellcheck source=../../bin/image-mount
 source "${subject}"
 
 work="$(mktemp --directory)"
@@ -74,10 +74,13 @@ check 'a first argument other than run rejected' "$(outcome "${rc}")" 'rejected'
 rc=0; ( parse_args run -- echo hi ) >/dev/null 2>&1 || rc=$?
 check 'missing --disk rejected' "$(outcome "${rc}")" 'rejected'
 
-rc=0; ( parse_args run --disk "${disk}" ) >/dev/null 2>&1 || rc=$?
+rc=0; ( parse_args run --disk "${disk}" -- echo hi ) >/dev/null 2>&1 || rc=$?
+check 'missing --format rejected (mandatory, no default)' "$(outcome "${rc}")" 'rejected'
+
+rc=0; ( parse_args run --disk "${disk}" --format vdi ) >/dev/null 2>&1 || rc=$?
 check 'missing command after -- rejected' "$(outcome "${rc}")" 'rejected'
 
-## --- happy parse: disk + command captured (stub id -> root so the root check passes) ---
+## --- happy parse: disk + format + command captured (stub id -> root so the root check passes) ---
 # shellcheck disable=SC2317  ## shadows the id command for parse_args's root check
 id() {
    printf '%s' '0'
@@ -85,16 +88,16 @@ id() {
 disk=""
 cmd=()
 format=""
-parse_args run --disk "${work}/disk.vdi" -- echo hello world
+parse_args run --disk "${work}/disk.vdi" --format vdi -- echo hello world
 check 'disk captured from --disk' "${disk}" "${work}/disk.vdi"
 check 'command after -- captured verbatim' "${cmd[*]}" 'echo hello world'
-check 'format defaults to vdi (pinned, never probed)' "${format}" 'vdi'
+check 'format captured from --format (pinned, never probed)' "${format}" 'vdi'
 
 disk=""
 cmd=()
 format=""
 parse_args run --disk "${work}/disk.vdi" --format qcow2 -- echo x
-check 'format overridden by --format' "${format}" 'qcow2'
+check 'format captured as given' "${format}" 'qcow2'
 
 ## --- teardown seam: cleanup with no state (empty since sourcing) is a safe no-op under
 ## nounset, proving the lib's :- guards hold for a tool that set no state. ----

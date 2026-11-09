@@ -8,10 +8,10 @@
 ## Set the installed system's GRUB one-shot next_entry to the boot-mode entry whose
 ## menuentry --id names MODE, so the next boot selects that mode DETERMINISTICALLY --
 ## no OCR, no menu interaction, no live-menu timing. Run against a mounted installed
-## root (CWD and $MOUNTPOINT = the root), e.g. as the command of vbox-disk-mount
+## root (CWD and $MOUNTPOINT = the root), e.g. as the command of image-mount
 ## (by ABSOLUTE path -- /usr/libexec is not on PATH):
 ##
-##   vbox-disk-mount run --disk <installed.vdi> --passphrase-file <pf> -- \
+##   image-mount run --disk <installed.vdi> --format vdi --passphrase-file <pf> -- \
 ##     /usr/libexec/image-test/grub-select-next-boot-mode persistent-sysmaint
 ##
 ## Assumes /boot/grub is on the mounted root -- true for the Kicksecure Calamares
@@ -42,7 +42,7 @@ me="${0##*/}"
 ## which a bare [ -e ] test misses -- would redirect this root write onto a HOST path. Resolves an
 ## existing/symlinked path and requires the real target to stay under ${root} (main's local, seen
 ## via dynamic scope). Must NOT run in a command substitution: 'exit' has to leave the whole
-## script. nosymfollow on the vbox-disk-mount mount is the atomic kernel guard; this keeps the
+## script. nosymfollow on the image-mount mount is the atomic kernel guard; this keeps the
 ## selector correct when it is run standalone.
 confine_grubenv_path() {
    local path="$1" label="$2"

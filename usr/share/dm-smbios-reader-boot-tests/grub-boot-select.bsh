@@ -15,71 +15,31 @@
 ##     so it resolves on a patched AND a pre-patch released image alike. Works on an
 ##     ENCRYPTED install (pass the LUKS passphrase file) and an unencrypted image (omit it);
 ##     pass the disk format for a non-vdi disk (vmdk for an OVA).
-##   * installed_disk_path -- resolve a VM's attached system disk image from VBoxManage, so a
-##     lane that only knows the VM name can hand the disk to the selector.
+##   * installed_disk_path + disk_format_for -- resolve a VM's attached system disk + its
+##     qemu-nbd format; moved to the image-test disk layer (vbox-vm-lib.bsh), shared with the
+##     vbox-disk-mount VM wrapper, and sourced below.
 ##
 ## Uses the caller's die + FAIL_RC (die-on-failure contract) and VBOXMANAGE (gui-drive.bsh).
 # shellcheck disable=SC2154  ## FAIL_RC (+ VBOXMANAGE) are set by the sourcing tool
 
-## Resolve the first attached writable disk image of VM $1 (skip none/emptydrive and optical
-## .iso media), so a lane holding only the VM name can select offline. die()s on no disk.
-installed_disk_path() {
-   local vm="$1" info line path
-   info="$("${VBOXMANAGE:-VBoxManage}" showvminfo "${vm}" --machinereadable)" \
-      || die "${FAIL_RC}" "could not read VM info for '${vm}' (installed_disk_path)"
-   while IFS= read -r line; do
-      ## A storage attachment with an absolute-path value: "<controller>-<p>-<d>"="/path".
-      case "${line}" in
-         '"'*'"="/'*)
-            true
-            ;;
-         *)
-            continue
-            ;;
-      esac
-      path="${line#*=\"}"
-      path="${path%\"}"
-      case "${path}" in
-         *.vdi|*.VDI|*.vmdk|*.VMDK|*.vhd|*.VHD|*.qcow2|*.img|*.raw)
-            printf '%s\n' "${path}"
-            return 0
-            ;;
-      esac
-   done <<< "${info}"
-   die "${FAIL_RC}" "no attached disk image found for VM '${vm}' (installed_disk_path)"
-}
-
-## Map a disk path to its qemu-nbd format by extension, so a lane that resolves the disk from
-## the VM (installed_disk_path) passes the RIGHT format and the mount is never forced to vdi on
-## a .vmdk/.qcow2 image. Unknown/.vdi -> vdi (vbox-disk-mount's default).
-disk_format_for() {
-   case "${1,,}" in
-      *.vmdk)
-         printf '%s' vmdk
-         ;;
-      *.qcow2)
-         printf '%s' qcow2
-         ;;
-      *.vhd)
-         ## QEMU's VHD driver is 'vpc', not 'vhd'; installed_disk_path accepts *.vhd, so a bare
-         ## vdi default here would make qemu-nbd reject it AND skip the self-containment probe.
-         printf '%s' vpc
-         ;;
-      *.raw|*.img)
-         printf '%s' raw
-         ;;
-      *)
-         printf '%s' vdi
-         ;;
-   esac
-}
+## VM-disk helpers shared with vbox-disk-mount -- single source, co-located with the
+## qemu-image-self-contained probe at the image-test disk layer.
+grub_boot_select_dir="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")"
+if [ -r "${grub_boot_select_dir}/../../libexec/image-test/vbox-vm-lib.bsh" ]; then
+   vbox_vm_lib="${grub_boot_select_dir}/../../libexec/image-test/vbox-vm-lib.bsh"
+else
+   vbox_vm_lib='/usr/libexec/image-test/vbox-vm-lib.bsh'
+fi
+# shellcheck source=../../libexec/image-test/vbox-vm-lib.bsh
+source "${vbox_vm_lib}"
 
 ## Deterministic offline boot-mode selection: set grubenv next_entry to MODE's entry.
-## Args: <mode> <disk-path> [<luks-passphrase-file>] [<disk-format>].
+## Args: <mode> <disk-path> [<luks-passphrase-file>] <disk-format>.
 ##   * mode: 'user' / 'persistent-sysmaint' / ... (the per-mode menuentry grub-select resolves).
 ##   * pass a passphrase file for an ENCRYPTED install; omit (or '') for an unencrypted image.
-##   * pass a format ('vmdk') for a non-vdi disk; omit (or '') for the vdi default.
-## The VM MUST be powered off (vbox-disk-mount refuses a VM-locked disk). Hands the request to
+##   * format is REQUIRED (pinned, never probed) -- use disk_format_for "${disk}"; the privleap
+##     action passes it to image-mount, whose --format is mandatory.
+## The VM MUST be powered off (image-mount refuses a VM-locked disk). Hands the request to
 ## the narrow vbox-grub-set-next-boot-mode privleap action in the caller-owned request dir
 ## (mirrors dm-calamares-install's mok_host_enroll), which sets next_entry so the next power-on
 ## autoboots MODE. die()s on failure (FAIL_RC contract).
@@ -90,26 +50,25 @@ disk_format_for() {
 ## followed by a USER boot, or a reused --reinstall VM).
 select_installed_mode_offline() {
    local mode="$1" disk="$2" pass_file="${3:-}" format="${4:-}" req_dir
+   [ -n "${format}" ] \
+      || die "${FAIL_RC}" "select_installed_mode_offline: a disk format is required (pinned, never probed; use disk_format_for)"
    req_dir="$(getent passwd "$(id -u)" | cut -d: -f6)/.cache/vbox-grub-set-next-boot-mode"
    # shellcheck disable=SC2174  ## --mode on mkdir --parents applies to the leaf, which is what we want
    mkdir --parents --mode=0700 -- "${req_dir}"
-   ## Clear any stale optional files first: the action treats their PRESENCE as meaningful
-   ## (passphrase present -> LUKS unlock; format present -> non-vdi), so a leftover from a
-   ## prior request would wrongly apply to this one.
-   safe-rm --force -- "${req_dir}/passphrase" "${req_dir}/format" 2>/dev/null || true
+   ## Clear any stale passphrase first: the action treats its PRESENCE as meaningful (passphrase
+   ## present -> LUKS unlock), so a leftover from a prior request would wrongly apply to this one.
+   ## format is always rewritten below (required), so no stale-format concern.
+   safe-rm --force -- "${req_dir}/passphrase" 2>/dev/null || true
    printf '%s' "${disk}" > "${req_dir}/disk"
    printf '%s' "${mode}" > "${req_dir}/mode"
-   chmod 0600 -- "${req_dir}/disk" "${req_dir}/mode"
+   printf '%s' "${format}" > "${req_dir}/format"
+   chmod 0600 -- "${req_dir}/disk" "${req_dir}/mode" "${req_dir}/format"
    if [ -n "${pass_file}" ]; then
       ## Abort on a failed copy (e.g. the passphrase file vanished after validation) rather
       ## than invoke the action without a passphrase and surface a misleading mount error.
       cp --force -- "${pass_file}" "${req_dir}/passphrase" \
          || die "${FAIL_RC}" "could not stage the LUKS passphrase from '${pass_file}'"
       chmod 0600 -- "${req_dir}/passphrase"
-   fi
-   if [ -n "${format}" ]; then
-      printf '%s' "${format}" > "${req_dir}/format"
-      chmod 0600 -- "${req_dir}/format"
    fi
    if ! leaprun vbox-grub-set-next-boot-mode; then
       safe-rm --force -- "${req_dir}/disk" "${req_dir}/passphrase" "${req_dir}/mode" "${req_dir}/format" 2>/dev/null || true
@@ -119,7 +78,7 @@ select_installed_mode_offline() {
 }
 
 ## Thin SYSMAINT wrapper (the whonix lane selects only this mode).
-## Args: <disk-path> [<luks-passphrase-file>] [<disk-format>].
+## Args: <disk-path> [<luks-passphrase-file>] <disk-format>.
 select_installed_sysmaint_offline() {
    select_installed_mode_offline persistent-sysmaint "$@"
 }

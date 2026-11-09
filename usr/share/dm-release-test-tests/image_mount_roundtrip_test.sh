@@ -5,11 +5,12 @@
 
 ## AI-Assisted
 
-## End-to-end: vbox-disk-mount opens a GPT-partitioned LUKS VDI disk image read-WRITE over
+## End-to-end: image-mount opens a GPT-partitioned LUKS VDI disk image read-WRITE over
 ## qemu-nbd, runs a command that creates a file on it, and after teardown the write has
 ## persisted and no nbd / device-mapper residue is left. Exercises the real connect ->
 ## settle-partitions -> unlock -> mount -> run -> sync -> unmount path (not just the arg
-## seam in vbox_disk_mount_args_test).
+## seam in image_mount_args_test). Also proves a real vdi passes the uniform self-containment
+## gate (nbd_connect now probes every format, including vdi, before opening).
 ##
 ## The image is PARTITIONED (LUKS on partition 1) and a VDI -- the layout the Calamares
 ## install produces and the format the tool targets. The partition table also exercises
@@ -44,15 +45,15 @@ if [ ! -b /dev/nbd0 ]; then
 fi
 
 test_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
-subject="${VBOX_DISK_MOUNT_BIN:-}"
+subject="${IMAGE_MOUNT_BIN:-}"
 if [ -z "${subject}" ]; then
-   if [ -x "${test_dir}/../../bin/vbox-disk-mount" ]; then
-      subject="${test_dir}/../../bin/vbox-disk-mount"
+   if [ -x "${test_dir}/../../bin/image-mount" ]; then
+      subject="${test_dir}/../../bin/image-mount"
    else
-      subject='/usr/bin/vbox-disk-mount'
+      subject='/usr/bin/image-mount'
    fi
 fi
-[ -x "${subject}" ] || { printf '%s\n' "FATAL: vbox-disk-mount not executable at ${subject}" >&2; exit 1; }
+[ -x "${subject}" ] || { printf '%s\n' "FATAL: image-mount not executable at ${subject}" >&2; exit 1; }
 
 work="$(mktemp --directory)"
 prep_name="vdmrt-prep-$$"
@@ -130,11 +131,11 @@ qemu-img convert -f raw -O vdi -- "${raw}" "${img}"
 
 ## Act: mount read-write and create a marker file on the guest filesystem.
 rc=0
-"${subject}" run --disk "${img}" --passphrase-file "${pf}" -- touch marker || rc=$?
-check 'vbox-disk-mount run exits 0' "${rc}" '0'
+"${subject}" run --disk "${img}" --format vdi --passphrase-file "${pf}" -- touch marker || rc=$?
+check 'image-mount run exits 0' "${rc}" '0'
 
-## No leftover device-mapper node from the tool's own mapping (vdm-<pid>-luks).
-leftover="$(find /dev/mapper -maxdepth 1 -name 'vdm-[0-9]*-luks' 2>/dev/null | wc -l)"
+## No leftover device-mapper node from the tool's own mapping (im-<pid>-luks).
+leftover="$(find /dev/mapper -maxdepth 1 -name 'im-[0-9]*-luks' 2>/dev/null | wc -l)"
 check 'no device-mapper residue from the tool' "${leftover}" '0'
 
 ## Verify the write persisted: convert the tool-written VDI back to raw and inspect it

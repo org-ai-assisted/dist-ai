@@ -5,21 +5,18 @@
 
 ## AI-Assisted
 
-## Mount a VirtualBox VM disk image on the HOST read-WRITE, run ONE caller command against
-## the mounted filesystem, then always unmount -- without booting the VM. Generic and
-## grub-agnostic: the caller supplies whatever edit it wants (e.g. grub-editenv, a file
-## write); this tool only owns the mount lifecycle. Optionally unlocks a single LUKS volume
-## (the harness holds the install passphrase) and handles an LVM layout inside LUKS.
+## Thin VBox/VM-aware wrapper over the generic image-mount engine. Takes a VM NAME, resolves the
+## VM's system disk image AND its qemu-nbd format (installed_disk_path + disk_format_for from
+## vbox-vm-lib.bsh), then calls image-mount with an explicit --disk + pinned --format. This is the
+## VBox layer that knows VM disks; image-mount itself is image-agnostic and never touches VBox.
 ##
-## Single-transaction by design: the mount lives for exactly one command and is torn down
-## by the EXIT trap, so there is no dangling-mount state a caller must remember to release
-## (the safe path is the default, nothing to recall).
+## Mounts the disk read-WRITE, runs ONE caller command against the mounted filesystem, then always
+## unmounts -- without booting the VM. Optionally unlocks a single LUKS volume (pass the install
+## passphrase file). The VM MUST be powered off (image-mount refuses a VM-locked disk).
 ##
-## WRITABLE counterpart of the read-only vbox-disk-extract; both source vbox-disk-lib.bsh,
-## so the qemu-nbd / LUKS / LVM / teardown plumbing is a single source. Must run as root
-## (qemu-nbd / cryptsetup / mount); callers invoke it via sudo. It has NO privleap action
-## of its own -- "run an arbitrary root command against a writable disk" is not something to
-## authorize to a group; a sudo-less runner needs a separate purpose-narrowed wrapper.
+## VBoxManage (the VM-disk resolution) runs as the invoking user who owns the VM; image-mount
+## (qemu-nbd / cryptsetup / mount) must run as root, so invoke this via sudo in a context where
+## the VM is still resolvable. It has NO privleap action of its own.
 
 set -o errexit
 set -o nounset
@@ -30,61 +27,64 @@ shopt -s shift_verbose
 export LC_ALL=C
 
 me="${0##*/}"
+VBOXMANAGE="${VBOXMANAGE:-VBoxManage}"
+FAIL_RC=1
 
-disk=""
+vm=""
 passphrase_file=""
-format=""
 cmd=()
 
 usage() {
-   printf '%s\n' "usage: ${me} run --disk PATH [--passphrase-file PATH] [--format FMT] -- CMD [ARGS...]
+   printf '%s\n' "usage: ${me} run --vm NAME [--passphrase-file PATH] -- CMD [ARGS...]
 
-run                mount the disk read-write, run CMD, then always unmount.
---disk             VirtualBox disk image (a .vdi by default; see --format); must be
-                   WRITABLE and NOT locked by a running VM (power the VM off first).
+run                resolve the VM's disk + format, mount it read-write, run CMD, then unmount.
+--vm               VirtualBox VM name; its first attached writable disk is resolved, and the
+                   qemu-nbd format is derived from the disk extension (never probed).
 --passphrase-file  0600 file with the LUKS passphrase; given -> the disk's single LUKS
                    volume is opened read-WRITE before the filesystem search.
---format           qemu-nbd disk format, pinned (never probed): default 'vdi'. A probed
-                   format lets a crafted image redirect writes onto a host path.
 CMD [ARGS...]      run after '--' with \$MOUNTPOINT set and CWD = the mounted filesystem.
 
-Mounts the first mountable filesystem read-write (journal replays), with nodev,nosuid,noexec.
-CMD and the disk image are TRUSTED: CMD runs as root and can follow a guest symlink out of
-the mount, so do not point this at an untrusted image or pass an untrusted command.
-Run as root (via sudo)." >&2
+CMD and the disk image are TRUSTED: CMD runs as root and can follow a guest symlink out of the
+mount. Power the VM off first. Run as root (via sudo)." >&2
 }
 
+## 2-arg die (code, message) -- the contract vbox-vm-lib.bsh's helpers call with FAIL_RC.
 die() {
-   printf '%s\n' "${me}: ERROR: ${1}" >&2
-   exit 1
+   printf '%s\n' "${me}: ERROR: ${2}" >&2
+   exit "$1"
 }
 
-## Shared host-side disk plumbing (cleanup, luks_open, settle_partitions, free_nbd,
-## candidate_filesystems) + its cleanup-state globals -- single source with vbox-disk-extract.
+## VM-disk helpers (installed_disk_path + disk_format_for) -- single source shared with the
+## offline boot-mode selector (grub-boot-select.bsh).
 lib_dir="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")"
-if [ -r "${lib_dir}/../libexec/image-test/vbox-disk-lib.bsh" ]; then
-   vbox_disk_lib="${lib_dir}/../libexec/image-test/vbox-disk-lib.bsh"
+if [ -r "${lib_dir}/../libexec/image-test/vbox-vm-lib.bsh" ]; then
+   vbox_vm_lib="${lib_dir}/../libexec/image-test/vbox-vm-lib.bsh"
 else
-   vbox_disk_lib='/usr/libexec/image-test/vbox-disk-lib.bsh'
+   vbox_vm_lib='/usr/libexec/image-test/vbox-vm-lib.bsh'
 fi
-# shellcheck source=../libexec/image-test/vbox-disk-lib.bsh
-source "${vbox_disk_lib}"
+# shellcheck source=../libexec/image-test/vbox-vm-lib.bsh
+source "${vbox_vm_lib}"
+
+## The generic engine (overridable for tests).
+if [ -n "${IMAGE_MOUNT:-}" ]; then
+   image_mount="${IMAGE_MOUNT}"
+elif [ -x "${lib_dir}/image-mount" ]; then
+   image_mount="${lib_dir}/image-mount"
+else
+   image_mount='/usr/bin/image-mount'
+fi
 
 parse_args() {
-   [ "${1:-}" = 'run' ] || { usage; die "first argument must be the 'run' subcommand"; }
+   [ "${1:-}" = 'run' ] || { usage; die "${FAIL_RC}" "first argument must be the 'run' subcommand"; }
    shift
    while [ "$#" -gt 0 ]; do
       case "$1" in
-         --disk)
-            disk="$2"
+         --vm)
+            vm="$2"
             shift 2
             ;;
          --passphrase-file)
             passphrase_file="$2"
-            shift 2
-            ;;
-         --format)
-            format="$2"
             shift 2
             ;;
          --)
@@ -98,81 +98,28 @@ parse_args() {
             ;;
          *)
             usage
-            die "unexpected argument '$1'"
+            die "${FAIL_RC}" "unexpected argument '$1'"
             ;;
       esac
    done
-   format="${format:-vdi}"
-   [ -n "${disk}" ]          || { usage; die "--disk required"; }
-   [ "${#cmd[@]}" -gt 0 ]    || { usage; die "a command after '--' is required"; }
-   [ -w "${disk}" ]          || die "disk not writable: '${disk}'"
+   [ -n "${vm}" ]         || { usage; die "${FAIL_RC}" "--vm required"; }
+   [ "${#cmd[@]}" -gt 0 ] || { usage; die "${FAIL_RC}" "a command after '--' is required"; }
    [ -z "${passphrase_file}" ] || [ -r "${passphrase_file}" ] \
-      || die "passphrase file not readable: '${passphrase_file}'"
-   [ "$(id -u)" = '0' ]      || die "must run as root (invoke via sudo)"
+      || die "${FAIL_RC}" "passphrase file not readable: '${passphrase_file}'"
 }
 
 main() {
-   trap cleanup EXIT
    parse_args "$@"
 
-   modprobe nbd max_part=16 2>/dev/null || true
-   nbd_dev="$(free_nbd)"
-   ## Writable connect with a pinned format (no probing): a VM-locked disk fails here,
-   ## loudly -- that is the intended guard against mounting a live disk, not a retry case.
-   nbd_connect "${nbd_dev}" "${disk}" "${format}" rw
-   settle_partitions "${nbd_dev}"
+   local disk format
+   disk="$(installed_disk_path "${vm}")"
+   format="$(disk_format_for "${disk}")"
 
+   local args=(run --disk "${disk}" --format "${format}")
    if [ -n "${passphrase_file}" ]; then
-      ## The LUKS volume is a partition, or the whole disk for an unpartitioned image.
-      local target luks_target=""
-      for target in "${nbd_dev}" "${nbd_dev}"p*; do
-         [ -b "${target}" ] || continue
-         if cryptsetup isLuks -- "${target}" 2>/dev/null; then
-            luks_target="${target}"
-            break
-         fi
-      done
-      [ -n "${luks_target}" ] || die "no LUKS volume found on '${disk}'"
-      luks_name="vdm-$$-luks"
-      luks_open "${luks_target}" "${luks_name}" rw
+      args+=(--passphrase-file "${passphrase_file}")
    fi
-
-   ## Mountpoint inside a 0700 parent (shared helper: keeps the decrypted tree off other local
-   ## users once the mount takes the guest root's 0755 mode).
-   make_private_mountpoint
-   local fs mounted='false'
-   ## candidate_filesystems in THIS shell via a file (not '< <()'): a procsub subshell would
-   ## discard its vg_activated assignment, leaking the VG cleanup turned on.
-   fs_list="$(mktemp)"
-   candidate_filesystems > "${fs_list}"
-   while read -r fs; do
-      [ -n "${fs}" ] || continue
-      ## Writable mount: let the journal REPLAY (do NOT use the read-only 'noload' trick --
-      ## mounting a dirty journal writable with noload risks corruption). Harden against a
-      ## hostile guest filesystem: nodev (no live guest device nodes), nosuid, noexec, and
-      ## nosymfollow -- the caller's command runs as ROOT with CWD in the mount, so without
-      ## nosymfollow a guest symlink (e.g. grubenv -> /etc/...) would redirect a root write onto
-      ## a HOST path. A real failure to mount read-write is a hard error, fail-closed -- see below.
-      # shellcheck disable=SC2154  ## mnt_dir is set by make_private_mountpoint (sourced vbox-disk-lib.bsh)
-      if mount --options nodev,nosuid,noexec,nosymfollow -- "${fs}" "${mnt_dir}" 2>/dev/null; then
-         mounted='true'
-         break
-      fi
-   done < "${fs_list}"
-   [ "${mounted}" = 'true' ] || die "no mountable filesystem found on '${disk}'"
-
-   ## Run the caller's command against the mounted tree. CMD is a TRUSTED harness literal
-   ## (this tool is root); it is not sanitized. Capture its status, then tear the mount down
-   ## fail-closed before returning that status.
-   local rc=0
-   ( cd -- "${mnt_dir}" && MOUNTPOINT="${mnt_dir}" "${cmd[@]}" ) || rc=$?
-
-   ## Flush then unmount fail-closed: a failed unmount means possibly-unflushed writes, so it
-   ## is a hard error (NOT 'umount || true'), surfaced over the command's own status. The
-   ## EXIT trap still runs as a best-effort safety net.
-   sync
-   umount -- "${mnt_dir}" || die "unmount failed (writes may be unflushed): '${mnt_dir}'"
-   return "${rc}"
+   "${image_mount}" "${args[@]}" -- "${cmd[@]}"
 }
 
 ## Sourced (a unit test) -> expose the functions without running; executed -> run.

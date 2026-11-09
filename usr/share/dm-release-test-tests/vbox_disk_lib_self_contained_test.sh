@@ -8,9 +8,10 @@
 ## nbd_connect opens the disk with qemu-nbd AS ROOT. Pinning the format is not enough for a
 ## multi-file format: a crafted VMDK FLAT extent (or a qcow2 backing file) can reference an
 ## external HOST path (RW ... FLAT "/etc/shadow"), so qemu-nbd's root open becomes arbitrary host
-## read/write. nbd_connect must reject a NON-vdi image that is not self-contained BEFORE opening
-## it. Source the real vbox-disk-lib.bsh, stub qemu-nbd, and assert: a crafted vmdk is refused and
-## qemu-nbd is never reached; a clean vdi and a clean qcow2 open normally. No root, no nbd.
+## read/write. nbd_connect must reject an image that is not self-contained BEFORE opening it,
+## UNIFORMLY for EVERY format (no vdi special-case). Source the real vbox-disk-lib.bsh, stub
+## qemu-nbd, and assert: a crafted vmdk/qcow2 is refused and qemu-nbd is never reached; a clean
+## vdi and a clean qcow2 open normally (a single-file vdi passes the uniform probe). No root, no nbd.
 ##
 ## Needs qemu-img (the self-contained probe + fixture creation); SKIPS if absent.
 
@@ -100,10 +101,17 @@ rc=0
 check 'crafted qcow2 (external data_file) is refused' "$([ "${rc}" -ne 0 ] && printf '%s' yes || printf '%s' no)" 'yes'
 check 'qemu-nbd NOT reached for the crafted qcow2' "$([ ! -s "${nbd_log}" ] && printf '%s' yes || printf '%s' no)" 'yes'
 
-## 2. Clean vdi -> opened (vdi is single-file, never probed).
+## 2. Clean vdi -> opened. The gate is now UNIFORM (no vdi skip), so a single-file vdi is
+## actually PROBED and must PASS: qemu-img info reports only the disk itself, so the probe
+## returns 0 and nbd_connect reaches qemu-nbd. First assert the real probe passes the vdi
+## directly (the operator's verify-before-relying requirement), then that nbd_connect opens it.
+self_contained="${QEMU_IMAGE_SELF_CONTAINED:-${vbox_disk_lib_dir}/qemu-image-self-contained}"
+rc=0; "${self_contained}" "${work}/clean.vdi" vdi >/dev/null 2>&1 || rc=$?
+check 'real self-containment probe PASSES a clean vdi (uniform gate, no skip)' \
+   "$([ "${rc}" -eq 0 ] && printf '%s' yes || printf '%s' no)" 'yes'
 true > "${nbd_log}"
 nbd_connect /dev/nbd-fake "${work}/clean.vdi" vdi rw >/dev/null 2>&1 || true
-check 'clean vdi reaches qemu-nbd' "$([ -s "${nbd_log}" ] && printf '%s' yes || printf '%s' no)" 'yes'
+check 'clean vdi reaches qemu-nbd (passed the uniform probe)' "$([ -s "${nbd_log}" ] && printf '%s' yes || printf '%s' no)" 'yes'
 
 ## 3. Clean qcow2 (self-contained, no backing) -> opened (the check must not over-reject).
 true > "${nbd_log}"

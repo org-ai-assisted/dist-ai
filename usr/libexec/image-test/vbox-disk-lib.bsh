@@ -6,7 +6,7 @@
 ## AI-Assisted
 
 ## Sourceable host-side disk plumbing shared by vbox-disk-extract (read-only single-file
-## copy) and vbox-disk-mount (generic read-write mount). The qemu-nbd connect, partition
+## copy) and image-mount (generic read-write mount engine). The qemu-nbd connect, partition
 ## settle, LUKS unlock, LVM-in-LUKS filesystem enumeration, and reverse-order teardown
 ## live in ONE place so the two tools cannot drift (dist-ai: no duplication; both ship in
 ## the same package, so no vendored copy / drift guard).
@@ -130,21 +130,21 @@ settle_partitions() {
 ## Connect DISK at /dev/nbd device DEV with an EXPLICIT format (never probed). Probing an
 ## untrusted image is a footgun: a crafted VMDK descriptor or a qcow2 backing-file reference
 ## redirects qemu-nbd's reads/writes onto an arbitrary HOST path, so the format is always
-## pinned by the caller (default 'vdi' for these VirtualBox tools). MODE 'readonly' adds
-## --read-only; anything else connects writable.
+## pinned by the caller. MODE 'readonly' adds --read-only; anything else connects writable.
 nbd_connect() {
    local dev="$1" disk="$2" format="$3" mode="${4:-rw}"
-   ## Defense in depth for EVERY caller: pinning the format is not enough for a MULTI-FILE format.
-   ## A crafted VMDK FLAT/SPARSE extent or a qcow2 backing file ('RW ... FLAT "/etc/shadow"') points
-   ## qemu-nbd's ROOT-level open at an arbitrary HOST path -> root read/write. So require a NON-vdi
-   ## image to be SELF-CONTAINED (every referenced file resolves to the disk itself) before opening
-   ## it. vdi is single-file and never references externally. vbox-grub-set-next-boot-mode also
-   ## pre-checks as the unprivileged caller; this guards the direct vbox-disk-mount/extract paths.
-   if [ "${format}" != 'vdi' ]; then
-      local self_contained="${QEMU_IMAGE_SELF_CONTAINED:-${vbox_disk_lib_dir}/qemu-image-self-contained}"
-      "${self_contained}" "${disk}" "${format}" \
-         || die "refusing '${disk}': format '${format}' references a file outside the disk (crafted extent/backing -> host-path escalation)"
-   fi
+   ## Defense in depth for EVERY caller AND every format: pinning the format is not enough for a
+   ## MULTI-FILE format. A crafted VMDK FLAT/SPARSE extent or a qcow2 backing file ('RW ... FLAT
+   ## "/etc/shadow"') points qemu-nbd's ROOT-level open at an arbitrary HOST path -> root
+   ## read/write. So require the image to be SELF-CONTAINED (every referenced file resolves to the
+   ## disk itself) before opening it -- UNIFORMLY, including vdi: a single-file vdi passes the
+   ## check (its only referenced path is the disk itself), so there is no reason to special-case
+   ## it, and a uniform gate cannot regress if a future format is wrongly assumed single-file.
+   ## vbox-grub-set-next-boot-mode also pre-checks as the unprivileged caller; this guards the
+   ## direct image-mount / vbox-disk-extract paths.
+   local self_contained="${QEMU_IMAGE_SELF_CONTAINED:-${vbox_disk_lib_dir}/qemu-image-self-contained}"
+   "${self_contained}" "${disk}" "${format}" \
+      || die "refusing '${disk}': format '${format}' references a file outside the disk (crafted extent/backing -> host-path escalation)"
    if [ "${mode}" = 'readonly' ]; then
       qemu-nbd --read-only --format "${format}" --connect="${dev}" -- "${disk}"
    else
@@ -170,7 +170,7 @@ free_nbd() {
 ## Sets mnt_base (the 0700 parent, 'mktemp --directory' is 0700; cleanup removes it after
 ## mnt_dir) and mnt_dir (the mountpoint inside it). realpath so a caller's realpath-prefix
 ## confinement holds even when an ancestor of TMPDIR is a symlink. Single source so
-## vbox-disk-mount and vbox-disk-extract cannot drift on this invariant.
+## image-mount and vbox-disk-extract cannot drift on this invariant.
 make_private_mountpoint() {
    mnt_base="$(realpath -- "$(mktemp --directory)")"
    mnt_dir="${mnt_base}/mnt"
