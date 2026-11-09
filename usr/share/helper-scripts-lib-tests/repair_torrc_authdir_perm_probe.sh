@@ -16,7 +16,10 @@
 ##                       INHERITED umask (the real consumer path: errexit +
 ##                       inherit_errexit, exactly as repair-torrc's main() calls it)
 ##
-## Exit: 0 ok; 1 sourcing enabled errexit (strict leak); 3 the function is undefined.
+## Exit: 0 ok; 1 sourcing enabled errexit (strict leak); 3 the function is
+## undefined. In 'source' mode the sentinel 'PROBE_SOURCE_END' is printed ONLY
+## if control falls through to the end: a subject that auto-ran its main and
+## hit 'exit' never emits it, so the test fails loud instead of passing vacuously.
 
 # shellcheck disable=SC1090,SC1091,SC2154  # SUBJECT: the repair-torrc path, from the env
 source "${SUBJECT}"
@@ -35,8 +38,9 @@ if [ "${1:-}" = "create" ]; then
    exit 0
 fi
 
-## 'source' mode: if sourcing enabled errexit, this 'false' aborts (exit 1);
-## otherwise 'true' yields exit 0. Any stdout here would also fail the
-## no-auto-run assertion in the test.
+## 'source' mode: if sourcing enabled errexit, this 'false' aborts the probe
+## (non-zero exit, no sentinel); if sourcing auto-ran main, its 'exit' never
+## reaches the sentinel either. Reaching the sentinel at exit 0 proves sourcing
+## neither leaked strict-mode nor auto-ran. The sentinel is the ONLY stdout.
 false
-true
+printf '%s\n' PROBE_SOURCE_END

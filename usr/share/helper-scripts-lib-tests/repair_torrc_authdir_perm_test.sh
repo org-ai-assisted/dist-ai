@@ -95,10 +95,20 @@ check() {
    fi
 }
 
-## Octal mode of a path, or 'MISSING' when it does not exist.
+## Permission bits of a DIRECTORY, else a marker.
+## - stat prints a leading special-bits digit (setgid/setuid/sticky) only when
+##   one is set, so the last three digits are the rwx bits. A setgid bit
+##   inherited from an ancestor of the mktemp tree is an environment artifact,
+##   not a widening of the bits this canary guards -- drop it.
+## - Requires a directory: a subject creating a regular file at 0700 (e.g.
+##   'install -m 0700' without -d) must not read as a correct authdir.
 mode_of() {
-   if [ -e "${1}" ]; then
-      stat -c '%a' -- "${1}"
+   local octal
+   if [ -d "${1}" ]; then
+      octal="$(stat -c '%a' -- "${1}")"
+      printf '%s' "${octal: -3}"
+   elif [ -e "${1}" ]; then
+      printf '%s' NOTADIR
    else
       printf '%s' MISSING
    fi
@@ -127,10 +137,13 @@ check "authdir under existing parent at 0700" "$(mode_of "${authdir2}")"       "
 check "existing parent mode untouched (0700)" "$(mode_of "${existing_parent}")" "700"
 
 ## --- (3) source-ability: no auto-run, no strict-mode leak, fn defined ---
+## The sentinel is reached ONLY if sourcing neither leaked strict-mode (which
+## would abort the probe at its 'false') nor auto-ran a main that 'exit's. An
+## empty / non-sentinel stdout therefore fails loud instead of passing vacuously.
 src_rc=0
 src_out="$("${probe}" source 2>/dev/null)" || src_rc=$?
-check "sourcing does not enable errexit (no strict leak)" "${src_rc}" "0"
-check "sourcing does not auto-run repair-torrc"            "${src_out}" ""
+check "sourcing does not enable errexit (no strict leak)"  "${src_rc}"  "0"
+check "sourcing does not auto-run repair-torrc"            "${src_out}" "PROBE_SOURCE_END"
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
