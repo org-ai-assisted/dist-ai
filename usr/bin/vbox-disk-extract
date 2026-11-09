@@ -35,7 +35,7 @@ dest_path=""
 format=""
 
 usage() {
-   printf '%s\n' "usage: ${me} --disk PATH --source IN-DISK-PATH --dest HOST-PATH [--passphrase-file PATH] [--format FMT]
+   printf '%s\n' "usage: ${me} --disk PATH --format FMT --source IN-DISK-PATH --dest HOST-PATH [--passphrase-file PATH]
 
 --disk             disk image (see --format).
 --source           absolute path of the file to read, inside the disk's filesystem.

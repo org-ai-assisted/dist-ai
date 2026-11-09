@@ -24,8 +24,10 @@ shopt -s shift_verbose
 export LC_ALL=C
 
 if ! type -P qemu-img >/dev/null 2>&1; then
-   printf '%s\n' "SKIP: qemu-img absent" >&2
-   exit 77  ## style-ok: allow-skip: qemu-utils is the self-contained probe + fixture dependency
+   ## REQUIRED, not optional: every case builds a real image with qemu-img and drives the real
+   ## self-containment probe, so its absence is an environment bug -> fail loud, never skip.
+   printf '%s\n' "FATAL: qemu-img absent -- required (self-containment probe + fixtures)" >&2
+   exit 1
 fi
 
 test_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
