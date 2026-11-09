@@ -328,6 +328,38 @@ check "state card: named text attachment recorded" "$(grep --quiet '"name": "vm-
 check "state card: text copied into the run dir" "$([ -f "${v_out}/10-vm-defined.card.txt" ] && printf '%s' true || printf '%s' false)"
 check "state card: NOT stored as a png shot" "$([ ! -f "${v_out}/calamares-install-10-vm-defined.png" ] && printf '%s' true || printf '%s' false)"
 
+## localRepo provenance block (fast-iteration apt-repo lane): a JSON object passed via
+## --provenance-local-repo flows end-to-end (publisher -> emitter json.loads -> model) and lands
+## under provenance.localRepo; it is OMITTED entirely when not passed (no null noise); a malformed
+## value FAILS the publish (no result.json, latest not advanced). Canary: the pre-change chain had
+## no --provenance-local-repo passthrough, so the publisher rejected the flag and nothing published.
+lr_json='{"derivative":"whonix","repoPath":"/srv/derivative-maker/aptrepo_local/whonix","sourceSha":"deadbeefcafe","packages":["anon-apps-config=7:18.1-1","whonix-gw-network-conf=3:18.2-1"]}'
+lr_out="$(image_test_results_publish "${results_root}" "${owner}" \
+   "whonix-lr-18-2-3-5" "persist-inst-whonix" "whonix-func" \
+   0 "" --lane whonix-cli-inst --version 18.2.3.5 --builder dm-release-test \
+   --origin downloaded --expect release-checks --provenance-local-repo "${lr_json}")"
+lr_result="${lr_out}/result.json"
+check "localRepo: block present under provenance" "$(grep --quiet '"localRepo"' -- "${lr_result}" && printf '%s' true || printf '%s' false)"
+check "localRepo: derivative recorded" "$(grep --quiet '"derivative": "whonix"' -- "${lr_result}" && printf '%s' true || printf '%s' false)"
+check "localRepo: repoPath recorded" "$(grep --quiet '/srv/derivative-maker/aptrepo_local/whonix' -- "${lr_result}" && printf '%s' true || printf '%s' false)"
+check "localRepo: sourceSha recorded" "$(grep --quiet '"sourceSha": "deadbeefcafe"' -- "${lr_result}" && printf '%s' true || printf '%s' false)"
+check "localRepo: package name=version recorded" "$(grep --quiet 'whonix-gw-network-conf=3:18.2-1' -- "${lr_result}" && printf '%s' true || printf '%s' false)"
+
+## OMIT when absent: the top calamares run carried no --provenance-local-repo, so its provenance
+## must have NO localRepo key at all (not a null) -- no null noise on the common path.
+check "localRepo: key OMITTED on a run without --provenance-local-repo" "$(grep --quiet '"localRepo"' -- "${json}" && printf '%s' false || printf '%s' true)"
+
+## MALFORMED JSON -> the emitter fails loud -> no result.json, latest not advanced (fail-closed;
+## a bogus provenance claim must never be recorded).
+badlr_rc=0
+image_test_results_publish "${results_root}" "${owner}" \
+   "whonix-badlr-18-2-3-5" "persist-inst-whonix" "whonix-func" \
+   0 "" --lane whonix-cli-inst --version 18.2.3.5 --builder dm-release-test \
+   --origin downloaded --expect release-checks --provenance-local-repo '{not valid json' >/dev/null 2>&1 || badlr_rc=$?
+check "localRepo: malformed JSON fails the publish (nonzero)" "$([ "${badlr_rc}" -ne 0 ] && printf '%s' true || printf '%s' false)"
+check "localRepo: no result.json for the malformed run" "$([ -z "$(find "${results_root}/whonix-badlr-18-2-3-5" -name result.json 2>/dev/null)" ] && printf '%s' true || printf '%s' false)"
+check "localRepo: latest not advanced for the malformed run" "$([ ! -e "${results_root}/whonix-badlr-18-2-3-5/latest" ] && printf '%s' true || printf '%s' false)"
+
 if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "" "${failures} publish assertion(s) failed" >&2
    exit 1

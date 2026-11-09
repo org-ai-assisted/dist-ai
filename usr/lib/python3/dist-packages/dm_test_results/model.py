@@ -265,6 +265,13 @@ def build_result(
         "builder": {"id": builder},
         "built_utc": provenance.get("built_utc"),
     }
+    ## localRepo: present ONLY on a local-repo run (the fast-iteration apt-repo lane). It records
+    ## what was DELIVERED under test -- derivative, host repoPath, build sourceSha, and the
+    ## name=version list from the repo's Packages index. Omit the key entirely otherwise (no null
+    ## noise), so a downloaded/official run's provenance is byte-unchanged.
+    local_repo = provenance.get("local_repo")
+    if local_repo is not None:
+        prov["localRepo"] = local_repo
 
     result = {
         "schema": SCHEMA,

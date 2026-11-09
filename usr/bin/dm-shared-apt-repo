@@ -68,6 +68,7 @@ usage() {
    printf '%s\n' "usage: ${me} prepare <kicksecure|whonix>
        ${me} attach <vm> [--transient]
        ${me} status [vm]
+       ${me} repo-path <kicksecure|whonix>
 
 Populate the repo first with: derivative-maker --skip-published-packages ...
 Share host path: ${repo_parent}   (shared read-only as '${share_name}' -> ${guest_mount})
@@ -174,6 +175,12 @@ case "${cmd}" in
       ;;
    status)
       do_status "${1:-}"
+      ;;
+   repo-path)
+      ## Single source of the per-derivative host repo dir, for a caller that records
+      ## provenance (dm-release-test's localRepo block) without re-deriving repo_parent.
+      check_derivative "${1:-}"
+      printf '%s\n' "$(repo_dir_for "${1}")"
       ;;
    -h|--help|help)
       usage

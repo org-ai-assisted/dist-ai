@@ -41,12 +41,26 @@ export LC_ALL=C
 me="${0##*/}"
 
 publish="true"
+local_repo=""
 lanes=()
 while [ "$#" -ge 1 ]; do
    case "$1" in
       --no-publish)
          publish="false"
          shift
+         ;;
+      --local-repo)
+         [ "$#" -ge 2 ] || { printf '%s\n' "${me}: --local-repo needs kicksecure|whonix" >&2; exit 64; }
+         case "$2" in
+            kicksecure|whonix)
+               local_repo="$2"
+               ;;
+            *)
+               printf '%s\n' "${me}: --local-repo must be kicksecure|whonix, got '$2'" >&2
+               exit 64
+               ;;
+         esac
+         shift 2
          ;;
       --)
          shift
@@ -64,8 +78,32 @@ while [ "$#" -ge 1 ]; do
 done
 [ "$#" -eq 0 ] || lanes+=("$@")
 if [ "${#lanes[@]}" -lt 1 ]; then
-   printf '%s\n' "usage: ${me} [--no-publish] 'GUEST IFACE [dm-release-test args]' ..." >&2
+   printf '%s\n' "usage: ${me} [--no-publish] [--local-repo kicksecure|whonix] 'GUEST IFACE [dm-release-test args]' ..." >&2
    exit 64
+fi
+
+## --local-repo appends `--local-repo <deriv>` to each whonix CLI INST lane (the only lane that can
+## upgrade from the fast LOCAL apt repo -- repo-add-local needs root, which only the split-free CLI
+## edition's user has; dm-release-test rejects it on any other lane). Lanes are opaque strings here,
+## so match `whonix cli ` + a `--lane inst` token; leave every other lane untouched.
+if [ -n "${local_repo}" ]; then
+   for i in "${!lanes[@]}"; do
+      ## Two independent matches (one glob cannot do AND without space-overlap bugs): the lane must
+      ## START `whonix cli ` AND carry a `--lane inst ` token (subject space-wrapped so the token
+      ## matches at the end too). Every other lane is left byte-unchanged.
+      case "${lanes[i]}" in
+         "whonix cli "*)
+            ;;
+         *)
+            continue
+            ;;
+      esac
+      case " ${lanes[i]} " in
+         *" --lane inst "*)
+            lanes[i]="${lanes[i]} --local-repo ${local_repo}"
+            ;;
+      esac
+   done
 fi
 
 ## Defense in depth: each lane is split with `read -r -a <<<`, which TRUNCATES at a newline (so a

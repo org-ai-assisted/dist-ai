@@ -46,6 +46,9 @@ VBOXMANAGE="${VBOXMANAGE:-VBoxManage}"
 GUESTCTL="${GUESTCTL:-vbox-ctl-local}"
 TESSERACT="${TESSERACT:-tesseract}"
 VBOX_EXEC_LOCAL="${VBOX_EXEC_LOCAL:-vbox-exec-local}"
+## Delivers the fast LOCAL apt repo over the 'shared' vboxsf (functional CLI/inst lane only).
+## Overridable so a test asserts the delegated attach with a stub.
+DM_SHARED_APT_REPO="${DM_SHARED_APT_REPO:-dm-shared-apt-repo}"
 TCPDUMP="${TCPDUMP:-tcpdump}"
 ## Splits the anon-leak-test battery JSON into per-probe story cards. Checkout sibling by
 ## default (bin is <root>/usr/bin, helper is <root>/usr/libexec/dm-whonix-pair); overridable so
@@ -97,6 +100,12 @@ check_log=""
 ## Calamares install lane uses. Empty => every story_snap/story_card call is a no-op, so a run
 ## without --shot-dir is byte-unchanged.
 shot_dir=""
+## functional CLI/inst lane only (--local-repo kicksecure|whonix): deliver the fast LOCAL apt repo
+## over the 'shared' vboxsf and enable it in the WS, so check 3 (upgrade-nonroot) upgrades the
+## derivative packages from it (Debian base still over Tor). Empty => disabled (byte-unchanged;
+## the lane upgrades from the published repos). Rejected in main outside --mode functional
+## --interface cli: repo-add-local needs root, which only the split-free CLI edition's `user` has.
+local_repo=""
 ## Active CLI-check capture temp (set by ws_func_cli_exec); on_exit removes it so a signal or
 ## lock-timeout mid-check cannot leave the host mktemp file behind across repeated interruptions.
 cli_capture_tmp=""
@@ -303,7 +312,7 @@ source "${lib_base}/release-checks.bsh"
 source "${lib_base}/ocr-session.bsh"
 
 usage() {
-   printf '%s\n' "usage: ${me} [--gw NAME] [--ws NAME] [--mode leak|functional] [--interface gui|cli]
+   printf '%s\n' "usage: ${me} [--gw NAME] [--ws NAME] [--mode leak|functional] [--interface gui|cli] [--local-repo kicksecure|whonix]
 
 --gw   Whonix Gateway VM name (default: ${gw})
 --ws   Whonix Workstation VM name (default: ${ws})
@@ -317,6 +326,11 @@ usage() {
        GUI-login check (needs a compositor) is genuinely N/A and routed-skipped with a loud
        reason. systemcheck (check 8) needs a logind user session guestcontrol cannot provide, so
        it is run SEPARATELY via a real console login and IS REQUIRED for a pass -- not skipped.
+--local-repo (--mode functional --interface cli ONLY) kicksecure|whonix: attach + enable the fast
+       LOCAL apt repo (delivered over the 'shared' vboxsf, codename 'local') in the Workstation so
+       check 3 (upgrade-nonroot) upgrades the derivative packages from it (Debian base over Tor).
+       Rejected in any other mode/interface (repo-add-local needs root, which only the split-free
+       CLI edition's user has). Populate the repo first: derivative-maker --skip-published-packages.
 
 Exit 0 = PASS."
 }
@@ -370,6 +384,18 @@ parse_args() {
             ## The caller creates, publishes + reclaims it; empty/unset => no story captured.
             [ "$#" -ge 2 ] || die "${SETUP_RC}" "--shot-dir needs a value"
             shot_dir="$2"
+            shift 2
+            ;;
+         --local-repo)
+            [ "$#" -ge 2 ] || die "${SETUP_RC}" "--local-repo needs a value"
+            case "$2" in
+               kicksecure|whonix)
+                  local_repo="$2"
+                  ;;
+               *)
+                  die "${SETUP_RC}" "--local-repo must be kicksecure|whonix, got '$2'"
+                  ;;
+            esac
             shift 2
             ;;
          --print-guards)
@@ -932,6 +958,15 @@ boot_gateway_functional() {
 boot_workstation_user() {
    vm="${ws}"
    restore_fresh "${ws}"
+   ## CLI/inst lane with --local-repo: attach the LOCAL apt repo as the 'shared' vboxsf while the
+   ## VM is powered off (permanent attach; the guest auto-mounts it at /mnt/shared via
+   ## mnt-shared-vbox.service on boot). Reuse dm-shared-apt-repo -- the single source of the repo
+   ## path -- and let on_exit drop the 'shared' mapping. Fail-closed: a failed attach is a
+   ## provisioning gap (SETUP_RC), not a release FAIL.
+   if [ -n "${local_repo}" ]; then
+      "${DM_SHARED_APT_REPO}" attach "${ws}" \
+         || die "${SETUP_RC}" "${ws}: could not attach the local apt repo share -- provisioning gap, not a release FAIL"
+   fi
    "${VBOXMANAGE}" startvm "${ws}" --type headless >/dev/null
    ws_started='true'
    wait_guestcontrol_ready user 300 \
@@ -1252,6 +1287,23 @@ ws_cli_console_systemcheck() {
 ##   - check 6 (GUI login = pgrep labwc): a CLI edition has no compositor -- legitimately N/A.
 ##   - check 8 (systemcheck --cli --ci): needs a logind user manager, absent over guestcontrol, so
 ##     it is run SEPARATELY via ws_cli_console_systemcheck (a genuine getty login) -- NOT skipped.
+## Enable the fast LOCAL apt repo in the WS (functional CLI/inst lane, --local-repo set). The
+## 'shared' vboxsf was host-attached in boot_workstation_user and auto-mounts at /mnt/shared;
+## here the in-guest helper writes its [trusted=yes] 'Suites: local' source and refreshes apt, so
+## the EXISTING check 3 (upgrade-nonroot = apt-get --update full-upgrade) pulls the derivative
+## packages from the fast local source (Debian base over Tor). Runs as the boot `user`: the CLI
+## edition has NO user/sysmaint split, so `user` has sudo and dsudo submits the empty password.
+## apt-cache policy confirms the local source is actually live (not silently dropped) so the
+## fail-closed check is meaningful. ANY failure -> SETUP_RC (INCONCLUSIVE, not a release FAIL):
+## the lane must never claim a local-repo upgrade it did not enable.
+ws_func_enable_local_repo() {
+   vm="${ws}"
+   ## local_repo is enum-validated (kicksecure|whonix) in parse_args, so it is safe to interpolate
+   ## into the guest shell snippet (no untrusted data).
+   gc_run user "dsudo repo-add-local ${local_repo} && dsudo apt-get --quiet update && apt-cache policy | grep --quiet --fixed-strings 'aptrepo_local/${local_repo}'" 600 \
+      || die "${SETUP_RC}" "${ws}: could not enable the local apt repo (${local_repo}) in the WS -- repo-add-local / apt-get update / policy check failed (INCONCLUSIVE, not a release FAIL)"
+}
+
 ## Everything else runs faithfully headless: user/sysmaint boot-role (checks 1, 2), CLI login
 ## (5, whoami), networking over the Gateway's Tor (4), and upgrade-nonroot (3).
 main_functional_cli() {
@@ -1262,6 +1314,12 @@ main_functional_cli() {
    boot_workstation_user
    printf '%s\n' "${me}: [functional-cli] wait for Tor egress (systemcheck SocksPort + TransPort)"
    ws_func_tor_gate
+   ## Enable the LOCAL apt repo AFTER Tor is confirmed (its apt-get update refreshes the Debian
+   ## base over Tor too, so it must not race a cold bootstrap). No-op unless --local-repo was set.
+   if [ -n "${local_repo}" ]; then
+      printf '%s\n' "${me}: [functional-cli] enable the local apt repo (${local_repo}) in the Workstation"
+      ws_func_enable_local_repo
+   fi
    ## check 8 in the user phase (before the sysmaint reboot), via a real console login.
    ws_cli_console_systemcheck
    RELEASE_CHECK_SKIP_REASON[6]='CLI edition has no graphical session (no labwc compositor)'
@@ -1301,6 +1359,15 @@ lock_ttl_default() {
 
 main() {
    parse_args "$@"
+   ## --local-repo is the CLI/inst lane's fast local-upgrade seam: repo-add-local needs root, and
+   ## only the split-free CLI edition's boot `user` can obtain it (the GUI lxqt lane's user cannot
+   ## -- user-sysmaint-split -- and its check 3 runs in a sysmaint session). Reject any other
+   ## combination fail-closed (SETUP_RC) rather than silently skip, so a misdirected flag never
+   ## reads as a local-repo run it was not.
+   if [ -n "${local_repo}" ] \
+      && { [ "${mode}" != 'functional' ] || [ "${interface}" != 'cli' ]; }; then
+      die "${SETUP_RC}" "--local-repo is valid only with --mode functional --interface cli (the CLI/inst lane); got --mode ${mode} --interface ${interface}"
+   fi
    ## Self-lock AFTER parse_args, so informational flags (--print-guards/-filter, --help) that
    ## exit in parse_args never take a VM lock. A leak test is mutually exclusive with ALL
    ## other VM work on the shared OVH server (foreign VM traffic confounds a leak measurement;

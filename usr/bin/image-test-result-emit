@@ -27,6 +27,7 @@ Exit: 0 ok, 2 usage/schema error.
 
 import argparse
 import errno
+import json
 import os
 import stat
 import sys
@@ -284,6 +285,11 @@ def parse_args(argv):
     parser.add_argument("--provenance-source-commit", default=None)
     parser.add_argument("--provenance-artifact-sha256", default=None)
     parser.add_argument("--provenance-built-utc", default=None)
+    ## The localRepo block (fast-iteration apt-repo lane): a JSON object
+    ## {derivative, repoPath, sourceSha, packages:[name=version,...]} built host-side by the
+    ## caller. Parsed here and nested under provenance.localRepo ONLY when present; a malformed
+    ## value fails loud (no result.json -> NO-DATA), never a silently-dropped provenance claim.
+    parser.add_argument("--provenance-local-repo", default=None)
     ## environment evidence: the firmware lane the guest ACTUALLY booted (proof, not the label)
     parser.add_argument("--env-firmware-declared", default=None)
     parser.add_argument("--env-firmware-detected", default=None)
@@ -448,6 +454,17 @@ def main(argv):
         attachments=attachments,
     )
 
+    ## Parse the localRepo block once (null when not a local-repo run). A malformed JSON object
+    ## raises SystemExit -> no result.json (NO-DATA), never a silently-dropped provenance claim.
+    local_repo = None
+    if args.provenance_local_repo is not None:
+        try:
+            local_repo = json.loads(args.provenance_local_repo)
+        except ValueError as exc:
+            raise SystemExit("image-test-result-emit: --provenance-local-repo is not valid JSON: %s" % exc)
+        if not isinstance(local_repo, dict):
+            raise SystemExit("image-test-result-emit: --provenance-local-repo must be a JSON object")
+
     environment = None
     if args.env_firmware_detected or args.env_firmware_evidence:
         environment = {"firmware": {
@@ -478,6 +495,7 @@ def main(argv):
                 "source_commit": args.provenance_source_commit,
                 "artifact_sha256": args.provenance_artifact_sha256,
                 "built_utc": args.provenance_built_utc,
+                "local_repo": local_repo,
             },
             environment=environment,
         )

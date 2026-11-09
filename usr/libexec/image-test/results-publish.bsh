@@ -96,7 +96,7 @@ image_test_results_publish() {
    shift 7
 
    local lane version builder origin step_name start_unix stop_unix step_stderr_file
-   local provenance_artifact_sha256
+   local provenance_artifact_sha256 provenance_local_repo
    local env_firmware_declared env_firmware_detected env_firmware_evidence env_firmware_match
    local -a expect=()
    lane=""
@@ -108,6 +108,7 @@ image_test_results_publish() {
    stop_unix=""
    step_stderr_file=""
    provenance_artifact_sha256=""
+   provenance_local_repo=""
    env_firmware_declared=""
    env_firmware_detected=""
    env_firmware_evidence=""
@@ -152,6 +153,10 @@ image_test_results_publish() {
             ;;
          --provenance-artifact-sha256)
             provenance_artifact_sha256="$2"
+            shift 2
+            ;;
+         --provenance-local-repo)
+            provenance_local_repo="$2"
             shift 2
             ;;
          --env-firmware-declared)
@@ -314,6 +319,12 @@ image_test_results_publish() {
       else
          printf '%s\n' "image_test_results_publish: ignoring malformed artifact sha256: ${provenance_artifact_sha256}" >&2
       fi
+   fi
+   ## The localRepo provenance block (fast-iteration apt-repo lane): a JSON object the caller built
+   ## host-side. Forwarded verbatim; the emitter json.loads it (failing loud on malformed JSON ->
+   ## NO-DATA). Empty = not a local-repo run (the key is then omitted from provenance entirely).
+   if [ -n "${provenance_local_repo}" ]; then
+      emit_args+=( --provenance-local-repo "${provenance_local_repo}" )
    fi
    ## Firmware-lane evidence: proof of the boot lane the guest actually ran, forwarded to the
    ## emitter's environment block. Empty = not captured (the field then stays null).

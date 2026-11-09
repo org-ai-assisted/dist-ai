@@ -52,9 +52,13 @@ me="${0##*/}"
 
 usage() {
    printf '%s\n' \
-      "Usage: ${me} [--iso KS_ISO] [--channel stable|developers] [--version VER] [--coreboot-rom ROM] [--add 'LANE']... [--no-publish] [--dry-run]" \
+      "Usage: ${me} [--iso KS_ISO] [--channel stable|developers] [--version VER] [--coreboot-rom ROM] [--local-repo kicksecure|whonix] [--add 'LANE']... [--no-publish] [--dry-run]" \
       "Runs the DEFAULT lane batch (kicksecure lxqt EFI+SecureBoot + BIOS; whonix lxqt BIOS inst + leak;" \
       "whonix cli BIOS inst) then publishes once (via vbox-image-test)." \
+      "--local-repo kicksecure|whonix: close the build->test loop -- the whonix CLI INST lane upgrades from" \
+      "the fast LOCAL apt repo (THIS build's packages). Applies to that lane ONLY (the lxqt inst lane cannot" \
+      "get root for repo-add-local and HONESTLY keeps testing the published image; kicksecure built-testing" \
+      "is via --iso, already closed). Populate the repo first: derivative-maker --skip-published-packages." \
       "--version VER is REQUIRED with --channel developers (whonix developers OVAs are not auto-discoverable);" \
       "it is threaded into the whonix lanes only. The whonix INST lanes need a pre-provisioned pair at the" \
       "resolved version (with --channel developers, run dm-release-test ... --lane inst --provision first)." \
@@ -67,6 +71,7 @@ iso=""
 channel="stable"
 version=""
 coreboot_rom=""
+local_repo=""
 no_publish="false"
 dry_run="false"
 extra=()
@@ -122,6 +127,19 @@ while [ "$#" -ge 1 ]; do
          extra+=("$2")
          shift 2
          ;;
+      --local-repo)
+         [ "$#" -ge 2 ] || { printf '%s\n' "${me}: --local-repo needs kicksecure|whonix" >&2; exit 64; }
+         case "$2" in
+            kicksecure|whonix)
+               local_repo="$2"
+               ;;
+            *)
+               printf '%s\n' "${me}: --local-repo must be kicksecure|whonix, got '$2'" >&2
+               exit 64
+               ;;
+         esac
+         shift 2
+         ;;
       --no-publish)
          no_publish="true"
          shift
@@ -173,12 +191,20 @@ ks_src="--source official --channel ${channel}"
 whonix_src="--source official --channel ${channel}"
 [ -z "${version}" ] || whonix_src="${whonix_src} --version ${version}"
 
+## --local-repo closes the build->test loop for the whonix CLI INST lane ONLY: that lane upgrades
+## (check 3) from the fast LOCAL apt repo (THIS build's packages over the 'shared' vboxsf). It does
+## NOT apply to the lxqt inst lane (its user cannot obtain root for repo-add-local -- dm-release-test
+## rejects it; the lxqt lane HONESTLY keeps testing the published image), nor to leak, nor to
+## kicksecure (kicksecure built-testing is via --iso, already a built-this-build lane). Empty = off.
+whonix_cli_inst="whonix cli --lane inst ${whonix_src} --firmware bios"
+[ -z "${local_repo}" ] || whonix_cli_inst="${whonix_cli_inst} --local-repo ${local_repo}"
+
 lanes=(
    "kicksecure lxqt ${ks_src} --firmware efi-secureboot"
    "kicksecure lxqt ${ks_src} --firmware bios"
    "whonix lxqt --lane inst ${whonix_src} --firmware bios"
    "whonix lxqt --lane leak ${whonix_src} --firmware bios"
-   "whonix cli --lane inst ${whonix_src} --firmware bios"
+   "${whonix_cli_inst}"
 )
 
 ## Opt-in additions.

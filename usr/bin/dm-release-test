@@ -62,6 +62,13 @@ fi
 ISO_DOWNLOAD="${ISO_DOWNLOAD:-iso-download}"
 DM_CALAMARES_INSTALL="${DM_CALAMARES_INSTALL:-dm-calamares-install}"
 DM_WHONIX_PAIR="${DM_WHONIX_PAIR:-dm-whonix-pair}"
+## Delivers + reports the LOCAL apt repo (--local-repo lane). Overridable so a test asserts the
+## localRepo provenance read with a stubbed `repo-path`.
+DM_SHARED_APT_REPO="${DM_SHARED_APT_REPO:-dm-shared-apt-repo}"
+## Build/admin user's home: holds ~/derivative-maker (git) + ~/derivative-binary (dm-source-state),
+## the source-state anchors the localRepo provenance records. Defaults to the install/build user's
+## home (DIST_INSTALLER_USER); a test seam overrides it to a fixture home.
+DM_SOURCE_HOME="${DM_SOURCE_HOME:-}"
 ## Standalone firmware-apply tool, shared with dm-calamares-install. Whonix uses it for BIOS only
 ## (a plain modifyvm, no NVRAM ops); a prebuilt OVA's firmware cannot be re-applied beyond that.
 DM_VBOX_FIRMWARE="${DM_VBOX_FIRMWARE:-dm-vbox-firmware}"
@@ -139,6 +146,9 @@ rt_fw_declared=""
 rt_fw_detected=""
 rt_fw_evidence=""
 rt_fw_match=""
+## The inst lane sets this to the localRepo provenance JSON on a --local-repo run; rt_publish_result
+## forwards it to the emitter (--provenance-local-repo), then resets it. Empty = published-repo run.
+rt_local_repo_json=""
 
 SETUP_RC=2
 
@@ -176,6 +186,11 @@ ova_ws=""
 ## = the normal lanes, byte-unchanged. Forwarded to dm-calamares-install, which needs --firmware
 ## efi and the patched CorebootRom-aware VBoxManage (resolved via DASHARO_VBOX_BIN / VBOXMANAGE).
 coreboot_rom=""
+## --local-repo <kicksecure|whonix> (whonix cli inst lane ONLY): run the functional battery against
+## the fast LOCAL apt repo (the freshly-built packages delivered over the 'shared' vboxsf) instead
+## of the published repos, so the build->test loop actually tests THIS build. Empty = published
+## repos (byte-unchanged). Validated in main (rejected outside the whonix cli inst lane).
+local_repo=""
 ## origin recorded in the result.json: downloaded (official release) or built (--iso).
 rt_origin="downloaded"
 
@@ -211,7 +226,7 @@ print_usage() {
   ${me} GUEST INTERFACE --source official|built [--lane inst|leak]
         [--channel stable|developers] [--version VER] [--firmware bios|efi|efi-secureboot]
         [--iso PATH] [--ova-gw PATH --ova-ws PATH] [--checks] [--dry-run]
-        [--coreboot-rom PATH] [--provision]
+        [--coreboot-rom PATH] [--local-repo kicksecure|whonix] [--provision]
 
   GUEST      kicksecure | whonix
   INTERFACE  lxqt | cli (the published desktop flavor)
@@ -239,6 +254,13 @@ print_usage() {
              --source built TEST run takes NO ovas -- it only verifies the pinned marker (pass
              --version). Pass the Gateway OVA to --ova-gw and the Workstation OVA to --ova-ws for
              this INTERFACE (a built OVA filename is arbitrary, so it is not validated).
+
+--local-repo kicksecure|whonix (whonix cli inst lane ONLY): run the functional battery against the
+fast LOCAL apt repo (THIS build's freshly-built packages, delivered over the 'shared' vboxsf) so
+check 3 (upgrade-nonroot) upgrades from it instead of the published repos -- closing the
+build->test loop. The result.json records a localRepo provenance block (derivative, repoPath,
+sourceSha, packages). Rejected for any other guest/interface/lane. Populate the repo first with
+derivative-maker --skip-published-packages.
 
 A pre-bless candidate installs under a disposable eph-inst-GUEST-VERSION
 account; a blessed release (version == stable pin) uses persist-inst-GUEST.
@@ -1093,6 +1115,14 @@ rt_publish_result() {
       pub_sha=( --provenance-artifact-sha256 "${rt_artifact_sha256}" )
    fi
    rt_artifact_sha256=""
+   ## localRepo provenance block (set by the inst lane via rt_local_repo_json on a --local-repo
+   ## run): the exact local build the verdict applies to. Consumed once; empty = a published-repo
+   ## run (the emitter then omits the key entirely).
+   local -a pub_local_repo=()
+   if [ -n "${rt_local_repo_json:-}" ]; then
+      pub_local_repo=( --provenance-local-repo "${rt_local_repo_json}" )
+   fi
+   rt_local_repo_json=""
    ## Firmware-lane evidence (set by the install lane via rt_fw_*): proof of the booted lane for
    ## the results plane's firmware panel. Consumed once. Empty detected = not captured.
    local -a pub_fw=()
@@ -1136,7 +1166,7 @@ rt_publish_result() {
       "${rc}" "${shot}" \
       --lane "${guest_name}-${interface}${lane_sfx}${lane_fw}" --version "${version}" \
       --builder dm-release-test --origin "${rt_origin}" \
-      "${pub_expect[@]}" "${pub_stderr[@]}" "${pub_sha[@]}" "${pub_fw[@]}")" \
+      "${pub_expect[@]}" "${pub_stderr[@]}" "${pub_sha[@]}" "${pub_fw[@]}" "${pub_local_repo[@]}")" \
       || { log warn "results publish failed for ${guest_name} ${interface} ${version} (verdict ${verdict} preserved)"; outdir='(publish-failed)'; }
    printf '%s\n' \
       "${me}: ${guest_name} ${interface} ${version} -- ${verdict} (rc=${rc}) -> ${outdir}"
@@ -1404,6 +1434,56 @@ rt_lane_whonix_leak() {
    return "${rc}"
 }
 
+## Resolve the build/admin user's home (holds ~/derivative-maker + ~/derivative-binary). Test seam
+## DM_SOURCE_HOME overrides; else the install/build user's home.
+rt_source_home() {
+   if [ -n "${DM_SOURCE_HOME}" ]; then
+      printf '%s' "${DM_SOURCE_HOME}"
+      return 0
+   fi
+   getent passwd "${DIST_INSTALLER_USER}" | cut -d: -f6
+}
+
+## The source sha anchoring a localRepo provenance record: the build user's ~/derivative-maker git
+## HEAD, else ~/derivative-binary/dm-source-state's first line, else empty (recorded honestly as "").
+rt_local_repo_source_sha() {
+   local home dm state sha=''
+   home="$(rt_source_home)"
+   dm="${home}/derivative-maker"
+   state="${home}/derivative-binary/dm-source-state"
+   if [ -d "${dm}/.git" ]; then
+      sha="$(git -C "${dm}" rev-parse HEAD 2>/dev/null || true)"
+   fi
+   if [ -z "${sha}" ] && [ -r "${state}" ]; then
+      sha="$(head -n1 -- "${state}" 2>/dev/null || true)"
+   fi
+   printf '%s' "${sha}"
+}
+
+## Build the localRepo provenance JSON (host-side; no guest round-trip) for a --local-repo run:
+## {derivative, repoPath, sourceSha, packages:[name=version,...]}. repoPath + the Packages index come
+## from dm-shared-apt-repo repo-path (single source of the repo path -- never re-derive repo_parent
+## here). Emits the JSON object on stdout; a read gap degrades to an EMPTY packages list (honest),
+## never a fabricated one.
+rt_build_local_repo_provenance() {
+   local deriv="$1" repo_path pkgs_file sha pkgs_json
+   repo_path="$("${DM_SHARED_APT_REPO}" repo-path "${deriv}" 2>/dev/null || true)"
+   pkgs_file="${repo_path}/dists/local/main/binary-amd64/Packages"
+   sha="$(rt_local_repo_source_sha)"
+   if [ -n "${repo_path}" ] && [ -r "${pkgs_file}" ]; then
+      pkgs_json="$(awk '/^Package: /{p=$2} /^Version: /{if(p!=""){print p"="$2; p=""}}' "${pkgs_file}" \
+         | jq -R -s -c 'split("\n") | map(select(length>0))')"
+   else
+      pkgs_json='[]'
+   fi
+   jq -n -c \
+      --arg deriv "${deriv}" \
+      --arg repo "${repo_path}" \
+      --arg sha "${sha}" \
+      --argjson pkgs "${pkgs_json}" \
+      '{derivative:$deriv, repoPath:$repo, sourceSha:$sha, packages:$pkgs}'
+}
+
 ## inst lane: the functional release-check battery (>= the kicksecure coverage) run on the
 ## Workstation of a persist-inst- pair, after the Gateway's Tor bootstrap gate.
 rt_lane_whonix_inst() {
@@ -1431,11 +1511,26 @@ rt_lane_whonix_inst() {
    ## OCR real-session battery.
    local wp_interface='gui'
    [ "${interface}" = 'cli' ] && wp_interface='cli'
-   sudo -u "${account}" -- "${rt_session_env[@]}" "${DM_WHONIX_PAIR}" --mode functional --interface "${wp_interface}" --check-log "${check_log}" --gw "${gw}" --ws "${ws}" || rc=$?
+   ## --local-repo (gated to this lane in main) forwards to dm-whonix-pair, which attaches +
+   ## enables the fast LOCAL apt repo so check 3 upgrades THIS build. Empty = published repos.
+   local -a lr_args=()
+   [ -n "${local_repo}" ] && lr_args=( --local-repo "${local_repo}" )
+   sudo -u "${account}" -- "${rt_session_env[@]}" "${DM_WHONIX_PAIR}" --mode functional --interface "${wp_interface}" --check-log "${check_log}" "${lr_args[@]}" --gw "${gw}" --ws "${ws}" || rc=$?
    ## Thread a non-empty check-log into the published step's stderr tail (empty = a pass or a
    ## pre-check failure -> no tail). Consumed once by rt_publish_result.
    rt_check_log=""
    [ -s "${check_log}" ] && rt_check_log="${check_log}"
+   ## HONEST provenance: on a --local-repo run record WHAT was delivered (derivative, host repoPath,
+   ## build sourceSha, the Packages name=version list) as the result.json localRepo block, so the
+   ## site shows the exact local build the verdict applies to. Host-side read (no guest round-trip);
+   ## best-effort -- a read gap warns + publishes without the block rather than aborting the verdict.
+   ## Consumed once by rt_publish_result; empty on a published-repo run (the key is then omitted).
+   rt_local_repo_json=""
+   if [ -n "${local_repo}" ]; then
+      rt_local_repo_json="$(rt_build_local_repo_provenance "${local_repo}")" || rt_local_repo_json=""
+      [ -n "${rt_local_repo_json}" ] \
+         || log warn "could not build the localRepo provenance block for ${local_repo} (publishing without it)"
+   fi
    rt_publish_result whonix "${version}" "${account}" whonix-func "${rc}" "" release-checks
    sudo -u "${account}" -- safe-rm --force -- "${check_log}" 2>/dev/null || true
    return "${rc}"
@@ -1557,6 +1652,18 @@ parse_args() {
             lane="$2"
             shift 2
             ;;
+         --local-repo)
+            [ "$#" -ge 2 ] || die "${SETUP_RC}" "missing value for --local-repo"
+            case "$2" in
+               kicksecure|whonix)
+                  local_repo="$2"
+                  ;;
+               *)
+                  die "${SETUP_RC}" "--local-repo must be kicksecure|whonix, got '$2'"
+                  ;;
+            esac
+            shift 2
+            ;;
          --checks)
             run_checks='true'
             shift
@@ -1633,6 +1740,17 @@ main() {
    eff_lane="$(rt_effective_lane "${guest}" "${lane}")" \
       || { print_usage >&2; die "${SETUP_RC}" "whonix requires --lane inst|leak; kicksecure accepts only inst (got guest='${guest}' lane='${lane}')"; }
    lane="${eff_lane}"
+
+   ## --local-repo is the whonix cli INST lane's fast local-upgrade seam: repo-add-local needs
+   ## root, which only the split-free CLI edition's `user` has (the lxqt lane's user cannot, and
+   ## its check 3 runs in a sysmaint session -- a tracked follow-up, not this lane). Reject any
+   ## other guest/interface/lane fail-closed (SETUP_RC) so a misdirected flag never silently
+   ## downgrades to a published-repo run while implying it tested the local build.
+   if [ -n "${local_repo}" ] \
+      && { [ "${guest}" != 'whonix' ] || [ "${interface}" != 'cli' ] || [ "${lane}" != 'inst' ]; }; then
+      print_usage >&2
+      die "${SETUP_RC}" "--local-repo is valid only for the whonix cli inst lane (got guest='${guest}' interface='${interface}' lane='${lane}')"
+   fi
 
    ## Resolve + couple the MANDATORY --source to the artifact flags, deriving the origin
    ## (downloaded|built). rt_resolve_origin rejects an absent/invalid source and any
