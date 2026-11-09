@@ -1026,6 +1026,14 @@ main_functional() {
 ## executor's contract, which owns that green line).
 ws_func_cli_exec() {
    vm="${ws}"
+   ## check 3 (upgrade-nonroot) over guestcontrol self-severs: the apt upgrade can pull a newer
+   ## virtualbox-guest-additions-iso whose reinstall RESTARTS VBoxService, killing the guestcontrol
+   ## session running the command (VERR_TIMEOUT). Run it DETACHED and poll its result over fresh
+   ## sessions that reconnect once VBoxService returns.
+   if [ "$1" = 3 ]; then
+      ws_func_cli_upgrade_detached "$2" "$3" "$4"
+      return "$?"
+   fi
    local tmp rc=0
    tmp="$(mktemp)"
    cli_capture_tmp="${tmp}"   ## track for on_exit: a signal/lock-timeout mid-check must not leak it
@@ -1053,6 +1061,55 @@ ws_func_cli_exec() {
    head --bytes 65536 -- "${tmp}" >&2
    safe-rm --force -- "${tmp}"; cli_capture_tmp=""
    return "${rc}"
+}
+
+## Run the CLI upgrade check (check 3) DETACHED so a VBoxService restart cannot sever it, then poll
+## its rc over fresh guestcontrol sessions. $1=role, $2=cmd, $3=timeout(s). Prints the PASS line on
+## rc 0 (executor contract); on failure appends the upgrade tail to check_log + returns the rc.
+ws_func_cli_upgrade_detached() {
+   local role="$1" cmd="$2" timeout="${3:-1800}"
+   ## GUEST temp files under the role's home (writable, no host /tmp), nonce'd so a late write from
+   ## a prior run cannot be read as this run's result.
+   local home nonce out_f rc_f
+   # shellcheck disable=SC2016  ## $HOME is evaluated by the GUEST shell, so it must stay literal
+   home="$(gc_run "${role}" 'printf %s "$HOME"' 30 2>/dev/null)"
+   [ -n "${home}" ] || home="/home/${role}"
+   nonce="$(date +%s)-$$-${RANDOM}"
+   out_f="${home}/.dm-cli-upgrade-${nonce}.out"
+   rc_f="${home}/.dm-cli-upgrade-${nonce}.rc"
+   ## setsid detaches the upgrade from the guestcontrol session's process group, so VBoxService's
+   ## restart (triggered by the GA reinstall the upgrade pulls) leaves it running; its rc lands in
+   ## rc_f. The launching run returns at once (the child is fully redirected off the run's pipes).
+   local launch="rm --force -- ${rc_f} ${out_f}; setsid bash -lc '${cmd} > ${out_f} 2>&1; printf %s \$? > ${rc_f}' >/dev/null 2>&1 < /dev/null &"
+   gc_run "${role}" "${launch}" 60 >/dev/null 2>&1 || true
+   ## Poll rc_f over FRESH sessions: a poll during the VBoxService restart fails transiently (empty);
+   ## keep polling to the upgrade budget until the rc (all-digits) is written.
+   local deadline=$(( SECONDS + timeout )) rc_val=''
+   while [ "${SECONDS}" -lt "${deadline}" ]; do
+      rc_val="$(gc_run "${role}" "cat ${rc_f} 2>/dev/null" 30 2>/dev/null)"
+      case "${rc_val}" in
+         '' | *[!0-9]*)
+            sleep 15
+            ;;
+         *)
+            break
+            ;;
+      esac
+   done
+   if [ "${rc_val}" = 0 ]; then
+      printf '%s\n' "${me}: check 3 PASS (upgrade-nonroot, detached over guestcontrol)"
+      return 0
+   fi
+   local tail_out
+   tail_out="$(gc_run "${role}" "tail --bytes 65536 -- ${out_f} 2>/dev/null" 60 2>/dev/null)"
+   if [ -n "${check_log:-}" ]; then
+      {
+         printf '%s\n' "=== check 3 (${cmd}, detached) FAILED rc=${rc_val:-timeout} ==="
+         printf '%s\n' "${tail_out}"
+      } >> "${check_log}"
+   fi
+   printf '%s\n' "${tail_out}" >&2
+   return "${rc_val:-1}"
 }
 
 ## CLI edition has NO user/sysmaint split (wiki/sysmaint): the functional battery runs ENTIRELY in
