@@ -88,8 +88,11 @@ def errno_is_soft(value: str) -> bool:
         return False
     if val.isdigit():
         return _ERRNO_MIN <= int(val) <= _ERRNO_MAX
-    ## an errno name like EPERM / EACCES
-    return val.replace('_', '').isalpha()
+    ## an errno NAME (EPERM / EACCES / ENOSYS ...): all uppercase, starts with E.
+    ## Full spelling validity is systemd-analyze verify's job; here we only reject
+    ## obvious junk and lowercase.
+    return (val.startswith('E') and val.isupper()
+            and val.replace('_', '').isalpha())
 
 
 def memfd_denial(text: str) -> str:
@@ -160,8 +163,10 @@ def main() -> int:
                       ['native'])
     results.expect_eq('LockPersonality enabled',
                       service_values(lines, 'LockPersonality')[-1:], ['true'])
-    results.check('NoExecPaths set',
-                  bool(service_values(lines, 'NoExecPaths')))
+    ## Effective value: an empty 'NoExecPaths=' resets it, so the LAST
+    ## assignment must be non-empty, not merely present.
+    noexec = service_values(lines, 'NoExecPaths')
+    results.check('NoExecPaths set', bool(noexec) and noexec[-1] != '')
 
     ## memfd_create must be effectively denied, and via a soft errno not a kill.
     results.expect_eq(

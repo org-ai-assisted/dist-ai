@@ -90,7 +90,11 @@ def _errno_is_soft(value: str) -> bool:
         return False
     if val.isdigit():
         return _ERRNO_MIN <= int(val) <= _ERRNO_MAX
-    return val.replace('_', '').isalpha()
+    ## an errno NAME (EPERM / EACCES / ENOSYS ...): all uppercase, starts with E.
+    ## Full spelling validity is systemd-analyze verify's job; here we only reject
+    ## obvious junk and lowercase.
+    return (val.startswith('E') and val.isupper()
+            and val.replace('_', '').isalpha())
 
 
 def memfd_denial(text: str) -> str:
