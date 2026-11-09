@@ -36,8 +36,34 @@ export LC_ALL=C
 
 me="${0##*/}"
 
+## Set the global 'confined' to a grubenv path safe to hand grub-editenv, or EXIT the script if
+## it escapes the mounted root. grub-editenv opens <path> AND its temp <path>.new (fopen FOLLOWS
+## a symlink) then renames .new onto path, so a guest symlink at EITHER -- even a DANGLING one,
+## which a bare [ -e ] test misses -- would redirect this root write onto a HOST path. Resolves an
+## existing/symlinked path and requires the real target to stay under ${root} (main's local, seen
+## via dynamic scope). Must NOT run in a command substitution: 'exit' has to leave the whole
+## script. nosymfollow on the vbox-disk-mount mount is the atomic kernel guard; this keeps the
+## selector correct when it is run standalone.
+confine_grubenv_path() {
+   local path="$1" label="$2"
+   confined="${path}"
+   if [ -L "${path}" ] || [ -e "${path}" ]; then
+      confined="$(realpath -- "${path}")" \
+         || { printf '%s\n' "${me}: ERROR: ${label} does not resolve" >&2; exit 1; }
+      case "${confined}/" in
+         "${root}/"*)
+            true
+            ;;
+         *)
+            printf '%s\n' "${me}: ERROR: ${label} resolves outside the mount ('${confined}'); refusing" >&2
+            exit 1
+            ;;
+      esac
+   fi
+}
+
 main() {
-   local mode root grubdir grub_cfg grubenv grubenv_real id
+   local mode root grubdir grub_cfg grubenv confined id
    mode="${1:?usage: ${me} <mode> (e.g. persistent-sysmaint)}"
    ## MODE is interpolated into the ERE below, so constrain it to the id charset
    ## (lowercase + hyphen). Rejects a typo/metachar mode (e.g. 'live.sysmaint', whose
@@ -77,19 +103,13 @@ main() {
          ;;
    esac
    grubenv="${grubdir}/grubenv"
-   if [ -e "${grubenv}" ]; then
-      grubenv_real="$(realpath -- "${grubenv}")" \
-         || { printf '%s\n' "${me}: ERROR: grubenv does not resolve" >&2; exit 1; }
-      case "${grubenv_real}/" in
-         "${root}/"*)
-            grubenv="${grubenv_real}"
-            ;;
-         *)
-            printf '%s\n' "${me}: ERROR: grubenv resolves outside the mount; refusing" >&2
-            exit 1
-            ;;
-      esac
-   fi
+   ## Confine the write target AND grub-editenv's temp sibling (<grubenv>.new) -- both are opened
+   ## following symlinks. Confine grubenv first (it may itself be an in-mount symlink we resolve),
+   ## then confine the .new of the RESOLVED path, since grub-editenv derives .new from the path we
+   ## pass it.
+   confine_grubenv_path "${grubenv}" "grubenv"
+   grubenv="${confined}"
+   confine_grubenv_path "${grubenv}.new" "grubenv.new"
 
    ## The simple boot-mode entry's --id for MODE, taken ONLY from a top-level menuentry
    ## line (so an earlier textual reference cannot be mistaken for the id). The advanced
@@ -97,8 +117,13 @@ main() {
    ## gnulinux-<version>-advanced-<dev> scheme, so this cannot match one. No match -> the
    ## image lacks the per-mode --id patch (a pre-patch image shares gnulinux-simple-<dev>
    ## across modes) -> fail loud, never select blindly.
+   ## Anchor the id tail to the device-id charset (a UUID: hex + hyphens). MODE is a COMPLETE
+   ## id field here, never a prefix of a longer one: 'gnulinux-${mode}-[^' ]+' is a PREFIX match,
+   ## so mode=persistent would wrongly select gnulinux-persistent-sysmaint-<uuid> (and live ->
+   ## live-sysmaint). A real mode is followed by the hex device-id (matches); an invalid prefix
+   ## is followed by 'sysmaint' (non-hex -> no match -> fail loud below, never a mis-select).
    id="$(grep --extended-regexp '^menuentry ' "${grub_cfg}" \
-      | grep --only-matching --extended-regexp "gnulinux-${mode}-[^' ]+" \
+      | grep --only-matching --extended-regexp "gnulinux-${mode}-[0-9a-fA-F][0-9a-fA-F-]*" \
       | head -n 1)" || true
    [ -n "${id}" ] || {
       printf '%s\n' "${me}: ERROR: no menuentry id 'gnulinux-${mode}-*' in '${grub_cfg}'" >&2

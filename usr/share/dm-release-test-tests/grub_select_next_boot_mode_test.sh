@@ -134,5 +134,46 @@ else
    fail=$(( fail + 1 ))
 fi
 
+## 5. CANARY (finding 5): a mode that is a PREFIX of a real mode must FAIL, never silently
+## select the longer entry. With only the *-sysmaint entries present, mode=persistent must not
+## pick gnulinux-persistent-sysmaint-<uuid> (and live must not pick live-sysmaint).
+root_pfx="${work_dir}/prefix"
+make_root "${root_pfx}" \
+   "gnulinux-persistent-sysmaint-${dev}" \
+   "gnulinux-live-sysmaint-${dev}" \
+   "gnulinux-user-${dev}"
+for pm in persistent live; do
+   rcp=0
+   MOUNTPOINT="${root_pfx}" "${helper}" "${pm}" >/dev/null 2>&1 || rcp=$?
+   envdump="$(grub-editenv "${root_pfx}/boot/grub/grubenv" list 2>/dev/null || true)"
+   if [ "${rcp}" -ne 0 ] && [[ "${envdump}" != *"next_entry="* ]]; then
+      printf '%s\n' "PASS: prefix mode '${pm}' rejected, next_entry left unset"
+      pass=$(( pass + 1 ))
+   else
+      printf '%s\n' "FAIL: prefix mode '${pm}': rc=${rcp}, envdump='${envdump}'"
+      fail=$(( fail + 1 ))
+   fi
+done
+
+## 6. CANARY (finding 2, grubenv.new half): grub-editenv writes <grubenv>.new (fopen FOLLOWS a
+## symlink) then renames it onto grubenv. A guest-planted grubenv.new symlink pointing OUTSIDE
+## the mount MUST be refused, so the root write cannot escape onto a host path even when grubenv
+## itself is absent.
+root_gn="${work_dir}/grubenv_new_escape"
+gn_escape="${work_dir}/gn_escape_target"
+make_root "${root_gn}" "gnulinux-persistent-sysmaint-${dev}"
+mkdir --parents -- "${gn_escape%/*}"
+ln --symbolic -- "${gn_escape}" "${root_gn}/boot/grub/grubenv.new"
+rc5=0
+MOUNTPOINT="${root_gn}" "${helper}" persistent-sysmaint >/dev/null 2>&1 || rc5=$?
+if [ "${rc5}" -ne 0 ] && [ ! -e "${gn_escape}" ]; then
+   printf '%s\n' "PASS: symlinked grubenv.new escaping the mount refused, no outside write"
+   pass=$(( pass + 1 ))
+else
+   gn_written='no'; [ -e "${gn_escape}" ] && gn_written='yes'
+   printf '%s\n' "FAIL: grubenv.new symlink-escape not refused (rc=${rc5}, outside written=${gn_written})"
+   fail=$(( fail + 1 ))
+fi
+
 printf '%s\n' "" "${pass} pass, ${fail} fail"
 [ "${fail}" -eq 0 ]
