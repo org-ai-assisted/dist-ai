@@ -1,0 +1,91 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Narrow privleap wrapper: set the one-shot GRUB next_entry on the CALLER'S OWN
+## installed VirtualBox disk to a boot-mode menuentry, as root and with the VM powered
+## off, so a DELIBERATELY sudo-less dm-release-test image-test runner (vboxusers only,
+## never sysmaint -- the isolation invariant that keeps a guest escape off host root)
+## can drive the installed system into a chosen boot mode OFFLINE: deterministic, no OCR,
+## no live-menu timing. The writable counterpart of vbox-mok-extract.
+##
+## Invoked ONLY via privleap (action 'vbox-grub-set-next-boot-mode', AuthorizedGroups
+## vboxusers), which runs it as root. NARROW BY CONSTRUCTION, so a vboxusers member can
+## at most retarget its OWN VM's one-shot boot selection -- never an arbitrary root write:
+##   * the disk, after realpath (so a symlink/hardlink cannot escape), MUST be OWNED by
+##     the caller -- so a caller can only touch a disk IT owns.
+##   * the only mutation is grubenv next_entry, set to an EXISTING gnulinux-<mode>-<dev>
+##     menuentry id in that disk's own grub.cfg (grub-select-next-boot-mode validates the
+##     mode as [a-z-]+ and fails loud on a missing id -- never a blind/arbitrary value).
+##   * the caller is PRIVLEAP_CALLER_UID (kernel SO_PEERCRED via privleap; not spoofable),
+##     NOT a request field.
+## The request (disk path + LUKS passphrase + mode) is handed over in the caller-owned
+## request dir; a crafted passphrase-file only feeds a LUKS key, and the mode only selects
+## among entries already on the caller's own disk, so nothing is leaked or escalated.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+me="$(basename -- "$0")"
+
+## Overridable so a unit test can assert the delegated invocation with stubs; production
+## is byte-identical (unset -> the real tools).
+VBOX_DISK_MOUNT="${VBOX_DISK_MOUNT:-/usr/bin/vbox-disk-mount}"
+GRUB_SELECT_NEXT_BOOT_MODE="${GRUB_SELECT_NEXT_BOOT_MODE:-/usr/libexec/image-test/grub-select-next-boot-mode}"
+
+die() {
+   printf '%s\n' "${me}: ERROR: $1" >&2
+   exit "${2:-1}"
+}
+
+## Caller identity comes from privleap, not from the request (unspoofable).
+[ -n "${PRIVLEAP_CALLER_UID:-}" ] \
+   || die "no PRIVLEAP_CALLER_UID in environment -- must be invoked via privleap" 2
+case "${PRIVLEAP_CALLER_UID}" in
+   ''|*[!0-9]*)
+      die "PRIVLEAP_CALLER_UID '${PRIVLEAP_CALLER_UID}' is not numeric" 2
+      ;;
+esac
+
+caller_pw="$(getent passwd "${PRIVLEAP_CALLER_UID}")" \
+   || die "no account for caller uid ${PRIVLEAP_CALLER_UID}" 2
+caller_home="$(printf '%s' "${caller_pw}" | cut -d: -f6)"
+[ -n "${caller_home}" ] || die "caller uid ${PRIVLEAP_CALLER_UID} has no home directory" 2
+
+req_dir="${caller_home}/.cache/vbox-grub-set-next-boot-mode"
+disk_file="${req_dir}/disk"
+pass_file="${req_dir}/passphrase"
+mode_file="${req_dir}/mode"
+[ -f "${disk_file}" ] || die "no request: '${disk_file}' does not exist" 2
+[ -f "${pass_file}" ] || die "no request: '${pass_file}' does not exist" 2
+[ -f "${mode_file}" ] || die "no request: '${mode_file}' does not exist" 2
+
+disk="$(cat -- "${disk_file}")"
+[ -n "${disk}" ] || die "request disk path is empty" 2
+mode="$(cat -- "${mode_file}")"
+## Constrain mode here too (defence in depth; grub-select-next-boot-mode re-validates).
+[[ "${mode}" =~ ^[a-z][a-z-]*$ ]] || die "invalid mode '${mode}' (expected [a-z-]+)" 2
+
+## The disk (after realpath, so a symlink/hardlink cannot escape) MUST be OWNED by the
+## caller -- a caller can retarget only a disk IT owns, never root's or another user's.
+disk_real="$(realpath -- "${disk}")" || die "disk path '${disk}' does not resolve" 2
+[ -f "${disk_real}" ] || die "disk '${disk_real}' is not a regular file" 2
+disk_owner_uid="$(stat --format='%u' -- "${disk_real}")" \
+   || die "cannot stat disk '${disk_real}'" 2
+[ "${disk_owner_uid}" = "${PRIVLEAP_CALLER_UID}" ] \
+   || die "refused: disk '${disk_real}' is owned by uid ${disk_owner_uid}, not the caller (uid ${PRIVLEAP_CALLER_UID})" 2
+
+## rw-mount the caller's own disk and set next_entry. vbox-disk-mount is already root
+## here (privleap ran us as root, no sudo), tears the mount down on its own EXIT trap,
+## and grub-select-next-boot-mode fails loud if the mode's gnulinux-<mode>-* id is absent.
+"${VBOX_DISK_MOUNT}" run --disk "${disk_real}" --passphrase-file "${pass_file}" \
+   -- "${GRUB_SELECT_NEXT_BOOT_MODE}" "${mode}" \
+   || die "could not set next_entry for mode '${mode}' on '${disk_real}'" 3
