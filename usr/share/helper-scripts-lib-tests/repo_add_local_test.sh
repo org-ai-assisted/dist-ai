@@ -56,7 +56,7 @@ cleanup() { rm --recursive --force -- "${tmp}"; }
 trap cleanup EXIT
 
 ## Fixtures: a fake 'local' repo, a sources dir, PATH stubs (root/network actions).
-mkdir --parents -- "${tmp}/repo/dists/local" "${tmp}/sources" "${tmp}/stubs" "${tmp}/apt"
+mkdir --parents -- "${tmp}/repo/dists/local" "${tmp}/sources" "${tmp}/prefs" "${tmp}/stubs" "${tmp}/apt"
 printf '%s\n' '#!/bin/bash' 'printf %s\\n 0' > "${tmp}/stubs/id"
 printf '%s\n' '#!/bin/bash' "printf '%s\\n' \"apt-get \$*\" >> \"${tmp}/apt/log\"" > "${tmp}/stubs/apt-get"
 chmod +x -- "${tmp}/stubs/id" "${tmp}/stubs/apt-get"
@@ -65,6 +65,7 @@ chmod +x -- "${tmp}/stubs/id" "${tmp}/stubs/apt-get"
 rc=0
 PATH="${tmp}/stubs:${PATH}" \
    REPO_ADD_LOCAL_SOURCES_LIST_D="${tmp}/sources" \
+   REPO_ADD_LOCAL_PREFERENCES_D="${tmp}/prefs" \
    HELPER_SCRIPTS_PATH="${hs_path}" \
    "${subject}" --repo-dir "${tmp}/repo" kicksecure >/dev/null 2>&1 || rc=$?
 if [ "${rc}" -eq 0 ]; then
@@ -94,6 +95,70 @@ if [ ! -e "${tmp}/apt/log" ]; then
    ok "does NOT run apt-get (enabling only)"
 else
    bad "ran apt-get (not its task): $(cat -- "${tmp}/apt/log")"
+fi
+
+## The pin preferences file is written unconditionally -- it forces the file: local sources above
+## the Tor remotes (covering this derivative repo and the Debian-base cache sources).
+pin_file="${tmp}/prefs/local-apt-repo.pref"
+if [ -f "${pin_file}" ] && [ "$(cat -- "${pin_file}")" = "$(local_apt_repo_pin)" ]; then
+   ok "wrote the local-sources pin (priority 1000) matching the shared generator"
+else
+   bad "did not write the expected pin to ${pin_file}"
+fi
+
+## --- mnt location + Debian-base cache: resident-component base sources + pin --------------------
+## Drive the mnt path via the REPO_ADD_LOCAL_GUEST_MOUNT seam (fixture, no real mountpoint): a
+## derivative 'local' repo PLUS an aptcache whose 'debian' nick offers main (RESIDENT) + contrib
+## (OFFERED but uncached) for the host codename. Expect base sources with ONLY the resident
+## component, not Trusted:yes, plus the pin.
+mnt_cn="$( . /etc/os-release 2>/dev/null || true; printf '%s' "${VERSION_CODENAME:-trixie}" )"
+mnt_arch="$(dpkg --print-architecture 2>/dev/null || printf '%s' amd64)"
+mnt_dists="${tmp}/mnt/aptcache/debian/dists/${mnt_cn}"
+mkdir --parents -- \
+   "${tmp}/mnt/aptrepo_local/whonix/dists/local" \
+   "${mnt_dists}/main/binary-${mnt_arch}/by-hash/SHA256" \
+   "${mnt_dists}/contrib/binary-${mnt_arch}/by-hash/SHA256" \
+   "${tmp}/mnt-sources" "${tmp}/mnt-prefs"
+mnt_mh="$(printf '%s' mainidx | sha256sum | cut -d' ' -f1)"
+mnt_ch="$(printf '%s' contribidx | sha256sum | cut -d' ' -f1)"
+touch -- "${mnt_dists}/main/binary-${mnt_arch}/by-hash/SHA256/${mnt_mh}"
+printf '%s\n' "SHA256:" \
+   " ${mnt_mh} 12345 main/binary-${mnt_arch}/Packages" \
+   " ${mnt_ch} 6789 contrib/binary-${mnt_arch}/Packages" \
+   > "${mnt_dists}/InRelease"
+
+rc=0
+PATH="${tmp}/stubs:${PATH}" \
+   REPO_ADD_LOCAL_GUEST_MOUNT="${tmp}/mnt" \
+   REPO_ADD_LOCAL_SOURCES_LIST_D="${tmp}/mnt-sources" \
+   REPO_ADD_LOCAL_PREFERENCES_D="${tmp}/mnt-prefs" \
+   HELPER_SCRIPTS_PATH="${hs_path}" \
+   "${subject}" whonix >/dev/null 2>&1 || rc=$?
+if [ "${rc}" -eq 0 ]; then
+   ok "runs clean in the mnt case with an aptcache present"
+else
+   bad "exited ${rc} in the mnt+aptcache case"
+fi
+
+base_sources="${tmp}/mnt-sources/local-apt-repo-base-mnt.sources"
+if [ -f "${base_sources}" ] \
+   && grep --quiet --fixed-strings "URIs: file:${tmp}/mnt/aptcache/debian" -- "${base_sources}" \
+   && grep --quiet "^Suites: ${mnt_cn}$" -- "${base_sources}" \
+   && grep --quiet '^Components: main$' -- "${base_sources}"; then
+   ok "mnt: wrote Debian-base sources for the cache-resident component (main)"
+else
+   bad "mnt: base sources missing or wrong$( [ -f "${base_sources}" ] && printf '%s' " -- $(cat -- "${base_sources}")" )"
+fi
+## CANARY: the offered-but-uncached contrib must NOT appear, and the base source must NOT be Trusted.
+if [ -f "${base_sources}" ] && ! grep --quiet 'contrib' -- "${base_sources}" && ! grep --quiet 'Trusted:' -- "${base_sources}"; then
+   ok "mnt canary: offered-but-uncached contrib excluded; base source not Trusted:yes"
+else
+   bad "mnt canary: base source included an uncached component or Trusted:yes"
+fi
+if [ -f "${tmp}/mnt-prefs/local-apt-repo.pref" ]; then
+   ok "mnt: wrote the local-sources pin"
+else
+   bad "mnt: did not write the pin"
 fi
 
 ## --- canary: a repo WITHOUT dists/local is refused -----------------------------

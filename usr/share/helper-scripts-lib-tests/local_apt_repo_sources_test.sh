@@ -5,6 +5,8 @@
 
 ## AI-Assisted
 
+## style-ok: no-safe-rm (rm -rf of our own mktemp fixture dir only)
+
 ## local-apt-repo-sources.bsh: the ONE generator of the derivative local apt
 ## repository deb822 stanza. It is the single source of truth shared by the
 ## build-time mounter (derivative-maker help-steps/create-local-apt-repo) and
@@ -113,6 +115,67 @@ if [[ "${nl}${actual_srv}${nl}" == *"${nl}Trusted: yes${nl}"* ]] \
 else
    fail_count=$(( fail_count + 1 ))
    printf '%s\n' "FAIL: canary: missing 'Trusted: yes' or the 'main contrib non-free' components"
+fi
+
+## --- local_apt_repo_base_stanza + local_apt_repo_pin: Debian-base cache sources ----------------
+## The warmed apt cache is a SUBSET: a component the signed InRelease OFFERS but whose index is
+## ABSENT on disk MUST be excluded (an offered-but-uncached component makes apt-get update
+## hard-fail exit 100), the genuine signed Release means NO 'Trusted: yes', and an uncompressed
+## 'Packages' entry (not .gz/.xz) is what anchors the match.
+if [ "$(type -t local_apt_repo_base_stanza)" = 'function' ] && [ "$(type -t local_apt_repo_pin)" = 'function' ]; then
+   base_fix="$(mktemp --directory)"
+   mkdir --parents -- \
+      "${base_fix}/debian/dists/trixie/main/binary-amd64/by-hash/SHA256" \
+      "${base_fix}/debian/dists/trixie/contrib/binary-amd64/by-hash/SHA256"
+   main_hash="$(printf '%s' mainidx | sha256sum | cut -d' ' -f1)"
+   contrib_hash="$(printf '%s' contribidx | sha256sum | cut -d' ' -f1)"
+   ## main's index is resident; contrib's is listed in InRelease but ABSENT on disk (the subset gap)
+   touch -- "${base_fix}/debian/dists/trixie/main/binary-amd64/by-hash/SHA256/${main_hash}"
+   printf '%s\n' "SHA256:" \
+      " ${main_hash} 12345 main/binary-amd64/Packages" \
+      " ${contrib_hash} 6789 contrib/binary-amd64/Packages" \
+      " ${main_hash} 42 main/binary-amd64/Packages.gz" \
+      > "${base_fix}/debian/dists/trixie/InRelease"
+
+   base_expected="Types: deb
+URIs: file:${base_fix}/debian
+Suites: trixie
+Components: main
+Enabled: yes"
+   base_actual="$(local_apt_repo_base_stanza "${base_fix}" debian trixie amd64)"
+   check_eq "base stanza emits only the cache-resident component (contrib excluded, uncached)" \
+      "${base_expected}" "${base_actual}"
+
+   ## CANARY: the base stanza must NOT carry 'Trusted: yes' (it verifies against the genuine signed
+   ## Release) and must NOT include an offered-but-uncached component.
+   if [[ "${nl}${base_actual}${nl}" != *"${nl}Trusted: yes${nl}"* ]] \
+      && [[ "${base_actual}" != *contrib* ]]; then
+      pass_count=$(( pass_count + 1 ))
+      printf '%s\n' "PASS: canary: base stanza is signed (no Trusted:yes) + excludes the uncached contrib"
+   else
+      fail_count=$(( fail_count + 1 ))
+      printf '%s\n' "FAIL: canary: base stanza wrongly carried Trusted:yes or an uncached component"
+   fi
+
+   ## A suite with no InRelease -> rc 1, no stanza (caller skips it -> remote/Tor fallback).
+   rc=0; out="$(local_apt_repo_base_stanza "${base_fix}" debian trixie-updates amd64)" || rc=$?
+   check_eq "base stanza: absent suite InRelease returns 1" "1" "${rc}"
+   check_eq "base stanza: absent suite emits nothing" "" "${out}"
+
+   ## Missing args -> rc 2.
+   rc=0; local_apt_repo_base_stanza "${base_fix}" debian trixie >/dev/null 2>&1 || rc=$?
+   check_eq "base stanza: missing arch returns 2" "2" "${rc}"
+
+   ## pin stanza (forces the file: local sources above the Tor remotes).
+   pin_expected='Package: *
+Pin: origin ""
+Pin-Priority: 1000'
+   check_eq "pin stanza: empty-origin priority 1000" "${pin_expected}" "$(local_apt_repo_pin)"
+
+   rm --recursive --force -- "${base_fix}"
+else
+   fail_count=$(( fail_count + 1 ))
+   printf '%s\n' "FAIL: local_apt_repo_base_stanza / local_apt_repo_pin not defined (Debian-base cache generator missing)"
 fi
 
 printf '%s\n' ""

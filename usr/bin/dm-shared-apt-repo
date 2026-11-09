@@ -59,6 +59,15 @@ codename="local"
 share_name="shared"
 guest_mount="/mnt/shared"
 
+## Host apt cache (approx) exposed file-based to the guest: bind-mounted READ-ONLY under the shared
+## tree so the single 'shared' vboxsf carries it to ${guest_mount}/aptcache. A guest full upgrade
+## then pulls the DEBIAN BASE from local file: content (no Tor) -- fast + offline, testing the
+## built packages against a current base. Overridable + absent-safe: a host without the approx
+## cache just skips this and the guest base stays on its normally-configured sources (generic for
+## any image type / non-approx host).
+approx_cache="${APPROX_CACHE_DIR:-/var/cache/approx-derivative-maker}"
+cache_mount="${repo_parent}/aptcache"
+
 die() {
    printf '%s\n' "${me}: ERROR: ${2}" >&2
    exit "$1"
@@ -69,6 +78,7 @@ usage() {
        ${me} attach <vm> [--transient]
        ${me} status [vm]
        ${me} repo-path <kicksecure|whonix>
+       ${me} cache-path
 
 Populate the repo first with: derivative-maker --skip-published-packages ...
 Share host path: ${repo_parent}   (shared read-only as '${share_name}' -> ${guest_mount})
@@ -82,6 +92,27 @@ check_derivative() {
 }
 
 repo_dir_for() { printf '%s' "${repo_parent}/aptrepo_local/${1}"; }
+
+## Expose the host approx Debian cache under the shared tree (read-only bind-mount) so the guest
+## reaches it at ${guest_mount}/aptcache via the existing 'shared' vboxsf. Idempotent
+## (mountpoint-guarded) and GENERIC: a host without the approx cache skips silently, so the guest
+## base simply stays on its configured sources. Needs root for the bind-mount (sudo; dm's build
+## user has it). A plain 'mount --bind' is read-write, so a second remount pass makes it read-only
+## (the guest must not mutate the host cache).
+expose_cache() {
+   if [ ! -d "${approx_cache}" ]; then
+      printf '%s\n' "${me}: no apt cache at ${approx_cache}; Debian base stays on its configured sources (ok)"
+      return 0
+   fi
+   if mountpoint --quiet -- "${cache_mount}" 2>/dev/null; then
+      printf '%s\n' "${me}: apt cache already exposed at ${cache_mount}"
+      return 0
+   fi
+   mkdir --parents -- "${cache_mount}"
+   sudo mount --bind -- "${approx_cache}" "${cache_mount}"
+   sudo mount -o remount,ro,bind -- "${cache_mount}"
+   printf '%s\n' "${me}: exposed apt cache ${approx_cache} -> ${cache_mount} (guest: ${guest_mount}/aptcache)"
+}
 
 do_prepare() {
    local d="$1" rd
@@ -101,6 +132,9 @@ do_prepare() {
    ## caller CWD (e.g. invoked from another user's home) -- that failure is non-zero
    ## and would abort under errexit.
    ( cd -- "${rd}" && find . -type d -exec chmod o+rx -- {} + )
+   ## Also expose the host apt cache (Debian base) under the shared tree, so the guest's full
+   ## upgrade can pull the base locally too, not just the derivative repo. Absent-safe (skips).
+   expose_cache
    printf '%s\n' \
       "${me}: prepared ${rd} (codename ${codename}); guest: run 'sudo repo-add-local'"
 }
@@ -181,6 +215,11 @@ case "${cmd}" in
       ## provenance (dm-release-test's localRepo block) without re-deriving repo_parent.
       check_derivative "${1:-}"
       printf '%s\n' "$(repo_dir_for "${1}")"
+      ;;
+   cache-path)
+      ## Single source of the exposed apt-cache mount path (the Debian-base file: tree the
+      ## guest sees at ${guest_mount}/aptcache); for a caller recording provenance.
+      printf '%s\n' "${cache_mount}"
       ;;
    -h|--help|help)
       usage
