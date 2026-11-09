@@ -33,6 +33,7 @@ work="$(mktemp --directory --tmpdir vbox-grub-next-test.XXXXXX)"
 ## mok-extract test), clean up only files WE create.
 uid="$(id -u)"
 home="$(getent passwd "${uid}" | cut -d: -f6)"
+[ -n "${home}" ] || { printf '%s\n' "FATAL: uid ${uid} has no home directory" >&2; exit 1; }
 req="${home}/.cache/vbox-grub-set-next-boot-mode"
 req_preexisted='true'
 [ -d "${req}" ] || req_preexisted='false'
@@ -143,6 +144,18 @@ safe-rm --force -- "${argv_log}"
 rc="$(run_wrapper "")"
 check "empty PRIVLEAP_CALLER_UID refused (rc!=0, got ${rc})" \
    "$([ "${rc}" != '0' ] && printf '%s' true || printf '%s' false)"
+
+## 5. A SYMLINKED request file must be refused -- a symlink in the caller-owned request dir
+## could redirect this root read onto a root-only file. Point req/disk at a symlink.
+safe-rm --force -- "${req}/disk" "${argv_log}"
+ln --symbolic -- "${disk}" "${req}/disk"
+rc="$(run_wrapper "${uid}")"
+check "symlinked request file refused (rc!=0, got ${rc})" \
+   "$([ "${rc}" != '0' ] && printf '%s' true || printf '%s' false)"
+check "symlinked request did NOT call vbox-disk-mount" \
+   "$([ ! -e "${argv_log}" ] && printf '%s' true || printf '%s' false)"
+safe-rm --force -- "${req}/disk"
+printf '%s\n' "${disk}" > "${req}/disk"
 
 if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "${failures} vbox-grub-set-next-boot-mode assertion(s) failed" >&2

@@ -64,9 +64,15 @@ req_dir="${caller_home}/.cache/vbox-grub-set-next-boot-mode"
 disk_file="${req_dir}/disk"
 pass_file="${req_dir}/passphrase"
 mode_file="${req_dir}/mode"
-[ -f "${disk_file}" ] || die "no request: '${disk_file}' does not exist" 2
-[ -f "${pass_file}" ] || die "no request: '${pass_file}' does not exist" 2
-[ -f "${mode_file}" ] || die "no request: '${mode_file}' does not exist" 2
+## Each request file must be a REGULAR file, NOT a symlink: the caller owns the request
+## dir, so a symlinked request file would redirect this root process's read onto a
+## root-only file (leaking its content back via an error, or feeding it as a LUKS key).
+## O_NOFOLLOW-equivalent: refuse a symlink outright rather than read through it.
+for req_file in "${disk_file}" "${pass_file}" "${mode_file}"; do
+   [ -L "${req_file}" ] \
+      && die "refused: request file '${req_file}' is a symlink (must be a regular file)" 2
+   [ -f "${req_file}" ] || die "no request: '${req_file}' does not exist" 2
+done
 
 disk="$(cat -- "${disk_file}")"
 [ -n "${disk}" ] || die "request disk path is empty" 2
