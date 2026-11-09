@@ -18,23 +18,52 @@
 ## 'nounset'/'pipefail' would leak into (and could kill) the sourcing shell.
 # shellcheck disable=SC2154  ## FAIL_RC (+ gui-drive.bsh globals) are set by the sourcing tool
 
-## Wait for the INSTALLED system's GRUB "Choose boot mode" menu, then select entry 2
-## (PERSISTENT Mode | SYSMAINT Session): 1x Down + Enter before the ~5s autoboot into
-## the default USER entry. Sets boot-role=sysmaint for checks 2 + 3. die()s if the menu
-## never OCRs -- a caller with a return-nonzero contract (boot_installed) wraps the call
-## in a subshell so that die cannot escape it.
+## Select the INSTALLED system's GRUB "Choose boot mode" entry 2 (PERSISTENT Mode |
+## SYSMAINT Session), tolerant of slow/late OCR on a BIOS VM. The flat menu autoboots the
+## default entry 1 (USER) after ~5s; entry 2 is one Down away.
+##
+## catch-halt-confirm: the instant the menu OCRs, send ONE Down. A Down HALTS GRUB's
+## autoboot countdown AND moves the highlight entry1 -> entry2 -- and a Down can never
+## submit anything, so it is safe even if we OCR'd a hair late. Only AFTER re-OCR confirms
+## the menu is STILL on screen (a halted menu keeps its "Choose boot mode" header) do we
+## press Enter. If the header is gone we were too late (GRUB already autobooting into
+## USER); an Enter then would land on the dracut LUKS passphrase prompt and submit an
+## EMPTY passphrase -- wedging the unlock -- so Enter fires ONLY on a confirmed menu,
+## never blindly. Exactly one Down from the always-entry1 default lands entry2 = SYSMAINT;
+## no second Down (it would overshoot into LIVE / REMOVE user-sysmaint-split).
+##
+## die()s if the menu is never caught+confirmed -- a caller with a return-nonzero contract
+## (boot_installed) wraps the call in a subshell so the die cannot escape it. Timeouts are
+## overridable (GRUB_SELECT_TIMEOUT_S / GRUB_SELECT_CONFIRM_S) with production-safe
+## defaults, so a unit test can drive the safe-fail path quickly.
 select_installed_sysmaint() {
-   local deadline text
-   deadline=$(( SECONDS + 60 ))
+   local deadline confirm_deadline text
+   local menu_re='choose[[:space:]]boot[[:space:]]mode|persistent[[:space:]]mode|sysmaint[[:space:]]session'
+   local timeout_s="${GRUB_SELECT_TIMEOUT_S:-60}"
+   local confirm_s="${GRUB_SELECT_CONFIRM_S:-10}"
+   deadline=$(( SECONDS + timeout_s ))
    while [ "${SECONDS}" -lt "${deadline}" ]; do
       text="$(gui_ocr)"
-      if [[ "${text,,}" =~ choose[[:space:]]boot[[:space:]]mode|persistent[[:space:]]mode|sysmaint[[:space:]]session ]]; then
+      if [[ "${text,,}" =~ ${menu_re} ]]; then
+         ## Halt the countdown + move entry1 -> entry2, then let the highlight settle.
          gui_scan e0 50 e0 d0
          sleep 1
-         gui_scan 1c 9c
-         return 0
+         ## Confirm the menu is still up, then Enter. Retry briefly to ride out a transient
+         ## blank screenshot; a halted menu stays put. Send NO further Down here.
+         confirm_deadline=$(( SECONDS + confirm_s ))
+         while [ "${SECONDS}" -lt "${confirm_deadline}" ]; do
+            text="$(gui_ocr)"
+            if [[ "${text,,}" =~ ${menu_re} ]]; then
+               gui_scan 1c 9c
+               return 0
+            fi
+            sleep 1
+         done
+         ## Down sent but the menu never re-confirmed: caught too late, GRUB is already
+         ## booting the default. Do NOT press Enter (it would hit the LUKS prompt).
+         break
       fi
-      sleep 2
+      sleep 1
    done
    die "${FAIL_RC}" "installed GRUB menu not detected (sysmaint select)"
 }
