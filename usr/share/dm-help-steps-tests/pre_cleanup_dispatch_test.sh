@@ -80,7 +80,7 @@ make_stub_steps() {
    log_file="$2"
    failing_step="$3"
 
-   for step_name in remove-local-temp-apt-repo unchroot-raw \
+   for step_name in remove-local-apt-repo unchroot-raw \
       unprevent-daemons-from-starting unmount-raw; do
       {
          printf '%s\n' '#!/bin/bash'
@@ -155,7 +155,7 @@ main() {
    exception_handler_cleanup_run unchroot_unmount "abort-on-failure"
    steps_ran="$(tr '\n' ' ' < "${log_file}")"
    require_steps "${steps_ran}" \
-      "remove-local-temp-apt-repo unchroot-raw unprevent-daemons-from-starting unmount-raw " \
+      "remove-local-apt-repo unchroot-raw unprevent-daemons-from-starting unmount-raw " \
       "kind 'unchroot_unmount' runs its four steps in order"
 
    true > "${log_file}"
@@ -192,7 +192,7 @@ main() {
    exception_handler_cleanup_run unchroot_unmount "tolerate-failure" || run_rc="$?"
    steps_ran="$(tr '\n' ' ' < "${log_file}")"
    require_steps "${steps_ran}" \
-      "remove-local-temp-apt-repo unchroot-raw unprevent-daemons-from-starting unmount-raw " \
+      "remove-local-apt-repo unchroot-raw unprevent-daemons-from-starting unmount-raw " \
       "the 'tolerate-failure' mode continues past a failing step"
    require_steps "${run_rc}" "0" "tolerate_failure 'true' returns success"
 
@@ -201,7 +201,7 @@ main() {
    run_rc=0
    exception_handler_cleanup_run unchroot_unmount "abort-on-failure" || run_rc="$?"
    steps_ran="$(tr '\n' ' ' < "${log_file}")"
-   require_steps "${steps_ran}" "remove-local-temp-apt-repo unchroot-raw " \
+   require_steps "${steps_ran}" "remove-local-apt-repo unchroot-raw " \
       "tolerate_failure 'false' stops at the failing step"
    if [ ! "${run_rc}" = "0" ]; then
       pass "the 'abort-on-failure' mode propagates the failure (rc ${run_rc})"
