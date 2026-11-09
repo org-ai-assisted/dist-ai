@@ -105,5 +105,17 @@ else
    fail=$(( fail + 1 ))
 fi
 
+## 3. A mode with a regex metachar must be REJECTED, not matched against a valid entry
+## ('.' would otherwise match the hyphen in gnulinux-live-sysmaint).
+rc2=0
+MOUNTPOINT="${root1}" "${helper}" 'live.sysmaint' >/dev/null 2>&1 || rc2=$?
+if [ "${rc2}" -ne 0 ]; then
+   printf '%s\n' "PASS: invalid mode 'live.sysmaint' rejected (no regex match)"
+   pass=$(( pass + 1 ))
+else
+   printf '%s\n' "FAIL: invalid mode 'live.sysmaint' was accepted"
+   fail=$(( fail + 1 ))
+fi
+
 printf '%s\n' "" "${pass} pass, ${fail} fail"
 [ "${fail}" -eq 0 ]

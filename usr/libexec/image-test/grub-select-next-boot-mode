@@ -8,10 +8,15 @@
 ## Set the installed system's GRUB one-shot next_entry to the boot-mode entry whose
 ## menuentry --id names MODE, so the next boot selects that mode DETERMINISTICALLY --
 ## no OCR, no menu interaction, no live-menu timing. Run against a mounted installed
-## root (CWD and $MOUNTPOINT = the root), e.g. as the command of vbox-disk-mount:
+## root (CWD and $MOUNTPOINT = the root), e.g. as the command of vbox-disk-mount
+## (by ABSOLUTE path -- /usr/libexec is not on PATH):
 ##
 ##   vbox-disk-mount run --disk <installed.vdi> --passphrase-file <pf> -- \
-##     grub-select-next-boot-mode persistent-sysmaint
+##     /usr/libexec/image-test/grub-select-next-boot-mode persistent-sysmaint
+##
+## Assumes /boot/grub is on the mounted root -- true for the Kicksecure Calamares
+## single-LUKS-root layout (grubenv lives inside the encrypted root). A separate /boot
+## not on the mounted filesystem yields no grub.cfg here -> fail loud, never misselect.
 ##
 ## Relies on the per-mode menuentry --id: dist-base-files etc/grub.d/10_00_linux_dist
 ## scopes the simple-entry id by boot mode (gnulinux-<mode>-<device-id>, where <mode> is
@@ -34,6 +39,11 @@ me="${0##*/}"
 main() {
    local mode root grub_cfg grubenv id
    mode="${1:?usage: ${me} <mode> (e.g. persistent-sysmaint)}"
+   ## MODE is interpolated into the ERE below, so constrain it to the id charset
+   ## (lowercase + hyphen). Rejects a typo/metachar mode (e.g. 'live.sysmaint', whose
+   ## '.' would match a hyphen and select a DIFFERENT mode's entry).
+   [[ "${mode}" =~ ^[a-z][a-z-]*$ ]] \
+      || { printf '%s\n' "${me}: ERROR: invalid mode '${mode}' (expected [a-z-]+)" >&2; exit 1; }
    root="${MOUNTPOINT:-$(pwd)}"
    grub_cfg="${root}/boot/grub/grub.cfg"
    grubenv="${root}/boot/grub/grubenv"
@@ -41,11 +51,14 @@ main() {
    [ -r "${grub_cfg}" ] \
       || { printf '%s\n' "${me}: ERROR: no grub.cfg at '${grub_cfg}'" >&2; exit 1; }
 
-   ## The simple boot-mode entry's --id for MODE. The advanced submenus keep the stock
-   ## gnulinux-advanced-<dev> / gnulinux-<version>-advanced-<dev> scheme, so this pattern
-   ## cannot match one. No match -> the image lacks the per-mode --id patch (a pre-patch
-   ## image shares gnulinux-simple-<dev> across modes) -> fail loud, never select blindly.
-   id="$(grep --only-matching --extended-regexp "gnulinux-${mode}-[^' ]+" "${grub_cfg}" \
+   ## The simple boot-mode entry's --id for MODE, taken ONLY from a top-level menuentry
+   ## line (so an earlier textual reference cannot be mistaken for the id). The advanced
+   ## submenus are indented and keep the stock gnulinux-advanced-<dev> /
+   ## gnulinux-<version>-advanced-<dev> scheme, so this cannot match one. No match -> the
+   ## image lacks the per-mode --id patch (a pre-patch image shares gnulinux-simple-<dev>
+   ## across modes) -> fail loud, never select blindly.
+   id="$(grep --extended-regexp '^menuentry ' "${grub_cfg}" \
+      | grep --only-matching --extended-regexp "gnulinux-${mode}-[^' ]+" \
       | head -n 1)" || true
    [ -n "${id}" ] || {
       printf '%s\n' "${me}: ERROR: no menuentry id 'gnulinux-${mode}-*' in '${grub_cfg}'" >&2
