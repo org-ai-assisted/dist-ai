@@ -31,6 +31,11 @@ mnt_dir=""
 mnt_base=""
 fs_list=""
 
+## Directory this lib lives in, to resolve sibling helpers (qemu-image-self-contained). Captured
+## at source time (BASH_SOURCE is the lib's path); the helper is overridable via
+## QEMU_IMAGE_SELF_CONTAINED for tests.
+vbox_disk_lib_dir="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")"
+
 ## Cleanup state, torn down in reverse by the EXIT trap regardless of outcome. Each step is
 ## best-effort/idempotent so a partial setup still unwinds; the ':-' guards let a tool that
 ## leaves one state var unset (e.g. no fs_list) still run cleanup under nounset.
@@ -129,6 +134,17 @@ settle_partitions() {
 ## --read-only; anything else connects writable.
 nbd_connect() {
    local dev="$1" disk="$2" format="$3" mode="${4:-rw}"
+   ## Defense in depth for EVERY caller: pinning the format is not enough for a MULTI-FILE format.
+   ## A crafted VMDK FLAT/SPARSE extent or a qcow2 backing file ('RW ... FLAT "/etc/shadow"') points
+   ## qemu-nbd's ROOT-level open at an arbitrary HOST path -> root read/write. So require a NON-vdi
+   ## image to be SELF-CONTAINED (every referenced file resolves to the disk itself) before opening
+   ## it. vdi is single-file and never references externally. vbox-grub-set-next-boot-mode also
+   ## pre-checks as the unprivileged caller; this guards the direct vbox-disk-mount/extract paths.
+   if [ "${format}" != 'vdi' ]; then
+      local self_contained="${QEMU_IMAGE_SELF_CONTAINED:-${vbox_disk_lib_dir}/qemu-image-self-contained}"
+      "${self_contained}" "${disk}" "${format}" \
+         || die "refusing '${disk}': format '${format}' references a file outside the disk (crafted extent/backing -> host-path escalation)"
+   fi
    if [ "${mode}" = 'readonly' ]; then
       qemu-nbd --read-only --format "${format}" --connect="${dev}" -- "${disk}"
    else
