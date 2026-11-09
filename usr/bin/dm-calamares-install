@@ -1689,6 +1689,16 @@ parse_args() {
       esac
    done
    [ -n "${vm}" ]         || { usage >&2; die "${SETUP_RC}" "--vm required"; }
+   ## The VM name is used as a path component under the VBox machine folder, incl. a
+   ## `safe-rm --recursive` of a stale per-VM dir in build_vm. Reject a '/' or '..' so a name
+   ## can never traverse out of that per-VM scope (harness names are plain; this guards the
+   ## general case and VBoxManage --name alike).
+   case "${vm}" in
+      */* | *..*)
+         usage >&2
+         die "${SETUP_RC}" "--vm must not contain '/' or '..' (it names a per-VM dir that is cleaned up): got '${vm}'"
+         ;;
+   esac
    [ -n "${iso}" ]        || { usage >&2; die "${SETUP_RC}" "--iso required"; }
    [ -n "${passphrase_file}" ] || { usage >&2; die "${SETUP_RC}" "--passphrase-file required"; }
    [ -r "${passphrase_file}" ] || die "${SETUP_RC}" "passphrase file not readable: '${passphrase_file}'"
