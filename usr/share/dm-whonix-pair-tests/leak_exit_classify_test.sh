@@ -119,6 +119,43 @@ classifies "duplicate exit_code key is rejected (not last-wins to clear)" \
 ## duplicate once decoded -> rejected, not silently last-wins.
 classifies "a unicode-escaped colliding exit_code key is rejected" \
    '{"exit_code": 1, "results": [{"probe":"icmp","status":"FAIL","message":"m","detail":{}}], "exit_code": 0}' inconclusive
+
+## --- ai-review round 2: a hand-rolled scan invites these; the column-0 real-json parse fails safe
+## A COMPLETE clean decoy object before a TRUNCATED real leak must not pass as the decoy's clear:
+## the truncated column-0 opener sets incomplete -> inconclusive (ai-review codex).
+decoy_then_trunc='{"exit_code": 0, "leak_detected": false, "results": []}
+{
+  "exit_code": 1,
+  "leak_detected": true,
+  "results": [
+    {
+      "detail": {
+        "exit_code": 0,
+        "leaked_to": "1.1.1.1"'
+classifies "a clean decoy before a truncated leak does NOT pass as clear" \
+   "${decoy_then_trunc}" inconclusive
+## A stray quote between two objects must not hide the second: the real parser stops each object at
+## its own brace (no global in_str to desync), so both are seen -> two verdicts -> inconclusive.
+quote_desync='{"exit_code": 0, "results": []} "
+{"exit_code": 1, "leak_detected": true, "results": [{"probe":"icmp","status":"FAIL","message":"m","detail":{"leaked_to":"1.1.1.1"}}]}'
+classifies "a stray quote between two objects does not hide the second (two verdicts)" \
+   "${quote_desync}" inconclusive
+## A stray wrapping brace must not swallow the leak into one bad slice: the column-0 '{' alone
+## fails to parse (incomplete) and the leak + a trailing decoy are two verdicts -> inconclusive.
+brace_swallow='{
+{"exit_code": 1, "leak_detected": true, "results": [{"probe":"icmp","status":"FAIL","message":"m","detail":{"leaked_to":"1.1.1.1"}}]}
+}
+{"exit_code": 0}'
+classifies "a stray wrapping brace does not swallow the leak" "${brace_swallow}" inconclusive
+## A duplicate key ANYWHERE (even a nested detail) rejects that whole object, so it cannot fall
+## through to a trailing clear decoy -> inconclusive (ai-review grok).
+dup_nested='{"exit_code": 1, "leak_detected": true, "results": [{"probe":"icmp","status":"FAIL","message":"m","detail":{"k":1,"k":2}}]}
+{"exit_code": 0, "results": []}'
+classifies "a duplicate key anywhere rejects that object (no fall-through to a clear decoy)" \
+   "${dup_nested}" inconclusive
+## An oversized capture (guest output has no size bound) is rejected O(1), no span amplification.
+oversized="$(head -c 1100000 /dev/zero | tr '\000' '{')"
+classifies "an oversized capture is rejected without amplification" "${oversized}" inconclusive
 ## A boolean exit_code is not an integer verdict (isinstance(True,int) is True but type is not).
 classifies "boolean exit_code decoy is not a verdict" \
    '{"results":[],"exit_code":true}' inconclusive

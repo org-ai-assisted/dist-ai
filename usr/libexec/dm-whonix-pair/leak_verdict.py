@@ -28,6 +28,11 @@ battery-story-cards story helper (imported), so the published story can NEVER di
 with the classified run. Fail-closed on ambiguity: zero or more than one top-level
 integer-exit_code object, a truncated/garbled capture, or a boolean/float/string/absent
 exit_code all classify INCONCLUSIVE -- never a false clear.
+
+Scope: the input is OUR OWN anon-leak-test's honest output, captured over guestcontrol;
+the hazards are accidental corruption (a transport cut, a nested-exit_code rename), which
+fail closed. It is NOT an adversarial-JSON parser -- a guest compromised enough to forge
+the capture already controls the verdict outright, so no parser can defend against that.
 """
 
 import json
@@ -46,11 +51,15 @@ def classify_exit_code(code):
     return INCONCLUSIVE
 
 
+## The verdict is a few KB; a far larger capture is garbage or a flood -> fail closed, O(1).
+_MAX_CAPTURE = 1 << 20  # 1 MiB
+
+
 def _reject_duplicate_keys(pairs):
     """json object_pairs_hook: a JSON object from json.dumps never repeats a key, so a duplicate
     -- including one forged by \\uXXXX-escaping a key to collide (exit_\\u0063ode decodes to
-    exit_code) -- is a crafted or garbled object. Reject it (ValueError) rather than silently
-    keep the last value, which could flip a top-level exit_code 1 to a trailing 0."""
+    exit_code) -- is a crafted or garbled object. Raise (reject the whole object) rather than
+    silently keep the last value, which could flip a top-level exit_code 1 to a trailing 0."""
     result = {}
     for key, value in pairs:
         if key in result:
@@ -59,64 +68,53 @@ def _reject_duplicate_keys(pairs):
     return result
 
 
-def _top_level_object_spans(text):
-    """(start, end) of every CLOSED top-level {...} in text, string-aware so a brace inside a
-    JSON string value is ignored. A truncated object that never closes yields NO span: the scan
-    never descends into an unclosed outer object, so it cannot promote a nested detail fragment
-    (e.g. a probe detail's own {"exit_code": 0}) to the verdict -- fail-closed on a transport cut."""
-    spans = []
-    depth = 0
-    start = None
-    in_str = False
-    escape = False
-    for i, ch in enumerate(text):
-        if in_str:
-            if escape:
-                escape = False
-            elif ch == "\\":
-                escape = True
-            elif ch == '"':
-                in_str = False
-            continue
-        if ch == '"':
-            in_str = True
-        elif ch == "{":
-            if depth == 0:
-                start = i
-            depth += 1
-        elif ch == "}" and depth > 0:
-            depth -= 1
-            if depth == 0:
-                spans.append((start, i + 1))
-    return spans
+def parse_verdict(text):
+    """Return (objects, incomplete): every COLUMN-0 top-level JSON object carrying a STRICT integer
+    'exit_code', and whether any column-0 opener FAILED to parse (truncated, garbled, or a forged
+    duplicate key) -- the caller fails closed on either an unexpected count or incomplete=True.
 
-
-def verdict_objects(text):
-    """Every TOP-LEVEL JSON object carrying a STRICT integer 'exit_code', in order. A JSON boolean
-    is excluded (type(True) is int is False, though isinstance(True, int) is True), so a boolean
-    decoy cannot pose as the verdict; a nested exit_code lives in a sub-dict and is invisible to
-    the top-level dict.get. Only CLOSED top-level objects are considered (a truncated tail is
-    dropped), and a duplicate-key object is rejected -- so neither a transport cut nor a forged
-    duplicate can flip the verdict. Transport may wrap the real output in noise and emit earlier
-    irrelevant objects (e.g. a '{"results": []}' warning, which carries no exit_code); the real
-    anon-leak-test output is exactly one qualifying object."""
+    anon-leak-test emits exactly one object via json.dumps(indent=2, sort_keys=True), whose
+    top-level '{' sits at column 0 while every nested brace is indented; a transport warning is
+    other text. So a top-level object starts ONLY at a column-0 '{', and the real json parser
+    (raw_decode) consumes each whole object in one call -- it never descends to a nested
+    'exit_code', and a stray quote or brace inside a value cannot desync the scan (the bug class
+    a hand-rolled tokenizer invites). A boolean exit_code is excluded (type(True) is int is False,
+    though isinstance(True, int) is True), so a boolean decoy cannot pose as the verdict."""
+    if len(text) > _MAX_CAPTURE:
+        return [], True
+    decoder = json.JSONDecoder(object_pairs_hook=_reject_duplicate_keys)
     found = []
-    for start, end in _top_level_object_spans(text):
+    incomplete = False
+    pos = 0
+    length = len(text)
+    while pos < length:
+        brace = text.find("{", pos)
+        if brace == -1:
+            break
+        if brace != text.rfind("\n", 0, brace) + 1:  # not at column 0 -> not a top-level opener
+            pos = brace + 1
+            continue
         try:
-            obj = json.loads(text[start:end], object_pairs_hook=_reject_duplicate_keys)
+            obj, end = decoder.raw_decode(text, brace)
         except ValueError:
+            ## a column-0 opener that will not parse: truncated tail, garbled, or a dup key ->
+            ## fail closed. Resume at the next line so a nested indented brace is never an anchor.
+            incomplete = True
+            newline = text.find("\n", brace)
+            pos = length if newline == -1 else newline + 1
             continue
         if isinstance(obj, dict) and type(obj.get("exit_code")) is int:  # exact int: reject bool
             found.append(obj)
-    return found
+        pos = max(end, brace + 1)
+    return found, incomplete
 
 
 def classify(text):
-    """The run's authoritative verdict: clear / leak / inconclusive. EXACTLY one top-level
-    integer-exit_code object yields a definite verdict; zero (nothing ran to completion) or more
-    than one (an ambiguous or decoyed capture) is INCONCLUSIVE -- fail-closed, never a false
-    clear from guessing which object is real."""
-    objects = verdict_objects(text)
-    if len(objects) != 1:
+    """The run's authoritative verdict: clear / leak / inconclusive. EXACTLY one clean top-level
+    integer-exit_code object yields a definite verdict; zero / more than one (an ambiguous or
+    decoyed capture) or ANY failed column-0 opener (a truncated or garbled capture) is
+    INCONCLUSIVE -- fail-closed, never a false clear from guessing which object is real."""
+    objects, incomplete = parse_verdict(text)
+    if incomplete or len(objects) != 1:
         return INCONCLUSIVE
     return classify_exit_code(objects[0]["exit_code"])

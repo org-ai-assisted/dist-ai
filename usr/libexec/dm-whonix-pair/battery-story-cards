@@ -83,13 +83,14 @@ def main(argv):
 
     text = sys.stdin.read()
 
-    ## Exactly one top-level integer-exit_code object = the one real verdict, found by the SAME
-    ## module probe_verdict classifies the run from (leak_verdict.classify shares this scan, so the
-    ## story and the gate cannot diverge). Zero (nothing ran to completion) or more than one (an
-    ## ambiguous or decoyed capture) -> fall back (exit 2) to the caller's single raw-JSON card,
-    ## never guess which object is real; a real leak is preserved raw, not silently dropped.
-    objects = leak_verdict.verdict_objects(text)
-    if len(objects) != 1:
+    ## Exactly one clean top-level integer-exit_code object = the one real verdict, found by the
+    ## SAME module probe_verdict classifies the run from (leak_verdict.parse_verdict is the shared
+    ## scan, so the story and the gate cannot diverge). Zero / more than one (ambiguous or decoyed)
+    ## or ANY failed column-0 opener (a truncated or garbled capture) -> fall back (exit 2) to the
+    ## caller's single raw-JSON card, never guess which object is real; a real leak is preserved
+    ## raw, not silently dropped.
+    objects, incomplete = leak_verdict.parse_verdict(text)
+    if incomplete or len(objects) != 1:
         return 2
     verdict = objects[0]
 
