@@ -1114,7 +1114,9 @@ wire() {
          # DIST_AI_REPO: git-hooks-workflow-gate-test resolves the workflow-yaml
          # validator (github-org-tools-tests, shipped by dist-ai) from it, so the
          # gate RUNS in CI instead of skipping on the dev-only ~/private-sources path.
-         wire_env=( "PRIVATE_AI_CONFIG_PATH=$( pkg_dir private-ai-config )" "DIST_AI_REPO=$( pkg_dir dist-ai )" )
+         # Use THIS orchestrator's own dist-ai root (mydir is dist-ai/usr/bin); for a
+         # non-dist-ai --component run 'pkg_dir dist-ai' resolves empty.
+         wire_env=( "PRIVATE_AI_CONFIG_PATH=$( pkg_dir private-ai-config )" "DIST_AI_REPO=$( dirname -- "$( dirname -- "${mydir}" )" )" )
          if [ -n "${hs}" ]; then
             suite_path="${mydir}:${hs}/usr/bin:${PATH}"
             wire_env+=(
