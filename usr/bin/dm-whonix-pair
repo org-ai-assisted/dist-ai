@@ -56,6 +56,15 @@ BATTERY_STORY_CARDS="${BATTERY_STORY_CARDS:-$(
 )/../libexec/dm-whonix-pair/battery-story-cards}"
 [ -x "${BATTERY_STORY_CARDS}" ] \
    || BATTERY_STORY_CARDS='/usr/libexec/dm-whonix-pair/battery-story-cards'
+## Single source of the leak-battery verdict classification (clear/leak/inconclusive), shared by
+## probe_verdict and battery-story-cards so the story can never disagree with the classified run.
+## Same checkout-sibling resolution + override as BATTERY_STORY_CARDS.
+LEAK_EXIT_CLASSIFY="${LEAK_EXIT_CLASSIFY:-$(
+   dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")"
+)/../libexec/dm-whonix-pair/leak-exit-classify}"
+[ -x "${LEAK_EXIT_CLASSIFY}" ] \
+   || LEAK_EXIT_CLASSIFY='/usr/libexec/dm-whonix-pair/leak-exit-classify'
+export LEAK_EXIT_CLASSIFY
 ## Where a leak's GW-NIC capture is preserved for forensics (see on_exit).
 LEAK_ARTIFACT_DIR="${LEAK_ARTIFACT_DIR:-${HOME:-${TMP:-}}}"
 
@@ -554,19 +563,17 @@ boot_workstation_sysmaint() {
 ## and a transport cut yields no output -- both have no exit_code line -> SETUP, never a false leak.
 ## Keyed on the JSON field at line start (the real top-level key), not a loose token anywhere.
 probe_verdict() {
-   local out="$1" n
-   n="$(printf '%s\n' "${out}" | sed -n 's/^[[:space:]]*"exit_code"[[:space:]]*:[[:space:]]*\([0-9]\{1,\}\).*/\1/p' | tail -1)"
-   case "${n}" in
-      0)
-         ## clear
+   local out="$1"
+   case "$(printf '%s\n' "${out}" | "${LEAK_EXIT_CLASSIFY}")" in
+      clear)
          return 0
          ;;
-      1)
+      leak)
          ## a probe proved non-Tor egress (LEAK)
          return 1
          ;;
       *)
-         ## 2 (inconclusive), or no JSON verdict at all (infra/transport failure)
+         ## inconclusive: exit_code 2, or no JSON verdict at all (infra/transport failure)
          return "${SETUP_RC}"
          ;;
    esac

@@ -22,12 +22,14 @@ The battery JSON (anon-leak-test --json) is:
   {"results": [{"probe", "status", "message", "detail"}, ...],
    "leak_detected": bool, "exit_code": int}
 Transport (guestcontrol) may wrap it in noise AND emit earlier, irrelevant
-objects (e.g. an empty '{"results": []}' warning) before the real verdict, so
-the object is both extracted by a decoder scan AND pinned to the SAME verdict
-dm-whonix-pair's probe_verdict classifies the run from -- the object carrying
-the LAST line-anchored "exit_code". A real leak must never be silently replaced
-by an earlier object: if the authoritative object cannot be matched, the helper
-exits 2 and the caller keeps the raw JSON, so the evidence is never lost.
+objects (e.g. an empty '{"results": []}' warning) before the real verdict.
+
+The verdict is NEVER re-derived here: it is classified by the SAME single-source
+classifier (leak-exit-classify) dm-whonix-pair's probe_verdict uses, so the story
+can never disagree with the published pass/fail. A per-probe story is emitted ONLY
+when the one cardable JSON object matches that authoritative verdict; on ANY
+divergence or ambiguity the helper exits 2 and the caller keeps the raw JSON, so a
+real leak can never be silently dropped from the published evidence.
 
 Argv: <base-nn> <summary-name>. Output (stdout), one card per line:
   <nn> <name> <b64-title> <b64-body>
@@ -40,35 +42,39 @@ Exit: 0 one-or-more records emitted; 2 no authoritative battery verdict to card
 
 import base64
 import json
-import re
+import os
 import string
+import subprocess
 import sys
-
-## probe_verdict (dm-whonix-pair) keys the run on the LAST line-anchored "exit_code": N (any
-## indent). Match that EXACTLY so the story cannot disagree with the published verdict.
-_EXIT_CODE_LINE = re.compile(r'(?m)^[ \t]*"exit_code"[ \t]*:[ \t]*(\d+)')
 
 ## The publisher (results-publish.bsh) drops any card milestone outside ASCII [A-Za-z0-9._-],
 ## plus a leading '-' and a bare '.' / '..'. Mirror that charset so every per-probe card publishes.
 _SAFE_CHARS = frozenset(string.ascii_letters + string.digits + "._-")
 
-
-def authoritative_exit_code(text):
-    """The exit_code probe_verdict classifies from: the LAST line-anchored "exit_code": N
-    (any indent). None when absent -> no verdict (the caller keeps the raw JSON)."""
-    matches = _EXIT_CODE_LINE.findall(text)
-    return int(matches[-1]) if matches else None
+## The shared verdict classifier (dm-whonix-pair's probe_verdict uses the same one): checkout
+## sibling by default, overridable via LEAK_EXIT_CLASSIFY so a test drives the in-tree copy.
+_CLASSIFY = os.environ.get("LEAK_EXIT_CLASSIFY") or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "leak-exit-classify")
 
 
-def extract_verdict(text):
-    """Return the JSON object carrying the LAST top-level integer 'exit_code' -- the SAME object
-    probe_verdict classifies the run from. Not merely the first object with a 'results' list: an
-    earlier empty/irrelevant object must never win and drop the real verdict. None if no object
-    carries an integer exit_code."""
+def classify(text):
+    """The run's verdict as probe_verdict classifies it: 'clear' / 'leak' / 'inconclusive'.
+    Delegated to the SINGLE shared classifier (never a parallel JSON parse), so the story can
+    never re-derive a verdict that diverges from the authoritative sed+case."""
+    result = subprocess.run([_CLASSIFY], input=text.encode("utf-8"),
+                            stdout=subprocess.PIPE, check=True)
+    return result.stdout.decode("ascii").strip()
+
+
+def verdict_objects(text):
+    """Every top-level JSON object carrying a STRICT integer 'exit_code'. A JSON boolean is
+    excluded (type(True) is not int, though isinstance(True, int) is True), so a boolean decoy
+    cannot pose as the verdict. The real anon-leak-test output is exactly one such object; a
+    transport warning (e.g. '{"results": []}') carries none."""
     decoder = json.JSONDecoder()
     index = 0
     length = len(text)
-    chosen = None
+    found = []
     while index < length:
         start = text.find("{", index)
         if start == -1:
@@ -78,11 +84,10 @@ def extract_verdict(text):
         except ValueError:
             index = start + 1
             continue
-        if isinstance(obj, dict) and isinstance(obj.get("exit_code"), int):
-            ## Keep scanning: the LAST such object wins (matches probe_verdict's tail -1).
-            chosen = obj
+        if isinstance(obj, dict) and type(obj.get("exit_code")) is int:  # exact int: reject bool
+            found.append(obj)
         index = end if end > start else start + 1
-    return chosen
+    return found
 
 
 def safe_label(name, fallback):
@@ -114,18 +119,30 @@ def main(argv):
     summary_name = safe_label(argv[1], "leak-battery")
 
     text = sys.stdin.read()
-    authoritative = authoritative_exit_code(text)
-    verdict = extract_verdict(text)
-    ## Publish ONLY a story that agrees with the verdict probe_verdict classifies the run from.
-    ## If no authoritative exit_code, or the extracted object does not carry it, keep the raw JSON
-    ## (exit 2) -- an earlier/irrelevant object must never silently replace the real verdict, so a
-    ## real leak can never vanish from the published story.
-    if (authoritative is None or verdict is None
-            or verdict.get("exit_code") != authoritative):
+
+    ## The authoritative verdict (the SAME one probe_verdict classifies the run from). A per-probe
+    ## story is published ONLY when the one cardable object matches it; ANY divergence or ambiguity
+    ## falls back (exit 2) to the caller's single raw-JSON card, so a real leak is never dropped.
+    authoritative = classify(text)
+
+    ## Exactly one strict-int exit_code object = the one real verdict. Zero (nothing to card) or
+    ## more than one (an ambiguous decoy) -> fall back; never guess which object is real.
+    objects = verdict_objects(text)
+    if len(objects) != 1:
         return 2
+    verdict = objects[0]
+
+    ## The carded object's own verdict, by the SAME classifier. A bare decoy line (CR-prefixed,
+    ## leading-zero like 01, or a non-ASCII digit) shifts the authoritative exit_code without a
+    ## matching JSON object, so these differ -> fall back rather than publish a contradicting story.
+    if classify('  "exit_code": %d\n' % verdict["exit_code"]) != authoritative:
+        return 2
+
     results = verdict.get("results")
+    ## A non-list / null 'results' is NOT cardable; fall back so its raw evidence survives, never
+    ## coerce it to an empty list and publish a probe-less story.
     if not isinstance(results, list):
-        results = []
+        return 2
 
     exit_code = verdict.get("exit_code")
     leak_detected = verdict.get("leak_detected")

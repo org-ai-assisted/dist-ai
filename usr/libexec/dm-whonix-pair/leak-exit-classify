@@ -1,0 +1,35 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Single source of the leak-battery verdict classification: anon-leak-test JSON on stdin ->
+## one of clear / leak / inconclusive on stdout. SHARED by dm-whonix-pair's probe_verdict and
+## the battery-story-cards story helper so the published story can never disagree with the
+## classified run. Keys on the LAST line-anchored "exit_code": N (any indent) -- 0 clear, 1 leak,
+## everything else (2, absent, non-ASCII digit, leading zero like 01) inconclusive. LC_ALL=C pins
+## [0-9]/[[:space:]] to ASCII (Unicode-digit and odd-whitespace decoy lines stay unmatched), so a
+## fullwidth-digit or stray-whitespace line cannot flip the verdict.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+exit_code_digits="$(sed -n 's/^[[:space:]]*"exit_code"[[:space:]]*:[[:space:]]*\([0-9]\{1,\}\).*/\1/p' | tail -1)"
+case "${exit_code_digits}" in
+   0)
+      printf '%s\n' clear
+      ;;
+   1)
+      printf '%s\n' leak
+      ;;
+   *)
+      printf '%s\n' inconclusive
+      ;;
+esac
