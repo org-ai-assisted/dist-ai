@@ -337,14 +337,28 @@ class TestPermissionDeniedPopupSurfacing(UpdatecheckTestBase):
         res = self._run_perm_denied(0)
         self.assertEqual(res.returncode, 0)
 
-    def test_branch_uses_wrapper_not_raw_popup_path(self) -> None:
-        ## main() must call the stubbable wrapper, not the raw absolute path, so
-        ## the popup failure mode is testable and MSGCOLLECTOR_REPO-overridable.
-        self.assertIn('show_permission_popup ', self.text)
-        self.assertNotIn(
-            '/usr/libexec/msgcollector/one-time-popup.py '
-            '~/.systemcheck/status-files',
-            self.text)
+    def test_raw_popup_invoked_only_via_wrapper(self) -> None:
+        ## The raw one-time-popup.py must be invoked from exactly ONE place -- the
+        ## show_permission_popup wrapper -- so the branch's failure mode stays
+        ## stubbable. A loose substring check greens even if the raw helper is
+        ## still called directly with different spacing/quoting (e.g. two spaces,
+        ## or "$HOME/..."), so parse non-comment lines instead.
+        popup_lines = [
+            line for line in self.text.splitlines()
+            if 'one-time-popup.py' in line and not line.lstrip().startswith('#')
+        ]
+        self.assertEqual(
+            len(popup_lines), 1,
+            'raw one-time-popup.py must be invoked exactly once (inside the '
+            f"show_permission_popup wrapper); found {len(popup_lines)}: "
+            f"{popup_lines}")
+        wrapper = popup_lines[0]
+        self.assertIn('"${MSGCOLLECTOR_REPO:-}"', wrapper)
+        self.assertIn('"$@"', wrapper)
+        ## and the permission-denied branch must call the wrapper (any spacing).
+        self.assertRegex(
+            self.text,
+            r'(?m)^[ \t]*show_permission_popup[ \t]+~/\.systemcheck/status-files')
 
 
 if __name__ == '__main__':
