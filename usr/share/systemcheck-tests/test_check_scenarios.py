@@ -278,7 +278,8 @@ class TestTempdirScenarios(ScenarioTestBase):
     ## symlink (-h false), dirs present and owned (-d/-O true).
     STAT_OK = ('stat() { case "$*" in *--format=%u*) printf "0\\n" ;; '
                '*--format=%a*/tmp/user/*) printf "700\\n" ;; '
-               '*--format=%a*) printf "711\\n" ;; esac; }\n')
+               '*--format=%a*/tmp/user) printf "711\\n" ;; '
+               '*--format=%a*/tmp) printf "1777\\n" ;; esac; }\n')
     TEST_OK = ('test() { case "$1" in -L) return 1 ;; -d|-O) return 0 ;; '
                '*) builtin test "$@" ;; esac; }\n')
 
@@ -336,9 +337,11 @@ class TestTempdirScenarios(ScenarioTestBase):
 
     def test_base_dir_not_root_owned_warns(self) -> None:
         ## Variables correct, per-user dir fine, but /tmp/user is not root-owned.
-        stat_base_bad = ('stat() { case "$*" in *--format=%u*) printf "1000\\n" ;; '
+        stat_base_bad = ('stat() { case "$*" in *--format=%u*/tmp/user) printf "1000\\n" ;; '
+                         '*--format=%u*) printf "0\\n" ;; '
                          '*--format=%a*/tmp/user/*) printf "700\\n" ;; '
-                         '*--format=%a*) printf "711\\n" ;; esac; }\n')
+                         '*--format=%a*/tmp/user) printf "711\\n" ;; '
+                         '*--format=%a*/tmp) printf "1777\\n" ;; esac; }\n')
         r = run_check_scenario(self.check(self.FILE), 'check_tempdir',
                                env_setup=self.GOOD_ENV,
                                stubs=self.ID + stat_base_bad + self.TEST_OK)
@@ -362,7 +365,8 @@ class TestTempdirScenarios(ScenarioTestBase):
         ## Base fine; the per-user dir is mode 0755, not 0700.
         stat_peruser_bad = ('stat() { case "$*" in *--format=%u*) printf "0\\n" ;; '
                             '*--format=%a*/tmp/user/*) printf "755\\n" ;; '
-                            '*--format=%a*) printf "711\\n" ;; esac; }\n')
+                            '*--format=%a*/tmp/user) printf "711\\n" ;; '
+                            '*--format=%a*/tmp) printf "1777\\n" ;; esac; }\n')
         r = run_check_scenario(self.check(self.FILE), 'check_tempdir',
                                env_setup=self.GOOD_ENV,
                                stubs=self.ID + stat_peruser_bad + self.TEST_OK)
