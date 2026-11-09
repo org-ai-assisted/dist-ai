@@ -321,14 +321,21 @@ fi
 ## not exist, so `git log old..<missing>` fails. Real `die` is sourced so the
 ## fix's die path runs; die exits explicitly, so a suppressing `|| rc` context
 ## cannot hide it.
-## helper-scripts is a superproject sibling: checked out separately in a component
-## CI run and wired via HELPER_SCRIPTS_PATH, with the superproject layout as the
-## fallback for a full checkout. Resolve + verify readability HERE (outside the
-## errexit-suppressing subshell below), FATAL if unresolvable, so a missing lib
-## fails loud instead of being swallowed into a false "failure propagates" pass.
-log_run_die="${HELPER_SCRIPTS_PATH:-${dm_checkout}/packages/kicksecure/helper-scripts}/usr/libexec/helper-scripts/log_run_die.sh"
+## helper-scripts is a superproject sibling, wired via HELPER_SCRIPTS_PATH (unset ->
+## the installed /usr/libexec tree, byte-identical) -- the same resolution the rest
+## of the suite uses. log_run_die.sh sources its siblings (get_colors.sh) from the
+## SAME base, so a readable log_run_die.sh whose sibling is absent would fail the
+## in-subshell source below and be MISREAD as the git-log failure propagating.
+## Resolve + smoke-source it HERE (outside the errexit-suppressing subshell), FATAL
+## on any load failure, so a missing/broken lib can never masquerade as a pass.
+log_run_die="${HELPER_SCRIPTS_PATH:-}/usr/libexec/helper-scripts/log_run_die.sh"
 if [ ! -r "${log_run_die}" ]; then
-   printf '%s\n' "FATAL: log_run_die.sh not found at '${log_run_die}' (set HELPER_SCRIPTS_PATH or DERIVATIVE_MAKER_DIR)." >&2
+   printf '%s\n' "FATAL: log_run_die.sh not found at '${log_run_die}' (set HELPER_SCRIPTS_PATH)." >&2
+   exit 1
+fi
+# shellcheck disable=SC1090  # path is a runtime-resolved helper-scripts lib
+if ! ( source "${log_run_die}" ) >/dev/null 2>&1; then
+   printf '%s\n' "FATAL: '${log_run_die}' failed to source (missing sibling lib?); set HELPER_SCRIPTS_PATH to a complete helper-scripts tree." >&2
    exit 1
 fi
 logfail_repo="$(mktemp -d -p "${tmp_root}")"

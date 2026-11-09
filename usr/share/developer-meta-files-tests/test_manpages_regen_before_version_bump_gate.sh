@@ -153,86 +153,14 @@ else
    fail "pkg_git_debinstfile (line ${debinstfile_line}) runs at/after the version-bump gate (line ${show_line}) -- install file drifts on quiet packages"
 fi
 
-## The regen commits must be pathspec-scoped: an unconditional every-pass commit
-## with a bare `git commit -m` would sweep a sibling's unrelated staged change
-## into the generated-file commit. Assert each helper commits with a `--`
-## pathspec -- either a direct `git commit -- <pathspec>` or the
-## `git_commit_pathspecs <msg> <pathspec...>` wrapper (which commits
-## `git commit -m <msg> -- <pathspecs>`, so it is scoped by construction as long
-## as at least one pathspec argument follows the message).
-commit_scoped() {
-   local fn="${1}" body
-   body="$(awk -v fn="${fn}" '
-      $0 ~ "^"fn"\\(\\) \\{" { f=1 }
-      f                      { print }
-      f && /^\}/             { exit }
-   ' "${subject}")"
-   if [ -z "${body}" ]; then
-      fail "${fn}: not found for commit-scope check"
-      return
-   fi
-   ## Check the pathspec PER 'git commit' invocation: a ' -- ' separator on the SAME
-   ## command line must be followed by a REAL pathspec token. The prior whole-body
-   ## glob matched a ' -- ' anywhere later in the body. Per line we first drop the
-   ## '-m'/'--message' quoted value (so a ' -- ' inside the commit message is not
-   ## counted) and the trailing '#' comment, then require ' -- ' followed by a token
-   ## that is neither empty nor a shell operator (a bare 'git commit --' or
-   ## '-- || true' commits every staged path, not a scoped set). Simple per-line
-   ## match, not a shell tokenizer: a backslash-continued multi-line 'git commit', an
-   ## unquoted/`--message=` message form, a ' -- ' in an escaped quote, or a crafted
-   ## empty/non-path token after '--' ('-- ""', '-- --') is out of scope (the real
-   ## commits are single-line, '-m "..."'). This guards an ACCIDENTAL dropped pathspec,
-   ## not an author deliberately crafting an unscoped commit that looks scoped.
-   local found=0 scoped=1 line nomsg after lead _parts
-   while IFS= read -r line; do
-      case "${line}" in
-         *'git_commit_pathspecs '*)
-            found=1
-            ## The wrapper is pathspec-scoped BY CONSTRUCTION; it only fails to
-            ## scope if called with the message alone and no pathspec. Require the
-            ## message token plus at least one more (the pathspec). read -ra splits
-            ## on whitespace WITHOUT globbing (the real calls are single-line with
-            ## simple quoted args); a trailing comment only inflates the count,
-            ## which stays on the safe side.
-            after="${line#*git_commit_pathspecs }"
-            read -ra _parts <<< "${after}"
-            if [ "${#_parts[@]}" -lt 2 ]; then
-               scoped=0
-            fi
-            ;;
-         *'git commit '*)
-            found=1
-            ## Drop the -m/--message quoted value, then the trailing '#' comment.
-            nomsg="$(printf '%s' "${line}" \
-               | sed -E -e 's/(-m|--message)[[:space:]]+"[^"]*"//g' \
-                        -e "s/(-m|--message)[[:space:]]+'[^']*'//g")"
-            nomsg="${nomsg%% #*}"
-            if [[ "${nomsg}" != *' -- '* ]]; then
-               scoped=0
-            else
-               after="${nomsg#* -- }"
-               lead="${after%%[![:space:]]*}"
-               after="${after#"${lead}"}"
-               case "${after}" in
-                  ''|'&'*|'|'*|';'*|'<'*|'>'*|')'*)
-                     scoped=0
-                     ;;
-               esac
-            fi
-            ;;
-      esac
-   done <<< "${body}"
-   if [ "${found}" -eq 0 ]; then
-      fail "${fn}: no 'git commit' / 'git_commit_pathspecs' found for commit-scope check"
-   elif [ "${scoped}" -eq 1 ]; then
-      pass "${fn}: every commit is pathspec-scoped"
-   else
-      fail "${fn}: a commit is NOT pathspec-scoped -- an unscoped commit sweeps unrelated staged changes"
-   fi
-}
-
-commit_scoped 'pkg_git_manpages'
-commit_scoped 'pkg_git_debinstfile'
+## Pathspec-scoping of these regen commits (that pkg_git_manpages /
+## pkg_git_debinstfile commit ONLY their generated paths, never a sibling's staged
+## change) is covered BEHAVIOURALLY by test_pkg_git_manpages_pathspec_abort.sh: it
+## drives the real git_commit_pathspecs against throwaway repos and asserts the
+## single commit carries only the given pathspecs, plus that both callers wire
+## through it. This test keeps the ORDERING invariant only (regen runs
+## unconditionally before the version-bump gate); a text re-check of the commit
+## scoping here would only duplicate that behavioural test more weakly.
 
 printf '%s\n' "${pass_count} pass, ${test_failures} fail, 0 skip"
 [ "${test_failures}" -eq 0 ]
