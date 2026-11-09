@@ -98,7 +98,12 @@ run_fs() {
    local label="$1" mkfs_cmd="$2" img mnt sf rc
    img="$(mktemp)"
    images+=( "${img}" )
-   dd if=/dev/zero of="${img}" bs=1M count=320 status=none
+   ## do_start's free-disk gate requires the swap size PLUS a fixed 2 GiB
+   ## headroom, so the backing fs must exceed ~2 GiB or do_start aborts
+   ## "Insufficient free disk space" before creating the file. A SPARSE 3 GiB
+   ## image clears the gate (df reports the full fs size) without writing 3 GiB:
+   ## only the 64 MiB swap file and fs metadata consume real blocks.
+   truncate --size=3G "${img}"
    "${mkfs_cmd}" -q -F "${img}" 2>/dev/null || "${mkfs_cmd}" -f "${img}"
    mnt="$(mktemp --directory)"
    mount -o loop "${img}" "${mnt}"
