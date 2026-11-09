@@ -31,5 +31,15 @@ normalized, so OCR glyph/spacing noise and minor UI drift do not matter, but a W
 
 `welcome`, `location`, `summary`, `luks-prompt` are seeded from OCR of a healthy run
 (2137-g853b3107b6f3-20261024T054343Z) as templates. Review + extend to the other milestones.
-`keyboard` is deliberately left UNVALIDATED (its OCR is noisy) as an example of the graduated
-state.
+
+`keyboard` and `installed-grub-menu` are deliberately left UNVALIDATED (no golden), as examples
+of the graduated state:
+- `keyboard` -- its OCR is noisy.
+- `installed-grub-menu` -- a blind-timed grab racing GRUB autoboot (it can land on the firmware
+  boot-device screen or a black frame, firmware-dependent); there is no stable cross-firmware
+  token, so it is NOT content-gated. The installed boot is proven by the downstream `luks-prompt`
+  + `first-boot` gates. It is `skip` for the blank gate too (see `milestone_blank_mode`).
+
+`luks-prompt` / `sysmaint-luks-prompt` drop the trailing device name on purpose: dracut prints
+`enter passphrase for disk <name>` where `<name>` varies by firmware (EFI `rootfs`, BIOS VBox
+`VBOX HARDDISK`), so the golden matches only the stable `Please enter passphrase for disk` prefix.

@@ -1,2 +1,4 @@
 # luks-prompt milestone -- expected OCR tokens (seeded from a healthy run; see README)
-Please enter passphrase for disk rootfs
+# Device-name tail dropped on purpose: dracut prints "for disk <name>" where <name> is
+# firmware-dependent (EFI: "rootfs"; BIOS VBox: "VBOX HARDDISK"). Match the stable prefix only.
+Please enter passphrase for disk

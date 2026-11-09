@@ -141,6 +141,28 @@ for fname in goldens:
 check("keyboard stays UNVALIDATED (no golden)",
       not os.path.isfile(os.path.join(golden_dir, "keyboard.tokens")))
 
+## Canary: no installed-grub-menu golden ships. It is a blind-timed grab racing GRUB autoboot
+## whose content is firmware-dependent (GRUB menu on EFI, the firmware boot-device screen or a
+## black frame on BIOS), so there is no stable cross-firmware token and it is UNVALIDATED by
+## design -- the installed boot is proven by the luks-prompt + first-boot gates. A golden
+## appearing here means someone re-gated a non-deterministic frame; update the README and this
+## canary together, deliberately.
+check("installed-grub-menu stays UNVALIDATED (no golden)",
+      not os.path.isfile(os.path.join(golden_dir, "installed-grub-menu.tokens")))
+
+## Firmware tolerance for the LUKS-prompt goldens. dracut prints "enter passphrase for disk
+## <name>" where <name> varies by firmware (EFI "rootfs" vs BIOS VBox "VBOX HARDDISK"); a real
+## BIOS run failed because the golden pinned "...for disk rootfs". The goldens now match only the
+## stable prefix. Drive the REAL matcher against the BIOS wording, and canary that the OLD
+## device-pinned token would NOT have matched it -- so this stays a load-bearing regression.
+_BIOS_LUKS = "Please enter passphrase for disk VBOX HARDDISK (press TAB for no echo)"
+for _stage in ("luks-prompt", "sysmaint-luks-prompt"):
+    _toks = ita.read_spec(os.path.join(golden_dir, "%s.tokens" % _stage))
+    check("%s golden matches the BIOS device-name wording" % _stage,
+          missing_tokens(_BIOS_LUKS, _toks) == [])
+check("old device-pinned LUKS token would NOT match the BIOS wording (fix is load-bearing)",
+      missing_tokens(_BIOS_LUKS, ["Please enter passphrase for disk rootfs"]) != [])
+
 if _failures:
     print("\n%d golden-token assertion(s) failed" % _failures, file=sys.stderr)
     sys.exit(1)
