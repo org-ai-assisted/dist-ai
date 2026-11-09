@@ -68,6 +68,12 @@ main() {
    ## MODE is interpolated into the ERE below, so constrain it to the id charset
    ## (lowercase + hyphen). Rejects a typo/metachar mode (e.g. 'live.sysmaint', whose
    ## '.' would match a hyphen and select a DIFFERENT mode's entry).
+   ## MODE is a TRUSTED INTERNAL token: callers pass a fixed set ('user' / 'persistent-sysmaint'
+   ## / ...), never user input. A crafted mode that is a real-mode prefix plus part of the
+   ## device-id (e.g. 'user-deadbeef' against gnulinux-user-deadbeef-<uuid>) would still select
+   ## the real 'user' entry via the greedy id tail -- a low residual accepted rather than
+   ## over-anchoring the device-id to a strict UUID shape (which would false-reject a legit
+   ## non-UUID device-id, e.g. under GRUB_DISABLE_UUID, re-opening a fail-closed gap).
    [[ "${mode}" =~ ^[a-z][a-z-]*$ ]] \
       || { printf '%s\n' "${me}: ERROR: invalid mode '${mode}' (expected [a-z-]+)" >&2; exit 1; }
 

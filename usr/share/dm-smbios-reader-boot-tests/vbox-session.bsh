@@ -153,7 +153,22 @@ clean_poweroff() {
       esac
       sleep 3
    done
+   ## Hard fallback: force off, then CONFIRM the off-state before returning. The frontend
+   ## does not release the disk lock until the VM is actually powered off, so returning early
+   ## would let a following offline disk mount (boot_installed) race a still-locked disk and
+   ## fail the qemu-nbd connect -- a false DEGRADED result with no boot.
    "${VBOXMANAGE}" controlvm "${vm}" poweroff >/dev/null 2>&1 || true
+   deadline=$(( SECONDS + 30 ))
+   while [ "${SECONDS}" -lt "${deadline}" ]; do
+      state="$("${VBOXMANAGE}" showvminfo "${vm}" --machinereadable 2>/dev/null \
+         | sed -n 's/^VMState="\(.*\)"$/\1/p')"
+      case "${state}" in
+         poweroff|aborted)
+            return 0
+            ;;
+      esac
+      sleep 2
+   done
 }
 
 ## Echo the guest display WIDTH in pixels (0 if unavailable). The desktop-up visual

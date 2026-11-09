@@ -17,6 +17,9 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
+# shellcheck source=../../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
+source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/has.bsh
+
 test_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 if [ -x "${test_dir}/../../libexec/image-test/vbox-grub-set-next-boot-mode" ]; then
    subject="${test_dir}/../../libexec/image-test/vbox-grub-set-next-boot-mode"
@@ -41,7 +44,7 @@ created='false'
 
 cleanup() {
    if [ "${created}" = 'true' ]; then
-      safe-rm --force -- "${req}/disk" "${req}/passphrase" "${req}/mode" "${req}/format" "${req}/fakedisk" "${req}/other_owned" 2>/dev/null || true
+      safe-rm --force -- "${req}/disk" "${req}/passphrase" "${req}/mode" "${req}/format" "${req}/fakedisk" "${req}/other_owned" "${req}/ok.vmdk" "${req}/bad.vmdk" 2>/dev/null || true
       if [ "${req_preexisted}" = 'false' ]; then
          rmdir -- "${req}" 2>/dev/null || true
       fi
@@ -145,14 +148,41 @@ check "no passphrase: delegates without --passphrase-file" \
    "$([ "${argv}" = "run --disk $(realpath -- "${disk}") -- ${helper_sentinel} persistent-sysmaint " ] && printf '%s' true || printf '%s' false)"
 printf '%s' 'irrelevant' > "${req}/passphrase"
 
-## 1c. OPTIONAL format: a format file (vmdk) -> the wrapper adds --format <fmt>.
-printf '%s' 'vmdk' > "${req}/format"
-safe-rm --force -- "${argv_log}"
-rc="$(run_wrapper "${uid}")"
-argv="$(tr '\n' ' ' < "${argv_log}" 2>/dev/null || true)"
-check "format file: delegates with --format vmdk" \
-   "$([ "${argv}" = "run --disk $(realpath -- "${disk}") --passphrase-file <PASSFILE> --format vmdk -- ${helper_sentinel} persistent-sysmaint " ] && printf '%s' true || printf '%s' false)"
-safe-rm --force -- "${req}/format"
+## 1c + 1e. OPTIONAL format (vmdk). A non-vdi format lets qemu-nbd open files the descriptor
+## references AS ROOT, so the wrapper requires a SELF-CONTAINED image: a monolithicSparse vmdk
+## (self-referencing) delegates with --format vmdk; a monolithicFlat vmdk whose extent points at
+## ANOTHER file (the /etc/shadow escalation) is REFUSED before any mount. Needs qemu-img to build
+## the fixtures (the real wrapper dependency for the vmdk path).
+if has qemu-img; then
+   ## Self-contained: delegates with --format vmdk. Point req/disk at a caller-owned sparse vmdk.
+   ok_vmdk="${req}/ok.vmdk"
+   qemu-img create -f vmdk -o subformat=monolithicSparse "${ok_vmdk}" 1M >/dev/null 2>&1
+   printf '%s\n' "${ok_vmdk}" > "${req}/disk"
+   printf '%s' 'vmdk' > "${req}/format"
+   safe-rm --force -- "${argv_log}"
+   rc="$(run_wrapper "${uid}")"
+   argv="$(tr '\n' ' ' < "${argv_log}" 2>/dev/null || true)"
+   check "self-contained vmdk: delegates with --format vmdk" \
+      "$([ "${argv}" = "run --disk $(realpath -- "${ok_vmdk}") --passphrase-file <PASSFILE> --format vmdk -- ${helper_sentinel} persistent-sysmaint " ] && printf '%s' true || printf '%s' false)"
+
+   ## Malicious monolithicFlat: extent references an OUTSIDE file -> MUST be refused, no mount.
+   victim="${work}/victim.bin"
+   printf '%s' SECRET > "${victim}"
+   bad_vmdk="${req}/bad.vmdk"
+   { printf '%s\n' '# Disk DescriptorFile' 'version=1' 'CID=fffffffe' 'parentCID=ffffffff' \
+       'createType="monolithicFlat"' "RW 1 FLAT \"${victim}\" 0" 'ddb.virtualHWVersion = "4"'; } > "${bad_vmdk}"
+   printf '%s\n' "${bad_vmdk}" > "${req}/disk"
+   safe-rm --force -- "${argv_log}"
+   rc="$(run_wrapper "${uid}")"
+   check "malicious vmdk (external extent) refused (rc!=0, got ${rc})" \
+      "$([ "${rc}" != '0' ] && printf '%s' true || printf '%s' false)"
+   check "malicious vmdk did NOT call vbox-disk-mount (no root open of the extent)" \
+      "$([ ! -e "${argv_log}" ] && printf '%s' true || printf '%s' false)"
+   safe-rm --force -- "${req}/format" "${req}/ok.vmdk" "${req}/bad.vmdk" "${victim}"
+   printf '%s\n' "${disk}" > "${req}/disk"
+else
+   printf '%s\n' "note: qemu-img absent -- skipping the vmdk self-containment cases (1c/1e)" >&2
+fi
 
 ## 1d. Invalid format (shell/argv metachars) -> refuse, no mount.
 printf '%s' 'vmdk; rm -rf /' > "${req}/format"

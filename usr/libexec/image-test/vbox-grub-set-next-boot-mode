@@ -65,19 +65,22 @@ caller_home="$(printf '%s' "${caller_pw}" | cut -d: -f6)"
 caller_gid="$(printf '%s' "${caller_pw}" | cut -d: -f4)"
 [ -n "${caller_gid}" ] || die "caller uid ${PRIVLEAP_CALLER_UID} has no primary group" 2
 
-## Read a caller-owned request file with the CALLER's privileges, never root's. The [ -L ]
-## checks below are check-then-open (TOCTOU): a caller owning the request dir can swap a file
-## for a symlink AFTER the check and BEFORE we read it. Reading as the caller closes the
-## escalation -- a symlink to a root-only file is then EACCES (the caller cannot read it),
-## so this root process never discloses a root file (via an error echo or as a LUKS key).
-## Only drop when we are actually root AND the caller is not root; a non-root run (the unit
-## test) is already the caller, so a plain read is already unprivileged and safe.
-read_req_as_caller() {
+## Run a command with the CALLER's privileges, never root's. Used to read caller-owned
+## request files and to probe the caller-owned disk, so neither a check-then-open symlink
+## swap (a caller owning the request dir can swap a file for a symlink AFTER the [ -L ] check)
+## nor a crafted disk descriptor can make this root process open a root-only path -- a path
+## the caller cannot read is EACCES, so nothing is disclosed or acted on. Only drop when we
+## are actually root AND the caller is not root; a non-root run (the unit test) is already the
+## caller, so running plain is already unprivileged and safe.
+run_as_caller() {
    if [ "$(id -u)" -eq 0 ] && [ "${PRIVLEAP_CALLER_UID}" != '0' ]; then
-      setpriv --reuid="${PRIVLEAP_CALLER_UID}" --regid="${caller_gid}" --clear-groups -- cat -- "$1"
+      setpriv --reuid="${PRIVLEAP_CALLER_UID}" --regid="${caller_gid}" --clear-groups -- "$@"
    else
-      cat -- "$1"
+      "$@"
    fi
+}
+read_req_as_caller() {
+   run_as_caller cat -- "$1"
 }
 
 ## Root-owned scratch for the passphrase we hand to vbox-disk-mount: it opens --passphrase-file
@@ -150,6 +153,22 @@ disk_owner_uid="$(stat --format='%u' -- "${disk_real}")" \
    || die "cannot stat disk '${disk_real}'" 2
 [ "${disk_owner_uid}" = "${PRIVLEAP_CALLER_UID}" ] \
    || die "refused: disk '${disk_real}' is owned by uid ${disk_owner_uid}, not the caller (uid ${PRIVLEAP_CALLER_UID})" 2
+
+## A non-vdi format (vmdk/qcow2) can reference OTHER files -- a VMDK FLAT/SPARSE extent, a
+## qcow2 backing file -- which vbox-disk-mount's qemu-nbd then OPENS AS ROOT. The caller-owns
+## check above covers only the disk file, NOT its referenced files, so a caller could craft a
+## descriptor (e.g. monolithicFlat `RW 1 FLAT "/etc/shadow"`, or a qcow2 backing /etc/shadow)
+## and escalate vboxusers -> arbitrary root read/write. Require a SELF-CONTAINED image: every
+## extent/backing path qemu would open must resolve to the disk file itself. vdi is always
+## self-contained (skip the probe); the Whonix OVA .vmdk is monolithicSparse (self-referencing).
+## Probe as the CALLER (qemu-image-self-contained runs qemu-img), so even the probe never
+## opens a root-only path as root. Resolve the checker next to this wrapper (so the checkout
+## copy is used in tests, the installed copy in production); overridable for a unit test.
+if [ -n "${format}" ] && [ "${format}" != 'vdi' ]; then
+   self_contained_check="${QEMU_IMAGE_SELF_CONTAINED:-$(dirname -- "$0")/qemu-image-self-contained}"
+   run_as_caller "${self_contained_check}" "${disk_real}" "${format}" \
+      || die "refused: disk '${disk_real}' (format ${format}) references external files, or is unreadable as the caller; only a self-contained image is allowed" 2
+fi
 
 ## rw-mount the caller's own disk and set next_entry. vbox-disk-mount is already root
 ## here (privleap ran us as root, no sudo), tears the mount down on its own EXIT trap,
