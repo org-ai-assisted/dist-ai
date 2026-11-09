@@ -247,17 +247,42 @@ fi
 ## committing an unpublished c2 in the window between the validation above and
 ## the commit would be pinned (TOCTOU) -- a gitlink CI cannot fetch, caught by
 ## neither --check nor the build. Instead stage each VALIDATED sha into a PRIVATE
-## index seeded from the superproject HEAD (only these gitlinks move; an unrelated
-## staged change in the shared index never rides along) and commit that tree with
-## plumbing: the pin is exactly what was validated, whatever the live submodule
-## HEAD is now.
+## index seeded from the branch tip (only these gitlinks move; an unrelated staged
+## change in the shared index never rides along) and commit that tree with plumbing:
+## the pin is exactly what was validated, whatever the live submodule HEAD is now.
 ##
-## commit-tree runs no pre-commit hook, so the gitlink / branch guards the
-## porcelain path had to override are simply not invoked (the branch is already
-## verified 'ai' above). Identity: pin author/committer NAME to 'claude' -- the
-## harness exports GIT_AUTHOR_NAME / GIT_COMMITTER_NAME with a session-id suffix
-## that would otherwise land in the public object; email stays git config
-## (noreply), never set here (PII risk).
+## commit-tree is not 'git commit', so the safety the porcelain gave is restored
+## explicitly below: a merge/sequencer-in-progress refusal, and a compare-and-swap
+## branch update (a concurrent superproject commit fails the bump LOUD instead of
+## being reverted or dropped), and honoring commit.gpgsign. The pre-commit /
+## commit-msg hooks do NOT run -- acceptable: the commit is a gitlink pointer plus a
+## FIXED message, so there is no file content, PII, Unicode or style for a hook to
+## catch, and the branch / gitlink guards the porcelain path waived are not wanted.
+## Residual: if '.git/index.lock' is held by a concurrent op exactly when the final
+## index sync runs, that sync fails after the ref moved, leaving a cosmetic staged
+## gitlink diff (no data loss; a re-run or 'git reset -- <paths>' clears it).
+
+## Refuse while a merge or sequencer operation is unfinished: a single-parent
+## plumbing commit would drop the second parent / staged result and leave the
+## operation half-applied (the porcelain 'git commit' refused this outright).
+for merge_state in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD REBASE_HEAD; do
+   ## Resolve the pseudo-ref in ${top}'s repo, NOT a filesystem probe: 'rev-parse
+   ## --git-path' prints a path relative to GIT's cwd, which 'test -e' would then
+   ## wrongly resolve against the shell's cwd (a stray MERGE_HEAD in an unrelated
+   ## repo at the cwd would false-trip it). --verify is cwd-independent.
+   if git -C "${top}" rev-parse --verify --quiet "${merge_state}" >/dev/null 2>&1; then
+      printf '%s\n' "${0##*/}: '${merge_state}' present (merge/sequencer in progress); refusing to bump." >&2
+      exit 2
+   fi
+done
+
+## Identity: pin author/committer NAME to 'claude' -- the harness exports
+## GIT_AUTHOR_NAME / GIT_COMMITTER_NAME with a session-id suffix that would
+## otherwise land in the public object; email stays git config (noreply), never
+## set here (PII risk).
+branch_ref="refs/heads/${AI_BRANCH}"
+old_tip="$( git -C "${top}" rev-parse --verify "${branch_ref}" )"
+
 ## shellcheck cannot see the trap invocation below.
 # shellcheck disable=SC2317
 remove_tmp_index() {
@@ -265,16 +290,27 @@ remove_tmp_index() {
 }
 tmp_index="$( mktemp )"
 trap remove_tmp_index EXIT
-GIT_INDEX_FILE="${tmp_index}" git -C "${top}" read-tree HEAD
+GIT_INDEX_FILE="${tmp_index}" git -C "${top}" read-tree "${old_tip}"
 for i in "${!to_bump_paths[@]}"; do
    GIT_INDEX_FILE="${tmp_index}" git -C "${top}" update-index --add \
       --cacheinfo "160000,${to_bump_shas[${i}]},${to_bump_paths[${i}]}"
 done
 new_tree="$( GIT_INDEX_FILE="${tmp_index}" git -C "${top}" write-tree )"
+
+sign_opt=()
+if [ "$( git -C "${top}" config --bool --get commit.gpgsign 2>/dev/null || true )" = "true" ]; then
+   sign_opt=( -S )
+fi
 new_commit="$( GIT_AUTHOR_NAME=claude GIT_COMMITTER_NAME=claude \
-   git -C "${top}" commit-tree "${new_tree}" -p HEAD \
+   git -C "${top}" commit-tree "${new_tree}" -p "${old_tip}" "${sign_opt[@]}" \
    -m "Bump submodule gitlinks to published ai tips" )"
-git -C "${top}" update-ref HEAD "${new_commit}"
+
+## Compare-and-swap: install the bump only if the branch is STILL at old_tip. A
+## concurrent commit (another session on this shared tree) moved it -> update-ref
+## fails, errexit aborts, nothing is clobbered; a re-run picks up the new tip. The
+## specific branch ref is named (not HEAD), so a checkout in the window cannot
+## redirect the update onto another branch.
+git -C "${top}" update-ref "${branch_ref}" "${new_commit}" "${old_tip}"
 
 ## Sync the SHARED index for the bumped paths to the committed shas so 'git
 ## status' is clean and a later sibling commit cannot carry a stale pin. Scoped
