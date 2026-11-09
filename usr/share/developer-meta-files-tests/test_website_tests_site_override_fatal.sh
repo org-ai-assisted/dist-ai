@@ -4,8 +4,9 @@
 ## See the file COPYING for copying conditions.
 
 ## Pins a silent-green regression in usr/bin/website-tests site-root resolution: an
-## EXPLICIT override (OUTPUT_LIES_REPO / SECURE_TERMINAL_SITE_REPO / ORG_AI_ASSISTED_REPO
-## set non-empty) that points at a path lacking the site marker (index.html for add_root,
+## EXPLICIT override (OUTPUT_LIES_REPO / SECURE_TERMINAL_SITE_REPO / ORG_AI_ASSISTED_REPO /
+## COMPUTER_SECURITY_RESEARCH_REPO set non-empty) that points at a path lacking the site
+## marker (index.html for add_root,
 ## comparison/shots for resolve_st_site) must FATAL -- it must NOT silently fall back to
 ## the private-sources default, which would report PASS on a DIFFERENT site than the
 ## operator asked for. An UNSET override legitimately uses the default.
@@ -152,7 +153,7 @@ fi
 ## unbound-variable nounset crash (which carries no 'FATAL: HOME is unset' message).
 run_rc=0
 run_err="$(env --unset=HOME --unset=OUTPUT_LIES_REPO --unset=SECURE_TERMINAL_SITE_REPO \
-   --unset=ORG_AI_ASSISTED_REPO "${runner}" 2>&1 >/dev/null)" || run_rc=$?
+   --unset=ORG_AI_ASSISTED_REPO --unset=COMPUTER_SECURITY_RESEARCH_REPO "${runner}" 2>&1 >/dev/null)" || run_rc=$?
 if [ "${run_rc}" -eq 1 ] \
    && grep --quiet 'FATAL: HOME is unset' <<< "${run_err}"; then
    pass 'website-tests: unset HOME + no override FAILs loudly with a FATAL (not a SKIP, not a nounset crash)'

@@ -14,7 +14,8 @@
 ## "family" links, prose capitalizes "Open Source"/"Free Software", and a
 ## review-status banner never claims a green "working" state. Pure Python, no
 ## network, no root. Each site checkout is resolved from an env var
-## (OUTPUT_LIES_REPO, SECURE_TERMINAL_SITE_REPO, ORG_AI_ASSISTED_REPO) or a
+## (OUTPUT_LIES_REPO, SECURE_TERMINAL_SITE_REPO, ORG_AI_ASSISTED_REPO,
+## COMPUTER_SECURITY_RESEARCH_REPO) or a
 ## default under the operator's private-sources; if none is found it SKIPs
 ## (exit 77) rather than failing.
 
@@ -226,7 +227,7 @@ done
 if { [ ! -v HOME ] || [ -z "${HOME}" ]; } \
       && [ -z "${OUTPUT_LIES_REPO:-}" ] && [ -z "${SECURE_TERMINAL_SITE_REPO:-}" ] \
       && [ -z "${ORG_AI_ASSISTED_REPO:-}" ] && [ -z "${COMPUTER_SECURITY_RESEARCH_REPO:-}" ]; then
-   printf '%s\n' "website-tests: FATAL: HOME is unset and no site override (OUTPUT_LIES_REPO / SECURE_TERMINAL_SITE_REPO / ORG_AI_ASSISTED_REPO) given -- unexpected scrubbed environment; refusing to silently SKIP" >&2
+   printf '%s\n' "website-tests: FATAL: HOME is unset and no site override (OUTPUT_LIES_REPO / SECURE_TERMINAL_SITE_REPO / ORG_AI_ASSISTED_REPO / COMPUTER_SECURITY_RESEARCH_REPO) given -- unexpected scrubbed environment; refusing to silently SKIP" >&2
    exit 1
 fi
 
@@ -358,7 +359,7 @@ if [ "${#roots[@]}" -eq 0 ]; then
    ## Honest no-checkout host (HOME set, no override, no default tree) -- a legitimate no-op.
    ## The scrubbed-env case (HOME unset + no override) already FATAL'd before the unit tests
    ## above, so it cannot reach here; this branch is only the genuine no-checkout SKIP.
-   printf '%s\n' 'website-tests: SKIP (no site checkout found; set OUTPUT_LIES_REPO / SECURE_TERMINAL_SITE_REPO / ORG_AI_ASSISTED_REPO)' >&2
+   printf '%s\n' 'website-tests: SKIP (no site checkout found; set OUTPUT_LIES_REPO / SECURE_TERMINAL_SITE_REPO / ORG_AI_ASSISTED_REPO / COMPUTER_SECURITY_RESEARCH_REPO)' >&2
    ## style-ok: allow-skip: no site checkout resolved -- there is nothing to verify, and site-deploy already treats this SKIP as a publish failure.
    exit 77
 fi
