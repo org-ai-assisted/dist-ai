@@ -155,6 +155,11 @@ lane_rc=0
 check "inst lane returns 0" "$([ "${lane_rc}" = '0' ] && printf '%s' true || printf '%s' false)" "${lane_rc}"
 check "threads --local-repo whonix to dm-whonix-pair" \
    "$(grep --quiet -- '--local-repo whonix' "${pair_argv}" && printf '%s' true || printf '%s' false)"
+## The resolved SHARE HOST PATH (repo-path stripped of /aptrepo_local/<deriv>) is passed down so the
+## account-run attach pins it rather than re-deriving a slot-less path. repo_dir=<work>/aptrepo_local/
+## whonix, so the base is <work>.
+check "threads --local-repo-base (resolved share host path) to dm-whonix-pair" \
+   "$(grep --quiet -- "--local-repo-base ${work}" "${pair_argv}" && printf '%s' true || printf '%s' false)"
 check "still runs --mode functional --interface cli" \
    "$(grep --quiet -- '--mode functional --interface cli' "${pair_argv}" && printf '%s' true || printf '%s' false)"
 check "forwards a --provenance-local-repo block to the publisher" \

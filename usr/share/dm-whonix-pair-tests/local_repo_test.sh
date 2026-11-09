@@ -63,6 +63,15 @@ noval_rc=0
 ( parse_args --local-repo ) >/dev/null 2>&1 || noval_rc=$?
 assert "--local-repo with no value rejected (SETUP_RC)" test "${noval_rc}" -eq 2
 
+## --local-repo-base (the orchestrator-passed share host path) parses into local_repo_base.
+assert "local_repo_base defaults empty" test -z "${local_repo_base}"
+local_repo_base=''
+parse_args --local-repo-base /srv/derivative-maker/SLOT
+assert "--local-repo-base parses" test "${local_repo_base}" = '/srv/derivative-maker/SLOT'
+baseval_rc=0
+( parse_args --local-repo-base ) >/dev/null 2>&1 || baseval_rc=$?
+assert "--local-repo-base with no value rejected (SETUP_RC)" test "${baseval_rc}" -eq 2
+
 ## --- mode/interface gate: stub both drivers + skip the VM lock, drive main ---
 export DM_VM_LOCK_HELD=1
 # shellcheck disable=SC2317  ## called indirectly via main
@@ -99,7 +108,9 @@ trap cleanup EXIT
 
 cat > "${shared_stub}" <<'STUB'
 #!/bin/bash
-printf '%s\n' "$*" >> "${REC_ATTACH}"
+## Record the LOCAL_APT_REPOSITORY_BASE env (the orchestrator-pinned share path) ALONGSIDE argv:
+## the account-run attach must receive the base so it never re-derives a slot-less (wrong) path.
+printf 'base=%s args=%s\n' "${LOCAL_APT_REPOSITORY_BASE:-}" "$*" >> "${REC_ATTACH}"
 exit 0
 STUB
 cat > "${exec_stub}" <<'STUB'
@@ -128,10 +139,23 @@ ws='TESTWS'
 # shellcheck disable=SC2034
 gw='TESTGW'
 local_repo='whonix'
-
+## With a base pinned by the orchestrator, the attach must receive it as LOCAL_APT_REPOSITORY_BASE
+## so the account-run attach maps THAT slotted repo, not a re-derived slot-less path.
+local_repo_base='/srv/derivative-maker/SLOT'
 boot_workstation_user >/dev/null 2>&1
 assert "boot_workstation_user attaches the shared repo via dm-shared-apt-repo" \
-   grep -q 'attach TESTWS' "${rec_attach}"
+   grep -q 'args=attach TESTWS' "${rec_attach}"
+assert "attach receives the orchestrator-pinned LOCAL_APT_REPOSITORY_BASE" \
+   grep -q 'base=/srv/derivative-maker/SLOT ' "${rec_attach}"
+
+## With NO base (non-slotted single-session host), the attach still runs, but with an EMPTY
+## LOCAL_APT_REPOSITORY_BASE -- dm-shared-apt-repo then derives the path from the env.
+true > "${rec_attach}"
+local_repo_base=''
+boot_workstation_user >/dev/null 2>&1
+assert "no base -> attach runs with an empty LOCAL_APT_REPOSITORY_BASE (env-derived)" \
+   grep -q 'base= args=attach TESTWS' "${rec_attach}"
+local_repo_base='/srv/derivative-maker/SLOT'
 
 ws_func_enable_local_repo >/dev/null 2>&1
 assert "ws_func_enable_local_repo runs repo-add-local for the derivative in-guest" \

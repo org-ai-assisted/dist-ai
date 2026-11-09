@@ -1551,8 +1551,19 @@ rt_lane_whonix_inst() {
    [ "${interface}" = 'cli' ] && wp_interface='cli'
    ## --local-repo (gated to this lane in main) forwards to dm-whonix-pair, which attaches +
    ## enables the fast LOCAL apt repo so check 3 upgrades THIS build. Empty = published repos.
+   ## Resolve the repo's SHARE HOST PATH here as ROOT (where dist_build_slot is set) and pass it
+   ## down via --local-repo-base: the account-run attach in dm-whonix-pair otherwise re-derives a
+   ## slot-less path and maps a DIFFERENT repo than the root-side provenance records (a false
+   ## signal). repo-path prints <base>/aptrepo_local/<deriv>; strip to the base. On the non-slotted
+   ## single-session host base == the derived default, so this is a no-op there.
    local -a lr_args=()
-   [ -n "${local_repo}" ] && lr_args=( --local-repo "${local_repo}" )
+   if [ -n "${local_repo}" ]; then
+      local lr_dir lr_base
+      lr_dir="$("${DM_SHARED_APT_REPO}" repo-path "${local_repo}" 2>/dev/null || true)"
+      lr_base="${lr_dir%/aptrepo_local/*}"
+      lr_args=( --local-repo "${local_repo}" )
+      [ -n "${lr_base}" ] && [ "${lr_base}" != "${lr_dir}" ] && lr_args+=( --local-repo-base "${lr_base}" )
+   fi
    sudo -u "${account}" -- "${rt_session_env[@]}" "${DM_WHONIX_PAIR}" --mode functional --interface "${wp_interface}" --check-log "${check_log}" "${lr_args[@]}" --gw "${gw}" --ws "${ws}" || rc=$?
    ## Thread a non-empty check-log into the published step's stderr tail (empty = a pass or a
    ## pre-check failure -> no tail). Consumed once by rt_publish_result.

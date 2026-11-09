@@ -106,6 +106,12 @@ shot_dir=""
 ## the lane upgrades from the published repos). Rejected in main outside --mode functional
 ## --interface cli: repo-add-local needs root, which only the split-free CLI edition's `user` has.
 local_repo=""
+## The local apt repo's SHARE HOST PATH (dm-shared-apt-repo's repo_parent), resolved by the
+## orchestrator (dm-release-test, as root where dist_build_slot is known) and passed via
+## --local-repo-base. The attach below runs as the test ACCOUNT, whose env lacks dist_build_slot,
+## so a re-derivation there would map a DIFFERENT (slot-less) repo than the root-side provenance
+## records -- a false signal. Empty => dm-shared-apt-repo derives it from the env (non-slotted case).
+local_repo_base=""
 ## Active CLI-check capture temp (set by ws_func_cli_exec); on_exit removes it so a signal or
 ## lock-timeout mid-check cannot leave the host mktemp file behind across repeated interruptions.
 cli_capture_tmp=""
@@ -396,6 +402,13 @@ parse_args() {
                   die "${SETUP_RC}" "--local-repo must be kicksecure|whonix, got '$2'"
                   ;;
             esac
+            shift 2
+            ;;
+         --local-repo-base)
+            ## The resolved SHARE HOST PATH for --local-repo, passed by dm-release-test (root). Pins
+            ## the attach's --hostpath so the account-run attach does not re-derive a slot-less path.
+            [ "$#" -ge 2 ] || die "${SETUP_RC}" "--local-repo-base needs a value"
+            local_repo_base="$2"
             shift 2
             ;;
          --print-guards)
@@ -969,8 +982,19 @@ boot_workstation_user() {
    ## path -- and let on_exit drop the 'shared' mapping. Fail-closed: a failed attach is a
    ## provisioning gap (SETUP_RC), not a release FAIL.
    if [ -n "${local_repo}" ]; then
-      "${DM_SHARED_APT_REPO}" attach "${ws}" \
-         || die "${SETUP_RC}" "${ws}: could not attach the local apt repo share -- provisioning gap, not a release FAIL"
+      ## Pin the repo's share host path when the orchestrator resolved it (--local-repo-base): this
+      ## attach runs as the test account, whose env lacks dist_build_slot, so re-deriving the path
+      ## here would map the wrong (slot-less) repo -- the delivery would then disagree with the
+      ## root-side provenance. LOCAL_APT_REPOSITORY_BASE overrides dm-shared-apt-repo's path outright.
+      ## Empty base => derive from the env (the non-slotted single-session case). Fail-closed: a
+      ## failed attach is a provisioning gap (SETUP_RC), not a release FAIL.
+      if [ -n "${local_repo_base}" ]; then
+         LOCAL_APT_REPOSITORY_BASE="${local_repo_base}" "${DM_SHARED_APT_REPO}" attach "${ws}" \
+            || die "${SETUP_RC}" "${ws}: could not attach the local apt repo share (${local_repo_base}) -- provisioning gap, not a release FAIL"
+      else
+         "${DM_SHARED_APT_REPO}" attach "${ws}" \
+            || die "${SETUP_RC}" "${ws}: could not attach the local apt repo share -- provisioning gap, not a release FAIL"
+      fi
    fi
    "${VBOXMANAGE}" startvm "${ws}" --type headless >/dev/null
    ws_started='true'
