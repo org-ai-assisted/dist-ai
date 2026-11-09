@@ -627,6 +627,20 @@ else
    fail "option forwarding: '--no-patch' should be rejected with exit 2, got ${rc}"
 fi
 
+## The stat family and --check also suppress the patch (stats/whitespace-check only, no diff
+## shown) and must be REJECTED (exit 2), same class as --no-patch above. --stat-width= (test 19)
+## is a width-tuning option, NOT in this family, and stays allowed.
+for suppress_opt in --stat --check; do
+   rc=0
+   ( cd -- "${repo}" && PATH="${DEVELOPER_META_FILES_DIR}/usr/bin:${PATH}" setsid dm-review-branch "${suppress_opt}" feature ) \
+      </dev/null >/dev/null 2>&1 || rc="$?"
+   if [ "${rc}" = 2 ]; then
+      pass "option forwarding: a suppress option (${suppress_opt}) is rejected (exit 2), not silently forwarded"
+   else
+      fail "option forwarding: '${suppress_opt}' should be rejected with exit 2, got ${rc}"
+   fi
+done
+
 if [ "${fail_count}" -gt 0 ]; then
    printf '%s\n' "test_dm_review_branch: ${fail_count} assertion(s) failed." >&2
    exit 1
