@@ -44,7 +44,7 @@ created='false'
 
 cleanup() {
    if [ "${created}" = 'true' ]; then
-      safe-rm --force -- "${req}/disk" "${req}/passphrase" "${req}/mode" "${req}/format" "${req}/fakedisk" "${req}/other_owned" "${req}/ok.vmdk" "${req}/bad.vmdk" 2>/dev/null || true
+      safe-rm --force -- "${req}/disk" "${req}/passphrase" "${req}/mode" "${req}/format" "${req}/fakedisk" "${req}/other_owned" "${req}/ok.vmdk" "${req}/bad.vmdk" "${req}/bad.qcow2" 2>/dev/null || true
       if [ "${req_preexisted}" = 'false' ]; then
          rmdir -- "${req}" 2>/dev/null || true
       fi
@@ -178,7 +178,27 @@ if has qemu-img; then
       "$([ "${rc}" != '0' ] && printf '%s' true || printf '%s' false)"
    check "malicious vmdk did NOT call vbox-disk-mount (no root open of the extent)" \
       "$([ ! -e "${argv_log}" ] && printf '%s' true || printf '%s' false)"
-   safe-rm --force -- "${req}/format" "${req}/ok.vmdk" "${req}/bad.vmdk" "${victim}"
+
+   ## Malicious qcow2 with an external data-file (NOT a backing file / extent) -> MUST be
+   ## refused. The data-file lives at format-specific.data.data-file, so a field-specific
+   ## check misses it; the recursive path-key walk catches it.
+   qvictim="${work}/qvictim.bin"
+   printf '%s' SECRET-QCOW > "${qvictim}"
+   bad_qcow2="${req}/bad.qcow2"
+   if qemu-img create -f qcow2 -o "data_file=${qvictim},data_file_raw=on" "${bad_qcow2}" 16 >/dev/null 2>&1; then
+      printf '%s\n' "${bad_qcow2}" > "${req}/disk"
+      printf '%s' 'qcow2' > "${req}/format"
+      safe-rm --force -- "${argv_log}"
+      rc="$(run_wrapper "${uid}")"
+      check "malicious qcow2 (external data-file) refused (rc!=0, got ${rc})" \
+         "$([ "${rc}" != '0' ] && printf '%s' true || printf '%s' false)"
+      check "malicious qcow2 did NOT call vbox-disk-mount" \
+         "$([ ! -e "${argv_log}" ] && printf '%s' true || printf '%s' false)"
+   else
+      printf '%s\n' "note: qemu-img lacks qcow2 data_file support -- skipping the data-file case" >&2
+   fi
+
+   safe-rm --force -- "${req}/format" "${req}/ok.vmdk" "${req}/bad.vmdk" "${req}/bad.qcow2" "${victim}" "${qvictim}"
    printf '%s\n' "${disk}" > "${req}/disk"
 else
    printf '%s\n' "note: qemu-img absent -- skipping the vmdk self-containment cases (1c/1e)" >&2

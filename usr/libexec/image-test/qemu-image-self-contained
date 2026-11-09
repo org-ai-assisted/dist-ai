@@ -6,19 +6,38 @@
 ## AI-Assisted
 
 ## Exit 0 iff the disk image (argv1), interpreted as format (argv2), is SELF-CONTAINED:
-## every file qemu would OPEN -- VMDK FLAT/SPARSE extents, a qcow2 backing file -- resolves
-## to the disk file itself. Exit 1 otherwise, AND on ANY error (fail-closed).
+## EVERY file qemu would OPEN -- VMDK FLAT/SPARSE extents, a qcow2 backing file, a qcow2
+## external data-file -- resolves to the disk file itself. Exit 1 otherwise, AND on ANY error
+## or if no path at all is found (fail-closed).
 ##
 ## Rationale: vbox-disk-mount's qemu-nbd opens those referenced files AS ROOT, so a crafted
-## descriptor (monolithicFlat `RW 1 FLAT "/etc/shadow"`, or a qcow2 backing /etc/shadow) would
-## let a non-root caller read/write a host path as root. vbox-grub-set-next-boot-mode runs this
-## as the CALLER (so even the probe cannot open a root-only path as root) before accepting a
-## non-vdi format. vdi is always self-contained and never probed.
+## descriptor (monolithicFlat `RW 1 FLAT "/etc/shadow"`, a qcow2 backing /etc/shadow, or a qcow2
+## `data_file=/etc/shadow`) would let a non-root caller read/write a host path as root.
+## vbox-grub-set-next-boot-mode runs this as the CALLER (so even the probe cannot open a
+## root-only path as root) before accepting a non-vdi format. vdi is always self-contained and
+## never probed.
+##
+## Collect the VALUE of every path-bearing key ANYWHERE in the qemu-img info tree, not a fixed
+## field list -- a field-specific enumeration already missed `data-file` once, so match by key
+## name recursively to also catch any future external-reference key.
 
 import json
 import os
 import subprocess
 import sys
+
+PATH_KEYS = {"filename", "backing-filename", "full-backing-filename", "data-file"}
+
+
+def collect_paths(obj, out):
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if key in PATH_KEYS and isinstance(value, str) and value:
+                out.append(value)
+            collect_paths(value, out)
+    elif isinstance(obj, list):
+        for item in obj:
+            collect_paths(item, out)
 
 
 def main():
@@ -43,14 +62,9 @@ def main():
     except Exception:
         return 1
     refs = []
-    backing = info.get("full-backing-filename") or info.get("backing-filename")
-    if backing:
-        refs.append(backing)
-    data = (info.get("format-specific") or {}).get("data") or {}
-    for extent in data.get("extents") or []:
-        name = extent.get("filename")
-        if name:
-            refs.append(name)
+    collect_paths(info, refs)
+    if not refs:
+        return 1
     for ref in refs:
         resolved = os.path.realpath(ref if os.path.isabs(ref) else os.path.join(disk_dir, ref))
         if resolved != disk:
