@@ -121,8 +121,9 @@ def _errno_is_soft(value: str) -> bool:
 def memfd_denial(text: str) -> str:
     """'none' | 'soft' | 'kill' for memfd_create under [Service], honoring
     SystemCallFilter= empty-reset, a per-syscall ':' action (overrides the global
-    errno), and the global SystemCallErrorNumber. Only '~' denylists are modelled
-    -- the form these units use."""
+    errno), and the global SystemCallErrorNumber. A '~' token denies memfd_create;
+    a later positive assignment of it re-allows it (last wins). A full allowlist
+    omitting memfd_create is out of scope -- these units use the '~' denylist form."""
     lines = _service_lines(text)
     effective: list = []
     for value in _service_values(lines, 'SystemCallFilter'):
