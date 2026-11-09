@@ -50,11 +50,17 @@ for a in "$@"; do
    [ "${prev}" = "--cmd" ] && printf '%s\n' "${a}" >> "${SE_LANES}"
    prev="${a}"
 done
+## Record the FULL argv (to assert each lane carries --timeout 0 --wait) and a lane marker in the
+## shared order log (to assert the publish runs only AFTER every lane dispatch). Both seams default
+## to /dev/null so the cases that do not set them are unaffected.
+printf '%s\n' "$*" >> "${SE_ARGV:-/dev/null}"
+printf '%s\n' lane >> "${ORDER:-/dev/null}"
 exit "${SE_RC:-0}"
 STUB
 cat > "${stub}/test-results-deploy" <<'STUB'
 #!/bin/bash
 printf 'x' >> "${TRD_CALLS}"
+printf '%s\n' publish >> "${ORDER:-/dev/null}"
 exit "${TRD_RC:-0}"
 STUB
 chmod +x -- "${stub}/server-exec" "${stub}/test-results-deploy"
@@ -62,7 +68,9 @@ export PATH="${stub}:${PATH}"
 
 lanes="${work}/lanes"
 calls="${work}/calls"
-reset() { true > "${lanes}"; true > "${calls}"; }
+argv="${work}/argv"
+order="${work}/order"
+reset() { true > "${lanes}"; true > "${calls}"; true > "${argv}"; true > "${order}"; }
 n_lanes() { grep --count 'dm-release-test' "${lanes}" 2>/dev/null || printf '%s' 0; }
 n_calls() { wc --bytes < "${calls}" 2>/dev/null | tr --delete ' '; }
 
@@ -149,6 +157,31 @@ rc=0
 SE_LANES="${lanes}" TRD_CALLS="${calls}" "${bin}" 'kicksecure lxqt --iso "/built image.iso"' >/dev/null 2>&1 || rc=$?
 want "${rc}" 64 "quoted lane spec rejected (exit 64)"
 want "$(n_calls)" 0 "quote rejection does not publish"
+
+# --- each lane is dispatched with `--timeout 0 --wait` so the real server-exec detaches durably
+#     yet BLOCKS on the lane's real rc -- restoring sequential order + a true verdict and making
+#     the publish fire only after lanes are terminal. Canary: pre-fix argv was `--timeout 0 --cmd`
+#     with NO --wait, so server-exec returned 0=launched and the publish fired on stale results. ---
+reset
+rc=0
+SE_LANES="${lanes}" SE_ARGV="${argv}" ORDER="${order}" TRD_CALLS="${calls}" \
+   "${bin}" --no-publish "kicksecure lxqt --iso /x.iso" "whonix lxqt --lane inst" || rc=$?
+want "${rc}" 0 "wait-dispatch lanes -> rc 0"
+n_argv="$(grep --count . "${argv}" 2>/dev/null || printf '%s' 0)"
+want "${n_argv}" 2 "both lanes invoked server-exec"
+if [ "$(grep --count -- '--wait' "${argv}")" = 2 ] && ! grep --quiet --invert-match -- '--wait' "${argv}"; then
+   pass "every lane dispatched with --wait"
+else
+   fail "a lane dispatched WITHOUT --wait -- server-exec would return 0=launched (false green, premature publish)"
+fi
+if [ "$(grep --count -- '--timeout 0' "${argv}")" = 2 ]; then pass "every lane keeps --timeout 0 (never kill a 40-50 min lane)"; else fail "a lane lost --timeout 0"; fi
+
+# --- the publish runs strictly AFTER every lane dispatch (EXIT trap at end), never interleaved. ---
+reset
+rc=0
+SE_LANES="${lanes}" SE_ARGV="${argv}" ORDER="${order}" TRD_CALLS="${calls}" \
+   "${bin}" "kicksecure lxqt --iso /x.iso" "whonix lxqt --lane inst" || rc=$?
+want "$(tr '\n' ' ' < "${order}")" "lane lane publish " "publish logged only after both lane dispatches"
 
 printf '%s\n' "----"
 printf '%s\n' "passed=${pass_count} failed=${fail_count}"

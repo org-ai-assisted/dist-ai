@@ -1840,6 +1840,20 @@ build_vm() {
    fi
    "${VBOXMANAGE}" unregistervm "${vm}" --delete 2>/dev/null || true
    safe-rm --force -- "${disk}"
+   ## A crashed prior run can leave this VM's settings dir on disk WITHOUT a registration, so the
+   ## swallowed unregistervm above is a no-op and createvm then dies VBOX_E_FILE_ERROR ("Machine
+   ## settings file ... already exists"). image-test-gc cannot clear it (it refuses persist-*), so
+   ## remove the stale per-VM dir HERE -- scoped to the one VM this path is about to recreate, NOT
+   ## an account wipe. It lives under VBox's configured default machine folder; query that (its
+   ## value may contain spaces, so strip only the label, not on whitespace).
+   local machine_folder
+   machine_folder="$("${VBOXMANAGE}" list systemproperties \
+      | sed -n 's/^Default machine folder:[[:space:]]*//p')"
+   if [ -n "${machine_folder}" ] && [ -e "${machine_folder}/${vm}" ]; then
+      printf '%s\n' "${me}: removing stale VM dir left by a prior crashed run: ${machine_folder}/${vm}" >&2
+      safe-rm --recursive --force -- "${machine_folder}/${vm}" \
+         || die "${FAIL_RC}" "could not remove stale VM dir '${machine_folder}/${vm}' (createvm would fail VBOX_E_FILE_ERROR); remove it manually and re-run"
+   fi
    "${VBOXMANAGE}" createvm --name "${vm}" --ostype Debian_64 --register >/dev/null
    ## vCPUs = online host CPUs minus one (shared dm-vbox-vcpus helper): a single-vCPU VM runs
    ## the hardened boot's Guest Additions setup so slowly that under host-CPU contention it

@@ -1843,7 +1843,7 @@ main() {
    ## (downloaded|built). rt_resolve_origin rejects an absent/invalid source and any
    ## source+artifact mismatch; the per-guest FS checks + version resolution follow here.
    rt_origin="$(rt_resolve_origin "${source_mode}" "${guest}" "${local_iso}" "${ova_gw}" "${ova_ws}")" \
-      || { print_usage >&2; die "${SETUP_RC}" "invalid --source/artifact combination (source='${source_mode}' guest='${guest}' iso='${local_iso}' ova-gw='${ova_gw}' ova-ws='${ova_ws}'): --source is mandatory (official|built); official forbids --iso/--ova-gw/--ova-ws; kicksecure built needs --iso; whonix built needs --ova-gw + --ova-ws"; }
+      || { print_usage >&2; die "${SETUP_RC}" "invalid --source/artifact combination (source='${source_mode}' guest='${guest}' iso='${local_iso}' ova-gw='${ova_gw}' ova-ws='${ova_ws}'): --source is mandatory (official|built); official forbids --iso/--ova-gw/--ova-ws; kicksecure built needs --iso; whonix built needs --ova-gw + --ova-ws. If this lane came from vbox-image-test/vbox-image-test-default and --source is MISSING entirely, your LOCAL dist-ai is likely STALE (predates mandatory --source): rebuild and 'dpkg -i' the dist-ai .deb on THIS machine -- deploy-dist-ai-to-server / boot-durable-deb refresh the server / boot cache, NOT the running local /usr/bin that emits the lanes"; }
 
    if [ "${rt_origin}" = 'built' ] && [ "${guest}" = 'kicksecure' ]; then
       ## Built-ISO lane (kicksecure): no download. A disposable eph-inst-kicksecure-built

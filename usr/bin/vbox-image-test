@@ -17,6 +17,9 @@
 ## then publish" step spans two machines and belongs in this dev-VM tool, not in dm-release-test.
 ##
 ## Lanes run SEQUENTIALLY (one VBox run at a time); the publish is a single batch deploy at the end.
+## Each lane is dispatched with `server-exec --timeout 0 --wait`: the lane detaches durably on the
+## server (no ssh-pipe wedge) but this tool BLOCKS on its real exit code, so the sequential order,
+## the real per-lane verdict, and "publish only after every lane is terminal" all hold.
 ##
 ## Usage:
 ##   vbox-image-test [--no-publish] 'GUEST IFACE [dm-release-test args]' ['GUEST IFACE ...' ...]
@@ -168,6 +171,11 @@ for spec in "${lanes[@]}"; do
    # shellcheck disable=SC2086  # the LOCAL word-split of ${spec} into argv is intended
    read -r -a lane_argv <<< "${spec}"
    remote_cmd="$(printf '%q ' dm-release-test "${lane_argv[@]}")"
-   server-exec --user root --timeout 0 --cmd "${remote_cmd}" || rc=$?
+   ## --wait: detach the lane durably on the server (no synchronous ssh-pipe wedge) but BLOCK
+   ## here on its REAL exit code. So lanes run one-at-a-time (sequential), rc reflects the lane's
+   ## true outcome (no launch-0 false green), and the EXIT-trap publish below fires only AFTER
+   ## every lane is terminal -- never on stale, still-running results. --wait propagates the real
+   ## rc, so driving this whole batch under bgjob-run is safe (the outer job sees the true rc).
+   server-exec --user root --timeout 0 --wait --cmd "${remote_cmd}" || rc=$?
 done
 exit "${rc}"
