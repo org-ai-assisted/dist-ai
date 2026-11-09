@@ -88,6 +88,18 @@ rc=0
 check 'crafted vmdk (external extent) is refused' "$([ "${rc}" -ne 0 ] && printf '%s' yes || printf '%s' no)" 'yes'
 check 'qemu-nbd NOT reached for the crafted vmdk' "$([ ! -s "${nbd_log}" ] && printf '%s' yes || printf '%s' no)" 'yes'
 
+## 1b. Crafted qcow2 whose external data_file references a host file -> REFUSED. The data_file
+## lives at format-specific.data.data-file, NOT a backing file or a VMDK extent, so a
+## field-specific check misses it; the recursive self-containment walk must still catch it.
+qcow2_data="${work}/qcow2_data"
+printf '%s' 'HOST-DATA' > "${qcow2_data}"
+qemu-img create -f qcow2 -o data_file="${qcow2_data}",data_file_raw=on "${work}/evil.qcow2" 16 >/dev/null
+true > "${nbd_log}"
+rc=0
+( nbd_connect /dev/nbd-fake "${work}/evil.qcow2" qcow2 rw ) >/dev/null 2>&1 || rc=$?
+check 'crafted qcow2 (external data_file) is refused' "$([ "${rc}" -ne 0 ] && printf '%s' yes || printf '%s' no)" 'yes'
+check 'qemu-nbd NOT reached for the crafted qcow2' "$([ ! -s "${nbd_log}" ] && printf '%s' yes || printf '%s' no)" 'yes'
+
 ## 2. Clean vdi -> opened (vdi is single-file, never probed).
 true > "${nbd_log}"
 nbd_connect /dev/nbd-fake "${work}/clean.vdi" vdi rw >/dev/null 2>&1 || true
