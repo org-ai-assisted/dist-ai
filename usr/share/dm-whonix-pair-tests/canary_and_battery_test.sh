@@ -212,14 +212,28 @@ rc=0; ( probe_verdict "$(printf '%s\n' "Traceback (most recent call last):" "  F
 check "probe_verdict: a python traceback (no JSON) -> SETUP_RC(${SETUP_RC}), NEVER a leak" "$([ "${rc}" = "${SETUP_RC}" ] && printf '%s' "0" || printf '%s' "1")"
 rc=0; ( probe_verdict '' ) || rc=$?
 check "probe_verdict: empty output (transport cut) -> SETUP_RC(${SETUP_RC})" "$([ "${rc}" = "${SETUP_RC}" ] && printf '%s' "0" || printf '%s' "1")"
-## Keyed on the real top-level exit_code line, NOT a lookalike inside a string value: a message
+## Reads the real top-level exit_code KEY, NOT a lookalike inside a string value: a message
 ## mentioning exit_code must not override the true verdict.
 rc=0; ( probe_verdict "$(printf '%s\n' "{" "  \"exit_code\": 1," "  \"results\": [ { \"message\": \"saw exit_code: 0 in noise\" } ]" "}")" ) || rc=$?
 check "probe_verdict: keys on the real exit_code (1), ignores a string-value lookalike (0) -> LEAK (1)" "$([ "${rc}" = 1 ] && printf '%s' "0" || printf '%s' "1")"
 
 ## --- ws_battery / ws_browser_probe: verdict is the JSON exit_code, not the host process exit ----
-## Stub emits a pretty-printed exit_code line + a chosen host exit code.
-mk_json() { printf '%s\n' "#!/bin/bash" "printf '  \"exit_code\": ${1}\n'" "exit ${2:-0}" > "${work}/vbe"; chmod +x "${work}/vbe"; }
+## Stub emits a real anon-leak-test JSON verdict OBJECT (what the battery always prints; the
+## classifier parses the top-level exit_code, never a loose line) + a chosen host exit code.
+mk_json() {
+   {
+      printf '%s\n' '#!/bin/bash'
+      printf '%s\n' "cat <<'JSON'"
+      printf '%s\n' '{'
+      printf '%s\n' "  \"exit_code\": ${1},"
+      printf '%s\n' '  "leak_detected": false,'
+      printf '%s\n' '  "results": []'
+      printf '%s\n' '}'
+      printf '%s\n' 'JSON'
+      printf '%s\n' "exit ${2:-0}"
+   } > "${work}/vbe"
+   chmod +x "${work}/vbe"
+}
 ## A probe LEAK (JSON exit_code 1), clean host exit -> 1.
 mk_json 1 0
 rc=0; ( ws_battery '--probe x' ) >/dev/null 2>&1 || rc=$?

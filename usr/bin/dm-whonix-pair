@@ -556,12 +556,13 @@ boot_workstation_sysmaint() {
 }
 
 ## Classify a guest probe run from its captured stdout by anon-leak-test's OWN JSON verdict, never
-## the process exit. anon-leak-test (--json) emits one object (indent=2) with an integer
-## "exit_code" (0 clear / 1 leak / 2 inconclusive): immune to guestcontrol's exit-code mangling (a
-## guest 2 reaches the host as 34), and PRESENT only when the probe ran to completion. A guest-side
-## infra failure (dsudo failure, python traceback, missing file) exits 1 with NO such verdict line,
-## and a transport cut yields no output -- both have no exit_code line -> SETUP, never a false leak.
-## Keyed on the JSON field at line start (the real top-level key), not a loose token anywhere.
+## the process exit. anon-leak-test (--json) emits one top-level object with an integer "exit_code"
+## (0 clear / 1 leak / 2 inconclusive): immune to guestcontrol's exit-code mangling (a guest 2
+## reaches the host as 34), and PRESENT only when the probe ran to completion. A guest-side infra
+## failure (dsudo failure, python traceback, missing file) exits 1 with NO such verdict object, and
+## a transport cut yields none -- both -> SETUP, never a false leak. leak-exit-classify reads the
+## object's TOP-LEVEL integer exit_code via a real JSON parse (a nested detail exit_code and decoy
+## objects cannot flip it); any ambiguity is inconclusive -> SETUP, fail-closed.
 probe_verdict() {
    local out="$1"
    case "$(printf '%s\n' "${out}" | "${LEAK_EXIT_CLASSIFY}")" in

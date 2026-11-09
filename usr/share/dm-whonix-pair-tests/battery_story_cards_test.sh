@@ -192,10 +192,10 @@ while IFS= read -r card; do
    assert "sanitized card name '${base}' is publishable" label_ok "${base%.card.txt}"
 done < <(cards_in "${shot_dir}")
 
-## --- Finding 1: an earlier empty/irrelevant object must NOT replace the real verdict --------
-## probe_verdict classifies from the LAST line-anchored exit_code; the story must card the SAME
-## object. Canary: the pre-fix helper returned the FIRST object with a results list (the empty
-## warning), dropped the real leak, and exited 0 -- no fallback, a real leak published as none.
+## --- Finding 1: an earlier irrelevant object must NOT replace the real verdict ---------------
+## The story cards the ONE top-level verdict object; an earlier object with NO exit_code (the
+## empty warning) is skipped, not treated as the verdict. Canary: the pre-fix helper returned the
+## FIRST object with a results list (the empty warning), dropped the real leak, and exited 0.
 shot_dir="${work}/earlier-empty"
 mkdir --parents -- "${shot_dir}"
 earlier_empty="$(printf '%s\n' 'guest warning {"results": []}' "${fail_json}")"
@@ -236,12 +236,14 @@ while IFS= read -r card; do
 done < <(cards_in "${shot_dir}")
 
 ## ============================================================================================
-## Fabricated-signal canaries: a story verdict re-derived by a PARALLEL JSON parse diverges from
-## dm-whonix-pair's authoritative probe_verdict (the SAME sed+case, now the shared leak-exit-
-## classify). Each decoy below made the pre-fix helper publish a WRONG story (or drop the leak)
-## and exit 0, so the raw-JSON fallback never fired. The fix classifies via the one shared
-## classifier and falls back (exit 2 -> single raw card) on ANY divergence, so a real leak
-## (leaked_to 1.1.1.1) is always either carded or preserved raw -- never dropped.
+## Fabricated-signal canaries. The story and dm-whonix-pair's authoritative probe_verdict share
+## ONE module (leak_verdict: a real TOP-LEVEL JSON parse), so they cannot diverge. Each decoy
+## below fooled the pre-fix line-based sed (and/or a parallel full-JSON scan) into a wrong story
+## or a dropped leak with no fallback. The real parse either reads the real top-level leak at the
+## gate (a bare decoy line is not a JSON object -> inert; a nested/boolean exit_code is not the
+## top-level integer), or, when the capture is genuinely ambiguous (two verdict objects, a
+## non-list results), falls back (exit 2 -> single raw card). Either way the real leak (leaked_to
+## 1.1.1.1) is always carded or preserved raw -- never dropped.
 ## The authoritative leak object, reused across the canaries.
 leak_obj='{
   "results": [{"probe": "icmp-clearnet", "status": "FAIL", "message": "non-Tor egress", "detail": {"leaked_to": "1.1.1.1"}}],
@@ -251,10 +253,10 @@ leak_obj='{
 ## '1.1.1.1' present in SOME card == the real leak evidence survived (carded or raw fallback).
 leak_survived() { grep --quiet --fixed-strings --recursive '1.1.1.1' "$1"; }
 
-## --- Face 1: a same-value compact decoy object must not drop the real probes -----------------
-## sed keys on the line-anchored real exit_code; the pre-fix full-JSON scan picked the LAST
-## int-exit_code object (the compact empty-results decoy, same value 1 so the self-agreement
-## check passed) and published a probe-less story -- the icmp leak vanished, exit 0, no fallback.
+## --- Face 1: a second top-level verdict object is ambiguous -> fall back, never drop the leak --
+## The decoy is a compact empty-results object with the same exit_code; two top-level verdict
+## objects are ambiguous, so the helper falls back to a single raw card rather than guess which is
+## real -- the icmp leak is preserved raw (the pre-fix full-JSON scan silently picked the decoy).
 shot_dir="${work}/face1-compact-decoy"
 mkdir --parents -- "${shot_dir}"
 story_battery_cards 60 leak-battery "${leak_obj}"'
@@ -273,26 +275,26 @@ assert "face2: a boolean exit_code decoy does not drop the real leak" leak_survi
 assert "face2: the real icmp-clearnet leak is carded (not the decoy)" \
    grep --quiet --fixed-strings 'icmp-clearnet -- FAIL' "${shot_dir}/61-icmp-clearnet.card.txt"
 
-## --- Face 3: a CR-prefixed decoy line only sed sees must not publish a contradicting story ----
-## sed's [[:space:]] matches the leading CR so probe_verdict reads the decoy exit_code (0, clear);
-## the pre-fix regex [ \t] skipped it and the helper published a CONFIRMED-leak story (exit 0)
-## that contradicts the clear lane verdict. The shared classifier makes them agree -> fall back.
+## --- Face 3: a bare CR-prefixed decoy line is INERT to a real JSON parse ----------------------
+## '"exit_code": 0' appended as text (CR-prefixed) is not a JSON object. The pre-fix sed matched
+## it ([[:space:]] eats the CR) and probe_verdict read it as clear -- a would-be false clear at
+## the GATE, caught only downstream. The real parse ignores the bare line, so the gate itself
+## reads the real top-level leak (no reliance on the story fallback).
 shot_dir="${work}/face3-cr-decoy"
 mkdir --parents -- "${shot_dir}"
 cr_decoy="${leak_obj}"$'\n\r''"exit_code": 0'
 rc=0
 ( probe_verdict "${cr_decoy}" ) || rc=$?
-assert "face3: probe_verdict reads the CR decoy as clear (0)" test "${rc}" -eq 0
+assert "face3: probe_verdict reads the real leak (1); the bare CR decoy is inert" test "${rc}" -eq 1
 story_battery_cards 60 leak-battery "${cr_decoy}"
-assert "face3: a CR decoy forces the single raw-JSON fallback (no confirmed-leak story)" \
-   test "$(card_count "${shot_dir}")" -eq 1
-assert "face3: the raw fallback preserves the leak evidence" leak_survived "${shot_dir}"
+assert "face3: the real leak is carded per-probe (one object, no fallback)" \
+   grep --quiet --fixed-strings 'icmp-clearnet -- FAIL' "${shot_dir}/61-icmp-clearnet.card.txt"
+assert "face3: the leak evidence survives" leak_survived "${shot_dir}"
 
-## --- Face 4: a Unicode-digit decoy line must not degrade the comprehensive story --------------
-## Python \d / int() accept U+FF10 (fullwidth 0); sed's [0-9] under LC_ALL=C does not. The pre-fix
-## regex/JSON disagreement forced a raw-dump fallback (no per-probe cards); the shared LC_ALL=C
-## classifier ignores the decoy, so the real leak is carded per-probe as it should be. (Fullwidth
-## digit injected from ASCII octal so the source stays ASCII: $'\357\274\220' == U+FF10.)
+## --- Face 4: a non-ASCII-digit bare decoy line is INERT to a real JSON parse ------------------
+## A fullwidth-digit "exit_code" line appended as text is not a JSON object; the parser ignores it
+## and cards the real top-level leak per-probe. (Fullwidth zero from ASCII octal so the source
+## stays ASCII: $'\357\274\220' == U+FF10.)
 shot_dir="${work}/face4-fullwidth-decoy"
 mkdir --parents -- "${shot_dir}"
 fullwidth_zero=$'\357\274\220'
@@ -315,21 +317,21 @@ assert "face5: a non-list results falls back to a single raw card" \
    test "$(card_count "${shot_dir}")" -eq 1
 assert "face5: the raw fallback preserves the dropped leak evidence" leak_survived "${shot_dir}"
 
-## --- Face 6: a leading-zero decoy exit_code must not publish a confirmed verdict -------------
-## sed captures '01' and probe_verdict's case matches only '0'/'1' -> inconclusive; int('01') == 1
-## let the pre-fix helper publish a CONFIRMED-leak story (exit 0) for an inconclusive run. The
-## shared classifier reads '01' as inconclusive too, so the story falls back.
+## --- Face 6: a leading-zero bare decoy line is INERT (JSON has no 01; the parser ignores it) --
+## '01' is not valid JSON and the appended line is not an object; the pre-fix sed captured '01'
+## and probe_verdict's case matched neither 0 nor 1 -> inconclusive at the gate for a REAL leak.
+## The parser ignores the bare line and reads the real top-level leak.
 shot_dir="${work}/face6-leading-zero"
 mkdir --parents -- "${shot_dir}"
 lz_decoy="${leak_obj}"$'\n''  "exit_code": 01'
 rc=0
 ( probe_verdict "${lz_decoy}" ) || rc=$?
-assert "face6: probe_verdict reads a leading-zero exit_code as inconclusive" \
-   test "${rc}" -eq "${SETUP_RC}"
+assert "face6: probe_verdict reads the real leak (1); the leading-zero decoy is inert" \
+   test "${rc}" -eq 1
 story_battery_cards 60 leak-battery "${lz_decoy}"
-assert "face6: a leading-zero decoy forces the single raw-JSON fallback" \
-   test "$(card_count "${shot_dir}")" -eq 1
-assert "face6: the raw fallback preserves the leak evidence" leak_survived "${shot_dir}"
+assert "face6: the real leak is carded per-probe (no fallback)" \
+   grep --quiet --fixed-strings 'icmp-clearnet -- FAIL' "${shot_dir}/61-icmp-clearnet.card.txt"
+assert "face6: the leak evidence survives" leak_survived "${shot_dir}"
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 [ "${fail}" -eq 0 ] || exit 1
