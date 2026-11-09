@@ -365,8 +365,22 @@ def validate(result):
     ## rescued by the `or {}` default and raises AttributeError there, halting the whole site.
     ## Must be null or an object, so a malformed one lands as NO-DATA, not a crash (like firmware).
     local_repo = provenance.get("localRepo") if provenance is not None else None
-    if local_repo is not None and not isinstance(local_repo, dict):
-        raise ModelError("provenance.localRepo must be null or an object: %r" % (local_repo,))
+    if local_repo is not None:
+        if not isinstance(local_repo, dict):
+            raise ModelError("provenance.localRepo must be null or an object: %r" % (local_repo,))
+        ## packages feeds '\n'.join(pkgs) in the site renderer; a non-list or a non-str
+        ## entry raises TypeError there and aborts the whole site -> reject it here so the
+        ## run lands NO-DATA instead. The scalar identity fields are rendered verbatim too.
+        pkgs = local_repo.get("packages")
+        if pkgs is not None and (not isinstance(pkgs, list)
+                                 or any(not isinstance(p, str) for p in pkgs)):
+            raise ModelError(
+                "provenance.localRepo.packages must be a list of strings: %r" % (pkgs,))
+        for key in ("derivative", "repoPath", "sourceSha"):
+            val = local_repo.get(key)
+            if val is not None and not isinstance(val, str):
+                raise ModelError(
+                    "provenance.localRepo.%s must be a string: %r" % (key, val))
     steps = result.get("steps")
     if not isinstance(steps, list):
         raise ModelError("steps must be a list")

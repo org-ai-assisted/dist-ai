@@ -240,6 +240,7 @@ class WxParserFidelityTest(unittest.TestCase):
         except unittest.SkipTest:
             self.fail('a missing REQUIRED unit raised SkipTest (vacuous skip)')
         except FileNotFoundError:
+            ## correct: a missing REQUIRED unit surfaces as an error, not a skip.
             pass
 
 

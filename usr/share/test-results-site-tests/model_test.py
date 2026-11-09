@@ -203,6 +203,17 @@ check_raises("validate refuses a non-dict environment.firmware",
 ## must refuse it (-> NO-DATA for that run only), like environment.firmware.
 check_raises("validate refuses a non-dict provenance.localRepo",
              lambda: _tamper(lambda r: r.__setitem__("provenance", {"localRepo": "pkgs"})))
+## localRepo.packages feeds '\n'.join in the site renderer; a non-list or a non-str entry would
+## raise TypeError there and abort site generation, so validate must refuse it (-> NO-DATA).
+check_raises("validate refuses a non-string localRepo package entry",
+             lambda: _tamper(lambda r: r.__setitem__(
+                 "provenance", {"localRepo": {"packages": ["ok", 123]}})))
+check_raises("validate refuses a non-list localRepo packages",
+             lambda: _tamper(lambda r: r.__setitem__(
+                 "provenance", {"localRepo": {"packages": "notalist"}})))
+check_raises("validate refuses a non-string localRepo sourceSha",
+             lambda: _tamper(lambda r: r.__setitem__(
+                 "provenance", {"localRepo": {"sourceSha": 5}})))
 ## A well-formed localRepo object stays valid, including the honest-unverified case (empty
 ## sourceSha + empty packages) -- do not over-reject.
 model.validate(model.build_result(
