@@ -333,5 +333,26 @@ assert "face6: the real leak is carded per-probe (no fallback)" \
    grep --quiet --fixed-strings 'icmp-clearnet -- FAIL' "${shot_dir}/61-icmp-clearnet.card.txt"
 assert "face6: the leak evidence survives" leak_survived "${shot_dir}"
 
+## --- Face 7: a truncated capture must fall back to raw, never promote a nested fragment --------
+## ai-review (codex/grok/agy): a real leak truncated so the only COMPLETE object is a nested
+## detail {"exit_code": 0} must not card a probe-less "clear" story. The top-level object never
+## closes -> no verdict object -> the story falls back to a single raw card that keeps the leak.
+shot_dir="${work}/face7-truncated-nested"
+mkdir --parents -- "${shot_dir}"
+trunc_nested='{
+  "exit_code": 1,
+  "leak_detected": true,
+  "results": [
+    {
+      "detail": {
+        "exit_code": 0,
+        "leaked_to": "1.1.1.1"
+      },
+      "message": "non-Tor egress"'
+story_battery_cards 60 leak-battery "${trunc_nested}"
+assert "face7: a truncated leak falls back to a single raw card" \
+   test "$(card_count "${shot_dir}")" -eq 1
+assert "face7: the raw fallback preserves the leak evidence" leak_survived "${shot_dir}"
+
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 [ "${fail}" -eq 0 ] || exit 1

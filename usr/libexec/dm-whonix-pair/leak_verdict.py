@@ -46,30 +46,68 @@ def classify_exit_code(code):
     return INCONCLUSIVE
 
 
+def _reject_duplicate_keys(pairs):
+    """json object_pairs_hook: a JSON object from json.dumps never repeats a key, so a duplicate
+    -- including one forged by \\uXXXX-escaping a key to collide (exit_\\u0063ode decodes to
+    exit_code) -- is a crafted or garbled object. Reject it (ValueError) rather than silently
+    keep the last value, which could flip a top-level exit_code 1 to a trailing 0."""
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate key: %r" % key)
+        result[key] = value
+    return result
+
+
+def _top_level_object_spans(text):
+    """(start, end) of every CLOSED top-level {...} in text, string-aware so a brace inside a
+    JSON string value is ignored. A truncated object that never closes yields NO span: the scan
+    never descends into an unclosed outer object, so it cannot promote a nested detail fragment
+    (e.g. a probe detail's own {"exit_code": 0}) to the verdict -- fail-closed on a transport cut."""
+    spans = []
+    depth = 0
+    start = None
+    in_str = False
+    escape = False
+    for i, ch in enumerate(text):
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}" and depth > 0:
+            depth -= 1
+            if depth == 0:
+                spans.append((start, i + 1))
+    return spans
+
+
 def verdict_objects(text):
-    """Every TOP-LEVEL JSON object carrying a STRICT integer 'exit_code', in order. A JSON
-    boolean is excluded (type(True) is int is False, though isinstance(True, int) is True), so
-    a boolean decoy cannot pose as the verdict; a nested exit_code lives in a sub-dict and is
-    invisible to the top-level dict.get. Transport (guestcontrol) may wrap the verdict in noise
-    and emit earlier irrelevant objects (e.g. a '{"results": []}' warning, which carries none),
-    and may truncate the tail (an incomplete object fails to decode and is skipped). The real
-    anon-leak-test output is exactly one such object."""
-    decoder = json.JSONDecoder()
-    index = 0
-    length = len(text)
+    """Every TOP-LEVEL JSON object carrying a STRICT integer 'exit_code', in order. A JSON boolean
+    is excluded (type(True) is int is False, though isinstance(True, int) is True), so a boolean
+    decoy cannot pose as the verdict; a nested exit_code lives in a sub-dict and is invisible to
+    the top-level dict.get. Only CLOSED top-level objects are considered (a truncated tail is
+    dropped), and a duplicate-key object is rejected -- so neither a transport cut nor a forged
+    duplicate can flip the verdict. Transport may wrap the real output in noise and emit earlier
+    irrelevant objects (e.g. a '{"results": []}' warning, which carries no exit_code); the real
+    anon-leak-test output is exactly one qualifying object."""
     found = []
-    while index < length:
-        start = text.find("{", index)
-        if start == -1:
-            break
+    for start, end in _top_level_object_spans(text):
         try:
-            obj, end = decoder.raw_decode(text, start)
+            obj = json.loads(text[start:end], object_pairs_hook=_reject_duplicate_keys)
         except ValueError:
-            index = start + 1
             continue
         if isinstance(obj, dict) and type(obj.get("exit_code")) is int:  # exact int: reject bool
             found.append(obj)
-        index = end if end > start else start + 1
     return found
 
 

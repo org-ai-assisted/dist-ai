@@ -84,6 +84,41 @@ classifies "empty input (transport cut)" '' inconclusive
 ## A truncated tail (an incomplete final object) decodes to nothing -> inconclusive, never clear.
 classifies "truncated tail (incomplete object) (#5)" \
    '{"results":[],"exit_code":1' inconclusive
+## A truncated REAL leak whose cut leaves a nested detail {"exit_code": 0} as the only complete
+## object must NOT promote that nested 0 to the verdict (ai-review codex/grok/agy): the top-level
+## object never closes -> no top-level span -> inconclusive, never a false clear.
+trunc_nested_leak='{
+  "exit_code": 1,
+  "leak_detected": true,
+  "results": [
+    {
+      "detail": {
+        "exit_code": 0,
+        "leaked_to": "1.1.1.1"
+      },
+      "message": "non-Tor egress"'
+classifies "a truncated leak does NOT promote a nested detail exit_code (false clear)" \
+   "${trunc_nested_leak}" inconclusive
+## The inverse (top-level clean, nested leak, same truncation) must NOT become a false LEAK either.
+trunc_nested_clean='{
+  "exit_code": 0,
+  "leak_detected": false,
+  "results": [
+    {
+      "detail": {
+        "exit_code": 1
+      },
+      "message": "x"'
+classifies "a truncated clean does NOT promote a nested detail exit_code (false leak)" \
+   "${trunc_nested_clean}" inconclusive
+## A duplicate top-level exit_code (json keeps the LAST) must not flip a leak to clear: json.dumps
+## never repeats a key, so a duplicate is crafted/garbled -> reject the object (ai-review grok).
+classifies "duplicate exit_code key is rejected (not last-wins to clear)" \
+   '{"exit_code": 1, "results": [{"probe":"icmp","status":"FAIL","message":"m","detail":{}}], "exit_code": 0}' inconclusive
+## A key forged to collide via a unicode escape (exit_code decodes to exit_code) is the same
+## duplicate once decoded -> rejected, not silently last-wins.
+classifies "a unicode-escaped colliding exit_code key is rejected" \
+   '{"exit_code": 1, "results": [{"probe":"icmp","status":"FAIL","message":"m","detail":{}}], "exit_code": 0}' inconclusive
 ## A boolean exit_code is not an integer verdict (isinstance(True,int) is True but type is not).
 classifies "boolean exit_code decoy is not a verdict" \
    '{"results":[],"exit_code":true}' inconclusive
