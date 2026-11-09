@@ -147,6 +147,7 @@ main() {
       ## A hard-powered-off VM leaves an unclean ext journal; ext* cannot replay it
       ## on a read-only device and refuses a plain '-o ro' mount, so fall back to
       ## 'noload' (skip journal replay -- safe for a read-only inspection).
+      # shellcheck disable=SC2154  ## mnt_dir is set by make_private_mountpoint (sourced vbox-disk-lib.bsh)
       if ! mount --read-only --options nodev,nosuid,noexec,nosymfollow -- "${fs}" "${mnt_dir}" 2>/dev/null \
          && ! mount --read-only --options nodev,nosuid,noexec,nosymfollow,noload -- "${fs}" "${mnt_dir}" 2>/dev/null; then
          continue

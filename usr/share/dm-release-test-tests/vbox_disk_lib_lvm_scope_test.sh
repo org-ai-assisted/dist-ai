@@ -75,6 +75,7 @@ contains() {
 }
 
 mapped='/dev/mapper/tluks'
+# shellcheck disable=SC2034  ## read by candidate_filesystems via the sourced lib (dynamic source)
 luks_name='tluks'
 
 ## Enumerate: pvs reports a VG, so candidate_filesystems activates it and lists its LVs. Run it

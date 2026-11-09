@@ -153,6 +153,7 @@ main() {
       ## nosymfollow -- the caller's command runs as ROOT with CWD in the mount, so without
       ## nosymfollow a guest symlink (e.g. grubenv -> /etc/...) would redirect a root write onto
       ## a HOST path. A real failure to mount read-write is a hard error, fail-closed -- see below.
+      # shellcheck disable=SC2154  ## mnt_dir is set by make_private_mountpoint (sourced vbox-disk-lib.bsh)
       if mount --options nodev,nosuid,noexec,nosymfollow -- "${fs}" "${mnt_dir}" 2>/dev/null; then
          mounted='true'
          break
