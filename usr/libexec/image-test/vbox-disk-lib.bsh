@@ -26,6 +26,7 @@
 nbd_dev=""
 luks_name=""
 vg_activated=""
+vg_dev=""
 mnt_dir=""
 mnt_base=""
 fs_list=""
@@ -50,7 +51,10 @@ cleanup() {
       safe-rm --force -- "${fs_list}" 2>/dev/null || true
    fi
    if [ -n "${vg_activated:-}" ]; then
-      vgchange --activate n -- "${vg_activated}" >/dev/null 2>&1 || true
+      ## Scope the deactivation to the guest PV (vg_dev, the LUKS mapping -- still open here,
+      ## cryptsetup close runs after this), exactly as the activation was: a bare VG NAME could
+      ## otherwise deactivate a same-named HOST VG (e.g. ubuntu-vg). See candidate_filesystems.
+      vgchange --devices "${vg_dev:-}" --activate n -- "${vg_activated}" >/dev/null 2>&1 || true
    fi
    if [ -n "${luks_name:-}" ] && [ -e "/dev/mapper/${luks_name}" ]; then
       cryptsetup close -- "${luks_name}" || true
@@ -144,6 +148,19 @@ free_nbd() {
    die "no free /dev/nbd device"
 }
 
+## Create the mountpoint inside a 0700 PARENT. Once a filesystem is mounted, the mountpoint
+## inode takes the GUEST root's mode (typically 0755), so other local users could traverse the
+## decrypted guest tree while it is mounted; the 0700 parent (not the mountpoint) blocks that.
+## Sets mnt_base (the 0700 parent, 'mktemp --directory' is 0700; cleanup removes it after
+## mnt_dir) and mnt_dir (the mountpoint inside it). realpath so a caller's realpath-prefix
+## confinement holds even when an ancestor of TMPDIR is a symlink. Single source so
+## vbox-disk-mount and vbox-disk-extract cannot drift on this invariant.
+make_private_mountpoint() {
+   mnt_base="$(realpath -- "$(mktemp --directory)")"
+   mnt_dir="${mnt_base}/mnt"
+   mkdir -- "${mnt_dir}"
+}
+
 ## Echo the candidate block devices that may hold a filesystem: the LUKS mapping and any
 ## LVs it exposes, else the disk's own partitions.
 candidate_filesystems() {
@@ -152,12 +169,17 @@ candidate_filesystems() {
       ## LVM inside LUKS: activate the VG and list its LVs; otherwise the mapping itself is
       ## the filesystem. pvs exits non-zero when the mapping is a plain filesystem (not an
       ## LVM PV); that is expected, so tolerate it rather than letting errexit abort.
+      ## SCOPE every LVM op to the guest PV with --devices: a bare VG NAME activates by name
+      ## across ALL visible PVs, so a guest VG named like a HOST VG (e.g. ubuntu-vg) would
+      ## activate the HOST VG and expose its LVs to the mount. --devices restricts LVM to the
+      ## guest mapping only, so only the guest VG is ever seen -- even on a name collision.
       local vg
-      vg="$(pvs --noheadings --options vg_name -- "${mapped}" 2>/dev/null | tr -d ' ' || true)"
+      vg="$(pvs --devices "${mapped}" --noheadings --options vg_name -- "${mapped}" 2>/dev/null | tr -d ' ' || true)"
       if [ -n "${vg}" ]; then
-         vgchange --activate y -- "${vg}" >/dev/null
+         vgchange --devices "${mapped}" --activate y -- "${vg}" >/dev/null
          vg_activated="${vg}"
-         lvs --noheadings --options lv_path -- "${vg}" 2>/dev/null | tr -d ' '
+         vg_dev="${mapped}"
+         lvs --devices "${mapped}" --noheadings --options lv_path -- "${vg}" 2>/dev/null | tr -d ' '
       else
          printf '%s\n' "${mapped}"
       fi

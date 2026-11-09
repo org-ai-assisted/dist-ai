@@ -131,10 +131,11 @@ main() {
       luks_open "${luks_target}" "${luks_name}"
    fi
 
-   ## Canonicalize so the realpath-based confinement prefix test below holds even when
-   ## an ancestor of the mktemp base (TMPDIR) is a symlink -- otherwise realpath's
-   ## canonical result would never start with the raw mnt_dir and EVERY file is rejected.
-   mnt_dir="$(realpath -- "$(mktemp --directory)")"
+   ## Mountpoint inside a 0700 parent (shared helper): once mounted, the mountpoint takes the
+   ## guest root's 0755 mode, so without a 0700 parent other local users could traverse the
+   ## decrypted guest tree. The helper's realpath also keeps the confinement prefix test below
+   ## holding when an ancestor of TMPDIR is a symlink.
+   make_private_mountpoint
    local fs found='false' resolved
    ## Run candidate_filesystems in THIS shell via a file (NOT a '< <()' process
    ## substitution): a procsub subshell would discard its vg_activated assignment, so
@@ -146,8 +147,8 @@ main() {
       ## A hard-powered-off VM leaves an unclean ext journal; ext* cannot replay it
       ## on a read-only device and refuses a plain '-o ro' mount, so fall back to
       ## 'noload' (skip journal replay -- safe for a read-only inspection).
-      if ! mount --read-only -- "${fs}" "${mnt_dir}" 2>/dev/null \
-         && ! mount --read-only --options noload -- "${fs}" "${mnt_dir}" 2>/dev/null; then
+      if ! mount --read-only --options nodev,nosuid,noexec,nosymfollow -- "${fs}" "${mnt_dir}" 2>/dev/null \
+         && ! mount --read-only --options nodev,nosuid,noexec,nosymfollow,noload -- "${fs}" "${mnt_dir}" 2>/dev/null; then
          continue
       fi
       ## Confine to the mounted guest fs: fully resolve symlinks and require the REAL

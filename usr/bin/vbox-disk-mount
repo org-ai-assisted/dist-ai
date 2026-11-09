@@ -137,12 +137,9 @@ main() {
       luks_open "${luks_target}" "${luks_name}" rw
    fi
 
-   ## Mount inside a 0700 PARENT: once mounted, the mountpoint takes the guest root inode's
-   ## mode (typically 0755), so other local users could read the decrypted tree during the
-   ## command; the 0700 parent (not the mountpoint) blocks that traversal. mktemp -d is 0700.
-   mnt_base="$(realpath -- "$(mktemp --directory)")"
-   mnt_dir="${mnt_base}/mnt"
-   mkdir -- "${mnt_dir}"
+   ## Mountpoint inside a 0700 parent (shared helper: keeps the decrypted tree off other local
+   ## users once the mount takes the guest root's 0755 mode).
+   make_private_mountpoint
    local fs mounted='false'
    ## candidate_filesystems in THIS shell via a file (not '< <()'): a procsub subshell would
    ## discard its vg_activated assignment, leaking the VG cleanup turned on.
@@ -152,9 +149,11 @@ main() {
       [ -n "${fs}" ] || continue
       ## Writable mount: let the journal REPLAY (do NOT use the read-only 'noload' trick --
       ## mounting a dirty journal writable with noload risks corruption). Harden against a
-      ## hostile guest filesystem: nodev (no live guest device nodes), nosuid, noexec. A real
-      ## failure to mount read-write is a hard error, fail-closed -- see below.
-      if mount --options nodev,nosuid,noexec -- "${fs}" "${mnt_dir}" 2>/dev/null; then
+      ## hostile guest filesystem: nodev (no live guest device nodes), nosuid, noexec, and
+      ## nosymfollow -- the caller's command runs as ROOT with CWD in the mount, so without
+      ## nosymfollow a guest symlink (e.g. grubenv -> /etc/...) would redirect a root write onto
+      ## a HOST path. A real failure to mount read-write is a hard error, fail-closed -- see below.
+      if mount --options nodev,nosuid,noexec,nosymfollow -- "${fs}" "${mnt_dir}" 2>/dev/null; then
          mounted='true'
          break
       fi
