@@ -138,8 +138,12 @@ wait_guestcontrol_ready() {
 ## a hard poweroff only if the guest ignores ACPI within the timeout.
 clean_poweroff() {
    local deadline state
+   ## Timeouts overridable (production-safe defaults) so a unit test can drive the
+   ## never-powers-off path quickly, and an e2e run can tune the waits.
+   local acpi_s="${CLEAN_POWEROFF_ACPI_S:-120}"
+   local hard_s="${CLEAN_POWEROFF_HARD_S:-30}"
    "${VBOXMANAGE}" controlvm "${vm}" acpipowerbutton >/dev/null 2>&1 || true
-   deadline=$(( SECONDS + 120 ))
+   deadline=$(( SECONDS + acpi_s ))
    while [ "${SECONDS}" -lt "${deadline}" ]; do
       state="$("${VBOXMANAGE}" showvminfo "${vm}" --machinereadable 2>/dev/null \
          | sed -n 's/^VMState="\(.*\)"$/\1/p')"
@@ -153,12 +157,14 @@ clean_poweroff() {
       esac
       sleep 3
    done
-   ## Hard fallback: force off, then CONFIRM the off-state before returning. The frontend
+   ## Hard fallback: force off, then CONFIRM the off-state before returning 0. The frontend
    ## does not release the disk lock until the VM is actually powered off, so returning early
    ## would let a following offline disk mount (boot_installed) race a still-locked disk and
-   ## fail the qemu-nbd connect -- a false DEGRADED result with no boot.
+   ## fail the qemu-nbd connect -- a false DEGRADED result with no boot. If even the hard
+   ## poweroff never confirms off (a wedged VM), RETURN NONZERO so the caller degrades rather
+   ## than mounting a locked disk -- never fall through to the loop's success status.
    "${VBOXMANAGE}" controlvm "${vm}" poweroff >/dev/null 2>&1 || true
-   deadline=$(( SECONDS + 30 ))
+   deadline=$(( SECONDS + hard_s ))
    while [ "${SECONDS}" -lt "${deadline}" ]; do
       state="$("${VBOXMANAGE}" showvminfo "${vm}" --machinereadable 2>/dev/null \
          | sed -n 's/^VMState="\(.*\)"$/\1/p')"
@@ -169,6 +175,8 @@ clean_poweroff() {
       esac
       sleep 2
    done
+   printf '%s\n' "${me}: ${vm}: did not power off within the deadline (still '${state:-unknown}')" >&2
+   return 1
 }
 
 ## Echo the guest display WIDTH in pixels (0 if unavailable). The desktop-up visual
@@ -198,7 +206,9 @@ unlock_luks() {
 boot_installed() {
    local role="$1" account disk mode
    account="$(gc_account_for_role "${role}")"
-   clean_poweroff
+   ## Must be fully powered off before the offline disk mount below -- else qemu-nbd races a
+   ## still-held disk lock. A VM that never powers off flows to the degraded gate result.
+   clean_poweroff || return 1
    ## Deterministic OFFLINE selection with the VM powered off: resolve the system disk and set
    ## grubenv next_entry for the TARGET role BEFORE power-on (no OCR, no live-menu race). BOTH
    ## roles are selected every boot: on an encrypted disk GRUB cannot clear the one-shot

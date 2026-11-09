@@ -145,5 +145,18 @@ assert_eq 'boot_installed user returns 0' "${rc}" '0'
 assert_eq 'boot_installed user selects the user mode offline (resets any stale one-shot)' \
    "$(cat -- "${tmp}/select_mode" 2>/dev/null)" 'user'
 
+## --- a VM that never powers off: clean_poweroff fails -> boot_installed must RETURN 1 and
+## NOT proceed to the offline mount (which would race the still-held disk lock). -----------
+# shellcheck disable=SC2317  ## invoked indirectly by boot_installed
+clean_poweroff() {
+   return 1
+}
+safe-rm --force -- "${tmp}/select_mode"
+rc=0
+boot_installed sysmaint || rc=$?
+assert_eq 'boot_installed returns 1 when clean_poweroff fails (VM never off)' "${rc}" '1'
+assert_eq 'boot_installed does NOT select/mount when the VM is not powered off' \
+   "$([ -e "${tmp}/select_mode" ] && printf '%s' called || printf '%s' not-called)" 'not-called'
+
 printf '%s\n' "" "${pass} pass, ${fail} fail"
 [ "${fail}" -eq 0 ] || exit 1
