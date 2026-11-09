@@ -1111,7 +1111,10 @@ wire() {
          ## reads as wired while it never ran. Same reason developer-meta-files gets
          ## the real shipped binary above.
          suite_path="${mydir}:${PATH}"
-         wire_env=( "PRIVATE_AI_CONFIG_PATH=$( pkg_dir private-ai-config )" )
+         # DIST_AI_REPO: git-hooks-workflow-gate-test resolves the workflow-yaml
+         # validator (github-org-tools-tests, shipped by dist-ai) from it, so the
+         # gate RUNS in CI instead of skipping on the dev-only ~/private-sources path.
+         wire_env=( "PRIVATE_AI_CONFIG_PATH=$( pkg_dir private-ai-config )" "DIST_AI_REPO=$( pkg_dir dist-ai )" )
          if [ -n "${hs}" ]; then
             suite_path="${mydir}:${hs}/usr/bin:${PATH}"
             wire_env+=(
