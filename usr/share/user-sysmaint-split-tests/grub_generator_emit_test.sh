@@ -56,14 +56,11 @@ fail=0
 skipped=0
 checked=0
 
-## generator : expected boot_mode_id token
-for spec in \
-   "${sysmaint_gen}:boot_mode_id=sysmaint" \
-   "${remove_gen}:boot_mode_id=remove-sysmaint"; do
-   generator="${spec%:*}"
-   must_contain="${spec##*:}"
-   rc=0
-   "${checker}" "${generator}" "$(basename -- "${generator}")" "${must_contain}" || rc=$?
+check_one() {
+   local generator="$1" token="$2" extra="${3:-}" rc=0
+   GRUB_EMIT_CHECK_EXTRA_ENV="${extra}" \
+      "${checker}" "${generator}" "$(basename -- "${generator}")${extra:+ [${extra}]}" "${token}" \
+      || rc=$?
    if [ "${rc}" -eq 77 ]; then
       skipped=$(( skipped + 1 ))
    elif [ "${rc}" -ne 0 ]; then
@@ -71,7 +68,15 @@ for spec in \
    else
       checked=$(( checked + 1 ))
    fi
-done
+}
+
+## The SYSMAINT wrapper is re-exec'd by grub-live's 10_20_linux_live with
+## persistence_type=LIVE, so its --id token MUST differ by persistence -- else the
+## live and persistent SYSMAINT entries share one id and id-based selection cannot
+## tell them apart. Assert both. REMOVE is persistent-only (never live-chained).
+check_one "${sysmaint_gen}" 'boot_mode_id=persistent-sysmaint'
+check_one "${sysmaint_gen}" 'boot_mode_id=live-sysmaint' 'persistence_type=LIVE'
+check_one "${remove_gen}"   'boot_mode_id=remove-sysmaint'
 
 ## All-skipped is not a pass: the subject was never resolved. (A real failure
 ## already set fail=1 and must report as a failure, not this diagnostic.)

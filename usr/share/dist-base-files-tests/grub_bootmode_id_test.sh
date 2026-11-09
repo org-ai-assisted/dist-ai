@@ -127,12 +127,15 @@ assert_prefix() {
    fi
 }
 
-## Unset falls back to 'simple' (non-wrapper invocation stays valid); each mode
-## token yields its own distinct prefix.
-assert_prefix UNSET           'gnulinux-simple-'
-assert_prefix user            'gnulinux-user-'
-assert_prefix sysmaint        'gnulinux-sysmaint-'
-assert_prefix remove-sysmaint 'gnulinux-remove-sysmaint-'
+## The real production tokens (see the 10_0x / 10_20 wrappers). Unset falls back to
+## 'simple' = the grub-live USER entry. persistent-sysmaint vs live-sysmaint proves
+## the SYSMAINT id is distinct per persistence, so live and persistent SYSMAINT never
+## share an id.
+assert_prefix UNSET              'gnulinux-simple-'
+assert_prefix user               'gnulinux-user-'
+assert_prefix persistent-sysmaint 'gnulinux-persistent-sysmaint-'
+assert_prefix live-sysmaint      'gnulinux-live-sysmaint-'
+assert_prefix remove-sysmaint    'gnulinux-remove-sysmaint-'
 
 printf '%s\n' "" "${checks} checks, ${fail} failed"
 [ "${fail}" -eq 0 ]

@@ -96,6 +96,14 @@ for grub_var in GRUB_ACTUAL_DEFAULT GRUB_CMDLINE_LINUX GRUB_CMDLINE_LINUX_DEFAUL
    grub_env+=( "${grub_var}=test-value" )
 done
 
+## Optional caller-supplied VAR=VAL extras (space-separated), appended last so they
+## override the fixed values above. Lets a suite drive a wrapper's branch -- e.g.
+## persistence_type=LIVE, which makes the SYSMAINT wrapper emit the live-sysmaint id.
+if [ -n "${GRUB_EMIT_CHECK_EXTRA_ENV:-}" ]; then
+   read -r -a extra_env <<< "${GRUB_EMIT_CHECK_EXTRA_ENV}"
+   grub_env+=( "${extra_env[@]}" )
+fi
+
 ## stderr is captured too: several generators take an early-exit path whose
 ## only output is a diagnostic on fd 2, and discarding it made them look as
 ## though they had emitted nothing.
