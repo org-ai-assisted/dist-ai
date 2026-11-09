@@ -283,6 +283,18 @@ class TestExitTrapPreservesStatus(UpdatecheckTestBase):
         res = self.run_sourced('set +o errexit\ntrue\nexit_trap')
         self.assertEqual(res.returncode, 0)
 
+    def test_sigterm_shutdown_survives_failing_qdbus(self) -> None:
+        ## A clean SIGTERM shutdown must exit 0 even when closing the desktop
+        ## notification fails (no Qt / qdbus error): the close is best-effort and
+        ## must not let the status-preserving EXIT trap fabricate a FAILED exit.
+        ## The daemon SIGTERMs updatecheck every cycle, so this is the normal
+        ## shutdown path.
+        res = self.run_sourced(
+            'notification_id=42\ntrap exit_trap EXIT\nsigterm_trap',
+            stubs='qdbus() { printf "could not find a Qt installation\\n" >&2; '
+                  'return 1; }\n')
+        self.assertEqual(res.returncode, 0)
+
 
 class TestPermissionDeniedPopupSurfacing(UpdatecheckTestBase):
     """The 'lacks privleap permission' branch (leaprun --check fails) shows a
