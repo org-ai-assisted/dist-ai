@@ -1031,14 +1031,7 @@ ws_func_cli_exec() {
    ## plain redirect preserves gc_run's REAL exit code; the output is bounded only when READ into
    ## the check-log below (a release check's output is bounded in practice, and ${tmp} is removed
    ## right after, so there is no lingering disk growth).
-   ## CLI edition has NO user/sysmaint account split (wiki/sysmaint): sysmaint-BOOT elevates the
-   ## `user` account (dsudo -> root); there is no `sysmaint` account to guestcontrol into. Checks
-   ## 2/3 carry SESSION=sysmaint (shared with the GUI edition, which DOES split) -- map it to the
-   ## `user` account, run in the same sysmaint-boot context (check 2 reads /proc/cmdline; check 3
-   ## upgrade-nonroot self-elevates via dsudo).
-   local session="$2"
-   [ "${session}" = 'sysmaint' ] && session='user'
-   gc_run "${session}" "$3" "$4" > "${tmp}" 2>&1 || rc=$?
+   gc_run "$2" "$3" "$4" > "${tmp}" 2>&1 || rc=$?
    if [ "${rc}" -eq 0 ]; then
       safe-rm --force -- "${tmp}"; cli_capture_tmp=""
       printf '%s\n' "${me}: check $1 PASS"
@@ -1058,27 +1051,14 @@ ws_func_cli_exec() {
    return "${rc}"
 }
 
-## CLI battery reboot callback (reboot_sysmaint_fn): the user->sysmaint transition for checks
-## 2, 3. Mirrors the GUI ws_func_reboot_sysmaint guards but HEADLESS. clean_poweroff is async and
-## its hard fallback returns WITHOUT waiting, so wait_vm_off CONFIRMS the off-state before startvm
-## (else startvm races a still-powering-off VM and a healthy image reads as a failed reboot).
-## select_installed_sysmaint drives the pre-OS GRUB entry (framebuffer, independent of the OS
-## desktop); readiness is guestcontrol, not an on-screen terminal. Every stage die()s on failure,
-## so run the sequence in a SUBSHELL converted to return 1 -- the battery's reboot_sysmaint_fn
-## contract is return-nonzero, never exit (a GRUB/boot failure fails the battery with its reason).
-ws_func_cli_reboot_sysmaint() {
-   (
-      vm="${ws}"
-      clean_poweroff
-      wait_vm_off "${ws}" 20 \
-         || die "${FAIL_RC}" "${ws}: did not power off before the sysmaint reboot -- cannot restart the Workstation"
-      "${VBOXMANAGE}" startvm "${ws}" --type headless >/dev/null
-      select_installed_sysmaint
-      ## CLI edition: no sysmaint account; sysmaint-BOOT elevates `user` (dsudo -> root). Wait for
-      ## the `user` guestcontrol channel (the account checks 2/3 run as), not a sysmaint account.
-      wait_guestcontrol_ready user 300 \
-         || die "${FAIL_RC}" "${ws}: guestcontrol not ready as user after the sysmaint reboot -- cannot run checks 2/3"
-   ) || return 1
+## CLI edition has NO user/sysmaint split (wiki/sysmaint): the functional battery runs ENTIRELY in
+## the `user` session -- check 2 (the boot-role=sysmaint assertion the CLI never satisfies) is
+## route-skipped and check 3 (upgrade-nonroot) is reassigned to the user session, so the battery
+## never transitions to sysmaint. This guard is the reboot_sysmaint_fn the battery takes; it fails
+## loud if a future sysmaint-session check ever reintroduces a reboot the CLI edition cannot do
+## (no boot-role=sysmaint in the cmdline, no sysmaint account to guestcontrol into).
+cli_no_sysmaint_reboot() {
+   die "${FAIL_RC}" "CLI functional battery must not reboot to sysmaint -- the CLI edition has no user/sysmaint split"
 }
 
 ## Run check 8 (systemcheck --cli --ci) in a REAL logind user session on the CLI Workstation.
@@ -1217,10 +1197,15 @@ main_functional_cli() {
    ws_cli_console_systemcheck
    RELEASE_CHECK_SKIP_REASON[6]='CLI edition has no graphical session (no labwc compositor)'
    RELEASE_CHECK_SKIP_REASON[8]='run separately via a real console login (ws_cli_console_systemcheck); guestcontrol has no logind user manager'
+   ## CLI edition has NO user/sysmaint split (wiki/sysmaint): route-skip check 2 (the
+   ## boot-role=sysmaint assertion the CLI never sets) and run check 3 (upgrade-nonroot) in the
+   ## single `user` session, so the battery stays in the user session and never reboots to sysmaint.
+   RELEASE_CHECK_SKIP_REASON[2]='CLI edition has no user/sysmaint boot-role split (wiki/sysmaint)'
+   RELEASE_CHECK_SESSION[3]='user'
    printf '%s\n' "${me}: [functional-cli] run the release-check battery over guestcontrol (no OCR)"
    ## No verify_fn ('' skips the OCR render pre-check -- there is no desktop to cross-check); the
    ## authoritative signal is each check's in-guest exit code over guestcontrol.
-   if ! run_release_check_battery ws_func_cli_exec ws_func_cli_reboot_sysmaint ''; then
+   if ! run_release_check_battery ws_func_cli_exec cli_no_sysmaint_reboot ''; then
       die "${FAIL_RC}" "release check ${RELEASE_CHECK_FAILED_NUM:-?} (${RELEASE_CHECK_FAILED_REASON:-unknown}) FAILED"
    fi
    printf '%s\n' "${me}: [functional-cli] PASS -- Workstation passed the CLI release-check battery + console-login systemcheck"
