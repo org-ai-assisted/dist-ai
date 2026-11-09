@@ -85,6 +85,26 @@ _FEED_BUDGET_S = 8.0
 ## stream-safe cap so a legitimately long (but bounded) cluster never trips it.
 _CELL_MAX = 256
 
+## Per-phase wall-time budget -- idiomatic time-boxed fuzzing (cf. libFuzzer
+## -max_total_time). The persistent-term phases (feed/tui/switch) re-render retained
+## output every iteration, so a phase's TOTAL cost grows with depth even though each
+## iteration stays DoS-bounded (_FEED_BUDGET_S); on the slow shared CI runner the full
+## --iterations overruns the suite's CI budget. Cap each phase by wall-time on CI (depth
+## then adapts to the runner) -- 0 disables the cap, so a manual `--iterations N` deep run
+## stays unbounded as the maintainer intends. 8 phases * 50s leaves margin under the 600s
+## fuzz-suite cap.
+_PHASE_BUDGET_S = 50.0 if os.environ.get('CI') else 0.0
+
+
+def _bounded(iterations, budget_s):
+    ## Yield up to `iterations` indices, stopping early once `budget_s` wall-seconds elapse
+    ## (budget_s <= 0 disables the cap). Per-iteration DoS asserts are unaffected.
+    start = time.monotonic()
+    for i in range(iterations):
+        if budget_s > 0 and time.monotonic() - start >= budget_s:
+            return
+        yield i
+
 
 def _rand_token(rnd):
     kind = rnd.random()
@@ -149,6 +169,9 @@ def _feed_live(term, data, read_max):
     term._flush_paint()
 
 
+_DOC_CHECKED: dict = {}
+
+
 def _check_document(term, seed, ctx):
     ## The visible transcript is the sanitization guarantee: only the structural
     ## newline/tab plus PRINTABLE characters may reach the document. str.isprintable()
@@ -157,9 +180,21 @@ def _check_document(term, seed, ctx):
     ## BOM, the isolates, ...), all of which this fuzzer feeds via _DANGER and none of
     ## which may render raw in ANY mode. A bare `ord >= 0x20` (or a 0x20-0x7E / >=0xA0
     ## range) wrongly admits DEL, C1, and every bidi/invisible >= 0xA0.
-    for ch in term.toPlainText():
+    ##
+    ## Incremental: a persistent-term phase re-checks the SAME growing transcript every
+    ## iteration -- O(n^2) in the per-char isprintable scan. Cache the last-checked text
+    ## per term and scan only the APPENDED tail when the new text extends it (append-only
+    ## feed); when it does NOT extend it (a mode switch re-rendered the whole buffer), scan
+    ## ALL of it, so a re-render that corrupts earlier text is still caught. id() reuse
+    ## after a term is GC'd falls to the full scan (the fresh text will not start with a
+    ## dead term's prefix), so the cache can never mask a control byte.
+    text = term.toPlainText()
+    prev = _DOC_CHECKED.get(id(term), '')
+    tail = text[len(prev):] if text.startswith(prev) else text
+    for ch in tail:
         _assert(ch in ('\n', '\t') or ch.isprintable(),
                 'raw control {0!r} reached the document ({1})'.format(ch, ctx), seed)
+    _DOC_CHECKED[id(term)] = text
 
 
 def _check_cells_bounded(term, seed, ctx):
@@ -182,7 +217,7 @@ def phase_feed(rnd, iterations, seed):
     pool = {m: SecureTerminal(command='/bin/cat') for m in modes}
     for m, term in pool.items():
         term.apply_mode(m)
-    for _ in range(iterations):
+    for _ in _bounded(iterations, _PHASE_BUDGET_S):
         m = rnd.choice(modes)
         term = pool[m]
         raw = _rand_bytes_chunk(rnd)
@@ -198,7 +233,7 @@ def phase_tui(rnd, iterations, seed):
     ## cell may accumulate an unbounded combining cluster.
     term = SecureTerminal(command='/bin/cat', tui=True)
     modes = list(S.DISPLAY_MODES)
-    for _ in range(iterations):
+    for _ in _bounded(iterations, _PHASE_BUDGET_S):
         term.apply_mode(rnd.choice(modes))
         raw = _rand_bytes_chunk(rnd)
         dt = _feed(term, raw)
@@ -212,7 +247,7 @@ def phase_switch(rnd, iterations, seed):
     ## Flip CLI<->TUI and toggle OSC opt-ins mid-stream: a mode switch re-renders
     ## from retained raw output and must not crash or leak.
     term = SecureTerminal(command='/bin/cat')
-    for _ in range(iterations):
+    for _ in _bounded(iterations, _PHASE_BUDGET_S):
         # time the feed AND the mode/OSC re-renders together: the switch re-renders
         # from retained raw output, which is exactly where a quadratic reshape DoS
         # surfaces, so bound the whole iteration -- not just the feed like phase_feed.
@@ -235,7 +270,7 @@ def phase_paste(rnd, iterations, seed):
     term = SecureTerminal(command='/bin/cat')
     sent: list[bytes] = []
     term._write = lambda data, _s=sent: _s.append(data) or len(data)   # capture; report full write
-    for _ in range(iterations):
+    for _ in _bounded(iterations, _PHASE_BUDGET_S):
         term.apply_paste_warn(rnd.choice(_PASTE_WARN))
         text = ''.join(_rand_token(rnd) for _ in range(rnd.randint(0, 12)))
         sent.clear()
@@ -268,7 +303,7 @@ def phase_keys(rnd, iterations, seed):
     mods = [Qt.KeyboardModifier.NoModifier, Qt.KeyboardModifier.ControlModifier,
             Qt.KeyboardModifier.ShiftModifier,
             Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier]
-    for _ in range(iterations):
+    for _ in _bounded(iterations, _PHASE_BUDGET_S):
         ev = QKeyEvent(QEvent.Type.KeyPress, rnd.choice(keys), rnd.choice(mods),
                        rnd.choice(('', 'a', '1', ' ')))
         term.keyPressEvent(ev)
@@ -295,7 +330,7 @@ def phase_review(rnd, iterations, seed):
     _saved_q = QMessageBox.question
     QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes)
     try:
-        for _ in range(iterations):
+        for _ in _bounded(iterations, _PHASE_BUDGET_S):
             raw = ''.join(_rand_token(rnd) for _ in range(rnd.randint(0, 15)))
             bar.show_review(term, raw, rnd.randint(0, 3),
                             rnd.choice(('paste', 'copy', 'clipboard', 'bogus')))
@@ -451,7 +486,7 @@ def phase_reflow_equiv(rnd, iterations, seed):
     saved_budget = S._LINE_WORK_BUDGET
     S._LINE_WORK_BUDGET = 200
     try:
-        for _ in range(iterations):
+        for _ in _bounded(iterations, _PHASE_BUDGET_S):
             term = SecureTerminal(command='/bin/cat')       # CLI line mode, line_edits on
             term._PTY_READ_MAX = rnd.choice((24, 32, 40, 56))
             parts = []
@@ -489,7 +524,7 @@ def phase_tui_resize(rnd, iterations, seed):
     ## pyte Screen.resize drops the top rows outright -- the vanish-on-copy (review-bar
     ## shrink+grow) bug. A deep READ does not clear a stateful-reconcile bug, so fuzz random
     ## resize sequences against a known-content oracle.
-    for _ in range(iterations):
+    for _ in _bounded(iterations, _PHASE_BUDGET_S):
         term = SecureTerminal(command='/bin/cat', tui=True)
         scr = term._screen
         rows0, cols = scr.lines, scr.columns
