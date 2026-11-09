@@ -234,6 +234,30 @@ check "#3: provenance OMITTED when the repo generation changed mid-test" \
 # shellcheck disable=SC2034
 DM_WHONIX_PAIR="${pair_stub}"
 
+## --- 1565: the root-side repo-path lookup FAILS (empty) -> the lane is INCONCLUSIVE (SETUP_RC)
+## BEFORE invoking dm-whonix-pair, never attaching a slot-less repo that disagrees with provenance. ---
+true > "${pair_argv}"
+true > "${prov_file}"
+empty_shared="${work}/dm-shared-apt-repo-empty"
+cat > "${empty_shared}" <<'EOF'
+#!/bin/bash
+## repo-path prints nothing (lookup failed); every subcommand no-ops.
+exit 0
+EOF
+chmod +x "${empty_shared}"
+# shellcheck disable=SC2034
+DM_SHARED_APT_REPO="${empty_shared}"
+# shellcheck disable=SC2034
+local_repo='whonix'
+lf_rc=0
+( rt_lane_whonix_inst persist-inst-whonix 18.2.3.5 ) >/dev/null 2>&1 || lf_rc=$?
+check "1565: lane is SETUP_RC (2) when the repo-path lookup fails" \
+   "$([ "${lf_rc}" = '2' ] && printf '%s' true || printf '%s' false)" "${lf_rc}"
+check "1565: dm-whonix-pair NOT invoked on a failed repo-path lookup" \
+   "$([ ! -s "${pair_argv}" ] && printf '%s' true || printf '%s' false)"
+# shellcheck disable=SC2034
+DM_SHARED_APT_REPO="${shared_stub}"
+
 printf '%s\n' "" "$(basename -- "$0"): ${pass} pass, ${fail} fail, 0 skip"
 [ "${fail}" -eq 0 ] || exit 1
 exit 0

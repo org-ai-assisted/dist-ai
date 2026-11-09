@@ -1575,8 +1575,18 @@ rt_lane_whonix_inst() {
       local lr_dir lr_base
       lr_dir="$("${DM_SHARED_APT_REPO}" repo-path "${local_repo}" 2>/dev/null || true)"
       lr_base="${lr_dir%/aptrepo_local/*}"
-      lr_args=( --local-repo "${local_repo}" )
-      [ -n "${lr_base}" ] && [ "${lr_base}" != "${lr_dir}" ] && lr_args+=( --local-repo-base "${lr_base}" )
+      ## The repo-path lookup runs HERE as root (where dist_build_slot is known). If it fails
+      ## (empty) or returns an unexpected shape (no /aptrepo_local/<deriv> -> the strip is a no-op,
+      ## lr_base == lr_dir), the account-run attach would re-derive a DIFFERENT (slot-less) path than
+      ## the provenance records -- a verdict against the wrong repo. Fail INCONCLUSIVE (SETUP_RC)
+      ## before the guest rather than attach a mismatched repo.
+      if [ -z "${lr_dir}" ] || [ "${lr_base}" = "${lr_dir}" ]; then
+         log error "repo-path lookup for ${local_repo} failed or had an unexpected shape ('${lr_dir}')"
+         rt_publish_result whonix "${version}" "${account}" whonix-func "${SETUP_RC}" "" release-checks
+         sudo -u "${account}" -- safe-rm --force -- "${check_log}" 2>/dev/null || true
+         return "${SETUP_RC}"
+      fi
+      lr_args=( --local-repo "${local_repo}" --local-repo-base "${lr_base}" )
    fi
    ## Capture the local repo's generation id BEFORE the guest upgrade, so the provenance read below
    ## binds to the generation the guest actually upgraded from -- a concurrent rebuild landing in the
