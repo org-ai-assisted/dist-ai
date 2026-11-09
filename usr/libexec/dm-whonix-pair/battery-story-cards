@@ -1,0 +1,127 @@
+#!/usr/bin/python3 -Bsu
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Shell-invocation guard.
+"exec" "bash" "-c" "printf '%s\n' '$0: ERROR: Do not execute this script with bash!' >&2; exit 1"
+
+"""Split an anon-leak-test battery JSON verdict into per-probe story-card records.
+
+dm-whonix-pair's leak lane carded the WHOLE battery JSON as ONE card, so the
+published "story" collapsed every per-probe check (enumerate, icmp-clearnet,
+udp-clearnet, tor-confirm, gateway-craft, ...) into a single JSON dump. This
+reads the battery JSON on stdin and prints one card record per probe PLUS a
+leading verdict summary, so the lane can publish a comprehensive, correctly
+ordered narrative -- a reader verifies WHICH checks ran and each one's result,
+on PASS and on FAIL/INCONCLUSIVE alike.
+
+The battery JSON (anon-leak-test --json) is:
+  {"results": [{"probe", "status", "message", "detail"}, ...],
+   "leak_detected": bool, "exit_code": int}
+Transport (guestcontrol) may wrap it in noise, so the object is extracted by a
+decoder scan, not a bare json.loads.
+
+Argv: <base-nn> <summary-name>. Output (stdout), one card per line:
+  <nn> <name> <b64-title> <b64-body>
+where nn = base (summary) then base+1, base+2, ... (runtime order), name is a
+publisher-safe label, and title/body are base64 (line-framed, newline-safe).
+
+Exit: 0 one-or-more records emitted; 2 no parseable battery verdict (the caller
+falls back to a single raw-JSON card, so the evidence is never lost).
+"""
+
+import base64
+import json
+import sys
+
+
+def extract_verdict(text):
+    """Return the first JSON object in text that has a 'results' list, or None."""
+    decoder = json.JSONDecoder()
+    index = 0
+    length = len(text)
+    while True:
+        start = text.find("{", index)
+        if start == -1:
+            return None
+        try:
+            obj, end = decoder.raw_decode(text, start)
+        except ValueError:
+            index = start + 1
+            continue
+        if isinstance(obj, dict) and isinstance(obj.get("results"), list):
+            return obj
+        index = end if end > start else start + 1
+
+
+def safe_label(name, fallback):
+    """Collapse a probe name to the publisher's safe-label charset [A-Za-z0-9._-],
+    never leading '-' (argparse-eatable) -- so every per-probe card publishes."""
+    cleaned = "".join(char if char.isalnum() or char in "._-" else "_"
+                      for char in str(name))
+    cleaned = cleaned.lstrip("-")
+    return cleaned or fallback
+
+
+def encode(text):
+    """base64 one field to a single whitespace-free token (newline-safe framing)."""
+    return base64.b64encode(text.encode("utf-8")).decode("ascii")
+
+
+def emit(nn, name, title, body):
+    sys.stdout.write("%d %s %s %s\n" % (nn, name, encode(title), encode(body)))
+
+
+def main(argv):
+    if len(argv) != 2:
+        sys.stderr.write("usage: battery-story-cards <base-nn> <summary-name>\n")
+        return 2
+    base = int(argv[0])
+    summary_name = safe_label(argv[1], "leak-battery")
+
+    verdict = extract_verdict(sys.stdin.read())
+    if verdict is None:
+        return 2
+    results = verdict["results"]
+
+    exit_code = verdict.get("exit_code")
+    leak_detected = verdict.get("leak_detected")
+    total = len(results)
+
+    ## Verdict summary (headline): the overall exit, the leak flag, and a one-line
+    ## roll-up of each probe's status -- the per-probe cards below carry the detail.
+    roster = "\n".join(
+        "  - %s: %s -- %s" % (result.get("probe", "?"),
+                              result.get("status", "?"),
+                              result.get("message", ""))
+        for result in results)
+    summary_title = ("Leak battery verdict: exit_code=%s, leak_detected=%s (%d probe(s))"
+                     % (exit_code, leak_detected, total))
+    summary_body = ("Per-probe roll-up (each probe is its own card below):\n%s"
+                    % roster)
+    emit(base, summary_name, summary_title, summary_body)
+
+    ## One card per probe, in the battery's run order, carded on PASS and on
+    ## FAIL/ERROR alike so a failing/inconclusive battery still shows WHICH check
+    ## failed and why.
+    for offset, result in enumerate(results, start=1):
+        probe = result.get("probe", "probe%d" % offset)
+        status = result.get("status", "UNKNOWN")
+        message = result.get("message", "")
+        detail = result.get("detail") or {}
+        name = safe_label(probe, "probe%d" % offset)
+        title = "Leak probe %d/%d: %s -- %s" % (offset, total, probe, status)
+        body = message
+        if detail:
+            body = "%s\n\ndetail:\n%s" % (
+                message, json.dumps(detail, indent=2, sort_keys=True))
+        emit(base + offset, name, title, body)
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

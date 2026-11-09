@@ -119,7 +119,8 @@ label_ok() {
    esac
 }
 for name in pair-defined gateway-desktop gateway-tor-bootstrap ws-firewall-flushed \
-   workstation-desktop workstation-tor-confirmed leak-battery browser-webrtc killswitch \
+   workstation-desktop workstation-tor-confirmed leak-battery killswitch-reemit \
+   enumerate icmp-clearnet udp-clearnet tor-confirm gateway-craft browser-webrtc killswitch \
    gw-canary leak-verdict failure; do
    assert "milestone name '${name}' is publishable" label_ok "${name}"
 done
