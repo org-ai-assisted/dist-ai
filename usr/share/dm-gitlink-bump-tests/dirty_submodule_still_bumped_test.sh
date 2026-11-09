@@ -158,6 +158,17 @@ else
 fi
 count
 
+## CASE 4: after the bump the superproject index matches HEAD. The tool commits
+## the validated sha via a private index, then syncs the SHARED index to it, so
+## no staged gitlink "downgrade" (index c0 vs HEAD c1) is left for a later
+## sibling commit to carry. A commit-tree without that sync leaves this RED.
+count
+if git -C "${super}" diff --cached --quiet; then
+   pass "post-bump: superproject index consistent with HEAD"
+else
+   fail "post-bump: superproject index has a staged gitlink mismatch vs HEAD"
+fi
+
 if [ "${tests_failed}" -ne 0 ]; then
    printf '%s\n' "dirty_submodule_still_bumped_test: ${tests_failed}/${tests_total} FAILED" >&2
    exit 1

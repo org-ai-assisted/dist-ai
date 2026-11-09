@@ -242,25 +242,47 @@ if [ "${dry_run}" = "true" ]; then
    exit 0
 fi
 
-## Commit ONLY those gitlink paths. Each qualifying submodule is on 'ai' and its
-## HEAD IS the target published tip; a partial commit of the path records that
-## HEAD as the new pin -- the submodule worktree's cleanliness is irrelevant, as
-## a pathspec commit captures the gitlink (HEAD), never the submodule's files.
-## The pathspec keeps any unrelated staged change out (a bare 'commit' would
-## sweep them in). Fixed subject: the diff already names the submodules, so
-## listing them here would only restate it.
-## Overrides: this IS the deliberate gitlink bumper -- the guard that would
-## otherwise refuse a pointer commit is meant for ACCIDENTAL bumps.
-## Identity: pin the committer/author NAME to 'claude'. The harness exports
-## GIT_AUTHOR_NAME / GIT_COMMITTER_NAME carrying a session-id suffix that
-## OVERRIDES git config, so without this the session id lands in the public
-## commit object. A per-command assignment overrides the inherited export;
-## email is left to git config (noreply), never set here (would risk PII).
-GIT_BRANCH_GUARD_ALLOW=1 GIT_GITLINK_GUARD_ALLOW=1 \
-GIT_AUTHOR_NAME=claude GIT_COMMITTER_NAME=claude \
-   git -C "${top}" commit --quiet \
-      -m "Bump submodule gitlinks to published ai tips" \
-      -- "${to_bump_paths[@]}"
+## Commit the VALIDATED shas, NOT the live submodule HEADs. A pathspec commit
+## ('git commit -- <path>') re-reads each submodule's worktree HEAD, so a sibling
+## committing an unpublished c2 in the window between the validation above and
+## the commit would be pinned (TOCTOU) -- a gitlink CI cannot fetch, caught by
+## neither --check nor the build. Instead stage each VALIDATED sha into a PRIVATE
+## index seeded from the superproject HEAD (only these gitlinks move; an unrelated
+## staged change in the shared index never rides along) and commit that tree with
+## plumbing: the pin is exactly what was validated, whatever the live submodule
+## HEAD is now.
+##
+## commit-tree runs no pre-commit hook, so the gitlink / branch guards the
+## porcelain path had to override are simply not invoked (the branch is already
+## verified 'ai' above). Identity: pin author/committer NAME to 'claude' -- the
+## harness exports GIT_AUTHOR_NAME / GIT_COMMITTER_NAME with a session-id suffix
+## that would otherwise land in the public object; email stays git config
+## (noreply), never set here (PII risk).
+## shellcheck cannot see the trap invocation below.
+# shellcheck disable=SC2317
+remove_tmp_index() {
+   safe-rm -f -- "${tmp_index:-}"
+}
+tmp_index="$( mktemp )"
+trap remove_tmp_index EXIT
+GIT_INDEX_FILE="${tmp_index}" git -C "${top}" read-tree HEAD
+for i in "${!to_bump_paths[@]}"; do
+   GIT_INDEX_FILE="${tmp_index}" git -C "${top}" update-index --add \
+      --cacheinfo "160000,${to_bump_shas[${i}]},${to_bump_paths[${i}]}"
+done
+new_tree="$( GIT_INDEX_FILE="${tmp_index}" git -C "${top}" write-tree )"
+new_commit="$( GIT_AUTHOR_NAME=claude GIT_COMMITTER_NAME=claude \
+   git -C "${top}" commit-tree "${new_tree}" -p HEAD \
+   -m "Bump submodule gitlinks to published ai tips" )"
+git -C "${top}" update-ref HEAD "${new_commit}"
+
+## Sync the SHARED index for the bumped paths to the committed shas so 'git
+## status' is clean and a later sibling commit cannot carry a stale pin. Scoped
+## to our paths only -- never the whole index.
+for i in "${!to_bump_paths[@]}"; do
+   git -C "${top}" update-index --add \
+      --cacheinfo "160000,${to_bump_shas[${i}]},${to_bump_paths[${i}]}"
+done
 
 printf '%s\n' "${0##*/}: committed. Push with dm-push (submodules first if any were unpublished)."
 exit 0
