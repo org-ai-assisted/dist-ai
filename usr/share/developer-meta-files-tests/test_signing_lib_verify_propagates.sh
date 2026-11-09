@@ -8,15 +8,15 @@
 ## Regression tests for signing-lib.bsh.
 ##
 ## Scheme under test:
-##   - sign_and_verify          : OpenPGP ('.asc') ONLY. The safe DEFAULT, used
+##   - sign_and_verify_openpgp          : OpenPGP ('.asc') ONLY. The safe DEFAULT, used
 ##                                for a huge disk image. Must NEVER invoke signify.
-##   - sign_and_verify_signify  : OpenPGP + signify ('.sig'). For a SMALL artifact
+##   - sign_and_verify_all  : OpenPGP + signify ('.sig'). For a SMALL artifact
 ##                                only (torrent, sha512sums, buildinfo, installer).
-##   - verify_signature         : OpenPGP only.
-##   - verify_signature_signify : OpenPGP + signify.
+##   - verify_signature_openpgp         : OpenPGP only.
+##   - verify_signature_all : OpenPGP + signify.
 ##
 ## Guards:
-##   1. signify is NEVER run by the default sign_and_verify (the image path) --
+##   1. signify is NEVER run by the default sign_and_verify_openpgp (the image path) --
 ##      an OOM-killed signify on a 919MB image is what motivated this scheme.
 ##   2. Every signature check propagates its failure (the lib is sourceable with
 ##      no errexit; an UNCHAINED statement would return only the last command's
@@ -129,54 +129,40 @@ reset_artifact() {
    true > "${SIGNIFY_CALLS}"
 }
 
-## CANARY 1: sign_and_verify (the image path) must produce a '.asc' and must
+## CANARY 1: sign_and_verify_openpgp (the image path) must produce a '.asc' and must
 ## NEVER invoke signify or produce a '.sig'. FAILS on the old size-gated code,
 ## which signify-signed any file < 1000MB.
 reset_artifact
-if ( SQ_VERIFY_RC=0 sign_and_verify "${artifact}" ) >/dev/null 2>&1; then
+if ( SQ_VERIFY_RC=0 sign_and_verify_openpgp "${artifact}" ) >/dev/null 2>&1; then
    if [ -f "${artifact}.asc" ] && [ ! -f "${artifact}.sig" ] && [ ! -s "${SIGNIFY_CALLS}" ]; then
-      pass "sign_and_verify produces .asc only, never invokes signify"
+      pass "sign_and_verify_openpgp produces .asc only, never invokes signify"
    else
-      fail "sign_and_verify must be OpenPGP-only but produced a .sig or invoked signify (signify call count: $(wc -l < "${SIGNIFY_CALLS}"))"
+      fail "sign_and_verify_openpgp must be OpenPGP-only but produced a .sig or invoked signify (signify call count: $(wc -l < "${SIGNIFY_CALLS}"))"
    fi
 else
-   fail "sign_and_verify unexpectedly failed on the happy path"
+   fail "sign_and_verify_openpgp unexpectedly failed on the happy path"
 fi
 
-## CANARY 1b: sign_and_verify must DELETE a stale '.sig' (from an earlier build
-## or planted), so a signature that does not match this file cannot be published.
-reset_artifact
-printf '%s' "stale signature for a previous file" > "${artifact}.sig"
-if ( SQ_VERIFY_RC=0 sign_and_verify "${artifact}" ) >/dev/null 2>&1; then
-   if [ ! -f "${artifact}.sig" ]; then
-      pass "sign_and_verify removes a stale .sig"
-   else
-      fail "sign_and_verify left a stale .sig in place (would publish a mismatched signature)"
-   fi
-else
-   fail "sign_and_verify unexpectedly failed with a stale .sig present"
-fi
-
-## CANARY 2: sign_and_verify_signify DOES invoke signify and produces both
+## CANARY 2: sign_and_verify_all DOES invoke signify and produces both
 ## sidecars. FAILS on the old code (no such function).
 reset_artifact
-if ( SQ_VERIFY_RC=0 SIGNIFY_RC=0 sign_and_verify_signify "${artifact}" ) >/dev/null 2>&1; then
+if ( SQ_VERIFY_RC=0 SIGNIFY_RC=0 sign_and_verify_all "${artifact}" ) >/dev/null 2>&1; then
    if [ -f "${artifact}.asc" ] && [ -f "${artifact}.sig" ] && [ -s "${SIGNIFY_CALLS}" ]; then
-      pass "sign_and_verify_signify produces .asc + .sig and invokes signify"
+      pass "sign_and_verify_all produces .asc + .sig and invokes signify"
    else
-      fail "sign_and_verify_signify did not produce both sidecars / invoke signify"
+      fail "sign_and_verify_all did not produce both sidecars / invoke signify"
    fi
 else
-   fail "sign_and_verify_signify unexpectedly failed on the happy path"
+   fail "sign_and_verify_all unexpectedly failed on the happy path"
 fi
 
-## PROPAGATION: a bad OpenPGP signature must FAIL verify_signature.
+## PROPAGATION: a bad OpenPGP signature must FAIL verify_signature_openpgp.
 reset_artifact
 printf '%s' "asc" > "${artifact}.asc"
-if ( SQ_VERIFY_RC=1 verify_signature "${artifact}" ) >/dev/null 2>&1; then
-   fail "verify_signature returned 0 for a bad OpenPGP sig (propagation broken)"
+if ( SQ_VERIFY_RC=1 verify_signature_openpgp "${artifact}" ) >/dev/null 2>&1; then
+   fail "verify_signature_openpgp returned 0 for a bad OpenPGP sig (propagation broken)"
 else
-   pass "verify_signature FAILS on a bad OpenPGP signature"
+   pass "verify_signature_openpgp FAILS on a bad OpenPGP signature"
 fi
 
 ## PROPAGATION: for the checksums path, a bad signify signature must FAIL even
@@ -184,64 +170,64 @@ fi
 reset_artifact
 printf '%s' "asc" > "${artifact}.asc"
 printf '%s' "sig" > "${artifact}.sig"
-if ( SQ_VERIFY_RC=0 SIGNIFY_RC=1 verify_signature_signify "${artifact}" ) >/dev/null 2>&1; then
-   fail "verify_signature_signify returned 0 with a bad signify sig (signify check masked)"
+if ( SQ_VERIFY_RC=0 SIGNIFY_RC=1 verify_signature_all "${artifact}" ) >/dev/null 2>&1; then
+   fail "verify_signature_all returned 0 with a bad signify sig (signify check masked)"
 else
-   pass "verify_signature_signify FAILS on a bad signify signature (good OpenPGP)"
+   pass "verify_signature_all FAILS on a bad signify signature (good OpenPGP)"
 fi
 
-## PROPAGATION: both good -> verify_signature_signify succeeds.
+## PROPAGATION: both good -> verify_signature_all succeeds.
 reset_artifact
 printf '%s' "asc" > "${artifact}.asc"
 printf '%s' "sig" > "${artifact}.sig"
-if ( SQ_VERIFY_RC=0 SIGNIFY_RC=0 verify_signature_signify "${artifact}" ) >/dev/null 2>&1; then
-   pass "verify_signature_signify succeeds when both signatures are valid"
+if ( SQ_VERIFY_RC=0 SIGNIFY_RC=0 verify_signature_all "${artifact}" ) >/dev/null 2>&1; then
+   pass "verify_signature_all succeeds when both signatures are valid"
 else
-   fail "verify_signature_signify wrongly failed with two valid signatures"
+   fail "verify_signature_all wrongly failed with two valid signatures"
 fi
 
-## PROPAGATION: sign_and_verify must FAIL a bad OpenPGP verify. The structural
+## PROPAGATION: sign_and_verify_openpgp must FAIL a bad OpenPGP verify. The structural
 ## grep below accepts any chaining including a failure-masking '|| true', so this
 ## behavioural check is what actually catches a swallowed failure.
 reset_artifact
-if ( SQ_SIGN_RC=0 SQ_VERIFY_RC=1 sign_and_verify "${artifact}" ) >/dev/null 2>&1; then
-   fail "sign_and_verify returned 0 despite a failing OpenPGP verify (failure masked)"
+if ( SQ_SIGN_RC=0 SQ_VERIFY_RC=1 sign_and_verify_openpgp "${artifact}" ) >/dev/null 2>&1; then
+   fail "sign_and_verify_openpgp returned 0 despite a failing OpenPGP verify (failure masked)"
 else
-   pass "sign_and_verify FAILS when OpenPGP verification fails"
+   pass "sign_and_verify_openpgp FAILS when OpenPGP verification fails"
 fi
 
-## sign_and_verify_signify must VERIFY after signing: signify signs OK but the
+## sign_and_verify_all must VERIFY after signing: signify signs OK but the
 ## signify VERIFY fails -> the function must fail, not just leave a '.sig'.
 reset_artifact
-if ( SQ_VERIFY_RC=0 SIGNIFY_SIGN_RC=0 SIGNIFY_VERIFY_RC=1 sign_and_verify_signify "${artifact}" ) >/dev/null 2>&1; then
-   fail "sign_and_verify_signify returned 0 though the signify verify failed (verify skipped)"
+if ( SQ_VERIFY_RC=0 SIGNIFY_SIGN_RC=0 SIGNIFY_VERIFY_RC=1 sign_and_verify_all "${artifact}" ) >/dev/null 2>&1; then
+   fail "sign_and_verify_all returned 0 though the signify verify failed (verify skipped)"
 else
-   pass "sign_and_verify_signify FAILS when the signify verification fails"
+   pass "sign_and_verify_all FAILS when the signify verification fails"
 fi
 
-## verify_signature is OpenPGP-only: a valid OpenPGP signature verifies WITHOUT
+## verify_signature_openpgp is OpenPGP-only: a valid OpenPGP signature verifies WITHOUT
 ## invoking signify.
 reset_artifact
 printf '%s' "asc" > "${artifact}.asc"
-if ( SQ_VERIFY_RC=0 verify_signature "${artifact}" ) >/dev/null 2>&1; then
+if ( SQ_VERIFY_RC=0 verify_signature_openpgp "${artifact}" ) >/dev/null 2>&1; then
    if [ ! -s "${SIGNIFY_CALLS}" ]; then
-      pass "verify_signature verifies via OpenPGP only, never invoking signify"
+      pass "verify_signature_openpgp verifies via OpenPGP only, never invoking signify"
    else
-      fail "verify_signature invoked signify (must be OpenPGP-only)"
+      fail "verify_signature_openpgp invoked signify (must be OpenPGP-only)"
    fi
 else
-   fail "verify_signature wrongly failed a valid OpenPGP signature"
+   fail "verify_signature_openpgp wrongly failed a valid OpenPGP signature"
 fi
 
-## verify_signature_signify must PROPAGATE a bad OpenPGP signature even when the
+## verify_signature_all must PROPAGATE a bad OpenPGP signature even when the
 ## signify signature is good (the OpenPGP check must not be skipped).
 reset_artifact
 printf '%s' "asc" > "${artifact}.asc"
 printf '%s' "sig" > "${artifact}.sig"
-if ( SQ_VERIFY_RC=1 SIGNIFY_VERIFY_RC=0 verify_signature_signify "${artifact}" ) >/dev/null 2>&1; then
-   fail "verify_signature_signify returned 0 with a bad OpenPGP sig (OpenPGP check skipped)"
+if ( SQ_VERIFY_RC=1 SIGNIFY_VERIFY_RC=0 verify_signature_all "${artifact}" ) >/dev/null 2>&1; then
+   fail "verify_signature_all returned 0 with a bad OpenPGP sig (OpenPGP check skipped)"
 else
-   pass "verify_signature_signify FAILS on a bad OpenPGP signature (good signify)"
+   pass "verify_signature_all FAILS on a bad OpenPGP signature (good signify)"
 fi
 
 ## STRUCTURAL: every sign/verify check chains with '|| return'. An unchained

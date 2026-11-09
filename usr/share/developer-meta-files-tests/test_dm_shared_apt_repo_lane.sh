@@ -5,14 +5,15 @@
 
 ## AI-Assisted
 
-## dm-shared-apt-repo shares a built apt repo from dm's binary build dir. A laned build writes under
-## derivative-binary/<slot>, so this READER must follow a forwarded/explicit dist_build_slot to find
-## the repo -- but must NOT invent a slot (that could miss a flat build). DERIVATIVE_BINARY overrides
-## outright. The real repo_parent line is extracted + eval'd. Canary: fails on the pre-lane default.
+## dm-shared-apt-repo shares a built apt repo from dm's shared repo base under
+## /srv/derivative-maker. A laned build writes under /srv/derivative-maker/<slot>, so this
+## READER must follow a forwarded/explicit dist_build_slot to find the repo -- but must NOT
+## invent a slot (that could miss a flat build). LOCAL_APT_REPOSITORY_BASE overrides outright.
+## The real repo_parent line is extracted + eval'd.
 
 ## File-wide: repo_parent is assigned by `eval` of the extracted line; dist_build_slot /
-## DERIVATIVE_BINARY are read by it (SC2034/SC2154); the grep patterns match the subject's
-## literal '${...}' text, so single quotes are intentional (SC2016).
+## LOCAL_APT_REPOSITORY_BASE are read by it (SC2034/SC2154); the grep patterns match the
+## subject's literal '${...}' text, so single quotes are intentional (SC2016).
 # shellcheck disable=SC2016,SC2034,SC2154
 set -o errexit
 set -o nounset
@@ -43,21 +44,19 @@ if [ -z "${line}" ]; then
    exit 1
 fi
 
-HOME=/home/user
+## LOCAL_APT_REPOSITORY_BASE overrides everything (slot ignored).
+LOCAL_APT_REPOSITORY_BASE=/custom/root dist_build_slot=ignored eval "${line}"
+if [ "${repo_parent}" = "/custom/root" ]; then pass "LOCAL_APT_REPOSITORY_BASE overrides outright"; else fail "LOCAL_APT_REPOSITORY_BASE not honored (got '${repo_parent}')"; fi
 
-## DERIVATIVE_BINARY overrides everything.
-DERIVATIVE_BINARY=/custom/root dist_build_slot=ignored eval "${line}"
-if [ "${repo_parent}" = "/custom/root" ]; then pass "DERIVATIVE_BINARY overrides outright"; else fail "DERIVATIVE_BINARY not honored (got '${repo_parent}')"; fi
-
-## A forwarded/explicit slot -> the lane subdir.
-unset DERIVATIVE_BINARY
+## A forwarded/explicit slot -> the lane subdir under /srv/derivative-maker.
+unset LOCAL_APT_REPOSITORY_BASE
 dist_build_slot=sess-XYZ eval "${line}"
-if [ "${repo_parent}" = "/home/user/derivative-binary/sess-XYZ" ]; then pass "dist_build_slot -> derivative-binary/<slot>"; else fail "lane not followed (got '${repo_parent}')"; fi
+if [ "${repo_parent}" = "/srv/derivative-maker/sess-XYZ" ]; then pass "dist_build_slot -> /srv/derivative-maker/<slot>"; else fail "lane not followed (got '${repo_parent}')"; fi
 
 ## No slot -> flat (does NOT invent a slot; matches a flat build).
 unset dist_build_slot
 eval "${line}"
-if [ "${repo_parent}" = "/home/user/derivative-binary" ]; then pass "no slot -> flat derivative-binary (flat build matched)"; else fail "invented a slot / wrong flat default (got '${repo_parent}')"; fi
+if [ "${repo_parent}" = "/srv/derivative-maker" ]; then pass "no slot -> flat /srv/derivative-maker (flat build matched)"; else fail "invented a slot / wrong flat default (got '${repo_parent}')"; fi
 
 printf '%s\n' "" "${pass_count} pass, ${fail_count} fail, 0 skip"
 [ "${fail_count}" -eq 0 ]

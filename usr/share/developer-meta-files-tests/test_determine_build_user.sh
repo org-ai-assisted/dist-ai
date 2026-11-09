@@ -44,8 +44,9 @@ for candidate in "${candidates[@]}"; do
    fi
 done
 if [ -z "${frag}" ]; then
-   printf '%s\n' "FATAL: help-steps/determine-build-user.bsh not found (set DERIVATIVE_MAKER_DIR)." >&2
-   exit 1
+   printf '%s\n' "SKIP: help-steps/determine-build-user.bsh not found (set DERIVATIVE_MAKER_DIR); it is a derivative-maker superproject fragment, absent in a standalone dmf component checkout." >&2
+   ## style-ok: allow-skip: help-steps/determine-build-user.bsh lives in the derivative-maker superproject, absent in a standalone dmf component checkout
+   exit 77
 fi
 
 mock_dir=""

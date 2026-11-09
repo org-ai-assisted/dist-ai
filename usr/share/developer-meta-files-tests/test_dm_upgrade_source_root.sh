@@ -70,8 +70,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-## Shallow symlink: its five-levels-up derivation cannot be a real checkout.
-linkdir="${work}/install/usr/bin"
+## Symlink nested five dirs below work so the tool's five-levels-up derivation
+## lands ON work (a real, non-checkout dir), never on '/' under a shallow TMPDIR.
+## With the subject's set -x on, a derived '/' prints '//help-steps/pre' in the
+## trace and would trip the regression regex below even though the tool errors
+## cleanly.
+linkdir="${work}/a/b/install/usr/bin"
 mkdir -p -- "${linkdir}"
 ln -s -- "${subject}" "${linkdir}/dm-upgrade-from-local-repository"
 link="${linkdir}/dm-upgrade-from-local-repository"

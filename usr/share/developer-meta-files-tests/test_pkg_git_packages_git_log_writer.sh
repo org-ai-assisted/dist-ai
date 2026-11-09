@@ -321,7 +321,16 @@ fi
 ## not exist, so `git log old..<missing>` fails. Real `die` is sourced so the
 ## fix's die path runs; die exits explicitly, so a suppressing `|| rc` context
 ## cannot hide it.
-log_run_die="${dm_checkout}/packages/kicksecure/helper-scripts/usr/libexec/helper-scripts/log_run_die.sh"
+## helper-scripts is a superproject sibling: checked out separately in a component
+## CI run and wired via HELPER_SCRIPTS_PATH, with the superproject layout as the
+## fallback for a full checkout. Resolve + verify readability HERE (outside the
+## errexit-suppressing subshell below), FATAL if unresolvable, so a missing lib
+## fails loud instead of being swallowed into a false "failure propagates" pass.
+log_run_die="${HELPER_SCRIPTS_PATH:-${dm_checkout}/packages/kicksecure/helper-scripts}/usr/libexec/helper-scripts/log_run_die.sh"
+if [ ! -r "${log_run_die}" ]; then
+   printf '%s\n' "FATAL: log_run_die.sh not found at '${log_run_die}' (set HELPER_SCRIPTS_PATH or DERIVATIVE_MAKER_DIR)." >&2
+   exit 1
+fi
 logfail_repo="$(mktemp -d -p "${tmp_root}")"
 git -C "${logfail_repo}" init -q -b master
 git_c "${logfail_repo}" commit -q --allow-empty -m base

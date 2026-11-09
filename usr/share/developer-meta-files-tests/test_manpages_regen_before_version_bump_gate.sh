@@ -156,7 +156,10 @@ fi
 ## The regen commits must be pathspec-scoped: an unconditional every-pass commit
 ## with a bare `git commit -m` would sweep a sibling's unrelated staged change
 ## into the generated-file commit. Assert each helper commits with a `--`
-## pathspec.
+## pathspec -- either a direct `git commit -- <pathspec>` or the
+## `git_commit_pathspecs <msg> <pathspec...>` wrapper (which commits
+## `git commit -m <msg> -- <pathspecs>`, so it is scoped by construction as long
+## as at least one pathspec argument follows the message).
 commit_scoped() {
    local fn="${1}" body
    body="$(awk -v fn="${fn}" '
@@ -180,9 +183,23 @@ commit_scoped() {
    ## empty/non-path token after '--' ('-- ""', '-- --') is out of scope (the real
    ## commits are single-line, '-m "..."'). This guards an ACCIDENTAL dropped pathspec,
    ## not an author deliberately crafting an unscoped commit that looks scoped.
-   local found=0 scoped=1 line nomsg after lead
+   local found=0 scoped=1 line nomsg after lead _parts
    while IFS= read -r line; do
       case "${line}" in
+         *'git_commit_pathspecs '*)
+            found=1
+            ## The wrapper is pathspec-scoped BY CONSTRUCTION; it only fails to
+            ## scope if called with the message alone and no pathspec. Require the
+            ## message token plus at least one more (the pathspec). read -ra splits
+            ## on whitespace WITHOUT globbing (the real calls are single-line with
+            ## simple quoted args); a trailing comment only inflates the count,
+            ## which stays on the safe side.
+            after="${line#*git_commit_pathspecs }"
+            read -ra _parts <<< "${after}"
+            if [ "${#_parts[@]}" -lt 2 ]; then
+               scoped=0
+            fi
+            ;;
          *'git commit '*)
             found=1
             ## Drop the -m/--message quoted value, then the trailing '#' comment.
@@ -206,11 +223,11 @@ commit_scoped() {
       esac
    done <<< "${body}"
    if [ "${found}" -eq 0 ]; then
-      fail "${fn}: no 'git commit' found for commit-scope check"
+      fail "${fn}: no 'git commit' / 'git_commit_pathspecs' found for commit-scope check"
    elif [ "${scoped}" -eq 1 ]; then
-      pass "${fn}: every 'git commit' is pathspec-scoped"
+      pass "${fn}: every commit is pathspec-scoped"
    else
-      fail "${fn}: a 'git commit' is NOT pathspec-scoped -- a bare 'git commit' sweeps unrelated staged changes"
+      fail "${fn}: a commit is NOT pathspec-scoped -- an unscoped commit sweeps unrelated staged changes"
    fi
 }
 
