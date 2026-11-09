@@ -1,0 +1,63 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Set the installed system's GRUB one-shot next_entry to the boot-mode entry whose
+## menuentry --id names MODE, so the next boot selects that mode DETERMINISTICALLY --
+## no OCR, no menu interaction, no live-menu timing. Run against a mounted installed
+## root (CWD and $MOUNTPOINT = the root), e.g. as the command of vbox-disk-mount:
+##
+##   vbox-disk-mount run --disk <installed.vdi> --passphrase-file <pf> -- \
+##     grub-select-next-boot-mode persistent-sysmaint
+##
+## Relies on the per-mode menuentry --id: dist-base-files etc/grub.d/10_00_linux_dist
+## scopes the simple-entry id by boot mode (gnulinux-<mode>-<device-id>, where <mode> is
+## user / persistent-sysmaint / live-sysmaint / remove-sysmaint). next_entry overrides
+## GRUB_DEFAULT for exactly ONE boot via the stock 00_header one-shot block, regardless
+## of the shipped GRUB_DEFAULT=0. One-shot BY DESIGN: GRUB clears next_entry after
+## reading it; a LUKS grubenv GRUB cannot write back keeps the selection until reset
+## offline -- harmless for a throwaway test VM.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+me="${0##*/}"
+
+main() {
+   local mode root grub_cfg grubenv id
+   mode="${1:?usage: ${me} <mode> (e.g. persistent-sysmaint)}"
+   root="${MOUNTPOINT:-$(pwd)}"
+   grub_cfg="${root}/boot/grub/grub.cfg"
+   grubenv="${root}/boot/grub/grubenv"
+
+   [ -r "${grub_cfg}" ] \
+      || { printf '%s\n' "${me}: ERROR: no grub.cfg at '${grub_cfg}'" >&2; exit 1; }
+
+   ## The simple boot-mode entry's --id for MODE. The advanced submenus keep the stock
+   ## gnulinux-advanced-<dev> / gnulinux-<version>-advanced-<dev> scheme, so this pattern
+   ## cannot match one. No match -> the image lacks the per-mode --id patch (a pre-patch
+   ## image shares gnulinux-simple-<dev> across modes) -> fail loud, never select blindly.
+   id="$(grep --only-matching --extended-regexp "gnulinux-${mode}-[^' ]+" "${grub_cfg}" \
+      | head -n 1)" || true
+   [ -n "${id}" ] || {
+      printf '%s\n' "${me}: ERROR: no menuentry id 'gnulinux-${mode}-*' in '${grub_cfg}'" >&2
+      printf '%s\n' "${me}: (image must carry the dist-base-files per-mode --id patch)" >&2
+      exit 1
+   }
+
+   grub-editenv "${grubenv}" set "next_entry=${id}"
+   printf '%s\n' "${me}: set next_entry=${id}"
+}
+
+## Sourced (a unit test) -> expose main without running; executed -> run.
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+   main "$@"
+fi
