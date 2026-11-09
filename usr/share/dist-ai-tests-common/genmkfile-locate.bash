@@ -31,11 +31,16 @@
 ## exits 1 (FATAL) when an explicitly selected helper is unreadable or none is
 ## found. Call it NOT inside a command substitution, so its exit reaches the test.
 genmkfile_require_helper() {
-   local from_bin candidate dm_candidate
+   local bin_real from_bin candidate dm_candidate
    ## GENMKFILE_BIN is how CI points at the component checkout (neither the dm path
    ## nor /usr). Derive the share dir from it; honor it exactly.
    if [ -n "${GENMKFILE_BIN:-}" ]; then
-      from_bin="$(dirname -- "$(dirname -- "${GENMKFILE_BIN}")")/share/genmkfile/make-helper-one.bsh"
+      ## Resolve the binary to an absolute, symlink-free path BEFORE deriving the
+      ## share dir: a relative or symlinked GENMKFILE_BIN would otherwise resolve
+      ## the helper lexically to the wrong checkout (or a cwd-relative path that
+      ## breaks once a test changes directory).
+      bin_real="$(readlink --canonicalize -- "${GENMKFILE_BIN}")"
+      from_bin="$(dirname -- "$(dirname -- "${bin_real}")")/share/genmkfile/make-helper-one.bsh"
       if [ ! -r "${from_bin}" ]; then
          printf '%s\n' "FATAL: GENMKFILE_BIN set but '${from_bin}' is not readable." >&2
          exit 1
@@ -48,7 +53,8 @@ genmkfile_require_helper() {
          printf '%s\n' "FATAL: GENMKFILE_SHARE set but '${GENMKFILE_SHARE}/make-helper-one.bsh' is not readable." >&2
          exit 1
       fi
-      genmkfile_helper_file="${GENMKFILE_SHARE}/make-helper-one.bsh"
+      ## Absolute so a test that changes directory still sources it.
+      genmkfile_helper_file="$(readlink --canonicalize -- "${GENMKFILE_SHARE}/make-helper-one.bsh")"
       return 0
    fi
    ## Nothing wired: the dm checkout BEFORE the installed copy (the installed copy
@@ -79,7 +85,7 @@ genmkfile_require_helper() {
 ## library. Same exact-honor / skip / FATAL contract as genmkfile_require_helper.
 ## Call it NOT inside a command substitution, so its exit reaches the test.
 genmkfile_require_bin() {
-   local candidate dm_candidate
+   local candidate dm_candidate share_real
    ## GENMKFILE_BIN is how CI points at the component checkout's binary; honor it
    ## exactly -- a set-but-non-executable path is an env bug, not a reason to test
    ## an unrelated checkout.
@@ -88,7 +94,23 @@ genmkfile_require_bin() {
          printf '%s\n' "FATAL: GENMKFILE_BIN set but '${GENMKFILE_BIN}' is not executable." >&2
          exit 1
       fi
-      genmkfile_bin_path="${GENMKFILE_BIN}"
+      ## Absolute, symlink-free so a test that changes directory before exec still
+      ## finds it (install_modes_test.sh cds into a temp tree, then execs this).
+      genmkfile_bin_path="$(readlink --canonicalize -- "${GENMKFILE_BIN}")"
+      return 0
+   fi
+   ## An explicit GENMKFILE_SHARE selects a checkout for binary tests too: derive
+   ## the binary from the SAME checkout (symmetric to how require_helper derives
+   ## the share dir from GENMKFILE_BIN), so a SHARE-only selection cannot silently
+   ## fall through to the dm checkout and test a DIFFERENT subject.
+   if [ -n "${GENMKFILE_SHARE:-}" ]; then
+      share_real="$(readlink --canonicalize -- "${GENMKFILE_SHARE}")"
+      candidate="$(dirname -- "$(dirname -- "${share_real}")")/bin/genmkfile"
+      if [ ! -x "${candidate}" ]; then
+         printf '%s\n' "FATAL: GENMKFILE_SHARE set but '${candidate}' is not executable." >&2
+         exit 1
+      fi
+      genmkfile_bin_path="${candidate}"
       return 0
    fi
    ## Nothing wired: the dm checkout BEFORE the installed copy (the installed copy
