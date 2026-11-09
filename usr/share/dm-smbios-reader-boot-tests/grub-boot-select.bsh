@@ -25,12 +25,18 @@
 ## catch-halt-confirm: the instant the menu OCRs, send ONE Down. A Down HALTS GRUB's
 ## autoboot countdown AND moves the highlight entry1 -> entry2 -- and a Down can never
 ## submit anything, so it is safe even if we OCR'd a hair late. Only AFTER re-OCR confirms
-## the menu is STILL on screen (a halted menu keeps its "Choose boot mode" header) do we
-## press Enter. If the header is gone we were too late (GRUB already autobooting into
-## USER); an Enter then would land on the dracut LUKS passphrase prompt and submit an
-## EMPTY passphrase -- wedging the unlock -- so Enter fires ONLY on a confirmed menu,
-## never blindly. Exactly one Down from the always-entry1 default lands entry2 = SYSMAINT;
-## no second Down (it would overshoot into LIVE / REMOVE user-sysmaint-split).
+## the menu is STILL on screen do we press Enter. If the menu is gone we were too late (GRUB
+## already autobooting into USER); an Enter then would land on the dracut LUKS passphrase
+## prompt and submit an EMPTY passphrase -- wedging the unlock -- so Enter fires ONLY on a
+## confirmed menu, never blindly. Exactly one Down from the always-entry1 default lands
+## entry2 = SYSMAINT; no second Down (it would overshoot into LIVE / REMOVE user-sysmaint-split).
+##
+## Match the "Choose boot mode" theme HEADER only -- NOT the entry titles ("PERSISTENT
+## Mode", "SYSMAINT Session"). Those titles ALSO appear in GRUB's post-autoboot "Booting
+## '<entry>'" banner and the booted console, so matching them would fire Down/Enter at an
+## already-booting system (the empty-passphrase wedge). The header is unique to the live
+## menu, so a match means the menu is genuinely displayed; if OCR garbles it we safe-fail
+## (die) rather than act on a booting screen.
 ##
 ## die()s if the menu is never caught+confirmed -- a caller with a return-nonzero contract
 ## (boot_installed) wraps the call in a subshell so the die cannot escape it. Timeouts are
@@ -38,7 +44,7 @@
 ## defaults, so a unit test can drive the safe-fail path quickly.
 select_installed_sysmaint() {
    local deadline confirm_deadline text
-   local menu_re='choose[[:space:]]boot[[:space:]]mode|persistent[[:space:]]mode|sysmaint[[:space:]]session'
+   local menu_re='choose[[:space:]]boot[[:space:]]mode'
    local timeout_s="${GRUB_SELECT_TIMEOUT_S:-60}"
    local confirm_s="${GRUB_SELECT_CONFIRM_S:-10}"
    deadline=$(( SECONDS + timeout_s ))

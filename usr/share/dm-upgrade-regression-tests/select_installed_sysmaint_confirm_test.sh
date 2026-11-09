@@ -107,6 +107,10 @@ source "${share_dir}/grub-boot-select.bsh"
 MENU="$(printf '%s\n' 'Choose boot mode' 'System will start in 4 seconds' 'PERSISTENT Mode | USER Session' 'PERSISTENT Mode | SYSMAINT Session')"
 LUKS="$(printf '%s\n' 'Please unlock disk cryptroot' 'Enter passphrase for /dev/sda2_crypt')"
 NOISE="$(printf '%s\n' 'Loading Linux' 'Booting a kernel')"
+## GRUB's post-autoboot banner: the entry TITLE text ("PERSISTENT Mode") appears here, so a
+## confirm/detect regex matching entry titles (not just the "Choose boot mode" header) would
+## wrongly treat this booting screen as the live menu and fire Enter into the LUKS prompt.
+BOOTING="$(printf '%s\n' "Booting 'PERSISTENT Mode | USER Session | daily activities'" 'Loading Linux 6.12.0-1 ...' 'Loading initial ramdisk ...')"
 DOWN='e0 50 e0 d0'
 ENTER='1c 9c'
 
@@ -158,6 +162,24 @@ rc=0
 assert_eq 'bug-guard: safe-fails nonzero' "${rc}" '5'
 assert_eq 'bug-guard: Down was sent' "$(grep --fixed-strings --line-regexp --count -- "${DOWN}" "${SCANCODE_LOG}" || true)" '1'
 assert_eq 'bug-guard: Enter was NOT sent after the menu vanished' "$(grep --fixed-strings --line-regexp --count -- "${ENTER}" "${SCANCODE_LOG}" || true)" '0'
+
+## --- post-autoboot banner at confirm: menu seen, then GRUB's "Booting 'PERSISTENT Mode
+## | USER Session'" banner (entry TITLE, not the header). Enter must NOT fire -- the menu is
+## gone, GRUB is booting USER, and an Enter would hit the LUKS prompt. FAILS on a body whose
+## confirm matches entry titles rather than the header only.
+set_case "${BOOTING}" "${MENU}"
+rc=0
+( select_installed_sysmaint ) 2>/dev/null || rc=$?
+assert_eq 'banner-confirm: safe-fails nonzero' "${rc}" '5'
+assert_eq 'banner-confirm: Enter NOT sent for the post-autoboot banner' "$(grep --fixed-strings --line-regexp --count -- "${ENTER}" "${SCANCODE_LOG}" || true)" '0'
+
+## --- missed menu entirely: the banner is on screen throughout (never the header). No Down,
+## no Enter -- detection matches the header only, so a booting screen is never acted on.
+set_case "${BOOTING}"
+rc=0
+( select_installed_sysmaint ) 2>/dev/null || rc=$?
+assert_eq 'banner-only: safe-fails nonzero' "${rc}" '5'
+assert_eq 'banner-only: no scancodes sent' "$(cat -- "${SCANCODE_LOG}")" ''
 
 ## --- never detected: autoboot/other screen throughout -> safe-fail, no scancodes ------
 set_case "${NOISE}"
