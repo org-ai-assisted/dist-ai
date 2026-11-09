@@ -44,19 +44,21 @@ if [ -z "${line}" ]; then
    exit 1
 fi
 
+## Drive the REAL script's `repo-path` (it exercises the FULL repo_parent selection end to end:
+## ${repo_parent}/aptrepo_local/<deriv>), not an eval of the extracted line in isolation -- a
+## later re-derivation inside the script would otherwise pass unnoticed.
+
 ## LOCAL_APT_REPOSITORY_BASE overrides everything (slot ignored).
-LOCAL_APT_REPOSITORY_BASE=/custom/root dist_build_slot=ignored eval "${line}"
-if [ "${repo_parent}" = "/custom/root" ]; then pass "LOCAL_APT_REPOSITORY_BASE overrides outright"; else fail "LOCAL_APT_REPOSITORY_BASE not honored (got '${repo_parent}')"; fi
+got="$(LOCAL_APT_REPOSITORY_BASE=/custom/root dist_build_slot=ignored "${subject}" repo-path whonix 2>/dev/null || true)"
+if [ "${got}" = "/custom/root/aptrepo_local/whonix" ]; then pass "LOCAL_APT_REPOSITORY_BASE overrides outright"; else fail "LOCAL_APT_REPOSITORY_BASE not honored (got '${got}')"; fi
 
 ## A forwarded/explicit slot -> the lane subdir under /srv/derivative-maker.
-unset LOCAL_APT_REPOSITORY_BASE
-dist_build_slot=sess-XYZ eval "${line}"
-if [ "${repo_parent}" = "/srv/derivative-maker/sess-XYZ" ]; then pass "dist_build_slot -> /srv/derivative-maker/<slot>"; else fail "lane not followed (got '${repo_parent}')"; fi
+got="$(dist_build_slot=sess-XYZ "${subject}" repo-path whonix 2>/dev/null || true)"
+if [ "${got}" = "/srv/derivative-maker/sess-XYZ/aptrepo_local/whonix" ]; then pass "dist_build_slot -> /srv/derivative-maker/<slot>"; else fail "lane not followed (got '${got}')"; fi
 
 ## No slot -> flat (does NOT invent a slot; matches a flat build).
-unset dist_build_slot
-eval "${line}"
-if [ "${repo_parent}" = "/srv/derivative-maker" ]; then pass "no slot -> flat /srv/derivative-maker (flat build matched)"; else fail "invented a slot / wrong flat default (got '${repo_parent}')"; fi
+got="$("${subject}" repo-path whonix 2>/dev/null || true)"
+if [ "${got}" = "/srv/derivative-maker/aptrepo_local/whonix" ]; then pass "no slot -> flat /srv/derivative-maker (flat build matched)"; else fail "invented a slot / wrong flat default (got '${got}')"; fi
 
 printf '%s\n' "" "${pass_count} pass, ${fail_count} fail, 0 skip"
 [ "${fail_count}" -eq 0 ]

@@ -44,8 +44,15 @@ for candidate in "${candidates[@]}"; do
    fi
 done
 if [ -z "${frag}" ]; then
-   printf '%s\n' "SKIP: help-steps/determine-build-user.bsh not found (set DERIVATIVE_MAKER_DIR); it is a derivative-maker superproject fragment, absent in a standalone dmf component checkout." >&2
-   ## style-ok: allow-skip: help-steps/determine-build-user.bsh lives in the derivative-maker superproject, absent in a standalone dmf component checkout
+   if [ -n "${DERIVATIVE_MAKER_DIR:-}" ]; then
+      ## A full derivative-maker checkout was given, so the fragment is REQUIRED there -- its
+      ## absence is a broken subject, not an optional target. FAIL (no vacuous skip that could let
+      ## the suite pass while this test never ran its assertions).
+      printf '%s\n' "FAIL: ${frag_rel} missing under DERIVATIVE_MAKER_DIR='${DERIVATIVE_MAKER_DIR}' -- required in a full checkout." >&2
+      exit 1
+   fi
+   printf '%s\n' "SKIP: ${frag_rel} not found (set DERIVATIVE_MAKER_DIR); it is a derivative-maker superproject fragment, absent in a standalone dmf component checkout." >&2
+   ## style-ok: allow-skip: help-steps/determine-build-user.bsh lives in the derivative-maker superproject, absent only in a standalone dmf component checkout (DERIVATIVE_MAKER_DIR unset)
    exit 77
 fi
 
