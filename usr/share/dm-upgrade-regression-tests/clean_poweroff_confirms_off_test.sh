@@ -75,5 +75,24 @@ rc=0
 VM_STATE='poweroff' clean_poweroff >/dev/null 2>&1 || rc=$?
 check "powered-off VM: clean_poweroff returns 0" "${rc}" '0'
 
+## 3. A clean_poweroff now CAN return 1 (a wedged VM), so a CLEANUP EXIT trap that calls it must
+## be best-effort -- a bare call aborts the errexit trap before `exit "${rc}"` and turns a PASS
+## into exit 1 (the fabricated-fail the on_exit / boot_gateway `|| true` fixes close). Mirror that
+## structure (a trap function doing `local rc=$?; ...; exit "${rc}"`, as on_exit does) with the
+## REAL clean_poweroff stubbed to a wedged VM, and assert a PASS still exits 0.
+# shellcheck disable=SC2317  ## fires via the EXIT trap, not a direct call
+exit_trap() {
+   local trap_rc=$?
+   VM_STATE='running' CLEAN_POWEROFF_ACPI_S=1 CLEAN_POWEROFF_HARD_S=1 clean_poweroff >/dev/null 2>&1 || true
+   exit "${trap_rc}"
+}
+rc=0
+(
+   set -o errexit
+   trap exit_trap EXIT
+   true   ## the run's real outcome: a PASS
+) >/dev/null 2>&1 || rc=$?
+check "best-effort clean_poweroff in an errexit EXIT trap preserves a PASS (exit 0)" "${rc}" '0'
+
 printf '%s\n' "" "${pass} pass, ${fail} fail"
 [ "${fail}" -eq 0 ]

@@ -558,7 +558,9 @@ boot_gateway() {
    ## gw_pin_guards already `sync`ed the drop-in, so even clean_poweroff's hard fallback cannot
    ## truncate it. Then WAIT for the VM to actually reach poweroff: clean_poweroff's hard-fallback
    ## path returns without waiting, and the next modifyvm needs the VM fully stopped.
-   clean_poweroff
+   ## Best-effort: a failed clean_poweroff must NOT abort this errexit function into a LEAK FAIL --
+   ## wait_vm_off below is the authority and maps a stuck VM to SETUP (inconclusive), not a leak.
+   clean_poweroff || true
    ## Confirm a settled off-state before re-tracing (the next modifyvm needs it fully stopped).
    wait_vm_off "${gw}" 20 \
       || die "${SETUP_RC}" "${gw}: did not reach poweroff before re-trace -- a provisioning failure, not a WS leak"
@@ -1044,7 +1046,9 @@ ws_func_reboot_sysmaint() {
    ## open_terminal), so run the whole sequence in a SUBSHELL and convert any exit into
    ## `return 1` -- the dying stage's own stderr still names what failed.
    (
-      clean_poweroff
+      ## Best-effort: let wait_vm_off below be the single off-state authority (with its specific
+      ## message) rather than clean_poweroff's errexit abort pre-empting it.
+      clean_poweroff || true
       ## Confirm the WS actually powered off before restarting it -- clean_poweroff (ACPI) is
       ## async and its hard fallback returns without waiting, so an immediate startvm can race a
       ## still-running VM (the slow-poweroff case seen at bake time).

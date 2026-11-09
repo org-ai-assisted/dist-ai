@@ -168,6 +168,9 @@ check "installed_disk_path dies (rc!=0) when no writable disk is attached" "$([ 
 check "disk_format_for .vdi -> vdi" "$([ "$(disk_format_for '/x/a.vdi')" = 'vdi' ] && printf '%s' true || printf '%s' false)"
 check "disk_format_for .vmdk -> vmdk" "$([ "$(disk_format_for '/x/b.VMDK')" = 'vmdk' ] && printf '%s' true || printf '%s' false)"
 check "disk_format_for .qcow2 -> qcow2" "$([ "$(disk_format_for '/x/c.qcow2')" = 'qcow2' ] && printf '%s' true || printf '%s' false)"
+check "disk_format_for .vhd -> vpc (QEMU VHD driver, not vdi; installed_disk_path accepts .vhd)" \
+   "$([ "$(disk_format_for '/x/e.vhd')" = 'vpc' ] && printf '%s' true || printf '%s' false)"
+check "disk_format_for .VHD -> vpc" "$([ "$(disk_format_for '/x/f.VHD')" = 'vpc' ] && printf '%s' true || printf '%s' false)"
 check "disk_format_for unknown -> vdi" "$([ "$(disk_format_for '/x/d.bin')" = 'vdi' ] && printf '%s' true || printf '%s' false)"
 
 if [ "${failures}" -ne 0 ]; then

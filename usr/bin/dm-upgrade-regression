@@ -68,7 +68,9 @@ on_exit() {
    ## so the guest FS/apt state must flush. clean_poweroff falls back to hard only if
    ## the guest ignores ACPI. Only ever our own, just-started VM.
    if [ "${vm_started}" = 'true' ]; then
-      clean_poweroff
+      ## Best-effort cleanup: a failed poweroff must NOT clobber the run's real verdict. A bare
+      ## call fails the errexit EXIT trap before `exit "${rc}"`, turning a PASS into exit 1.
+      clean_poweroff || true
    fi
    exit "${rc}"
 }

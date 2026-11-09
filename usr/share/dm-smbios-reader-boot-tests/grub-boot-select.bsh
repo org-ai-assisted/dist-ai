@@ -60,6 +60,11 @@ disk_format_for() {
       *.qcow2)
          printf '%s' qcow2
          ;;
+      *.vhd)
+         ## QEMU's VHD driver is 'vpc', not 'vhd'; installed_disk_path accepts *.vhd, so a bare
+         ## vdi default here would make qemu-nbd reject it AND skip the self-containment probe.
+         printf '%s' vpc
+         ;;
       *.raw|*.img)
          printf '%s' raw
          ;;
