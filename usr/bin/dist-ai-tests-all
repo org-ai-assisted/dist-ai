@@ -349,7 +349,7 @@ wire() {
    wire_args=()
    [ -n "${repo_root}" ] || [ -n "${component_root}" ] || return 0
 
-   local hs dmf suite_path
+   local hs dmf suite_path st_repo
    hs="$( pkg_dir helper-scripts )"
    dmf="$( pkg_dir developer-meta-files )"
 
@@ -1114,6 +1114,17 @@ wire() {
                "HELPER_SCRIPTS_PATH=${hs}"
                "PYTHONPATH=${hs}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
             )
+         fi
+         ## qube-ctl neutralizes untrusted output through secure-terminal's
+         ## unicode-tag-stdin ('has unicode-tag-stdin || die 1'); it ships in no apt
+         ## package, only the secure-terminal checkout opted in via dm-consumer.yml
+         ## (secure-terminal: true -> SECURE_TERMINAL_REPO). Put its bin on PATH, else
+         ## every qube-ctl fetch/sanitize suite dies 'unicode-tag-stdin not found'.
+         st_repo="${SECURE_TERMINAL_REPO:-}"
+         [ -n "${st_repo}" ] || st_repo="$( pkg_dir secure-terminal 2>/dev/null || true )"
+         if [ -n "${st_repo}" ] && [ -x "${st_repo}/usr/bin/unicode-tag-stdin" ]; then
+            suite_path="${st_repo}/usr/bin:${suite_path}"
+            wire_env+=( "SECURE_TERMINAL_REPO=${st_repo}" )
          fi
          wire_env+=( "PATH=${suite_path}" )
          ;;
