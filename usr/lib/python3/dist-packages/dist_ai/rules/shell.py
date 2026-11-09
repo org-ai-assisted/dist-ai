@@ -799,13 +799,17 @@ def _mkdir_then_chmod_pairs(ctx):
                  or target_protected)
             ## A MULTI-COMPONENT target ('a/b/c', '/run/x/y') is NOT auto-fixed:
             ## 'install -d -m' modes only the FINAL component and makes any PARENT
-            ## it creates 0755 (ignoring -m AND the umask), so a 'mkdir --parents
-            ## a/b/c; chmod 0700 a/b/c' whose parents were umask-private (0700) would
-            ## be silently EXPOSED. A '/' in the operand source is the conservative
-            ## discriminator (a filename cannot contain '/'); a pure expansion
-            ## ('"$dir"') carries no literal '/' and stays fixable -- the tool cannot
-            ## see its runtime value either way. Even a '--'-guarded 'mkdir -p --
-            ## a/b/c' declines: the parent exposure is independent of dash-guarding.
+            ## it creates 0755 (ignoring -m AND the umask), so collapsing 'mkdir
+            ## --parents a/b/c; chmod 0700 a/b/c' whose parents were umask-private
+            ## (0700) would silently EXPOSE them. Discriminator: a literal '/' in the
+            ## operand SOURCE -- a path separator, which a single filename component
+            ## never has. Even a '--'-guarded 'mkdir -p -- a/b/c' declines; the
+            ## exposure is independent of dash-guarding. ACCEPTED limitation (accident-
+            ## not-adversary, mirroring bash_ast NOT decoding $'...'): an opaque
+            ## expansion ('"$dir"') or an ANSI-C-encoded separator ($'\x2f') carries
+            ## no literal '/' in its source and stays fixable -- the tool cannot see
+            ## the runtime arity; R-173's style-guide entry carries the caveat for the
+            ## author.
             and "/" not in dir_src
             and _mkdir_fix_shape(eff1, source)
             and _chmod_fix_shape(eff2, source)
