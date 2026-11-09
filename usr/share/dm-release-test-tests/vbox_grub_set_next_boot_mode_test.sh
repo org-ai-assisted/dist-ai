@@ -40,7 +40,7 @@ created='false'
 
 cleanup() {
    if [ "${created}" = 'true' ]; then
-      safe-rm --force -- "${req}/disk" "${req}/passphrase" "${req}/mode" "${req}/fakedisk" 2>/dev/null || true
+      safe-rm --force -- "${req}/disk" "${req}/passphrase" "${req}/mode" "${req}/fakedisk" "${req}/other_owned" 2>/dev/null || true
       if [ "${req_preexisted}" = 'false' ]; then
          rmdir -- "${req}" 2>/dev/null || true
       fi
@@ -108,8 +108,18 @@ argv="$(tr '\n' ' ' < "${argv_log}" 2>/dev/null || true)"
 check "delegates: run --disk <realpath> --passphrase-file <req/passphrase> -- <helper> persistent-sysmaint" \
    "$([ "${argv}" = "run --disk $(realpath -- "${disk}") --passphrase-file ${req}/passphrase -- ${helper_sentinel} persistent-sysmaint " ] && printf '%s' true || printf '%s' false)"
 
-## 2. Ownership refusal: a root-owned disk with the caller's own uid -> refuse, no mount.
-printf '%s\n' '/bin/true' > "${req}/disk"
+## 2. Ownership refusal: a disk owned by someone OTHER than the caller -> refuse, no mount.
+## Pick an other-owned path robustly in both runner contexts: non-root uses root-owned
+## /bin/true (owner 0 != uid); a root run (uid 0) chowns a file to uid 1 so the owner
+## still differs from the caller (else 0 == 0 would spuriously pass).
+if [ "${uid}" = '0' ]; then
+   other_owned="${req}/other_owned"
+   printf '%s' '' > "${other_owned}"
+   chown 1 -- "${other_owned}"
+else
+   other_owned='/bin/true'
+fi
+printf '%s\n' "${other_owned}" > "${req}/disk"
 safe-rm --force -- "${argv_log}"
 rc="$(run_wrapper "${uid}")"
 check "root-owned disk refused (rc!=0, got ${rc})" \

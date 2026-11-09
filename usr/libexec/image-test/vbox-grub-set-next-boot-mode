@@ -76,6 +76,12 @@ mode="$(cat -- "${mode_file}")"
 
 ## The disk (after realpath, so a symlink/hardlink cannot escape) MUST be OWNED by the
 ## caller -- a caller can retarget only a disk IT owns, never root's or another user's.
+## NOTE: realpath+stat here then vbox-disk-mount re-opens the path, a check/use race on
+## the disk PATH -- identical to the read-only vbox-mok-extract. Closing it fully needs
+## fd-passing through vbox-disk-mount; accepted under the same model (the disk is the
+## harness's own trusted test install, the runner is a trusted vboxusers account, so this
+## is deliberate-misuse-only, not an accident). Symlink escape of the WRITE via the guest
+## filesystem is separately confined in grub-select-next-boot-mode (boot/grub within mount).
 disk_real="$(realpath -- "${disk}")" || die "disk path '${disk}' does not resolve" 2
 [ -f "${disk_real}" ] || die "disk '${disk_real}' is not a regular file" 2
 disk_owner_uid="$(stat --format='%u' -- "${disk_real}")" \

@@ -37,19 +37,59 @@ export LC_ALL=C
 me="${0##*/}"
 
 main() {
-   local mode root grub_cfg grubenv id
+   local mode root grubdir grub_cfg grubenv grubenv_real id
    mode="${1:?usage: ${me} <mode> (e.g. persistent-sysmaint)}"
    ## MODE is interpolated into the ERE below, so constrain it to the id charset
    ## (lowercase + hyphen). Rejects a typo/metachar mode (e.g. 'live.sysmaint', whose
    ## '.' would match a hyphen and select a DIFFERENT mode's entry).
    [[ "${mode}" =~ ^[a-z][a-z-]*$ ]] \
       || { printf '%s\n' "${me}: ERROR: invalid mode '${mode}' (expected [a-z-]+)" >&2; exit 1; }
-   root="${MOUNTPOINT:-$(pwd)}"
-   grub_cfg="${root}/boot/grub/grub.cfg"
-   grubenv="${root}/boot/grub/grubenv"
 
-   [ -r "${grub_cfg}" ] \
-      || { printf '%s\n' "${me}: ERROR: no grub.cfg at '${grub_cfg}'" >&2; exit 1; }
+   ## Confine to the MOUNTED root. This runs as root against a guest filesystem, so a
+   ## symlinked boot/grub (or grub.cfg/grubenv) inside that filesystem could otherwise
+   ## redirect the grub-editenv WRITE onto a HOST path. Resolve the mount root, then require
+   ## /boot/grub -- and every file we read/write -- to RESOLVE INSIDE it. grubenv may not
+   ## exist yet (grub-editenv creates it in the confined grubdir), so its creation is covered
+   ## by confining grubdir; a pre-existing grubenv is re-checked.
+   root="$(realpath -- "${MOUNTPOINT:-$(pwd)}")" \
+      || { printf '%s\n' "${me}: ERROR: mount root does not resolve" >&2; exit 1; }
+   grubdir="$(realpath -- "${root}/boot/grub")" \
+      || { printf '%s\n' "${me}: ERROR: no '${root}/boot/grub' (separate /boot not on the mounted root?)" >&2; exit 1; }
+   case "${grubdir}/" in
+      "${root}/"*)
+         true
+         ;;
+      *)
+         printf '%s\n' "${me}: ERROR: boot/grub resolves outside the mount ('${grubdir}'); refusing" >&2
+         exit 1
+         ;;
+   esac
+   grub_cfg="$(realpath -- "${grubdir}/grub.cfg" 2>/dev/null || true)"
+   { [ -n "${grub_cfg}" ] && [ -r "${grub_cfg}" ]; } \
+      || { printf '%s\n' "${me}: ERROR: no readable grub.cfg under '${grubdir}'" >&2; exit 1; }
+   case "${grub_cfg}/" in
+      "${root}/"*)
+         true
+         ;;
+      *)
+         printf '%s\n' "${me}: ERROR: grub.cfg resolves outside the mount; refusing" >&2
+         exit 1
+         ;;
+   esac
+   grubenv="${grubdir}/grubenv"
+   if [ -e "${grubenv}" ]; then
+      grubenv_real="$(realpath -- "${grubenv}")" \
+         || { printf '%s\n' "${me}: ERROR: grubenv does not resolve" >&2; exit 1; }
+      case "${grubenv_real}/" in
+         "${root}/"*)
+            grubenv="${grubenv_real}"
+            ;;
+         *)
+            printf '%s\n' "${me}: ERROR: grubenv resolves outside the mount; refusing" >&2
+            exit 1
+            ;;
+      esac
+   fi
 
    ## The simple boot-mode entry's --id for MODE, taken ONLY from a top-level menuentry
    ## line (so an earlier textual reference cannot be mistaken for the id). The advanced

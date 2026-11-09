@@ -117,5 +117,22 @@ else
    fail=$(( fail + 1 ))
 fi
 
+## 4. CANARY: a symlinked boot/grub pointing OUTSIDE the mounted root MUST be refused, so
+## the root grub-editenv WRITE cannot escape onto a host path via a crafted guest filesystem.
+root3="${work_dir}/escape_root"
+escape="${work_dir}/escape_target"
+mkdir --parents -- "${root3}/boot" "${escape}"
+ln --symbolic -- "${escape}" "${root3}/boot/grub"
+rc3=0
+MOUNTPOINT="${root3}" "${helper}" persistent-sysmaint >/dev/null 2>&1 || rc3=$?
+if [ "${rc3}" -ne 0 ] && [ ! -e "${escape}/grubenv" ]; then
+   printf '%s\n' "PASS: symlinked boot/grub escaping the mount refused, no outside write"
+   pass=$(( pass + 1 ))
+else
+   escaped='no'; [ -e "${escape}/grubenv" ] && escaped='yes'
+   printf '%s\n' "FAIL: symlink-escape not refused (rc=${rc3}, escape grubenv written=${escaped})"
+   fail=$(( fail + 1 ))
+fi
+
 printf '%s\n' "" "${pass} pass, ${fail} fail"
 [ "${fail}" -eq 0 ]
