@@ -92,12 +92,13 @@ check() {
    fi
 }
 
-## Expose a raw file's partitions as /dev/loopNp*, waiting for the first node, and record the
-## loop device for teardown. Echoes the loop device path.
+## Expose a raw file's partitions as /dev/loopNp*, waiting for the first node. Echoes the loop
+## device path; the CALLER appends it to loop_devs for teardown -- registering here would be a
+## no-op, since this function is called in a $(...) command substitution (a subshell), so the
+## parent loop_devs would stay empty and the EXIT trap would detach nothing (loop-device leak).
 loop_partscan() {
    local file="$1" dev i
    dev="$(losetup --find --partscan --show -- "${file}")"
-   loop_devs+=( "${dev}" )
    for ((i = 0; i < 40; i++)); do
       udevadm settle 2>/dev/null || true
       if [ -b "${dev}p1" ]; then
@@ -121,6 +122,7 @@ chmod 0600 -- "${pf}"
 truncate --size=128M -- "${raw}"
 parted --script -- "${raw}" mklabel gpt mkpart primary 1MiB 100%
 prep_loop="$(loop_partscan "${raw}")"
+loop_devs+=( "${prep_loop}" )
 cryptsetup luksFormat --batch-mode --type luks2 --pbkdf pbkdf2 --pbkdf-force-iterations 1000 \
    --key-file "${pf}" -- "${prep_loop}p1"
 cryptsetup open --key-file "${pf}" -- "${prep_loop}p1" "${prep_name}"
@@ -142,6 +144,7 @@ check 'no device-mapper residue from the tool' "${leftover}" '0'
 ## read-only through an independent LUKS open on the partition.
 qemu-img convert -f vdi -O raw -- "${img}" "${vraw}"
 verify_loop="$(loop_partscan "${vraw}")"
+loop_devs+=( "${verify_loop}" )
 cryptsetup open --readonly --key-file "${pf}" -- "${verify_loop}p1" "${verify_name}"
 mkdir -- "${work}/mnt"
 mount --read-only -- "/dev/mapper/${verify_name}" "${work}/mnt"
