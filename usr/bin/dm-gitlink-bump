@@ -153,13 +153,13 @@ for path in "${sub_paths[@]}"; do
    ref="$( git -C "${sub}" symbolic-ref --quiet HEAD 2>/dev/null || true )"
    [ "${ref}" = "refs/heads/${AI_BRANCH}" ] || continue
 
-   ## Clean: no uncommitted tracked changes. A FAILED 'git status' (corrupt
-   ## index, unreadable submodule) yields empty stdout -- do not read that as
-   ## clean; skip it rather than bump on a repo we could not inspect.
-   if ! sub_status="$( git -C "${sub}" status --porcelain --untracked-files=no 2>/dev/null )"; then
-      continue
-   fi
-   [ -z "${sub_status}" ] || continue
+   ## Inspectable: a FAILED 'git status' (corrupt index, unreadable submodule)
+   ## means HEAD cannot be trusted -- skip rather than bump blind. Uncommitted
+   ## tracked changes do NOT disqualify it: the gitlink pin is the committed
+   ## HEAD, independent of the worktree, so a sibling session's WIP in the
+   ## submodule must not hide a published-ahead (stale) pin -- that would make it
+   ## invisible to --check, a false green on the shared multi-session tree.
+   git -C "${sub}" status --porcelain --untracked-files=no >/dev/null 2>&1 || continue
 
    head_sha="$( git -C "${sub}" rev-parse --verify HEAD 2>/dev/null || true )"
    [ -n "${head_sha}" ] || continue
@@ -242,11 +242,13 @@ if [ "${dry_run}" = "true" ]; then
    exit 0
 fi
 
-## Commit ONLY those gitlink paths. Each qualifying submodule is on 'ai', clean,
-## and its HEAD IS the target published tip, so a partial commit of the path
-## records that HEAD as the new pin. The pathspec keeps any unrelated staged
-## change out (a bare 'commit' would sweep them in). Fixed subject: the diff
-## already names the submodules, so listing them here would only restate it.
+## Commit ONLY those gitlink paths. Each qualifying submodule is on 'ai' and its
+## HEAD IS the target published tip; a partial commit of the path records that
+## HEAD as the new pin -- the submodule worktree's cleanliness is irrelevant, as
+## a pathspec commit captures the gitlink (HEAD), never the submodule's files.
+## The pathspec keeps any unrelated staged change out (a bare 'commit' would
+## sweep them in). Fixed subject: the diff already names the submodules, so
+## listing them here would only restate it.
 ## Overrides: this IS the deliberate gitlink bumper -- the guard that would
 ## otherwise refuse a pointer commit is meant for ACCIDENTAL bumps.
 ## Identity: pin the committer/author NAME to 'claude'. The harness exports
