@@ -1,0 +1,164 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Mount a VirtualBox VM disk image on the HOST read-WRITE, run ONE caller command against
+## the mounted filesystem, then always unmount -- without booting the VM. Generic and
+## grub-agnostic: the caller supplies whatever edit it wants (e.g. grub-editenv, a file
+## write); this tool only owns the mount lifecycle. Optionally unlocks a single LUKS volume
+## (the harness holds the install passphrase) and handles an LVM layout inside LUKS.
+##
+## Single-transaction by design: the mount lives for exactly one command and is torn down
+## by the EXIT trap, so there is no dangling-mount state a caller must remember to release
+## (the safe path is the default, nothing to recall).
+##
+## WRITABLE counterpart of the read-only vbox-disk-extract; both source vbox-disk-lib.bsh,
+## so the qemu-nbd / LUKS / LVM / teardown plumbing is a single source. Must run as root
+## (qemu-nbd / cryptsetup / mount); callers invoke it via sudo. It has NO privleap action
+## of its own -- "run an arbitrary root command against a writable disk" is not something to
+## authorize to a group; a sudo-less runner needs a separate purpose-narrowed wrapper.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+me="${0##*/}"
+
+disk=""
+passphrase_file=""
+cmd=()
+
+usage() {
+   printf '%s\n' "usage: ${me} run --disk PATH [--passphrase-file PATH] -- CMD [ARGS...]
+
+run                mount the disk read-write, run CMD, then always unmount.
+--disk             VirtualBox disk image (anything qemu-nbd reads, e.g. a .vdi); must be
+                   WRITABLE and NOT locked by a running VM (power the VM off first).
+--passphrase-file  0600 file with the LUKS passphrase; given -> the disk's single LUKS
+                   volume is opened read-WRITE before the filesystem search.
+CMD [ARGS...]      run after '--' with \$MOUNTPOINT set and CWD = the mounted filesystem.
+
+Mounts the first mountable filesystem read-write (journal replays). Run as root (via sudo)." >&2
+}
+
+die() {
+   printf '%s\n' "${me}: ERROR: ${1}" >&2
+   exit 1
+}
+
+## Shared host-side disk plumbing (cleanup, luks_open, settle_partitions, free_nbd,
+## candidate_filesystems) + its cleanup-state globals -- single source with vbox-disk-extract.
+lib_dir="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")"
+if [ -r "${lib_dir}/../libexec/image-test/vbox-disk-lib.bsh" ]; then
+   vbox_disk_lib="${lib_dir}/../libexec/image-test/vbox-disk-lib.bsh"
+else
+   vbox_disk_lib='/usr/libexec/image-test/vbox-disk-lib.bsh'
+fi
+# shellcheck source=../libexec/image-test/vbox-disk-lib.bsh
+source "${vbox_disk_lib}"
+
+parse_args() {
+   [ "${1:-}" = 'run' ] || { usage; die "first argument must be the 'run' subcommand"; }
+   shift
+   while [ "$#" -gt 0 ]; do
+      case "$1" in
+         --disk)
+            disk="$2"
+            shift 2
+            ;;
+         --passphrase-file)
+            passphrase_file="$2"
+            shift 2
+            ;;
+         --)
+            shift
+            cmd=( "$@" )
+            break
+            ;;
+         -h|--help)
+            usage
+            exit 0
+            ;;
+         *)
+            usage
+            die "unexpected argument '$1'"
+            ;;
+      esac
+   done
+   [ -n "${disk}" ]          || { usage; die "--disk required"; }
+   [ "${#cmd[@]}" -gt 0 ]    || { usage; die "a command after '--' is required"; }
+   [ -w "${disk}" ]          || die "disk not writable: '${disk}'"
+   [ -z "${passphrase_file}" ] || [ -r "${passphrase_file}" ] \
+      || die "passphrase file not readable: '${passphrase_file}'"
+   [ "$(id -u)" = '0' ]      || die "must run as root (invoke via sudo)"
+}
+
+main() {
+   trap cleanup EXIT
+   parse_args "$@"
+
+   modprobe nbd max_part=16 2>/dev/null || true
+   nbd_dev="$(free_nbd)"
+   ## Writable connect (no --read-only): a VM-locked .vdi fails here, loudly -- that is the
+   ## intended guard against mounting a live disk, not something to retry around.
+   qemu-nbd --connect="${nbd_dev}" -- "${disk}"
+   settle_partitions "${nbd_dev}"
+
+   if [ -n "${passphrase_file}" ]; then
+      ## The LUKS volume is a partition, or the whole disk for an unpartitioned image.
+      local target luks_target=""
+      for target in "${nbd_dev}" "${nbd_dev}"p*; do
+         [ -b "${target}" ] || continue
+         if cryptsetup isLuks -- "${target}" 2>/dev/null; then
+            luks_target="${target}"
+            break
+         fi
+      done
+      [ -n "${luks_target}" ] || die "no LUKS volume found on '${disk}'"
+      luks_name="vdm-$$-luks"
+      luks_open "${luks_target}" "${luks_name}" rw
+   fi
+
+   mnt_dir="$(realpath -- "$(mktemp --directory)")"
+   local fs mounted='false'
+   ## candidate_filesystems in THIS shell via a file (not '< <()'): a procsub subshell would
+   ## discard its vg_activated assignment, leaking the VG cleanup turned on.
+   fs_list="$(mktemp)"
+   candidate_filesystems > "${fs_list}"
+   while read -r fs; do
+      [ -n "${fs}" ] || continue
+      ## Writable mount: let the journal REPLAY (do NOT use the read-only 'noload' trick --
+      ## mounting a dirty journal writable with noload risks corruption). A real failure to
+      ## mount read-write is a hard error, fail-closed -- see below.
+      if mount -- "${fs}" "${mnt_dir}" 2>/dev/null; then
+         mounted='true'
+         break
+      fi
+   done < "${fs_list}"
+   [ "${mounted}" = 'true' ] || die "no mountable filesystem found on '${disk}'"
+
+   ## Run the caller's command against the mounted tree. CMD is a TRUSTED harness literal
+   ## (this tool is root); it is not sanitized. Capture its status, then tear the mount down
+   ## fail-closed before returning that status.
+   local rc=0
+   ( cd -- "${mnt_dir}" && MOUNTPOINT="${mnt_dir}" "${cmd[@]}" ) || rc=$?
+
+   ## Flush then unmount fail-closed: a failed unmount means possibly-unflushed writes, so it
+   ## is a hard error (NOT 'umount || true'), surfaced over the command's own status. The
+   ## EXIT trap still runs as a best-effort safety net.
+   sync
+   umount -- "${mnt_dir}" || die "unmount failed (writes may be unflushed): '${mnt_dir}'"
+   return "${rc}"
+}
+
+## Sourced (a unit test) -> expose the functions without running; executed -> run.
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+   main "$@"
+fi

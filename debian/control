@@ -108,7 +108,11 @@ Depends: ${misc:Depends},
  squashfs-tools,
  isomd5sum,
  grub-common,
- kpartx
+ kpartx,
+ cryptsetup,
+ lvm2
+## cryptsetup + lvm2: vbox-disk-extract / vbox-disk-mount open a LUKS volume and an
+## LVM-inside-LUKS layout on an installed disk image, host-side.
 ## ISO-builder (dm-raw-to-iso) tools. Arch-agnostic ones above are Depends
 ## (xorriso already listed). The GRUB platform + signed shim/grub packages are
 ## arch-specific (amd64/i386 vs arm64) and this package is Architecture: all, so
