@@ -35,11 +35,16 @@ home="$(getent passwd "$(id -u)" | cut -d: -f6)"
 req="${home}/.cache/vbox-grub-set-next-boot-mode"
 req_preexisted='true'
 [ -d "${req}" ] || req_preexisted='false'
+## Only remove the request files once WE own the slot: a refusal (an occupied/symlinked slot)
+## must NOT let the EXIT trap delete a concurrent request's files.
+created='false'
 
 # shellcheck disable=SC2317  ## runs via the EXIT trap
 cleanup() {
-   safe-rm --force -- "${req}/disk" "${req}/passphrase" "${req}/mode" "${req}/format" 2>/dev/null || true
-   [ "${req_preexisted}" = 'true' ] || rmdir -- "${req}" 2>/dev/null || true
+   if [ "${created}" = 'true' ]; then
+      safe-rm --force -- "${req}/disk" "${req}/passphrase" "${req}/mode" "${req}/format" 2>/dev/null || true
+      [ "${req_preexisted}" = 'true' ] || rmdir -- "${req}" 2>/dev/null || true
+   fi
    safe-rm --recursive --force -- "${tmp}"
 }
 trap cleanup EXIT
@@ -51,6 +56,8 @@ for leaf in disk passphrase mode format; do
       exit 1
    fi
 done
+## Slot is ours now -- the EXIT trap may clean the request files.
+created='true'
 
 ## Caller globals the fragment consumes, plus a die that exits (mirrors the real caller).
 FAIL_RC=5
@@ -155,6 +162,13 @@ chmod +x "${VBOXMANAGE}"
 rc=0
 ( installed_disk_path empty ) >/dev/null 2>&1 || rc=$?
 check "installed_disk_path dies (rc!=0) when no writable disk is attached" "$([ "${rc}" != '0' ] && printf '%s' true || printf '%s' false)"
+
+## 7. disk_format_for maps the disk extension to the qemu-nbd format (so a resolved non-vdi
+## disk is not forced to vdi), defaulting unknown/.vdi to vdi.
+check "disk_format_for .vdi -> vdi" "$([ "$(disk_format_for '/x/a.vdi')" = 'vdi' ] && printf '%s' true || printf '%s' false)"
+check "disk_format_for .vmdk -> vmdk" "$([ "$(disk_format_for '/x/b.VMDK')" = 'vmdk' ] && printf '%s' true || printf '%s' false)"
+check "disk_format_for .qcow2 -> qcow2" "$([ "$(disk_format_for '/x/c.qcow2')" = 'qcow2' ] && printf '%s' true || printf '%s' false)"
+check "disk_format_for unknown -> vdi" "$([ "$(disk_format_for '/x/d.bin')" = 'vdi' ] && printf '%s' true || printf '%s' false)"
 
 if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "${failures} grub-boot-select.bsh assertion(s) failed" >&2

@@ -228,7 +228,9 @@ boot_installed() {
          ;;
    esac
    disk="$(installed_disk_path "${vm}")" || return 1
-   ( select_installed_mode_offline "${mode}" "${disk}" "${passphrase_file:-}" ) || return 1
+   ## Pass the disk's actual format (vdi default, vmdk/qcow2 for a resolved non-vdi disk) so
+   ## the offline mount is never forced to vdi and fails on a non-vdi image.
+   ( select_installed_mode_offline "${mode}" "${disk}" "${passphrase_file:-}" "$(disk_format_for "${disk}")" ) || return 1
    "${VBOXMANAGE}" startvm "${vm}" --type headless >/dev/null
    unlock_luks "${role}"
    wait_guestcontrol_ready "${account}" 300

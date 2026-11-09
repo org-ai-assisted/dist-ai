@@ -1301,7 +1301,8 @@ reboot_installed() {
          boot_mode='user'
          ;;
    esac
-   select_installed_mode_offline "${boot_mode}" "${boot_disk}" "${passphrase_file}"
+   ## Pass the disk's actual format so a reused non-vdi (.vmdk) disk is not forced to vdi.
+   select_installed_mode_offline "${boot_mode}" "${boot_disk}" "${passphrase_file}" "$(disk_format_for "${boot_disk}")"
    start_vm_frontend
    gui_wait_for 'passphrase for disk|please unlock|luks' 120 "LUKS unlock (${role})"
    if [ "${role}" = 'sysmaint' ]; then

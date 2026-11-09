@@ -49,6 +49,26 @@ installed_disk_path() {
    die "${FAIL_RC}" "no attached disk image found for VM '${vm}' (installed_disk_path)"
 }
 
+## Map a disk path to its qemu-nbd format by extension, so a lane that resolves the disk from
+## the VM (installed_disk_path) passes the RIGHT format and the mount is never forced to vdi on
+## a .vmdk/.qcow2 image. Unknown/.vdi -> vdi (vbox-disk-mount's default).
+disk_format_for() {
+   case "${1,,}" in
+      *.vmdk)
+         printf '%s' vmdk
+         ;;
+      *.qcow2)
+         printf '%s' qcow2
+         ;;
+      *.raw|*.img)
+         printf '%s' raw
+         ;;
+      *)
+         printf '%s' vdi
+         ;;
+   esac
+}
+
 ## Deterministic offline boot-mode selection: set grubenv next_entry to MODE's entry.
 ## Args: <mode> <disk-path> [<luks-passphrase-file>] [<disk-format>].
 ##   * mode: 'user' / 'persistent-sysmaint' / ... (the per-mode menuentry grub-select resolves).
@@ -76,7 +96,10 @@ select_installed_mode_offline() {
    printf '%s' "${mode}" > "${req_dir}/mode"
    chmod 0600 -- "${req_dir}/disk" "${req_dir}/mode"
    if [ -n "${pass_file}" ]; then
-      cp --force -- "${pass_file}" "${req_dir}/passphrase"
+      ## Abort on a failed copy (e.g. the passphrase file vanished after validation) rather
+      ## than invoke the action without a passphrase and surface a misleading mount error.
+      cp --force -- "${pass_file}" "${req_dir}/passphrase" \
+         || die "${FAIL_RC}" "could not stage the LUKS passphrase from '${pass_file}'"
       chmod 0600 -- "${req_dir}/passphrase"
    fi
    if [ -n "${format}" ]; then

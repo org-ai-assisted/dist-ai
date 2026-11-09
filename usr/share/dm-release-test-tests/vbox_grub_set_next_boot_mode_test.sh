@@ -64,7 +64,7 @@ check() {
 }
 
 [ -L "${req}" ] && { printf '%s\n' "FATAL: ${req} is a symlink; refusing" >&2; exit 1; }
-for leaf in disk passphrase mode fakedisk; do
+for leaf in disk passphrase mode format fakedisk ok.vmdk bad.vmdk bad.qcow2; do
    if [ -e "${req}/${leaf}" ] || [ -L "${req}/${leaf}" ]; then
       printf '%s\n' "FATAL: ${req}/${leaf} exists; refusing to clobber a concurrent request" >&2
       exit 1
