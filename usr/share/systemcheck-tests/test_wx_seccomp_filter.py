@@ -37,6 +37,7 @@ deliberate, sound choice -- so this lint does not require a soft errno there.
 Resolves units via SYSTEMCHECK_REPO (dist-ai/CLAUDE.md).
 """
 
+import errno
 import os
 import unittest
 
@@ -52,6 +53,9 @@ _RETRYABLE_ERRNOS = {
     'EINTR', 'EAGAIN', 'EWOULDBLOCK',
     'ERESTART', 'ERESTARTSYS', 'ERESTARTNOINTR', 'ERESTARTNOHAND',
 }
+## A real errno name. systemd IGNORES an unknown name (e.g. EBOGUS) and keeps the
+## default KILL action, so an invalid name is NOT a soft deny.
+_VALID_ERRNO_NAMES = frozenset(errno.errorcode.values())
 
 ## user-scope units that spawn a memfd-using GUI helper as a direct child.
 GUI_UNITS = ('updatecheck.service', 'systemcheck.service')
@@ -71,9 +75,13 @@ def _service_lines(text: str) -> list:
     for raw in text.splitlines():
         stripped = raw.strip()
         if stripped.startswith('[') and stripped.endswith(']'):
-            in_service = stripped.lower() == '[service]'
+            ## systemd section names are CASE-SENSITIVE: directives under a
+            ## '[service]' header are ignored, so a case-insensitive match would
+            ## credit hardening systemd never applies.
+            in_service = stripped == '[Service]'
             continue
-        if not in_service or stripped.startswith('#'):
+        ## systemd ignores lines starting with '#' OR ';' (comments).
+        if not in_service or stripped.startswith('#') or stripped.startswith(';'):
             continue
         if stripped.endswith('\\'):
             buf += stripped[:-1] + ' '
@@ -105,11 +113,9 @@ def _errno_is_soft(value: str) -> bool:
         return False
     if val.isdigit():
         return _ERRNO_MIN <= int(val) <= _ERRNO_MAX
-    ## an errno NAME (EPERM / EACCES / ENOSYS ...): all uppercase, starts with E.
-    ## Full spelling validity is systemd-analyze verify's job; here we only reject
-    ## obvious junk and lowercase.
-    return (val.startswith('E') and val.isupper()
-            and val.replace('_', '').isalpha())
+    ## an errno NAME must be a REAL errno: systemd ignores an unknown name and keeps
+    ## the KILL action, so a bogus name (EBOGUS) is not a soft deny.
+    return val in _VALID_ERRNO_NAMES
 
 
 def memfd_denial(text: str) -> str:
@@ -127,12 +133,19 @@ def memfd_denial(text: str) -> str:
     denied = False
     per_syscall = None
     for value in effective:
-        if not value.startswith('~'):
-            continue
-        for token in value[1:].split():
-            if token.split(':', 1)[0] == 'memfd_create':
+        negate = value.startswith('~')
+        for token in (value[1:] if negate else value).split():
+            if token.split(':', 1)[0] != 'memfd_create':
+                continue
+            if negate:
+                ## '~' denylist: memfd_create is denied; ':' sets its per-syscall action.
                 denied = True
                 per_syscall = token.split(':', 1)[1] if ':' in token else None
+            else:
+                ## a later POSITIVE assignment re-allows the syscall (systemd removes
+                ## it from the denylist), so it is no longer denied.
+                denied = False
+                per_syscall = None
     if not denied:
         return 'none'
     if per_syscall is not None:
@@ -197,6 +210,26 @@ class WxParserFidelityTest(unittest.TestCase):
     def test_memfd_denial_requires_exact_syscall_name(self) -> None:
         unit = '[Service]\nSystemCallFilter=~memfd_create_secret:EPERM\n'
         self.assertEqual(memfd_denial(unit), 'none')
+
+    def test_wrong_case_service_header_is_ignored(self) -> None:
+        unit = '[service]\nSystemCallFilter=~memfd_create:EPERM\n'
+        self.assertEqual(memfd_denial(unit), 'none')
+
+    def test_semicolon_comment_is_skipped(self) -> None:
+        unit = '[Service]\n; a comment line\nSystemCallFilter=~memfd_create:EPERM\n'
+        self.assertEqual(memfd_denial(unit), 'soft')
+
+    def test_positive_assignment_reallows_syscall(self) -> None:
+        unit = ('[Service]\n'
+                'SystemCallFilter=~memfd_create:EPERM\n'
+                'SystemCallFilter=memfd_create\n')
+        self.assertEqual(memfd_denial(unit), 'none')
+
+    def test_errno_is_soft_rejects_bogus_name(self) -> None:
+        self.assertFalse(_errno_is_soft('EBOGUS'))
+
+    def test_errno_is_soft_accepts_a_real_errno(self) -> None:
+        self.assertTrue(_errno_is_soft('EPERM'))
 
     def test_missing_required_unit_fails_not_skips(self) -> None:
         ## A missing REQUIRED unit must be an error, never a vacuous skip.

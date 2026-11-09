@@ -36,6 +36,7 @@ like sdwdate-tests/test_seccomp_filter.py.)
 Resolves the unit via PRIVLEAP_REPO (dist-ai/CLAUDE.md), else the installed path.
 """
 
+import errno
 import os
 import sys
 
@@ -57,6 +58,10 @@ _RETRYABLE_ERRNOS = {
     'EINTR', 'EAGAIN', 'EWOULDBLOCK',
     'ERESTART', 'ERESTARTSYS', 'ERESTARTNOINTR', 'ERESTARTNOHAND',
 }
+## A real errno name. systemd IGNORES an unknown name (e.g. EBOGUS) and keeps the
+## default KILL action, so an invalid name is NOT a soft deny -- reporting 'soft'
+## for it is a false pass.
+_VALID_ERRNO_NAMES = frozenset(errno.errorcode.values())
 
 
 def service_lines(text: str) -> list:
@@ -69,9 +74,13 @@ def service_lines(text: str) -> list:
     for raw in text.splitlines():
         stripped = raw.strip()
         if stripped.startswith('[') and stripped.endswith(']'):
-            in_service = stripped.lower() == '[service]'
+            ## systemd section names are CASE-SENSITIVE: directives under a
+            ## '[service]' header are ignored, so a case-insensitive match would
+            ## credit hardening systemd never applies.
+            in_service = stripped == '[Service]'
             continue
-        if not in_service or stripped.startswith('#'):
+        ## systemd ignores lines starting with '#' OR ';' (comments).
+        if not in_service or stripped.startswith('#') or stripped.startswith(';'):
             continue
         if stripped.endswith('\\'):
             buf += stripped[:-1] + ' '
@@ -104,11 +113,9 @@ def errno_is_soft(value: str) -> bool:
         return False
     if val.isdigit():
         return _ERRNO_MIN <= int(val) <= _ERRNO_MAX
-    ## an errno NAME (EPERM / EACCES / ENOSYS ...): all uppercase, starts with E.
-    ## Full spelling validity is systemd-analyze verify's job; here we only reject
-    ## obvious junk and lowercase.
-    return (val.startswith('E') and val.isupper()
-            and val.replace('_', '').isalpha())
+    ## an errno NAME must be a REAL errno: systemd ignores an unknown name and keeps
+    ## the KILL action, so a bogus name (EBOGUS) is not a soft deny.
+    return val in _VALID_ERRNO_NAMES
 
 
 def memfd_denial(text: str) -> str:
@@ -127,12 +134,19 @@ def memfd_denial(text: str) -> str:
     denied = False
     per_syscall = None
     for value in effective:
-        if not value.startswith('~'):
-            continue
-        for token in value[1:].split():
-            if token.split(':', 1)[0] == 'memfd_create':
+        negate = value.startswith('~')
+        for token in (value[1:] if negate else value).split():
+            if token.split(':', 1)[0] != 'memfd_create':
+                continue
+            if negate:
+                ## '~' denylist: memfd_create is denied; ':' sets its per-syscall action.
                 denied = True
                 per_syscall = token.split(':', 1)[1] if ':' in token else None
+            else:
+                ## a later POSITIVE assignment re-allows the syscall (systemd removes
+                ## it from the denylist), so it is no longer denied.
+                denied = False
+                per_syscall = None
     if not denied:
         return 'none'
     if per_syscall is not None:
@@ -177,6 +191,14 @@ def main() -> int:
                                  'MemoryDenyWriteExecute') == ['yes'])
     results.check('errno_is_soft rejects EINTR (retryable -> spins, not a soft deny)',
                   not errno_is_soft('EINTR'))
+    results.check('errno_is_soft rejects a bogus errno name (systemd keeps the kill)',
+                  not errno_is_soft('EBOGUS'))
+    results.check('memfd_denial honors a later positive re-allow of the syscall',
+                  memfd_denial('[Service]\nSystemCallFilter=~memfd_create:EPERM\n'
+                               'SystemCallFilter=memfd_create\n') == 'none')
+    results.check('memfd_denial ignores a wrong-case [service] header',
+                  memfd_denial('[service]\nSystemCallFilter=~memfd_create:EPERM\n')
+                  == 'none')
 
     ## Hardening intact (section-aware: directives outside [Service] are inert).
     ## systemd treats true/yes/on/1 as enabled, so accept any of them (TRUE_VALUES),
