@@ -61,15 +61,25 @@ class PamNamespaceE2E(unittest.TestCase):
         if not os.path.exists(NS_CONF):
             ## style-ok: allow-skip: security-misc pam_namespace not installed
             raise unittest.SkipTest('pam_namespace config %s absent' % NS_CONF)
+        ## Refuse to run if either throwaway name already exists: tearDownClass
+        ## does 'userdel -rf', which would delete a REAL account and its home.
+        ## Modify nothing in that case; only remove accounts we created.
+        preexisting = [u for u in USERS if sh('id -u %s' % u).returncode == 0]
+        if preexisting:
+            raise RuntimeError(
+                'refusing to run: test account(s) already exist and teardown '
+                'would delete them: %s' % ', '.join(preexisting))
+        cls._created = []
         for user in USERS:
-            if sh('id -u %s' % user).returncode != 0:
-                sh('useradd --create-home --shell /bin/bash %s' % user)
+            if sh('useradd --create-home --shell /bin/bash %s'
+                  % user).returncode == 0:
+                cls._created.append(user)
 
     @classmethod
     def tearDownClass(cls):
         if os.geteuid() != 0:
             return
-        for user in USERS:
+        for user in getattr(cls, '_created', []):
             sh('loginctl disable-linger %s 2>/dev/null' % user)
             sh('pkill -u %s 2>/dev/null; sleep 1; userdel -rf %s 2>/dev/null'
                % (user, user))
@@ -135,10 +145,18 @@ class PamNamespaceE2E(unittest.TestCase):
                 'sleep 1; done; exit 1' % uid)
         self.assertEqual(up.returncode, 0, 'user@%s.service did not start' % uid)
         ## a file written in the login session's /tmp must be visible to the
-        ## systemd --user manager's /tmp (same per-account instance)
-        login_sh(user, 'echo manager-visible > /tmp/split-check')
+        ## systemd --user manager's /tmp (same per-account instance). Check each
+        ## probe command FIRST, so a failed write/systemd-run is reported as the
+        ## command error it is, not misdiagnosed as a namespace split.
+        wrote = login_sh(user, 'echo manager-visible > /tmp/split-check')
+        self.assertEqual(wrote.returncode, 0,
+                         'login write to /tmp/split-check failed: %s'
+                         % wrote.stderr)
         seen = sh('systemd-run --user --machine %s@ --pipe --quiet --wait '
-                  'cat /tmp/split-check 2>/dev/null' % user)
+                  'cat /tmp/split-check' % user)
+        self.assertEqual(seen.returncode, 0,
+                         'systemd-run --user probe failed (rc=%d): %s'
+                         % (seen.returncode, seen.stderr))
         self.assertIn('manager-visible', seen.stdout,
                       'systemd --user sees a DIFFERENT /tmp than the login '
                       'session (split not closed): %r' % seen.stdout)

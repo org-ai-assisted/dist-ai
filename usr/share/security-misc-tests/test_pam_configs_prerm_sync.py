@@ -23,11 +23,32 @@ IS set, a missing path is drift in the resolved subject and FAILS, never skips.
 """
 
 import os
+import re
+import tempfile
 import unittest
 
 PAM_CONFIGS_REL = 'usr/share/pam-configs'
 PRERM_REL = 'debian/security-misc-shared.prerm'
+## The remove command, matched whitespace-tolerantly (a maintainer may space the
+## options differently); kept as a string too for readability in messages.
 REMOVE_MARKER = 'pam-auth-update --package --remove'
+REMOVE_RE = re.compile(r'pam-auth-update\s+--package\s+--remove')
+
+
+def _strip_inline_comment(line):
+    """Drop an unquoted shell comment ('#' at a word boundary to end of line);
+    a '#' inside single or double quotes is preserved. Deliberately small - the
+    prerm is a controlled script, not arbitrary shell."""
+    quote = ''
+    for i, ch in enumerate(line):
+        if quote:
+            if ch == quote:
+                quote = ''
+        elif ch in ('"', "'"):
+            quote = ch
+        elif ch == '#' and (i == 0 or line[i - 1].isspace()):
+            return line[:i]
+    return line
 
 
 def _security_misc_repo():
@@ -39,7 +60,13 @@ def _shipped_profiles(pam_configs_dir):
     '#<package>' install tag stripped. pam-auth-update treats every file in this
     directory as a profile, so the test does too -- no name-convention filter, so
     a profile that does NOT follow the '-security-misc' convention still has to
-    appear in the prerm removal list (it would otherwise be a silent fail-open)."""
+    appear in the prerm removal list (it would otherwise be a silent fail-open).
+
+    The source pam-configs directory IS the installed set: debian/*.install lists
+    every file here, so the directory and the install manifest cannot diverge.
+    We deliberately do NOT parse the .install manifest to filter 'uninstalled
+    drafts' - that would add a second fragile parser for a case this package
+    does not have."""
     names = set()
     for entry in os.listdir(pam_configs_dir):
         if not os.path.isfile(os.path.join(pam_configs_dir, entry)):
@@ -49,26 +76,26 @@ def _shipped_profiles(pam_configs_dir):
 
 
 def _prerm_remove_list(prerm_path):
-    """Profile operands passed to EVERY prerm 'pam-auth-update --package --remove'
-    call. For each marker occurrence, collect the operands on its own line
-    remainder and on the backslash-continued lines that follow. Full-line shell
-    comments are ignored (so a comment that merely mentions the marker does not
-    start a bogus empty collection), surrounding shell quotes are stripped, and
-    option words (leading '-') are skipped, leaving only profile names. This is a
-    deliberately small scan, not a shell parser."""
+    """Profile operands passed to EVERY prerm 'pam-auth-update --package
+    --remove' call. For each marker occurrence, collect the operands on its own
+    line remainder and on the backslash-continued lines that follow. Shell
+    comments are stripped FIRST (so a marker inside a comment or a trailing
+    '# note' never contributes operands and a backslash inside a comment does
+    not falsely continue the command), the marker is matched whitespace-
+    tolerantly, surrounding shell quotes are stripped, and option words (leading
+    '-') are skipped, leaving only profile names. This is a deliberately small
+    scan of a controlled script, not a general shell parser."""
     names = set()
     collecting = False
     with open(prerm_path, encoding='utf-8') as handle:
         for raw in handle:
-            line = raw.rstrip('\n')
+            line = _strip_inline_comment(raw.rstrip('\n'))
             if not collecting:
-                if line.lstrip().startswith('#'):
-                    continue
-                marker = line.find(REMOVE_MARKER)
-                if marker == -1:
+                match = REMOVE_RE.search(line)
+                if match is None:
                     continue
                 collecting = True
-                line = line[marker + len(REMOVE_MARKER):]
+                line = line[match.end():]
             has_continuation = line.rstrip().endswith('\\')
             for token in line.rstrip().rstrip('\\').split():
                 token = token.strip('\'"')
@@ -113,6 +140,61 @@ class PrermPamConfigsSyncTest(unittest.TestCase):
             '  shipped but not in prerm: %s\n'
             '  in prerm but not shipped: %s'
             % (PAM_CONFIGS_REL, only_shipped, only_prerm))
+
+
+class PrermParserTest(unittest.TestCase):
+    """Unit tests for _prerm_remove_list's small shell scan, with synthetic
+    prerm snippets (test inputs, not a copy of a package script). Regression
+    coverage for the shell edge cases: whitespace, comments, quoting, and
+    multiple removal commands."""
+
+    def _parse(self, text):
+        handle = tempfile.NamedTemporaryFile(
+            'w', suffix='.prerm', delete=False, encoding='utf-8')
+        try:
+            handle.write(text)
+            handle.close()
+            return _prerm_remove_list(handle.name)
+        finally:
+            os.unlink(handle.name)
+
+    def test_backslash_continuation(self):
+        self.assertEqual(
+            self._parse('pam-auth-update --package --remove foo \\\n  bar\n'),
+            {'foo', 'bar'})
+
+    def test_extra_whitespace_in_command(self):
+        self.assertEqual(
+            self._parse('pam-auth-update  --package   --remove   foo bar\n'),
+            {'foo', 'bar'})
+
+    def test_marker_inside_comment_is_ignored(self):
+        self.assertEqual(
+            self._parse(': # pam-auth-update --package --remove ghost\n'),
+            set())
+
+    def test_trailing_inline_comment_dropped(self):
+        self.assertEqual(
+            self._parse(
+                'pam-auth-update --package --remove foo  # remove on uninstall\n'),
+            {'foo'})
+
+    def test_quoted_operands_unquoted(self):
+        self.assertEqual(
+            self._parse('pam-auth-update --package --remove \'foo\' "bar"\n'),
+            {'foo', 'bar'})
+
+    def test_multiple_remove_commands_unioned(self):
+        self.assertEqual(
+            self._parse('pam-auth-update --package --remove foo\n'
+                        'pam-auth-update --package --remove bar\n'),
+            {'foo', 'bar'})
+
+    def test_quoted_hash_is_not_a_comment(self):
+        self.assertEqual(
+            self._parse('echo "# not a comment"\n'
+                        'pam-auth-update --package --remove foo\n'),
+            {'foo'})
 
 
 if __name__ == '__main__':
