@@ -140,6 +140,17 @@ assert_reject "release-shaped dash form rejected (cell collision)" rt_version_bu
 assert_reject "release-shaped dash-dot mix rejected" rt_version_build_distinct 18.2.3-0
 assert_reject "release-shaped long dotted rejected" rt_version_build_distinct 1.2.3.4.5.6.7.8.9.0.1.2.3.4.5.6.7.8
 
+## rt_version_fw_distinct: the cell key tail is "-${firmware}-${version//./-}", and the firmware
+## enum has a prefix pair (efi < efi-secureboot), so a built "--firmware efi --version
+## secureboot-18.2.3.0" folds to the SAME "-efi-secureboot-18-2-3-0" cell as the official
+## "--firmware efi-secureboot --version 18.2.3.0". The guard rejects a version opening with a
+## longer firmware's suffix; everything else passes. bios has no longer sibling -> never rejected.
+assert_reject "fw-distinct efi + 'secureboot-'prefixed label collides" rt_version_fw_distinct efi secureboot-18.2.3.0
+assert_reject "fw-distinct efi + bare 'secureboot' label collides" rt_version_fw_distinct efi secureboot
+assert_out "fw-distinct efi + git-describe label ok" "" rt_version_fw_distinct efi 18.2.3.0-g9999
+assert_out "fw-distinct efi-secureboot has no longer sibling -> ok" "" rt_version_fw_distinct efi-secureboot 18.2.3.0
+assert_out "fw-distinct bios never rejected" "" rt_version_fw_distinct bios secureboot-18.2.3.0
+
 ## lane predicates: rt_lane_is_leak keys on the LANE (inst|leak), NOT the guest -- whonix
 ## supports both. Canary: the old body `[ "$1" = whonix ]` passes 'whonix' and rejects 'leak'.
 assert_out "leak lane is leak" "" rt_lane_is_leak leak

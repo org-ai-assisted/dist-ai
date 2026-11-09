@@ -403,6 +403,44 @@ rt_version_build_distinct() {
    return 1
 }
 
+## The firmware enum, SINGLE source: --firmware validates against it, and rt_version_fw_distinct
+## below reasons about its prefix pair (efi is a dash-prefix of efi-secureboot).
+FIRMWARE_VALUES=(bios efi efi-secureboot)
+
+## True when $1 is a known firmware value.
+firmware_valid() {
+   local want="$1" f
+   for f in "${FIRMWARE_VALUES[@]}"; do
+      [ "${f}" = "${want}" ] && return 0
+   done
+   return 1
+}
+
+## Reject a BUILT version that, folded into the results cell key after the firmware token, could
+## impersonate a DIFFERENT firmware's official cell. The cell tail is "-${firmware}-${version//./-}";
+## both the firmware and the dashed version use '-' separators and the enum has a prefix pair, so
+## "--firmware efi --version secureboot-18.2.3.0" folds to the same "-efi-secureboot-18-2-3-0"
+## cell as "--firmware efi-secureboot --version 18.2.3.0". For every enum value that strictly
+## EXTENDS ${firmware} at a '-' boundary, forbid a dashed version opening with that extension, so
+## the version cannot steal the firmware's trailing segment. rt_version_build_distinct already
+## blocks the pure-release-shaped labels. Pure. $1 = firmware, $2 = version.
+rt_version_fw_distinct() {
+   local firmware="$1" dashed="${2//./-}" other suffix
+   for other in "${FIRMWARE_VALUES[@]}"; do
+      case "${other}" in
+         "${firmware}-"*)
+            suffix="${other#"${firmware}-"}"
+            case "${dashed}" in
+               "${suffix}" | "${suffix}-"*)
+                  return 1
+                  ;;
+            esac
+            ;;
+      esac
+   done
+   return 0
+}
+
 ## Compose + validate the ephemeral install account name. Keeping the eph-inst- prefix
 ## is load-bearing: image-test-gc only wipes eph-*, and the host nftables leak-drop
 ## resolves the fleet by persist-inst-*|eph-inst-*|persist-leak-*|eph-leak-* name pattern.
@@ -1574,15 +1612,12 @@ parse_args() {
             ## results subtree name + --lane, so an empty/garbage value would otherwise
             ## flow in (e.g. a malformed 'guest-interface--version' cell) before the
             ## downstream publisher's safe-name check. Reject anything but the known set.
-            case "$2" in
-               bios | efi | efi-secureboot)
-                  firmware="$2"
-                  firmware_explicit="true"
-                  ;;
-               *)
-                  die "${SETUP_RC}" "--firmware must be bios|efi|efi-secureboot, got '$2'"
-                  ;;
-            esac
+            if firmware_valid "$2"; then
+               firmware="$2"
+               firmware_explicit="true"
+            else
+               die "${SETUP_RC}" "--firmware must be bios|efi|efi-secureboot, got '$2'"
+            fi
             shift 2
             ;;
          --iso)
@@ -1776,6 +1811,8 @@ main() {
          || die "${SETUP_RC}" "built version label '${version}' is not path-safe (<=64 of [A-Za-z0-9.+_-], no leading '-', no '/' or '..')"
       rt_version_build_distinct "${version}" \
          || die "${SETUP_RC}" "built label '${version}' looks like a release version -- use a build-distinct label (the git-describe <ver>-g<sha>) so it cannot overwrite an official-release cell"
+      rt_version_fw_distinct "${firmware}" "${version}" \
+         || die "${SETUP_RC}" "built label '${version}' with --firmware ${firmware} folds into another firmware's cell -- pick a label that does not begin with another firmware's suffix"
       account='eph-inst-'"${guest}"'-built'
       account_kind='prebless'
       stable='(local build)'
@@ -1806,6 +1843,8 @@ main() {
          || die "${SETUP_RC}" "built version label '${version}' is not path-safe (<=64 of [A-Za-z0-9.+_-], no leading '-', no '/' or '..')"
       rt_version_build_distinct "${version}" \
          || die "${SETUP_RC}" "built label '${version}' looks like a release version -- use a build-distinct label (the git-describe <ver>-g<sha>) so it cannot overwrite an official-release cell"
+      rt_version_fw_distinct "${firmware}" "${version}" \
+         || die "${SETUP_RC}" "built label '${version}' with --firmware ${firmware} folds into another firmware's cell -- pick a label that does not begin with another firmware's suffix"
       stable='(local build)'
       if rt_lane_is_leak "${lane}"; then
          account="persist-leak-${guest}"
