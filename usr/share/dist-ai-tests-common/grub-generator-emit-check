@@ -43,8 +43,13 @@ generator="${1:?usage: grub-generator-emit-check <generator> <label> [<must-cont
 label="${2:?usage: grub-generator-emit-check <generator> <label> [<must-contain>]}"
 must_contain="${3:-}"
 
-if [ ! -r "${generator}" ]; then
-   printf '%s\n' "FATAL: ${label}: no generator at '${generator}'" >&2
+## Must be EXECUTABLE, not merely readable: the generator is run by its own shebang
+## (as grub-mkconfig's run-parts does). A present-but-non-executable generator would
+## fail to exec, and its 'Permission denied' on stderr (captured below) is non-empty
+## output -- which, with an empty <must-contain>, would FALSE-PASS the emit check. A
+## grub.d generator that cannot run is broken, so fail loud here instead.
+if [ ! -x "${generator}" ]; then
+   printf '%s\n' "FATAL: ${label}: generator missing or not executable: '${generator}'" >&2
    exit 1
 fi
 

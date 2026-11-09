@@ -103,7 +103,11 @@ render_id() {
       GRUB_CMDLINE_LINUX='' GRUB_CMDLINE_LINUX_DEFAULT='' \
       GRUB_GFXPAYLOAD_LINUX='' GRUB_TIMEOUT=5 \
       "${engine}" 2>/dev/null \
-      | grep --only-matching --extended-regexp "gnulinux-[^' ]+" | head -n 1
+      | grep --only-matching --extended-regexp "gnulinux-[^' ]+" | head -n 1 \
+      || true
+   ## '|| true': no id is a legitimate outcome (a mode the engine emits nothing for);
+   ## under pipefail+inherit_errexit a no-match grep (exit 1) would otherwise abort the
+   ## caller's command substitution and skip the '[ -z id ]' diagnostic + remaining modes.
 }
 
 fail=0
