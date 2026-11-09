@@ -7,8 +7,8 @@
 
 """
 Regression: a systemcheck W^X unit that filters SystemCallFilter=~memfd_create
-AND spawns a memfd-using GUI helper as a DIRECT child must deny memfd_create
-via a soft errno (SystemCallErrorNumber=), never the default SIGSYS kill.
+AND spawns a memfd-using GUI helper as a DIRECT child must deny memfd_create via
+a soft errno (SystemCallErrorNumber=EPERM), never the default SIGSYS kill.
 
 Why: ~memfd_create is a defense-in-depth denylist (it blocks the anonymous-memfd
 W^X exec-bypass). With NO SystemCallErrorNumber= the denied call SIGSYS-KILLS the
@@ -18,6 +18,13 @@ buffer via memfd_create, so a GUI child inheriting the filter is killed outright
 bypass identically (no memfd is created) while letting the toolkit fall back and
 render. The kill adds no security over EPERM here, so for these GUI-spawning
 units it is simply the wrong failure mode.
+
+The check models systemd's effective-policy semantics (memfd_denial): the
+[Service] section only, SystemCallFilter= empty-reset, a per-syscall ':' action
+that overrides the global SystemCallErrorNumber, and errno validity -- a lint
+fooled by any of those would report a confident wrong pass. (The parser mirrors
+privleap-tests/service_hardening_test.py; a cross-suite shared module is not on
+either suite's import path, so the two are kept in step by hand.)
 
 Scope (units whose process tree includes a DIRECT memfd-using GUI child):
   * updatecheck.service -- forks one-time-popup.py (PyQt5) directly.
@@ -35,9 +42,9 @@ import unittest
 
 from systemcheck_testlib import read, systemcheck_dir
 
-## systemd renders/accepts this as "kill the caller with SIGSYS" (the default
-## when SystemCallErrorNumber= is unset). A real errno (EPERM) fails soft.
-KILL_VALUES = {'', 'kill'}
+## systemd accepts an errno name or a number 1..4095; anything else (empty,
+## 'kill', 0, out of range, junk) is NOT a soft-fail errno.
+_ERRNO_MIN, _ERRNO_MAX = 1, 4095
 
 ## user-scope units that spawn a memfd-using GUI helper as a direct child.
 GUI_UNITS = ('updatecheck.service', 'systemcheck.service')
@@ -48,17 +55,73 @@ def _usr_dir() -> str:
     return os.path.dirname(os.path.dirname(systemcheck_dir()))
 
 
-def _directive_values(text: str, key: str) -> list:
-    """All values assigned to `key` (last one wins in systemd; empty resets)."""
-    out = []
-    prefix = key + '='
+def _service_lines(text: str) -> list:
+    """Logical directive lines inside [Service], '\\'-continuations joined.
+    Directives outside [Service] are inert, so the lint ignores them too."""
+    out: list = []
+    buf: str = ''
+    in_service: bool = False
     for raw in text.splitlines():
-        line = raw.strip()
-        if line.startswith('#'):
+        stripped = raw.strip()
+        if stripped.startswith('[') and stripped.endswith(']'):
+            in_service = stripped.lower() == '[service]'
             continue
-        if line.startswith(prefix):
-            out.append(line[len(prefix):].strip())
+        if not in_service or stripped.startswith('#'):
+            continue
+        if stripped.endswith('\\'):
+            buf += stripped[:-1] + ' '
+        else:
+            out.append((buf + stripped).strip())
+            buf = ''
+    if buf:
+        out.append(buf.strip())
     return out
+
+
+def _service_values(lines: list, key: str) -> list:
+    prefix = key + '='
+    return [line[len(prefix):].strip() for line in lines
+            if line.startswith(prefix)]
+
+
+def _errno_is_soft(value: str) -> bool:
+    val = value.strip()
+    if not val or val.lower() == 'kill':
+        return False
+    if val.isdigit():
+        return _ERRNO_MIN <= int(val) <= _ERRNO_MAX
+    return val.replace('_', '').isalpha()
+
+
+def memfd_denial(text: str) -> str:
+    """'none' | 'soft' | 'kill' for memfd_create under [Service], honoring
+    SystemCallFilter= empty-reset, a per-syscall ':' action (overrides the global
+    errno), and the global SystemCallErrorNumber. Only '~' denylists are modelled
+    -- the form these units use."""
+    lines = _service_lines(text)
+    effective: list = []
+    for value in _service_values(lines, 'SystemCallFilter'):
+        if value == '':
+            effective = []
+        else:
+            effective.append(value)
+    denied = False
+    per_syscall = None
+    for value in effective:
+        if not value.startswith('~'):
+            continue
+        for token in value[1:].split():
+            if token.split(':', 1)[0] == 'memfd_create':
+                denied = True
+                per_syscall = token.split(':', 1)[1] if ':' in token else None
+    if not denied:
+        return 'none'
+    if per_syscall is not None:
+        return 'soft' if _errno_is_soft(per_syscall) else 'kill'
+    errnos = _service_values(lines, 'SystemCallErrorNumber')
+    if errnos and _errno_is_soft(errnos[-1]):
+        return 'soft'
+    return 'kill'
 
 
 class WxSeccompErrnoTest(unittest.TestCase):
@@ -73,23 +136,13 @@ class WxSeccompErrnoTest(unittest.TestCase):
         for unit in GUI_UNITS:
             with self.subTest(unit=unit):
                 text = self._unit_text(unit)
-                filters = _directive_values(text, 'SystemCallFilter')
-                self.assertTrue(
-                    any('~memfd_create' in value for value in filters),
-                    f"{unit}: expected SystemCallFilter=~memfd_create (the W^X "
-                    'memfd denylist this lint guards)')
-                errnos = _directive_values(text, 'SystemCallErrorNumber')
-                self.assertTrue(
-                    errnos,
-                    f"{unit}: SystemCallFilter=~memfd_create with NO "
-                    'SystemCallErrorNumber= -- a denied memfd_create SIGSYS-kills '
-                    'the inherited GUI child (yad/PyQt). Set '
-                    'SystemCallErrorNumber=EPERM so it fails soft.')
-                effective = errnos[-1]
-                self.assertNotIn(
-                    effective.lower(), KILL_VALUES,
-                    f"{unit}: SystemCallErrorNumber={effective!r} still means a "
-                    'SIGSYS kill; it must be a soft errno (EPERM).')
+                self.assertEqual(
+                    memfd_denial(text), 'soft',
+                    f"{unit}: memfd_create must be denied via a soft errno "
+                    '(SystemCallErrorNumber=EPERM), not the default SIGSYS kill '
+                    '-- otherwise the inherited GUI child (yad/PyQt) is killed. '
+                    "memfd_denial reported it as not 'soft' (see effective "
+                    'filter / per-syscall action / errno).')
 
 
 if __name__ == '__main__':

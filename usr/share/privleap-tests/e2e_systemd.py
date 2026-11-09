@@ -299,11 +299,15 @@ def run_wx_phase(user: str, results: Results) -> None:
                   svc_prop('LockPersonality') == 'yes')
     results.check('NoExecPaths set', bool(svc_prop('NoExecPaths')))
 
-    ## systemd forces PR_SET_NO_NEW_PRIVS=1 whenever MDWE/SystemCallFilter= is
-    ## set, so NoNewPrivileges=false is a silent no-op; the unit must DECLARE it
-    ## yes to match the enforced reality (a declared false misleads the reader).
-    results.check('NoNewPrivileges declared yes (false would be a void no-op)',
-                  svc_prop('NoNewPrivileges') == 'yes')
+    ## privleapd is a root service WITH CAP_SYS_ADMIN, so systemd installs the
+    ## seccomp filter via that capability -- no_new_privs is NOT forced on, and
+    ## NoNewPrivileges=false is HONORED (NoNewPrivs=0) by design: an escalated
+    ## action may still exec a SUID helper, matching the sudo-like role. Flipping
+    ## it to yes would silently break SUID/file-cap actions. (A user-scope service
+    ## would instead have NNP forced on.)
+    results.check('NoNewPrivileges=no (honored for this root+CAP_SYS_ADMIN '
+                  'service; yes would break SUID actions)',
+                  svc_prop('NoNewPrivileges') == 'no')
 
     ## memfd_create must be denied via EPERM, not the default SIGSYS kill, so an
     ## inherited action (or GUI child) fails soft instead of dying by signal.
