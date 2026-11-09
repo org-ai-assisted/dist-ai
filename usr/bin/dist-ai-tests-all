@@ -1152,16 +1152,18 @@ wire() {
          ## derivative-maker packages/ subpath; point the suite at it via
          ## SECURE_TERMINAL_REPO resolved from the component root.
          wire_env=( "SECURE_TERMINAL_REPO=$( pkg_dir secure-terminal )" )
-         ## The live-widget fuzzer's cost per iteration climbs as the widget's
-         ## retained output grows toward its re-render cap, so its 6000-iteration
-         ## default runs for tens of minutes -- past timeout_fuzz, i.e. a
-         ## guaranteed TIMEOUT verdict rather than a fuzz run. Bound it to a count
-         ## that fits the 600s per-suite cap on the SLOW shared GitHub runner, not
-         ## just a fast dev host: 1200 consistently exceeded 600s there (~750 iters
-         ## reached in 602s before the climbing tail), so cap below that tail. A
-         ## deep run stays available by hand: secure-terminal-tests-fuzz-gui --iterations N.
+         ## The live-widget fuzzer's cost is dominated by PER-PHASE headless-Qt
+         ## re-render, not iteration count: on the slow shared GitHub runner a run
+         ## clears ~5 phases in ~600s whether iterations is 1200 or 400, so it
+         ## TIMEOUTs the 600s per-suite cap regardless. Reducing iterations does
+         ## NOT fit the budget (measured: 400 iters still died at 602s mid-run).
+         ## FIXME: the nightly dist-ai-fuzz lane needs a structural fix -- cap
+         ## per-phase wall-time in the harness (reset retained output so re-render
+         ## cost stops climbing) or raise BOTH timeout_fuzz and the workflow's
+         ## 20-min job budget. 1200 is the maintainer's chosen depth; keep it, and
+         ## run deep by hand: secure-terminal-tests-fuzz-gui --iterations N.
          if [ "${suite}" = 'secure-terminal-tests-fuzz-gui' ]; then
-            wire_args=( '--iterations' '400' )
+            wire_args=( '--iterations' '1200' )
          fi
          ;;
       terminal-poc-corpus)
