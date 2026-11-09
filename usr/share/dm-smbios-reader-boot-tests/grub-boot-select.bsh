@@ -5,14 +5,42 @@
 
 ## AI-Assisted
 
-## Sourceable GRUB boot-menu selection shared by dm-calamares-install (install gate)
-## and vbox-session.bsh (dm-upgrade-regression). The SINGLE source of truth for
-## select_installed_sysmaint -- both gates drive the installed system's "Choose boot
-## mode" menu identically, so the OCR+scancode logic lives in ONE place (no vendored
-## copy, no drift guard).
+## Sourceable GRUB boot-mode selection shared by dm-calamares-install (install gate)
+## and vbox-session.bsh (dm-upgrade-regression). TWO selectors, SINGLE source:
+##   * select_installed_sysmaint_offline -- DETERMINISTIC (preferred): with the VM
+##     powered OFF, set grubenv next_entry to the per-mode menuentry id via the
+##     vbox-grub-set-next-boot-mode privleap action (host-side, no boot, no OCR). Relies
+##     on the per-mode --id (dist-base-files 10_00_linux_dist). Use this on an ENCRYPTED
+##     install where the disk path + LUKS passphrase file are in hand.
+##   * select_installed_sysmaint -- LEGACY OCR+scancode on the live "Choose boot mode"
+##     menu, still used by the lanes not yet migrated (vbox-session/dm-upgrade-regression,
+##     dm-whonix-pair -- they resolve the disk from the VM and/or run unencrypted VMDK OVAs,
+##     a migration tracked separately). Retire once every caller uses the offline selector.
 ##
 ## MUST be sourced AFTER gui-drive.bsh (uses gui_ocr/gui_scan + the caller's die).
 ## Caller globals: FAIL_RC (plus gui-drive.bsh's vm/GUESTCTL/VBOXMANAGE/TESSERACT/me).
+
+## Deterministic offline SYSMAINT selection. Args: <disk-path> <luks-passphrase-file>.
+## The VM MUST be powered off (vbox-disk-mount refuses a VM-locked disk). Hands the request
+## (disk + passphrase + mode) to the narrow vbox-grub-set-next-boot-mode privleap action in
+## the caller-owned request dir (mirrors dm-calamares-install's mok_host_enroll), which sets
+## next_entry so the next power-on autoboots SYSMAINT. die()s on failure (FAIL_RC contract).
+# shellcheck disable=SC2154  ## FAIL_RC is set by the sourcing tool
+select_installed_sysmaint_offline() {
+   local disk="$1" pass_file="$2" req_dir
+   req_dir="$(getent passwd "$(id -u)" | cut -d: -f6)/.cache/vbox-grub-set-next-boot-mode"
+   # shellcheck disable=SC2174  ## --mode on mkdir --parents applies to the leaf, which is what we want
+   mkdir --parents --mode=0700 -- "${req_dir}"
+   printf '%s' "${disk}" > "${req_dir}/disk"
+   cp --force -- "${pass_file}" "${req_dir}/passphrase"
+   printf '%s' 'persistent-sysmaint' > "${req_dir}/mode"
+   chmod 0600 -- "${req_dir}/disk" "${req_dir}/passphrase" "${req_dir}/mode"
+   if ! leaprun vbox-grub-set-next-boot-mode; then
+      safe-rm --force -- "${req_dir}/disk" "${req_dir}/passphrase" "${req_dir}/mode" 2>/dev/null || true
+      die "${FAIL_RC}" "could not set SYSMAINT next_entry offline via the 'vbox-grub-set-next-boot-mode' privleap action (installed? runner in vboxusers? per-mode --id in the image?)"
+   fi
+   safe-rm --force -- "${req_dir}/disk" "${req_dir}/passphrase" "${req_dir}/mode" 2>/dev/null || true
+}
 ##
 ## style-ok: no-strict -- sourced-only fragment; a top-level 'set -o errexit'/
 ## 'nounset'/'pipefail' would leak into (and could kill) the sourcing shell.

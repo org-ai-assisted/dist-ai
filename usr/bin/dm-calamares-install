@@ -1279,10 +1279,14 @@ reboot_installed() {
    "${VBOXMANAGE}" controlvm "${vm}" poweroff 2>/dev/null || true
    sleep 3
    cb_reset_nvram
-   start_vm_frontend
+   ## Deterministic SYSMAINT selection: set grubenv next_entry OFFLINE (VM powered off)
+   ## so the power-on below autoboots the SYSMAINT entry by its unique --id -- no OCR of
+   ## the "Choose boot mode" menu, no autoboot-countdown race (the dev1424 wedge). The
+   ## in-guest LUKS unlock at the dracut prompt below is unchanged. USER boots the default.
    if [ "${role}" = 'sysmaint' ]; then
-      select_installed_sysmaint
+      select_installed_sysmaint_offline "${disk}" "${passphrase_file}"
    fi
+   start_vm_frontend
    gui_wait_for 'passphrase for disk|please unlock|luks' 120 "LUKS unlock (${role})"
    if [ "${role}" = 'sysmaint' ]; then
       story_snap 63 sysmaint-luks-prompt
