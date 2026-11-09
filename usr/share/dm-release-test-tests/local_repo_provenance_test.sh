@@ -68,7 +68,7 @@ EOF
 ## Build/admin source home: a dm-source-state file (no git repo) -> sourceSha = its first line.
 src_home="${work}/srchome"
 mkdir --parents -- "${src_home}/derivative-binary"
-printf '%s\n' 'deadbeefcafe1234' > "${src_home}/derivative-binary/dm-source-state"
+printf '%s\n' 'Source-Commit: deadbeefcafe1234' > "${src_home}/derivative-binary/dm-source-state"
 
 ## Recorders.
 pair_argv="${work}/pair.argv"
@@ -196,14 +196,19 @@ check "no --local-repo: NO provenance block forwarded" \
 ## moved after the build no longer matches the packages in the local repo.
 g_home="${work}/ghome"
 mkdir --parents -- "${g_home}/derivative-binary" "${g_home}/derivative-maker"
-printf '%s\n' 'buildtimesha0000' > "${g_home}/derivative-binary/dm-source-state"
+printf '%s\n' 'Source-Commit: buildtimesha0000' > "${g_home}/derivative-binary/dm-source-state"
 git -C "${g_home}/derivative-maker" init --quiet
 git -C "${g_home}/derivative-maker" -c user.email=t@t -c user.name=t commit --quiet --allow-empty -m x
 # shellcheck disable=SC2034  ## read as a global by the sourced rt_source_home
 DM_SOURCE_HOME="${g_home}"
 g_sha="$(rt_local_repo_source_sha)"
-check "G: sourceSha is the build-time dm-source-state, not the live git HEAD" \
+check "G: sourceSha is the build-time dm-source-state value, not the live git HEAD or the label line" \
    "$([ "${g_sha}" = 'buildtimesha0000' ] && printf '%s' true || printf '%s' false)" "${g_sha}"
+## 'Source-Commit: unrecorded' -> honest empty sha (never the sentinel label).
+printf '%s\n' 'Source-Commit: unrecorded' > "${g_home}/derivative-binary/dm-source-state"
+unrec_sha="$(rt_local_repo_source_sha)"
+check "G: an unrecorded source commit yields an empty sha" \
+   "$([ -z "${unrec_sha}" ] && printf '%s' true || printf '%s' false)" "${unrec_sha}"
 # shellcheck disable=SC2034
 DM_SOURCE_HOME="${src_home}"
 

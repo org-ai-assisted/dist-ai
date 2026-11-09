@@ -1488,9 +1488,21 @@ rt_source_home() {
 ## longer matches the packages sitting in the local apt repo, so HEAD would misattribute the result
 ## to a newer commit. No build-time state -> empty (recorded honestly as "", never a guessed sha).
 rt_local_repo_source_sha() {
-   local state sha=''
+   local state line sha=''
    state="$(rt_source_home)/derivative-binary/dm-source-state"
-   [ -r "${state}" ] && sha="$(head -n1 -- "${state}" 2>/dev/null || true)"
+   if [ -r "${state}" ]; then
+      ## dm-source-state's first line is 'Source-Commit: <sha>' (sign-and-tag), or
+      ## 'Source-Commit: unrecorded' when the build did not record it. Extract the VALUE
+      ## (publishing the whole label line would be an invalid commit id); the unrecorded
+      ## sentinel -> empty (honest "").
+      line="$(head -n1 -- "${state}" 2>/dev/null || true)"
+      case "${line}" in
+         'Source-Commit: '*)
+            sha="${line#Source-Commit: }"
+            [ "${sha}" = 'unrecorded' ] && sha=''
+            ;;
+      esac
+   fi
    printf '%s' "${sha}"
 }
 
@@ -1607,7 +1619,7 @@ rt_lane_whonix_inst() {
    if [ -n "${local_repo}" ]; then
       rt_local_repo_json="$(rt_build_local_repo_provenance "${local_repo}" "${rt_local_repo_gen}")" || rt_local_repo_json=""
       [ -n "${rt_local_repo_json}" ] \
-         || log warn "localRepo provenance omitted for ${local_repo} (repo generation changed during the test, or the Packages index was unreadable) -- publishing without it"
+         || log warn "could not record localRepo provenance for ${local_repo} for this test generation -- publishing without it"
    fi
    rt_publish_result whonix "${version}" "${account}" whonix-func "${rc}" "" release-checks
    sudo -u "${account}" -- safe-rm --force -- "${check_log}" 2>/dev/null || true
