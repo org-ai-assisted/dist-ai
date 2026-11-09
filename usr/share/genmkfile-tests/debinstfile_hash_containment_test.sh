@@ -41,20 +41,22 @@ cleanup() {
 }
 trap cleanup EXIT
 
-## Extract the real function; stub only the reporting/guard helpers it calls.
-{
-   # shellcheck disable=SC2016  # literal shell-function text written to fn.sh
-   printf '%s\n' 'exit_with_error() { printf "DIE: %s\n" "$2" >&2; exit "$1"; }'
-   printf '%s\n' 'make_require() { :; }'
-   printf '%s\n' 'make_output_info() { :; }'
-   sed -n '/^make_debinstfile_create()/,/^}/p' -- "${helper_file}"
-} > "${work}/fn.sh"
-if ! grep --quiet '^make_debinstfile_create()' "${work}/fn.sh"; then
-   printf '%s\n' 'ERROR: could not extract make_debinstfile_create.' >&2
+## Source the REAL helper WHOLE, then stub only the reporting/guard helpers it calls.
+## The helper is a sourced-only library (its CLI body is gated behind was_executed), so
+## sourcing it defines make_debinstfile_create AND every sibling it calls
+## (e.g. make_pkgfiles_multi_package) without running the CLI. A single-function sed cut
+## silently drifts the moment the subject gains an intra-file dependency -- exactly the
+## extract-a-function anti-pattern dist-ai's CLAUDE.md forbids. Stubs defined AFTER the
+## source override the real reporting/guard helpers.
+# shellcheck disable=SC1090
+source "${helper_file}"
+if ! declare -F make_debinstfile_create >/dev/null; then
+   printf '%s\n' 'ERROR: make_debinstfile_create not defined after sourcing the helper.' >&2
    exit 1
 fi
-# shellcheck disable=SC1091
-source "${work}/fn.sh"
+exit_with_error() { printf '%s\n' "DIE: $2" >&2; exit "$1"; }
+make_require() { :; }
+make_output_info() { :; }
 
 ## Hostile source tree: a PARENT directory carrying '#..' and a file whose basename has '#'.
 pkg_root="${work}/pkgroot"

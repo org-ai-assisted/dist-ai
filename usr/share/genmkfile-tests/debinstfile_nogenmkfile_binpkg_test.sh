@@ -48,22 +48,23 @@ cleanup() {
 }
 trap cleanup EXIT
 
-## Extract the real functions; stub only the reporting/guard helpers they call.
-{
-   # shellcheck disable=SC2016  # literal shell-function text written to fn.sh
-   printf '%s\n' 'exit_with_error() { printf "DIE: %s\n" "$2" >&2; exit "$1"; }'
-   printf '%s\n' 'make_require() { :; }'
-   printf '%s\n' 'make_output_info() { :; }'
-   sed -n '/^debinstfile_has_nogenmkfile_marker()/,/^}/p' -- "${helper_file}"
-   sed -n '/^make_debinstfile_create()/,/^}/p' -- "${helper_file}"
-} > "${work}/fn.sh"
-if ! grep --quiet '^make_debinstfile_create()' "${work}/fn.sh" \
-   || ! grep --quiet '^debinstfile_has_nogenmkfile_marker()' "${work}/fn.sh"; then
-   printf '%s\n' 'ERROR: could not extract make_debinstfile_create + marker helper.' >&2
+## Source the REAL helper WHOLE, then stub only the reporting/guard helpers it calls.
+## The helper is a sourced-only library (its CLI body is gated behind was_executed), so
+## sourcing it defines make_debinstfile_create, debinstfile_has_nogenmkfile_marker AND
+## every sibling they call (e.g. make_pkgfiles_multi_package) without running the CLI. A
+## per-function sed cut silently drifts the moment the subject gains an intra-file
+## dependency -- the extract-a-function anti-pattern dist-ai's CLAUDE.md forbids. Stubs
+## defined AFTER the source override the real reporting/guard helpers.
+# shellcheck disable=SC1090
+source "${helper_file}"
+if ! declare -F make_debinstfile_create >/dev/null \
+   || ! declare -F debinstfile_has_nogenmkfile_marker >/dev/null; then
+   printf '%s\n' 'ERROR: make_debinstfile_create + marker helper not defined after sourcing.' >&2
    exit 1
 fi
-# shellcheck disable=SC1091
-source "${work}/fn.sh"
+exit_with_error() { printf '%s\n' "DIE: $2" >&2; exit "$1"; }
+make_require() { :; }
+make_output_info() { :; }
 
 tests_total=0
 tests_failed=0
