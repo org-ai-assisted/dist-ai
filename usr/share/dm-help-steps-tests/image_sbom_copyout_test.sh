@@ -109,6 +109,15 @@ check "B: sidecar carries flavor B content" "$(cat -- "${raw_b}.cdx.json" 2>/dev
 check "no-clobber: A's sidecar survives B's build" "$(exists "${raw_a}.cdx.json")" "yes"
 check "no-clobber: A's content is intact" "$(cat -- "${raw_a}.cdx.json" 2>/dev/null)" "SBOM-FLAVOR-A"
 
+## ---- rerun of the SAME build refreshes (safe-rm + cp), never stale ----
+## A rebuild of flavor A at the same version reuses raw_a; the copy-out must
+## overwrite the old sidecar with the new rootfs's SBOM, not leave the stale one.
+printf '%s\n' 'SBOM-FLAVOR-A-REBUILT' > "${embedded}"
+CHROOT_FOLDER="${chroot_dir}" binary_image_raw_file="${raw_a}" dist_binary_build_folder="${outdir}" \
+   copy_image_sbom_out
+check "rerun: same-build sidecar refreshed, not stale" \
+   "$(cat -- "${raw_a}.cdx.json" 2>/dev/null)" "SBOM-FLAVOR-A-REBUILT"
+
 ## ---- absent embedded SBOM (hook skipped: SOURCE_DATE_EPOCH unset) -> no-op ----
 safe-rm --force -- "${embedded}"
 raw_c="${outdir}/Kicksecure-C-18.0.amd64.raw"
