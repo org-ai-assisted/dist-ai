@@ -33,19 +33,25 @@ me="${0##*/}"
 
 disk=""
 passphrase_file=""
+format=""
 cmd=()
 
 usage() {
-   printf '%s\n' "usage: ${me} run --disk PATH [--passphrase-file PATH] -- CMD [ARGS...]
+   printf '%s\n' "usage: ${me} run --disk PATH [--passphrase-file PATH] [--format FMT] -- CMD [ARGS...]
 
 run                mount the disk read-write, run CMD, then always unmount.
---disk             VirtualBox disk image (anything qemu-nbd reads, e.g. a .vdi); must be
+--disk             VirtualBox disk image (a .vdi by default; see --format); must be
                    WRITABLE and NOT locked by a running VM (power the VM off first).
 --passphrase-file  0600 file with the LUKS passphrase; given -> the disk's single LUKS
                    volume is opened read-WRITE before the filesystem search.
+--format           qemu-nbd disk format, pinned (never probed): default 'vdi'. A probed
+                   format lets a crafted image redirect writes onto a host path.
 CMD [ARGS...]      run after '--' with \$MOUNTPOINT set and CWD = the mounted filesystem.
 
-Mounts the first mountable filesystem read-write (journal replays). Run as root (via sudo)." >&2
+Mounts the first mountable filesystem read-write (journal replays), with nodev,nosuid,noexec.
+CMD and the disk image are TRUSTED: CMD runs as root and can follow a guest symlink out of
+the mount, so do not point this at an untrusted image or pass an untrusted command.
+Run as root (via sudo)." >&2
 }
 
 die() {
@@ -77,6 +83,10 @@ parse_args() {
             passphrase_file="$2"
             shift 2
             ;;
+         --format)
+            format="$2"
+            shift 2
+            ;;
          --)
             shift
             cmd=( "$@" )
@@ -92,6 +102,7 @@ parse_args() {
             ;;
       esac
    done
+   format="${format:-vdi}"
    [ -n "${disk}" ]          || { usage; die "--disk required"; }
    [ "${#cmd[@]}" -gt 0 ]    || { usage; die "a command after '--' is required"; }
    [ -w "${disk}" ]          || die "disk not writable: '${disk}'"
@@ -106,9 +117,9 @@ main() {
 
    modprobe nbd max_part=16 2>/dev/null || true
    nbd_dev="$(free_nbd)"
-   ## Writable connect (no --read-only): a VM-locked .vdi fails here, loudly -- that is the
-   ## intended guard against mounting a live disk, not something to retry around.
-   qemu-nbd --connect="${nbd_dev}" -- "${disk}"
+   ## Writable connect with a pinned format (no probing): a VM-locked disk fails here,
+   ## loudly -- that is the intended guard against mounting a live disk, not a retry case.
+   nbd_connect "${nbd_dev}" "${disk}" "${format}" rw
    settle_partitions "${nbd_dev}"
 
    if [ -n "${passphrase_file}" ]; then
@@ -126,7 +137,12 @@ main() {
       luks_open "${luks_target}" "${luks_name}" rw
    fi
 
-   mnt_dir="$(realpath -- "$(mktemp --directory)")"
+   ## Mount inside a 0700 PARENT: once mounted, the mountpoint takes the guest root inode's
+   ## mode (typically 0755), so other local users could read the decrypted tree during the
+   ## command; the 0700 parent (not the mountpoint) blocks that traversal. mktemp -d is 0700.
+   mnt_base="$(realpath -- "$(mktemp --directory)")"
+   mnt_dir="${mnt_base}/mnt"
+   mkdir -- "${mnt_dir}"
    local fs mounted='false'
    ## candidate_filesystems in THIS shell via a file (not '< <()'): a procsub subshell would
    ## discard its vg_activated assignment, leaking the VG cleanup turned on.
@@ -135,9 +151,10 @@ main() {
    while read -r fs; do
       [ -n "${fs}" ] || continue
       ## Writable mount: let the journal REPLAY (do NOT use the read-only 'noload' trick --
-      ## mounting a dirty journal writable with noload risks corruption). A real failure to
-      ## mount read-write is a hard error, fail-closed -- see below.
-      if mount -- "${fs}" "${mnt_dir}" 2>/dev/null; then
+      ## mounting a dirty journal writable with noload risks corruption). Harden against a
+      ## hostile guest filesystem: nodev (no live guest device nodes), nosuid, noexec. A real
+      ## failure to mount read-write is a hard error, fail-closed -- see below.
+      if mount --options nodev,nosuid,noexec -- "${fs}" "${mnt_dir}" 2>/dev/null; then
          mounted='true'
          break
       fi

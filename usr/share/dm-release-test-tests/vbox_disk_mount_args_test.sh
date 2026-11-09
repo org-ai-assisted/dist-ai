@@ -84,9 +84,17 @@ id() {
 }
 disk=""
 cmd=()
+format=""
 parse_args run --disk "${work}/disk.vdi" -- echo hello world
 check 'disk captured from --disk' "${disk}" "${work}/disk.vdi"
 check 'command after -- captured verbatim' "${cmd[*]}" 'echo hello world'
+check 'format defaults to vdi (pinned, never probed)' "${format}" 'vdi'
+
+disk=""
+cmd=()
+format=""
+parse_args run --disk "${work}/disk.vdi" --format qcow2 -- echo x
+check 'format overridden by --format' "${format}" 'qcow2'
 
 ## --- teardown seam: cleanup with no state (empty since sourcing) is a safe no-op under
 ## nounset, proving the lib's :- guards hold for a tool that set no state. ----

@@ -27,6 +27,7 @@ nbd_dev=""
 luks_name=""
 vg_activated=""
 mnt_dir=""
+mnt_base=""
 fs_list=""
 
 ## Cleanup state, torn down in reverse by the EXIT trap regardless of outcome. Each step is
@@ -38,6 +39,12 @@ cleanup() {
    fi
    if [ -n "${mnt_dir:-}" ]; then
       rmdir -- "${mnt_dir}" 2>/dev/null || true
+   fi
+   ## mnt_base is the 0700 parent some tools put the mountpoint inside (so the mount taking
+   ## the guest root inode's mode cannot expose the tree to other local users); remove it
+   ## after its mnt_dir child. Unset for a tool that mounts directly on mnt_dir.
+   if [ -n "${mnt_base:-}" ]; then
+      rmdir -- "${mnt_base}" 2>/dev/null || true
    fi
    if [ -n "${fs_list:-}" ]; then
       safe-rm --force -- "${fs_list}" 2>/dev/null || true
@@ -84,22 +91,42 @@ luks_open() {
 }
 
 ## Block until the kernel has published the connected disk's partition nodes (the
-## partprobe uevents are async). A whole-disk image legitimately has no partitions, so a
-## device-level signature counts as settled too. Bounded, so a blank disk still returns
-## rather than hanging.
+## partprobe uevents are async). Bounded, so a blank disk still returns rather than hanging.
+## A whole-disk image (a filesystem / LUKS signature DIRECTLY on the device, no partition
+## table) has no partition nodes to wait for and counts as settled at once. A PARTITIONED
+## image is settled ONLY once its first partition node exists: treating a partition-table
+## signature (PTTYPE=) as "settled" would return before udev created /dev/<dev>pN, so the
+## caller's LUKS/filesystem scan would find no partitions and wrongly die on a valid image.
 settle_partitions() {
-   local dev="$1" i
+   local dev="$1" i probe
    partprobe "${dev}" 2>/dev/null || true
    for ((i = 0; i < 40; i++)); do
       udevadm settle 2>/dev/null || true
       if [ -b "${dev}p1" ]; then
          return 0
       fi
-      if blkid -- "${dev}" >/dev/null 2>&1; then
+      ## Whole-disk signature = a TYPE= line (filesystem/crypto_LUKS) with NO PTTYPE= line
+      ## (no partition table). Then there are no partitions to wait for.
+      probe="$(blkid --output export -- "${dev}" 2>/dev/null || true)"
+      if grep --quiet '^TYPE=' <<< "${probe}" && ! grep --quiet '^PTTYPE=' <<< "${probe}"; then
          return 0
       fi
       sleep 0.25
    done
+}
+
+## Connect DISK at /dev/nbd device DEV with an EXPLICIT format (never probed). Probing an
+## untrusted image is a footgun: a crafted VMDK descriptor or a qcow2 backing-file reference
+## redirects qemu-nbd's reads/writes onto an arbitrary HOST path, so the format is always
+## pinned by the caller (default 'vdi' for these VirtualBox tools). MODE 'readonly' adds
+## --read-only; anything else connects writable.
+nbd_connect() {
+   local dev="$1" disk="$2" format="$3" mode="${4:-rw}"
+   if [ "${mode}" = 'readonly' ]; then
+      qemu-nbd --read-only --format "${format}" --connect="${dev}" -- "${disk}"
+   else
+      qemu-nbd --format "${format}" --connect="${dev}" -- "${disk}"
+   fi
 }
 
 ## First unused /dev/nbdN (size 0 = not connected).
