@@ -360,6 +360,13 @@ def validate(result):
     if (isinstance(firmware, dict) and firmware.get("match") is not None
             and not isinstance(firmware["match"], bool)):
         raise ModelError("environment.firmware.match must be a bool or null: %r" % (firmware["match"],))
+    ## provenance.localRepo is read as prov.get("localRepo") then .get(...) by the generator
+    ## (run_fields / _local_repo_block) OUTSIDE a try; a truthy non-dict (e.g. a string) is NOT
+    ## rescued by the `or {}` default and raises AttributeError there, halting the whole site.
+    ## Must be null or an object, so a malformed one lands as NO-DATA, not a crash (like firmware).
+    local_repo = provenance.get("localRepo") if provenance is not None else None
+    if local_repo is not None and not isinstance(local_repo, dict):
+        raise ModelError("provenance.localRepo must be null or an object: %r" % (local_repo,))
     steps = result.get("steps")
     if not isinstance(steps, list):
         raise ModelError("steps must be a list")

@@ -298,6 +298,44 @@ def build_plane(root):
     with open(os.path.join(r_dir, "result.json"), "w", encoding="ascii") as handle:
         handle.write(model.dumps(r_result))
 
+    ## LR: a --local-repo build-iteration run carries provenance.localRepo (derivative, host
+    ## repoPath, build sourceSha, delivered name=version list) -> the detail page shows a "Local
+    ## apt repo build" panel with those fields. Regression: that provenance was validated + stored
+    ## (model.build_result) but the generator never RENDERED it, so a local-repo run could not show
+    ## WHICH local build the verdict applied to.
+    lr_dir = os.path.join(root, "whonix-lr-18-2-3-5", "20261006T000000Z")
+    lr_prov = {"local_repo": {
+        "derivative": "whonix",
+        "repoPath": "/home/builder/dist-base-LRREPO_NEEDLE/aptrepo_local/whonix",
+        "sourceSha": "abcdef0123456789abcdef0123456789abcdef01",
+        "packages": ["kicksecure-meta=LRPKG_NEEDLE", "whonix-ws-network-conf=3:40.6-1"],
+    }}
+    lr_step = model.make_step(name="checks", status=model.step_status_from_rc(0), exit_code=0)
+    lr_result = model.build_result(
+        run_id="whonix-lr-18-2-3-5-1", lane="whonix-cli-inst", version="18.2.3.5",
+        builder="dm-release-test", mode="calamares-install", origin=model.ORIGIN_DOWNLOADED,
+        rc=0, generated_unix=now, stop_unix=now, steps=[lr_step], provenance=lr_prov)
+    os.makedirs(lr_dir, exist_ok=True)
+    with open(os.path.join(lr_dir, "result.json"), "w", encoding="ascii") as handle:
+        handle.write(model.dumps(lr_result))
+
+    ## LRbare: an UNVERIFIED local-repo run (empty sourceSha + empty packages). The panel still
+    ## renders the identity (derivative/repo) but shows the source "unverified" and "no package
+    ## versions recorded" -- an honest gap, never a fabricated sha/list.
+    lrb_dir = os.path.join(root, "whonix-lrbare-18-2-3-5", "20261006T000000Z")
+    lrb_prov = {"local_repo": {
+        "derivative": "whonix", "repoPath": "/home/builder/aptrepo_local/whonix",
+        "sourceSha": "", "packages": [],
+    }}
+    lrb_step = model.make_step(name="checks", status=model.step_status_from_rc(0), exit_code=0)
+    lrb_result = model.build_result(
+        run_id="whonix-lrbare-18-2-3-5-1", lane="whonix-cli-inst-bare", version="18.2.3.5",
+        builder="dm-release-test", mode="calamares-install", origin=model.ORIGIN_DOWNLOADED,
+        rc=0, generated_unix=now, stop_unix=now, steps=[lrb_step], provenance=lrb_prov)
+    os.makedirs(lrb_dir, exist_ok=True)
+    with open(os.path.join(lrb_dir, "result.json"), "w", encoding="ascii") as handle:
+        handle.write(model.dumps(lrb_result))
+
     ## V: a PASS run carrying per-shot CONTENT validation + an OCR sidecar + a state-card TEXT panel
     ## (the DISPLAY/publish half). On a PASSING run: a 'validated' shot shows a green content chip; an
     ## 'unvalidated' shot (no golden) shows an INCONCLUSIVE content chip -- NOT green (the keystone:
@@ -624,6 +662,23 @@ q_rows = [r for r in matrix_sec.split("<tr>") if "kicksecure-fwgreen-18-2-3-5-1/
 check("PASS+firmware-mismatch has exactly one overview row", len(q_rows) == 1)
 check("PASS+firmware-mismatch overview cell is non-green",
       bool(q_rows) and "st-fail" in q_rows[0] and "st-pass" not in q_rows[0])
+
+## LR: the --local-repo build-iteration provenance (provenance.localRepo) renders on the detail
+## page -- the exact local build the verdict applies to. Before the fix it was validated + stored
+## but never surfaced, so a local-repo run could not show which build it tested.
+lr_page = read(os.path.join(out1, "whonix-lr-18-2-3-5-1", "index.html"))
+check("localRepo panel: heading present", "Local apt repo build" in lr_page)
+check("localRepo panel: repo path shown", "LRREPO_NEEDLE" in lr_page)
+check("localRepo panel: package name=version shown", "LRPKG_NEEDLE" in lr_page)
+check("localRepo panel: build sourceSha shown",
+      "abcdef0123456789abcdef0123456789abcdef01" in lr_page)
+## A non-local-repo run (the firmware run O) must NOT show the localRepo panel.
+check("non-local-repo run omits the localRepo panel", "Local apt repo build" not in o_page)
+## LRbare: an unverified run shows the identity but an HONEST empty sha/packages, never fabricated.
+lrb_page = read(os.path.join(out1, "whonix-lrbare-18-2-3-5-1", "index.html"))
+check("localRepo panel renders for an unverified run", "Local apt repo build" in lrb_page)
+check("localRepo unverified sourceSha reads 'unverified'", "<em>unverified</em>" in lrb_page)
+check("localRepo empty package list reads honestly", "no package versions recorded" in lrb_page)
 
 ## R: a malformed environment.firmware does NOT abort the site. run_generator above did not
 ## raise (it would have, on the pre-fix AttributeError), and the run renders NO-DATA while

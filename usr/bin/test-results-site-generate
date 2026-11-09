@@ -949,6 +949,10 @@ def run_fields(view):
         "fw_detected": fw.get("detected", "") or "",
         "fw_evidence": fw.get("evidence", "") or "",
         "fw_match": fw.get("match"),
+        ## Local-repo provenance (provenance.localRepo): the exact local build a --local-repo run
+        ## tested -- derivative, host repoPath, build sourceSha, name=version package list. {} on a
+        ## published-repo / old run (key omitted by the emitter), so no panel is rendered.
+        "lr": (prov or {}).get("localRepo") or {},
     }
 
 
@@ -1021,6 +1025,29 @@ def _firmware_block(f):
     ) % (chip, esc(f["fw_declared"] or "?"), esc(f["fw_detected"] or "?"), esc(note), pre)
 
 
+def _local_repo_block(f):
+    ## Provenance for a --local-repo build-iteration run: the exact local build the verdict applies
+    ## to -- derivative, host repo path, build sourceSha, and the delivered name=version package
+    ## list. {} when not a local-repo run (published-repo / old results), so no panel is rendered.
+    ## An absent sourceSha or empty package list is shown honestly as such, never fabricated.
+    lr = f["lr"]
+    if not lr:
+        return ""
+    deriv = lr.get("derivative", "") or ""
+    repo = lr.get("repoPath", "") or ""
+    sha = lr.get("sourceSha", "") or ""
+    pkgs = lr.get("packages") or []
+    sha_html = ('<code class="runid">%s</code>' % esc(sha)) if sha else "<em>unverified</em>"
+    pkg_html = (
+        '<pre class="steplog" tabindex="0">%s</pre>' % esc_log("\n".join(pkgs))
+    ) if pkgs else "<p>no package versions recorded</p>"
+    return (
+        '<div class="issue"><h3>Local apt repo build</h3>'
+        "<p>derivative <code>%s</code> &middot; source %s</p>"
+        "<p>repo <code>%s</code></p>%s</div>"
+    ) % (esc(deriv or "?"), sha_html, esc(repo or "?"), pkg_html)
+
+
 def _validation_tally_line(view):
     ## Per-run content-validation tally over the published SHOTS (cards are authoritative text, not
     ## validated): "screenshots: X validated, Y unvalidated, Z mismatch, W OCR error". So the
@@ -1048,6 +1075,9 @@ def render_run(view, header, footer, generated_utc):
     ## stay in the .fg grid, so a single step is grid-only-child (full width) and multiple
     ## steps still tile; the firmware card always stacks above them.
     fw_block = _firmware_block(f)
+    ## Local-repo provenance, like the firmware card: a full-width attestation above the steps,
+    ## "" -> omitted on a non-local-repo run.
+    lr_block = _local_repo_block(f)
     step_blocks = []
     if isinstance(view.result, dict):
         for step in view.result["steps"]:
@@ -1074,11 +1104,12 @@ def render_run(view, header, footer, generated_utc):
         '<p class="sub"><a href="../">back to all results</a></p>'
         "</div></section>"
         '<section class="cat"><div class="wrap"><h2 class="catname">Run detail</h2>'
-        "%s<div class=\"fg\">%s</div></div></section>"
+        "%s%s<div class=\"fg\">%s</div></div></section>"
     ) % (
         esc(f["lane"]), esc(view.run_id), esc(f["lane"]), esc(f["version"]),
         esc(f["builder"]), esc(f["origin"]), status_chip(view.status),
-        esc(age_text(view.age)), sha_line, tally_line, fw_block, "".join(step_blocks),
+        esc(age_text(view.age)), sha_line, tally_line, fw_block, lr_block,
+        "".join(step_blocks),
     )
     return page(
         "Run %s" % view.run_id, "Test run %s" % view.run_id, header, footer, body,

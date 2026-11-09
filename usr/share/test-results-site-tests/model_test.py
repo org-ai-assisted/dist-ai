@@ -198,6 +198,18 @@ check_raises("validate refuses a non-dict environment",
              lambda: _tamper(lambda r: r.__setitem__("environment", "uefi")))
 check_raises("validate refuses a non-dict environment.firmware",
              lambda: _tamper(lambda r: r.__setitem__("environment", {"firmware": "uefi"})))
+## provenance.localRepo is read as prov.get("localRepo").get(...) by run_fields / _local_repo_block
+## OUTSIDE a try; a truthy non-dict crashes the render (AttributeError), halting the site. validate
+## must refuse it (-> NO-DATA for that run only), like environment.firmware.
+check_raises("validate refuses a non-dict provenance.localRepo",
+             lambda: _tamper(lambda r: r.__setitem__("provenance", {"localRepo": "pkgs"})))
+## A well-formed localRepo object stays valid, including the honest-unverified case (empty
+## sourceSha + empty packages) -- do not over-reject.
+model.validate(model.build_result(
+    run_id="r", lane="l", version="v", builder="b", mode="m", origin=model.ORIGIN_BUILT,
+    rc=0, generated_unix=1, stop_unix=1, steps=[_passed_step()],
+    provenance={"local_repo": {"derivative": "whonix", "repoPath": "/x", "sourceSha": "", "packages": []}}))
+check("validate accepts a well-formed localRepo (incl empty sha/packages)", True)
 ## The step tails feed _tail() -> len() OUTSIDE a try; a truthy non-str crashes it.
 check_raises("validate refuses a non-str step.stdout_tail",
              lambda: _tamper(lambda r: r["steps"][0].__setitem__("stdout_tail", 5)))
