@@ -94,15 +94,24 @@ mapped='/dev/mapper/tluks'
 # shellcheck disable=SC2034  ## read by candidate_filesystems/cleanup via the sourced lib
 luks_name='tluks'
 
-## Drive the enumeration exactly as image-mount does: errexit on, 'trap cleanup EXIT'. The
-## partial-activation vgchange aborts candidate_filesystems, the subshell's EXIT trap runs
-## cleanup, and the '|| true' is on the SUBSHELL (not the function) so errexit stays live INSIDE
-## it. cleanup appends to argv_log, which survives the subshell.
+## Drive the enumeration as image-mount does: errexit ON, 'trap cleanup EXIT'. The
+## partial-activation vgchange must ABORT candidate_filesystems so the EXIT-trap cleanup runs.
+## Do NOT put the subshell on the LHS of '||' (e.g. '( ... ) || true'): bash then runs it in an
+## errexit-IGNORED context, the failing vgchange does NOT abort, the pre-fix code reaches its
+## after-activate assignment, and the bug PASSES. Instead turn errexit OFF in the PARENT (so the
+## expected subshell failure does not abort the test) and back ON INSIDE the standalone subshell
+## (a standalone subshell is not an ignored context, so this takes effect). cleanup appends to
+## argv_log, which survives the subshell.
 fs_out="${work}/fs"
+## style-ok: R-011 -- deliberate errexit boundary: OFF in the parent lets the expected subshell
+## failure pass without aborting the test; the subshell re-enables it so the repro's abort fires.
+set +o errexit
 (
+   set -o errexit
    trap cleanup EXIT
    candidate_filesystems > "${fs_out}"
-) || true
+)
+set -o errexit
 
 ## The activation was attempted (we reached the failing path)...
 activate_line="$(grep '^vgchange.*--activate y' -- "${argv_log}" || true)"
