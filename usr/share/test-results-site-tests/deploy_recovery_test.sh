@@ -9,7 +9,7 @@
 ## of the published tip, the driver must publish (via site-deploy) even on a run that regenerates
 ## NO new change -- otherwise a commit stranded by a prior failed push (the exact wedge seen: a
 ## dozen commits ahead, site frozen) is never sent. Drives the REAL driver + REAL generator (no
-## copy) with `sandbox` and `site-deploy` stubbed, SOURCE_DATE_EPOCH pinned so a re-generate is
+## copy) with `rsync` and `site-deploy` stubbed, SOURCE_DATE_EPOCH pinned so a re-generate is
 ## byte-identical (the no-change branch), and an EMPTY origin so the published tip is unknown.
 ## The plane is empty, so the generator does no image work -- Pillow is not needed.
 ##
@@ -70,21 +70,17 @@ origin="${work}/origin.git"
 git -c init.defaultBranch=master -C "${work}" init --quiet --bare origin.git
 git -C "${pages}" remote add origin "${origin}"
 
-## Stubs: sandbox `pull` creates the (empty) staging results tree then succeeds; site-deploy
-## records each call. The REAL generator then renders an empty overview into the Pages repo.
+## Stubs: rsync succeeds without transferring (the driver pre-creates the empty mirror dir);
+## site-deploy records each call. The REAL generator then renders an empty overview into the
+## Pages repo.
 bin="${work}/bin"
 mkdir --parents -- "${bin}"
 site_marker="${work}/site-deploy.calls"
-cat > "${bin}/sandbox" <<STUB
+cat > "${bin}/rsync" <<'STUB'
 #!/bin/bash
-ispull=0
-for a in "\$@"; do [ "\$a" = 'pull' ] && ispull=1; done
-if [ "\${ispull}" = '1' ]; then
-   mkdir --parents -- "\${@: -1}"
-fi
 exit 0
 STUB
-chmod +x -- "${bin}/sandbox"
+chmod +x -- "${bin}/rsync"
 ## The REAL site-deploy stub lives OFF PATH, reached only via the sibling-resolution seam. A
 ## TRIPWIRE site-deploy sits ON PATH: the driver must sibling-resolve (via the seam here), never
 ## fall through to a PATH copy -- that was the live bug (a stale /usr/bin site-deploy, PATH-found

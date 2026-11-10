@@ -6,7 +6,7 @@
 ## AI-Assisted
 
 ## Drives the REAL test-results-deploy to its CONFIRM-PUBLISHED step with PATH stubs
-## (sandbox / site-deploy / generate / github-api) and a local file:// origin, so the real
+## (rsync / site-deploy / generate / github-api) and a local file:// origin, so the real
 ## pull / generator / push / network never run. Guards the regression where a pushed-but-unbuilt
 ## or stale publish read as success: confirm_published must FAIL LOUD unless the github-pages
 ## DEPLOYMENT for the pushed commit reports a 'success' status. (Pages is build_type=workflow:
@@ -87,16 +87,12 @@ head_sha="$(git -C "${pages_repo}" rev-parse HEAD)"
 bindir="${workdir}/bin"
 mkdir --parents -- "${bindir}"
 
-## sandbox stub: on pull, create the destination results tree so [ -d results ] passes.
-cat > "${bindir}/sandbox" <<'STUB'
+## rsync stub: the driver pre-creates the mirror dir, so the sync just succeeds without transfer.
+cat > "${bindir}/rsync" <<'STUB'
 #!/bin/bash
-dst="${!#}"
-case "${dst}" in
-   */results) mkdir --parents -- "${dst}" ;;
-esac
 exit 0
 STUB
-chmod +x "${bindir}/sandbox"
+chmod +x "${bindir}/rsync"
 
 ## generate no-op: tree unchanged -> driver skips the commit, reaches confirm via site-deploy.
 printf '%s\n' '#!/bin/bash' 'exit 0' > "${bindir}/generate-noop"

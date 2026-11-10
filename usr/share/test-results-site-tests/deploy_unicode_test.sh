@@ -14,7 +14,7 @@
 ## publish -- the exact wedge seen live (unicode-only cleared the first gate, R-001 blocked next).
 ##
 ## Drives the REAL driver + commit path (no copy). The generator is stubbed to emit one unicode
-## OCR sidecar (its own job is tested elsewhere); sandbox/site-deploy/github-api are stubbed so
+## OCR sidecar (its own job is tested elsewhere); rsync/site-deploy/github-api are stubbed so
 ## the pull/publish/confirm steps are hermetic (no root, no network). core.hooksPath points at a
 ## pre-commit that models the two gates' OBSERVABLE override contract -- a staged tree with
 ## non-ASCII is BLOCKED unless BOTH overrides are set. Hermetic on purpose: the real gates
@@ -147,19 +147,14 @@ else
    fail=$((fail + 1))
 fi
 
-## Stubs. sandbox pull creates the (empty) staging tree then succeeds.
+## Stubs. rsync succeeds without transfer (the driver pre-creates the empty mirror dir).
 bin="${work}/bin"
 mkdir --parents -- "${bin}"
-cat > "${bin}/sandbox" <<'STUB'
+cat > "${bin}/rsync" <<'STUB'
 #!/bin/bash
-ispull=0
-for a in "$@"; do [ "${a}" = 'pull' ] && ispull=1; done
-if [ "${ispull}" = '1' ]; then
-   mkdir --parents -- "${@: -1}"
-fi
 exit 0
 STUB
-chmod +x -- "${bin}/sandbox"
+chmod +x -- "${bin}/rsync"
 
 ## site-deploy: a no-op publish (off PATH, reached via the sibling-resolution seam the driver honors).
 seam_dir="${work}/seam"

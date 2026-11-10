@@ -5,12 +5,13 @@
 
 ## AI-Assisted
 
-## Drives the REAL test-results-deploy driver with `sandbox` stubbed to record its
-## argv and fail at the pull step (so the real generator / site-deploy never run,
-## keeping this pure logic -- no root, no network). Guards the regression where the
-## pull of the /var/www/results plane omitted --allow-system-path: sandbox refuses a
-## system path without it, so every unattended deploy failed and the Pages results
-## site froze.
+## Drives the REAL test-results-deploy driver with `rsync` stubbed to record its argv and fail
+## (so the real generator / site-deploy never run, keeping this pure logic -- no root, no network).
+## Guards the plane-sync mechanism: a RESUMABLE, INCREMENTAL rsync mirror into a PERSISTENT local
+## cache. The prior tar-over-ssh whole-tree re-pull was non-resumable -- it restarted the whole
+## 100M+ plane from zero on every retry over a degraded link and never finished, wedging every
+## publish. This locks the properties that fix it: --partial (resumable), --delete (exact delta
+## mirror), and a STABLE mirror dest reused across runs (not a per-run throwaway).
 
 set -o errexit
 set -o nounset
@@ -40,6 +41,16 @@ check() {
       fail=$((fail + 1))
    fi
 }
+check_eq() {
+   ## $1 description, $2 actual, $3 expected (exact)
+   if [ "$2" = "$3" ]; then
+      printf '%s\n' "PASS: $1"
+      pass=$((pass + 1))
+   else
+      printf '%s\n' "FAIL: $1" "  expected: $3" "  actual: $2" >&2
+      fail=$((fail + 1))
+   fi
+}
 
 workdir="$(mktemp --directory)"
 cleanup() {
@@ -51,20 +62,20 @@ trap cleanup EXIT
 pages_repo="${workdir}/pages"
 mkdir --parents -- "${pages_repo}/.git" "${pages_repo}/automated-test-results"
 
-## Stubs on PATH: sandbox records its argv then fails (exit 7) so the driver dies at
-## the pull `|| die` and never reaches the real generator / site-deploy.
+## Stubs on PATH: rsync records its argv + the ambient TMPDIR then fails (exit 7) so the driver
+## dies at the sync `|| die` and never reaches the real generator / site-deploy.
 stubdir="${workdir}/stub-bin"
 mkdir --parents -- "${stubdir}"
-argv_file="${workdir}/sandbox.argv"
-tmpdir_file="${workdir}/sandbox.tmpdir"
+argv_file="${workdir}/rsync.argv"
+tmpdir_file="${workdir}/rsync.tmpdir"
 
-cat > "${stubdir}/sandbox" <<EOF
+cat > "${stubdir}/rsync" <<EOF
 #!/bin/bash
 printf '%s\n' "\$@" > "${argv_file}"
 printf '%s\n' "\${TMPDIR:-unset}" > "${tmpdir_file}"
 exit 7
 EOF
-chmod +x -- "${stubdir}/sandbox"
+chmod +x -- "${stubdir}/rsync"
 
 for stub in site-deploy test-results-site-generate; do
    cat > "${stubdir}/${stub}" <<'EOF'
@@ -74,59 +85,78 @@ EOF
    chmod +x -- "${stubdir}/${stub}"
 done
 
-## Run the real driver; it is EXPECTED to fail (stub pull exits 7 -> die).
-## Pin TEST_RESULTS_REMOTE so an ambient value cannot leak in and make the
-## "/var/www/results" assertion below non-hermetic (spurious pass/fail by env).
+run_deploy() {
+   ## $1 extra env assignments (space-separated KEY=VAL), rest ignored. Returns driver rc.
+   local rc=0
+   PATH="${stubdir}:${PATH}" HOME="${workdir}" TEST_RESULTS_PAGES_REPO="${pages_repo}" \
+      TEST_RESULTS_DEPLOY_TARGET=server-admin TEST_RESULTS_REMOTE=/var/www/results \
+      "${deploy}" >/dev/null 2>&1 || rc=$?
+   return "${rc}"
+}
+
 rc=0
-PATH="${stubdir}:${PATH}" HOME="${workdir}" TEST_RESULTS_PAGES_REPO="${pages_repo}" \
-   TEST_RESULTS_REMOTE=/var/www/results \
-   "${deploy}" >/dev/null 2>&1 || rc=$?
+run_deploy || rc=$?
 
 ## CANARY: the stub must actually have been reached, or the assertions below are vacuous.
 if [ ! -s "${argv_file}" ]; then
-   printf '%s\n' "FAIL: sandbox stub was never invoked (driver died before the pull; rc=${rc})" >&2
+   printf '%s\n' "FAIL: rsync stub was never invoked (driver died before the sync; rc=${rc})" >&2
    exit 1
 fi
 
 argv="$(cat -- "${argv_file}")"
-check "pull invoked" "${argv}" "pull"
-check "pull carries --allow-system-path (the regression guard)" "${argv}" "--allow-system-path"
-check "pull targets the results plane" "${argv}" "/var/www/results"
+check "rsync remote targets the results plane"                 "${argv}" "server-admin:/var/www/results"
+check "rsync is RESUMABLE (--partial -- the wedge fix)"         "${argv}" "--partial"
+check "rsync is an exact delta mirror (--delete)"              "${argv}" "--delete"
+check "rsync excludes .git"                                    "${argv}" "--exclude=.git"
+check "rsync drops tree-escaping symlinks (--safe-links)"      "${argv}" "--safe-links"
+check "rsync recurses"                                         "${argv}" "--recursive"
 
-## F1 staging-on-disk: the pull's destination is the mktemp staging dir, which must land under
-## the disk-backed default base (HOME/.cache/test-results-deploy/deploy.XXXXXX), NOT a bare
-## mktemp on the small RAM tmpfs that overran the staging budget. The 'deploy.' template prefix
-## AND the .cache path are both new -- the old `mktemp --directory` had neither.
-check "staging is on the disk cache base, not the RAM tmpfs (F1)" \
-   "${argv}" "/.cache/test-results-deploy/deploy."
-## The sandbox/qube-ctl pull stages its archive on TMPDIR before delivery, so TMPDIR itself must
-## point at disk -- redirecting only the destination still overflows the pull's free-space budget
-## on the small /tmp tmpfs. Assert the pull saw TMPDIR under the disk staging dir. Canary: the
-## pre-fix driver left TMPDIR at the ambient /tmp, so this substring was absent.
-check "sandbox pull sees TMPDIR on disk, not the tmpfs (F1 transport staging)" \
+## The destination is a PERSISTENT mirror on the disk cache base, NOT a per-run throwaway staging
+## tree. CANARY: the pre-fix driver passed a fresh `deploy.XXXXXX/results` sandbox dest each run;
+## '/mirror/results' + the absence of a 'deploy.' prefix in the dest both fail on that old code.
+mirror_dest="$(printf '%s\n' "${argv}" | tail -1)"
+check "rsync dest is the PERSISTENT mirror on the disk cache base" \
+   "${mirror_dest}" "/.cache/test-results-deploy/mirror/results"
+
+## TMPDIR scratch (private git index / commit message) still lands on the disk base, not the small
+## /tmp tmpfs. Canary: the pre-fix driver left TMPDIR at the ambient /tmp.
+check "driver sets TMPDIR to the disk scratch, not the tmpfs" \
    "$(cat -- "${tmpdir_file}" 2>/dev/null || true)" "/.cache/test-results-deploy/deploy."
-if [ -d "${workdir}/.cache/test-results-deploy" ]; then
-   printf '%s\n' "PASS: staging base dir created on disk"
+
+if [ -d "${workdir}/.cache/test-results-deploy/mirror/results" ]; then
+   printf '%s\n' "PASS: persistent mirror dir created on disk"
    pass=$((pass + 1))
 else
-   printf '%s\n' "FAIL: staging base dir was not created (${workdir}/.cache/test-results-deploy)" >&2
+   printf '%s\n' "FAIL: persistent mirror dir not created (${workdir}/.cache/test-results-deploy/mirror/results)" >&2
    fail=$((fail + 1))
 fi
 
-## F1 override: TEST_RESULTS_STAGING_DIR relocates the staging base (safe default, overridable).
+## INCREMENTAL regression: a SECOND run must reuse the SAME mirror dest -- the whole point of the
+## fix (transfer only the delta into a kept tree). The pre-fix per-run mktemp dest differed every
+## run, so this exact-match check fails on the old code.
+dest_run1="${mirror_dest}"
+run_deploy || true
+dest_run2="$(tail -1 -- "${argv_file}")"
+check_eq "second run reuses the SAME persistent mirror dest (incremental, not re-pulled)" \
+   "${dest_run2}" "${dest_run1}"
+
+## TEST_RESULTS_STAGING_DIR relocates the mirror base (safe default, overridable).
 override_base="${workdir}/custom-stage"
-override_argv="${workdir}/sandbox.override.argv"
-cat > "${stubdir}/sandbox" <<EOF
-#!/bin/bash
-printf '%s\n' "\$@" > "${override_argv}"
-exit 7
-EOF
-chmod +x -- "${stubdir}/sandbox"
 PATH="${stubdir}:${PATH}" HOME="${workdir}" TEST_RESULTS_PAGES_REPO="${pages_repo}" \
-   TEST_RESULTS_REMOTE=/var/www/results TEST_RESULTS_STAGING_DIR="${override_base}" \
+   TEST_RESULTS_DEPLOY_TARGET=server-admin TEST_RESULTS_REMOTE=/var/www/results \
+   TEST_RESULTS_STAGING_DIR="${override_base}" \
    "${deploy}" >/dev/null 2>&1 || true
-check "TEST_RESULTS_STAGING_DIR overrides the staging base (F1)" \
-   "$(cat -- "${override_argv}" 2>/dev/null || true)" "${override_base}/deploy."
+check "TEST_RESULTS_STAGING_DIR relocates the mirror base" \
+   "$(tail -1 -- "${argv_file}" 2>/dev/null || true)" "${override_base}/mirror/results"
+
+## TEST_RESULTS_MIRROR_DIR overrides the mirror location directly.
+override_mirror="${workdir}/custom-mirror"
+PATH="${stubdir}:${PATH}" HOME="${workdir}" TEST_RESULTS_PAGES_REPO="${pages_repo}" \
+   TEST_RESULTS_DEPLOY_TARGET=server-admin TEST_RESULTS_REMOTE=/var/www/results \
+   TEST_RESULTS_MIRROR_DIR="${override_mirror}" \
+   "${deploy}" >/dev/null 2>&1 || true
+check "TEST_RESULTS_MIRROR_DIR overrides the mirror location" \
+   "$(tail -1 -- "${argv_file}" 2>/dev/null || true)" "${override_mirror}/results"
 
 printf '%s\n' "===== deploy_test: ${pass} pass, ${fail} fail ====="
 [ "${fail}" -eq 0 ]

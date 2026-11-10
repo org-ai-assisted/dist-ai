@@ -36,10 +36,16 @@ me="${0##*/}"
 ## Overridable knobs (defaults match the live setup).
 target="${TEST_RESULTS_DEPLOY_TARGET:-server-admin}"
 results_remote="${TEST_RESULTS_REMOTE:-/var/www/results}"
+## rsync transport to the results plane. The plane lives on the OVH admin server -- an ssh target
+## whose NAME doubles as its ssh_config Host alias -- so the default remote is
+## '<target>:<results_remote>'. ssh opts match the rest of the transport: keyed BatchMode (never
+## prompt) + no host-key randomart (security-misc enables it globally). Overridable for tests.
+rsync_rsh="${TEST_RESULTS_RSYNC_RSH:-ssh -o BatchMode=yes -o VisualHostKey=no}"
+rsync_remote="${TEST_RESULTS_RSYNC_REMOTE:-${target}:${results_remote}}"
 pages_repo="${TEST_RESULTS_PAGES_REPO:-${HOME}/private-sources/org-ai-assisted.github.io}"
-## Stage on DISK by default, NOT the ~2G /tmp tmpfs: the plane pull (16M+ and growing) overruns
-## it and sandbox aborts on the staging free-space budget. A disk-backed base under $HOME is the
-## default so the safe path needs nothing recalled; override with TEST_RESULTS_STAGING_DIR.
+## Disk-backed base (NOT the ~2G /tmp tmpfs) for the PERSISTENT plane mirror and the throwaway
+## scratch. A disk base is the default so the safe path needs nothing recalled; override with
+## TEST_RESULTS_STAGING_DIR.
 staging_base="${TEST_RESULTS_STAGING_DIR:-${HOME}/.cache/test-results-deploy}"
 ## Confirm-published poll budget (seconds): GitHub Pages builds the pushed branch ASYNCHRONOUSLY,
 ## so a successful push is not yet a live site. Poll this long for the build to land at our commit.
@@ -124,7 +130,7 @@ if [ -z "${site_deploy}" ]; then
    [ -x "${site_deploy}" ] || site_deploy="site-deploy"
 fi
 
-command -v sandbox >/dev/null 2>&1 || die "sandbox not found"
+command -v rsync >/dev/null 2>&1 || die "rsync not found"
 command -v "${generate}" >/dev/null 2>&1 || die "test-results-site-generate not found"
 command -v "${site_deploy}" >/dev/null 2>&1 || die "site-deploy not found"
 [ -d "${pages_repo}/.git" ] || die "not a git checkout: ${pages_repo}"
@@ -143,35 +149,48 @@ flock --timeout 3600 "${lock_fd}" \
    || die "another test-results-deploy holds the Pages-repo lock (waited 3600s)"
 
 mkdir --parents -- "${staging_base}"
-## Absolutize: a RELATIVE override would make mktemp print a relative staging path, and the later
-## `cd` into the Pages repo then points the EXIT-trap cleanup at the wrong directory (a leak).
+## Absolutize: a RELATIVE override would make the mirror + scratch paths relative, and the later
+## `cd` into the Pages repo then points the EXIT-trap cleanup AND the mirror at the wrong directory.
 staging_base="$(cd -- "${staging_base}" && pwd)"
-staging="$(mktemp --directory --tmpdir="${staging_base}" deploy.XXXXXX)"
-## The sandbox / qube-ctl pull stages the incoming archive on TMPDIR before delivering it to the
-## destination, and the default /tmp is the small, near-full tmpfs whose free space the pull's
-## budget check rejects. Point TMPDIR + TMP at the disk-backed staging dir so the TRANSPORT's own
-## archive staging lands on disk too -- redirecting only the destination is not enough. Cleaned by
-## the EXIT trap.
-export TMPDIR="${staging}"
-export TMP="${staging}"
+
+## PERSISTENT mirror of the results plane -- deliberately NOT cleaned between runs. The incremental
+## rsync below keeps it in sync, so each publish transfers only the DELTA (normally one finished
+## run's screenshots). Overridable; defaults under the disk staging base.
+mirror="${TEST_RESULTS_MIRROR_DIR:-${staging_base}/mirror}/results"
+mkdir --parents -- "${mirror}"
+
+## Throwaway scratch (private git index + commit-message temp) on the disk base, not the small /tmp
+## tmpfs. Cleaned by the EXIT trap; the mirror is kept.
+scratch="$(mktemp --directory --tmpdir="${staging_base}" deploy.XXXXXX)"
+export TMPDIR="${scratch}"
+export TMP="${scratch}"
 ## Registered in the EXIT trap so a failure at any step (read-tree / add / commit) cannot leak
-## the private index or the message temp file.
+## the private index or the message temp file. The mirror is persistent and not listed here.
 idx=""
 msg_file=""
 # shellcheck disable=SC2317  ## runs via the EXIT trap
 cleanup() {
-   safe-rm --recursive --force -- "${staging}" || true
+   safe-rm --recursive --force -- "${scratch}" || true
    [ -z "${idx}" ] || safe-rm --force -- "${idx}" || true
    [ -z "${msg_file}" ] || safe-rm --force -- "${msg_file}" || true
 }
 trap cleanup EXIT
 
-printf '%s\n' "${me}: pulling results plane from ${target}:${results_remote}"
-## --allow-system-path: the results plane lives under /var/www (nginx webroot, world-readable)
-## by design; sandbox pull refuses a system path unless the read is declared deliberate.
-sandbox --target "${target}" pull --allow-system-path "${results_remote}" "${staging}/results" \
-   || die "pull of ${results_remote} from ${target} failed"
-[ -d "${staging}/results" ] || die "pull produced no results tree"
+printf '%s\n' "${me}: syncing results plane from ${rsync_remote}"
+## INCREMENTAL, RESUMABLE mirror -- not a throwaway whole-tree re-pull. The server->dev-VM path can
+## degrade to a per-flow TCP crawl, and a tar-over-ssh pull is non-resumable: it restarts the whole
+## 100M+ plane from zero on every retry and never finishes, wedging every publish (the failure this
+## fixes). rsync moves ONLY changed/new files and --partial resumes an interrupted transfer, so a
+## slow link costs at most a slow FIRST sync, never a permanent wedge. --delete keeps the mirror an
+## exact copy (a cell removed on the server drops from the site); --safe-links drops any symlink
+## escaping the tree; .git is never part of the world-readable nginx-webroot plane.
+rsync \
+   --recursive --links --perms --times \
+   --delete --partial --safe-links --exclude='.git' \
+   --rsh="${rsync_rsh}" \
+   -- "${rsync_remote}/" "${mirror}/" \
+   || die "rsync mirror of ${rsync_remote} failed"
+[ -d "${mirror}" ] || die "mirror produced no results tree"
 
 ## --chrome-from the site's own root page: the generated results pages then carry the SITE's
 ## actual header nav, not the generator's fallback default -- so website-tests' nav-consistency
@@ -181,7 +200,7 @@ chrome_from=()
 
 printf '%s\n' "${me}: regenerating the static site into ${pages_repo}"
 "${generate}" \
-   --results-root "${staging}/results" \
+   --results-root "${mirror}" \
    --site-out "${pages_repo}" \
    "${chrome_from[@]}" \
    || die "site generation failed"

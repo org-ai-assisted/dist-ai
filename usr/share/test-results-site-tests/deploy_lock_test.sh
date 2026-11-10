@@ -13,10 +13,10 @@
 ## webp flagged each concurrent run). The fix is an exclusive flock on the Pages repo held
 ## for the whole run.
 ##
-## Drives the REAL test-results-deploy (no copy) with a stub `sandbox` whose `pull` records
+## Drives the REAL test-results-deploy (no copy) with a stub `rsync` (the plane sync) that records
 ## START/END around a sleep then exits non-zero, so the script dies right after the
-## lock-protected pull without reaching the heavy generator. Two instances run concurrently;
-## the lock must serialize them, so at no point are two inside the pull at once.
+## lock-protected sync without reaching the heavy generator. Two instances run concurrently;
+## the lock must serialize them, so at no point are two inside the sync at once.
 
 set -o errexit
 set -o nounset
@@ -53,26 +53,21 @@ mkdir --parents -- "${pages}/automated-test-results"
 git -c init.defaultBranch=master -C "${pages}" init --quiet
 printf '%s\n' '<!doctype html><title>t</title>' > "${pages}/index.html"
 
-## Stub sandbox: on `pull`, bracket a sleep with START/END markers (so overlap is visible),
-## then exit non-zero so the real script dies at `|| die` right after the lock-held pull --
-## the generator / site-deploy are never reached. Any other sandbox call is a no-op.
+## Stub rsync (the plane sync): bracket a sleep with START/END markers (so overlap is visible),
+## then exit non-zero so the real script dies at `|| die` right after the lock-held sync --
+## the generator / site-deploy are never reached.
 bin="${work}/bin"
 mkdir --parents -- "${bin}"
 marker="${work}/marker"
 touch -- "${marker}"
-cat > "${bin}/sandbox" <<STUB
+cat > "${bin}/rsync" <<STUB
 #!/bin/bash
-for a in "\$@"; do
-   if [ "\$a" = 'pull' ]; then
-      printf '%s\n' "START \$\$" >> "${marker}"
-      sleep 2
-      printf '%s\n' "END \$\$" >> "${marker}"
-      exit 1
-   fi
-done
-exit 0
+printf '%s\n' "START \$\$" >> "${marker}"
+sleep 2
+printf '%s\n' "END \$\$" >> "${marker}"
+exit 1
 STUB
-chmod +x "${bin}/sandbox"
+chmod +x "${bin}/rsync"
 ## site-deploy only has to satisfy the pre-lock `command -v` check; it is never reached.
 printf '%s\n' '#!/bin/bash' 'exit 0' > "${bin}/site-deploy"
 chmod +x "${bin}/site-deploy"
