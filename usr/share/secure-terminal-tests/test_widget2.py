@@ -4743,6 +4743,29 @@ key(_tkm, Qt.Key.Key_End)
 eq(_tkms, [b'\x1b[1;5F', b'\x1b[1;2F', b'\x1b[1;5A', b'\x1b[F'],
    'TUI: a modified cursor/End key is CSI-encoded (Ctrl+End=ESC[1;5F); bare End=ESC[F')
 
+# Shift+PageUp/PageDown are the LOCAL scrollback override in TUI mode too (konsole
+# parity, matching Shift+wheel): they scroll THIS terminal and are NEVER forwarded
+# to the child -- even though a plain PageUp IS sent to it as VT input. Regression:
+# a full-screen program (a shell / Claude Code) used to swallow them. Shift+Home/End
+# stay modified cursor keys to the child in TUI (asserted in the _tkm block above).
+_tsc = SecureTerminal(command='/bin/cat', tui=True)
+_tsc.resize(600, 200)
+_tsc.show()
+for _tsci in range(200):
+    _tsc._append('tuiline %d\n' % _tsci)
+_tscbar = _tsc.verticalScrollBar()
+_tsc_bottom = _tscbar.value()                # at the bottom after the output
+_tscsent = spy_writes(_tsc)
+key(_tsc, Qt.Key.Key_PageUp, mods=Qt.KeyboardModifier.ShiftModifier)
+_tsc_up = _tscbar.value()
+ok(_tsc_up < _tsc_bottom, 'TUI: Shift+PageUp scrolls the local scrollback up')
+eq(_tscsent, [], 'TUI: Shift+PageUp is a local scroll, nothing sent to the child')
+key(_tsc, Qt.Key.Key_PageDown, mods=Qt.KeyboardModifier.ShiftModifier)
+ok(_tscbar.value() > _tsc_up, 'TUI: Shift+PageDown scrolls the local scrollback back down')
+eq(_tscsent, [], 'TUI: Shift+PageDown is local too, nothing sent to the child')
+key(_tsc, Qt.Key.Key_PageUp)                 # plain PageUp still reaches the child
+eq(_tscsent, [b'\x1b[5~'], 'TUI: plain PageUp is forwarded to the child as VT input')
+
 # a tooltip over empty space (no codepoint) hides any tip
 _tt = SecureTerminal(command='/bin/cat')
 _hv = QHelpEvent(QEvent.Type.ToolTip, QPoint(3, 3), _tt.mapToGlobal(QPoint(3, 3)))
@@ -4752,7 +4775,7 @@ ok(True, 'a tooltip over empty space hides the tip without error')
 # stop any repeating timers these grid/TUI terminals started, so they do not
 # fire into the offscreen platform's static teardown (which would crash a
 # process that has otherwise passed cleanly)
-for _tstop in (_gz, _tk2, _rt2, _es, _am):
+for _tstop in (_gz, _tk2, _rt2, _es, _am, _tsc):
     for _tmr in ('_render_timer', '_sync_timer'):
         _t = getattr(_tstop, _tmr, None)
         if _t is not None:
