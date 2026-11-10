@@ -205,13 +205,19 @@ def resolve_axe_source() -> Optional[str]:
 
 # axe.run over the LIVE document, violations only (passes/incomplete/inapplicable are not gated).
 # An async arrow so page.evaluate awaits the axe promise.
-# identical-links-same-purpose (WCAG 2.4.9 AAA) is DISABLED by default in axe-core; enable it
-# explicitly so the gate catches two links with the same accessible name pointing at different
-# destinations (a real wayfinding defect on the family sites). All other defaults stand.
+# Two WCAG rules that axe-core ships DISABLED by default are enabled here; without this the gate
+# silently never checks them:
+#   - identical-links-same-purpose (WCAG 2.4.9 AAA): two links with the same accessible name
+#     pointing at different destinations (a real wayfinding defect on the family sites).
+#   - target-size (WCAG 2.5.8 AA, WCAG 2.2): touch targets below 24x24 CSS px without the 24px
+#     spacing exception (undersized/crowded tap targets -- footnote markers, inline icon links).
+#     The inline-in-sentence exception is honoured by axe, so prose links are not flagged.
+# All other defaults stand.
 _AXE_RUN_JS = (
     "async () => { const r = await axe.run(document, "
     "{resultTypes: ['violations'], "
-    "rules: {'identical-links-same-purpose': {enabled: true}}}); return r.violations; }")
+    "rules: {'identical-links-same-purpose': {enabled: true}, "
+    "'target-size': {enabled: true}}}); return r.violations; }")
 
 # Force every `content-visibility: auto` section to render before axe measures. That CSS defers
 # rendering (and layout/paint) of OFF-SCREEN content as a perf win, but axe-core then samples

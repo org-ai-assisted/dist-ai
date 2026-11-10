@@ -468,6 +468,12 @@ def run() -> int:
     ck("identical-links-same-purpose" in ax._AXE_RUN_JS and "enabled: true" in ax._AXE_RUN_JS,
        "identical-links-same-purpose rule is explicitly enabled in _AXE_RUN_JS")
 
+    # target-size (WCAG 2.5.8 AA) is ALSO OFF by default in axe-core; without the explicit enable
+    # the gate silently never checks touch-target size/spacing (undersized footnote markers, inline
+    # icon links). Guard the enable against an accidental revert.
+    ck("'target-size': {enabled: true}" in ax._AXE_RUN_JS,
+       "target-size rule is explicitly enabled in _AXE_RUN_JS")
+
     # _skip raises SystemExit(77) (the shared env-unmet contract).
     try:
         ax._skip("canary")
