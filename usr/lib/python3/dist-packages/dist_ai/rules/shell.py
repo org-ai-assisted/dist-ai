@@ -661,8 +661,16 @@ def _mkdir_parents_flag(call, source):
         if name is not None and bash_ast.resolve_long(name, MKDIR_LONG) \
                 == "parents":
             return True
-        if text == "-p":
-            return True
+        ## A bundled short-option cluster ('-pv', '-vp', '-pm700') is one opt token.
+        ## '-m' consumes the REST of the cluster as its mode value (bash_ast cluster
+        ## rule), so a 'p' AFTER an 'm' is mode text, not the parents flag; 'p' is
+        ## never a valid mode char, so this only differs on a broken mkdir.
+        if not text.startswith("--"):
+            for letter in text[1:]:
+                if letter == "p":
+                    return True
+                if letter == "m":
+                    break
     return False
 
 

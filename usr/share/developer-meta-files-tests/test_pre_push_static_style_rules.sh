@@ -956,6 +956,19 @@ expect_rule "R-173" "${mkd}${sp}-p${sp}--${sp}--reference=ref${nlreal}${chm}${sp
 ## invalid who-only dash form ('-a', which chmod rejects) is not a real mode.
 expect_rule "R-173" "${mkd}${sp}${dir173}${nlreal}${chm}${sp}--s${sp}700${sp}${dir173}"                "present"
 expect_rule "R-173" "${mkd}${sp}${dir173}${nlreal}${chm}${sp}-a${sp}${dir173}"                         "absent"
+## R-173 CLUSTER parents flag: a bundled short-option '-p' ('-pv', '-vp', '-pm700')
+## is still a '--parents' create, so it must get the 'install -d -m' guidance, NOT
+## the plain-mkdir lock-dir 'mkdir --mode=' message. The cluster is detect-only (the
+## extra option declines the autofix), so assert the MESSAGE text, not fix content.
+expect_rule "install -d -m MODE -- DIR" "${mkd}${sp}-pv${sp}--${sp}${dq}${dir173}${dq}${nlreal}${chm}${sp}0700${sp}--${sp}${dq}${dir173}${dq}" "present"
+expect_rule "mkdir --mode=MODE -- DIR"  "${mkd}${sp}-pv${sp}--${sp}${dq}${dir173}${dq}${nlreal}${chm}${sp}0700${sp}--${sp}${dq}${dir173}${dq}" "absent"
+## order-independent cluster, and the bundled-mode cluster, both carry parents.
+expect_rule "install -d -m MODE -- DIR" "${mkd}${sp}-vp${sp}--${sp}${dq}${dir173}${dq}${nlreal}${chm}${sp}0700${sp}--${sp}${dq}${dir173}${dq}" "present"
+expect_rule "install -d -m MODE -- DIR" "${mkd}${sp}-pm700${sp}--${sp}${dq}${dir173}${dq}${nlreal}${chm}${sp}0700${sp}--${sp}${dq}${dir173}${dq}" "present"
+## PRECISE-scan lock-in: '-mp700' is '-m' with mode 'p700' (NO parents -- '-m' consumes
+## the cluster remainder), so it KEEPS the lock-dir message; guards against a naive
+## '"p" in text[1:]' simplification that would misread the mode value as a parents flag.
+expect_rule "mkdir --mode=MODE -- DIR" "${mkd}${sp}-mp700${sp}--${sp}${dq}${dir173}${dq}${nlreal}${chm}${sp}0700${sp}--${sp}${dq}${dir173}${dq}" "present"
 
 ## R-010: seven COPIES of one directive must NOT satisfy the block (DISTINCT
 ## directives are counted); the seven distinct directives pass.
