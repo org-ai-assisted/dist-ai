@@ -97,5 +97,20 @@ assert "check 3 returns the detached upgrade's nonzero rc" test "${rc}" -eq 100
 assert "the failed upgrade tail is recorded to check_log" \
    grep --quiet --fixed-strings 'FAILED rc=100' "${check_log}"
 
+## --- --local-repo path: check 3 must run apt-get DIRECTLY, not upgrade-nonroot. CANARY for the
+## critical fix -- upgrade-nonroot is a user usability wrapper that deliberately does NOT forward
+## apt options, so the offline upgrade must bypass it and pass -o to apt-get itself.
+launch_seen=''
+staged_rc='0'
+check_log=''
+local_repo='whonix'
+rc=0
+ws_func_cli_exec 3 user 'upgrade-nonroot --yes' 1800 > /dev/null 2>&1 || rc=$?
+local_repo=''
+assert "check 3 --local-repo launches apt-get full-upgrade DIRECTLY (not upgrade-nonroot)" \
+   grep --quiet --fixed-strings 'apt-get' <<< "${launch_seen}"
+assert "check 3 --local-repo passes the offline local-sources options to apt-get" \
+   grep --quiet --fixed-strings 'Dir::Etc::sourceparts' <<< "${launch_seen}"
+
 printf '%s\n' "cli_upgrade_detached_test: ${pass} pass, ${fail} fail, 0 skip"
 [ "${fail}" -eq 0 ]

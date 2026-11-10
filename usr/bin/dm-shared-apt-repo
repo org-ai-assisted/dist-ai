@@ -107,20 +107,11 @@ expose_cache() {
       printf '%s\n' "${me}: no Debian mirror at ${mirror_dir}; Debian base stays on its configured sources (ok)"
       return 0
    fi
-   ## An existing mount is kept ONLY if it binds the REQUESTED mirror_dir: findmnt prints a bind's
-   ## source path in brackets (e.g. '/dev/x[/@/srv/debian-mirror]'), so a mismatch (a stale mount,
-   ## or a changed DEBIAN_MIRROR_DIR) is dropped and re-bound below rather than silently masking the
-   ## requested dir. Empty/odd source -> treat as mismatch (fail safe to a clean re-bind).
-   if mountpoint --quiet -- "${cache_mount}" 2>/dev/null; then
-      cache_src="$(findmnt --noheadings --first-only --output SOURCE --target "${cache_mount}" 2>/dev/null || true)"
-      case "${cache_src}" in
-         *"${mirror_dir}]")
-            ;;
-         *)
-            sudo umount -- "${cache_mount}" 2>/dev/null || true
-            ;;
-      esac
-   fi
+   ## mirror_dir is a FIXED path (/srv/debian-mirror) and cache_mount is PER-SLOT, so a given
+   ## cache_mount is only ever bound to this one source -- there is no override-change / wrong-source
+   ## case to guard here (a findmnt source-check is both unnecessary and hard to get right: --first-only
+   ## reports the shadowed lower mount, a suffix compare over-matches, and an EBUSY umount is easy to
+   ## mis-handle). Bind if not yet mounted, then ALWAYS (re)assert ro + nosymfollow below.
    if ! mountpoint --quiet -- "${cache_mount}" 2>/dev/null; then
       mkdir --parents -- "${cache_mount}"
       sudo mount --bind -- "${mirror_dir}" "${cache_mount}"

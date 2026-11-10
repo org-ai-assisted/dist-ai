@@ -1137,10 +1137,13 @@ ws_func_cli_exec() {
    ## sessions that reconnect once VBoxService returns.
    if [ "$1" = 3 ]; then
       local cli_upgrade_cmd="$3"
-      ## --local-repo: point the upgrade at the local sources ONLY -- upgrade-nonroot forwards "$@"
-      ## to apt-get, so sourceparts + sourcelist=/dev/null make the full upgrade resolve offline from
-      ## the local file: mirror + derivative repo (no Tor, no pin). local_repo is enum-validated.
-      [ -n "${local_repo}" ] && cli_upgrade_cmd="$3 ${LOCAL_TEST_APT_OPTS}"
+      ## --local-repo: run apt-get DIRECTLY, not via upgrade-nonroot. upgrade-nonroot is a usability
+      ## wrapper for interactive users and deliberately does NOT forward apt options (passing -o to a
+      ## root apt-get is a privilege-escalation vector), so it cannot be pointed at the local sources
+      ## -- the wrong tool for a local-repo upgrade. apt-get direct takes the options (sourceparts +
+      ## sourcelist=/dev/null + Sandbox::User=root), so the SAME '--update full-upgrade' resolves
+      ## offline from the local file: mirror + derivative repo (no Tor). local_repo is enum-validated.
+      [ -n "${local_repo}" ] && cli_upgrade_cmd="dsudo apt-get ${LOCAL_TEST_APT_OPTS} --update full-upgrade --yes"
       ws_func_cli_upgrade_detached "$2" "${cli_upgrade_cmd}" "$4"
       return "$?"
    fi
@@ -1371,7 +1374,7 @@ ws_func_enable_local_repo() {
    ## is READ from the host-side mirror bind-mount; the emitted URI is the guest mount path. All
    ## inputs are trusted (local_repo is enum-validated, the paths come from dm-shared-apt-repo), and
    ## the stanzas reach the guest base64-encoded, so nothing untrusted hits the guest shell.
-   local host_cache guest_cache guest_repo src b64 nick suite spec base_stanza
+   local host_cache guest_cache guest_repo sources_content emitted_suites b64 nick suite spec base_stanza
    if [ "$(type -t local_apt_repo_base_stanza)" != 'function' ] || [ "$(type -t local_apt_repo_sources_stanza)" != 'function' ]; then
       die "${SETUP_RC}" "${ws}: helper-scripts local-apt-repo-sources.bsh not loaded (set HELPER_SCRIPTS_PATH / install helper-scripts) -- cannot generate the local apt sources (INCONCLUSIVE)"
    fi
@@ -1384,26 +1387,33 @@ ws_func_enable_local_repo() {
    guest_repo="${GUEST_SHARE_MOUNT}/aptrepo_local/${local_repo}"
    [ -d "${host_cache}" ] \
       || die "${SETUP_RC}" "${ws}: Debian mirror not exposed at ${host_cache} (host: run 'dm-shared-apt-repo expose' before the lane) -- cannot source the base locally (INCONCLUSIVE)"
-   src="$(mktemp)"
-   {
-      local_apt_repo_sources_stanza "file:${guest_repo}" local
-      for spec in debian:trixie debian:trixie-updates debian-security:trixie-security; do
-         nick="${spec%%:*}"
-         suite="${spec#*:}"
-         if base_stanza="$(local_apt_repo_base_stanza "${host_cache}" "${nick}" "${suite}" "${LOCAL_MIRROR_ARCH}" "${guest_cache}")"; then
-            ## deb822 separates stanzas by a blank line.
-            printf '%s\n' "" "${base_stanza}"
-         fi
-      done
-   } > "${src}"
-   ## The base MUST resolve (check 3 upgrades from local-ONLY sources): an Architectures line only
-   ## appears on a base stanza, so its absence means no base suite was resident. Fail closed.
-   if ! grep --quiet '^Architectures:' -- "${src}"; then
-      safe-rm --force -- "${src}"
-      die "${SETUP_RC}" "${ws}: no Debian base suite resolved from the mirror at ${host_cache} (INCONCLUSIVE)"
-   fi
-   b64="$(base64 --wrap=0 -- "${src}")"
-   safe-rm --force -- "${src}"
+   ## Build the sources in a plain variable (derivative 'local' repo + each RESIDENT Debian base
+   ## suite), tracking which base suites resolved. deb822 separates stanzas by a blank line.
+   sources_content="$(local_apt_repo_sources_stanza "file:${guest_repo}" local)"
+   emitted_suites=""
+   for spec in debian:trixie debian:trixie-updates debian-security:trixie-security; do
+      nick="${spec%%:*}"
+      suite="${spec#*:}"
+      if base_stanza="$(local_apt_repo_base_stanza "${host_cache}" "${nick}" "${suite}" "${LOCAL_MIRROR_ARCH}" "${guest_cache}")"; then
+         sources_content="${sources_content}"$'\n\n'"${base_stanza}"
+         emitted_suites="${emitted_suites} ${suite}"
+      fi
+   done
+   ## Check 3 upgrades from the local-ONLY sources with no remote fallback, so EVERY expected base
+   ## suite must resolve -- an incomplete mirror missing e.g. trixie-security would otherwise pass
+   ## this lane while SILENTLY excluding security + point updates from the offline upgrade. Require
+   ## all three; a missing one is a provisioning gap (INCONCLUSIVE), never a release PASS.
+   for spec in debian:trixie debian:trixie-updates debian-security:trixie-security; do
+      suite="${spec#*:}"
+      case " ${emitted_suites} " in
+         *" ${suite} "*)
+            ;;
+         *)
+            die "${SETUP_RC}" "${ws}: Debian base suite '${suite}' not resolvable from the mirror at ${host_cache} -- incomplete mirror, refusing a partial offline upgrade (INCONCLUSIVE)"
+            ;;
+      esac
+   done
+   b64="$(printf '%s\n' "${sources_content}" | base64 --wrap=0)"
    ## Write the sources into the DEDICATED guest dir, then update + policy-check reading ONLY that
    ## dir -- so check 3 upgrades offline from the local file: sources with no pin and no edit to the
    ## guest's own apt config.

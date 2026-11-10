@@ -1620,7 +1620,7 @@ rt_lane_whonix_inst() {
       ## Absent-safe: a host without the mirror skips, and dm-whonix-pair's enable step then fails
       ## closed (INCONCLUSIVE) rather than silently upgrading the base over Tor.
       LOCAL_APT_REPOSITORY_BASE="${lr_base}" "${DM_SHARED_APT_REPO}" expose \
-         || log warning "dm-shared-apt-repo expose failed; the WS base-local upgrade may be INCONCLUSIVE"
+         || log warn "dm-shared-apt-repo expose failed; the WS base-local upgrade may be INCONCLUSIVE"
    fi
    sudo -u "${account}" -- "${rt_session_env[@]}" "${DM_WHONIX_PAIR}" --mode functional --interface "${wp_interface}" --check-log "${check_log}" "${lr_args[@]}" --gw "${gw}" --ws "${ws}" || rc=$?
    ## Thread a non-empty check-log into the published step's stderr tail (empty = a pass or a

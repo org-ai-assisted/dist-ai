@@ -102,15 +102,19 @@ rec_attach="$(mktemp)"
 rec_exec="$(mktemp)"
 shared_stub="$(mktemp)"
 exec_stub="$(mktemp)"
-## Fixture mirror the stub's cache-path points at: one resident Debian base suite so the host-side
-## base generation in ws_func_enable_local_repo emits a stanza (its 'Architectures:' line is the
-## fail-closed signal the enable checks).
+## Fixture mirror the stub's cache-path points at: ALL THREE Debian base suites resident (the enable
+## requires trixie + trixie-updates + trixie-security -- an incomplete mirror is INCONCLUSIVE), each
+## with main resident via the compressed index.
 host_cache_fixture="$(mktemp --directory)"
-mkdir --parents -- "${host_cache_fixture}/debian/dists/trixie/main/binary-amd64"
-printf '%s' idx > "${host_cache_fixture}/debian/dists/trixie/main/binary-amd64/Packages.gz"
 hc_mh="$(printf '%s' mainidx | sha256sum | cut -d' ' -f1)"
-printf '%s\n' "SHA256:" " ${hc_mh} 123 main/binary-amd64/Packages" \
-   > "${host_cache_fixture}/debian/dists/trixie/InRelease"
+for hc_spec in debian:trixie debian:trixie-updates debian-security:trixie-security; do
+   hc_nick="${hc_spec%%:*}"
+   hc_suite="${hc_spec#*:}"
+   mkdir --parents -- "${host_cache_fixture}/${hc_nick}/dists/${hc_suite}/main/binary-amd64"
+   printf '%s' idx > "${host_cache_fixture}/${hc_nick}/dists/${hc_suite}/main/binary-amd64/Packages.gz"
+   printf '%s\n' "SHA256:" " ${hc_mh} 123 main/binary-amd64/Packages" \
+      > "${host_cache_fixture}/${hc_nick}/dists/${hc_suite}/InRelease"
+done
 # shellcheck disable=SC2317  ## runs via the EXIT trap
 cleanup() { safe-rm --recursive --force -- "${rec_attach}" "${rec_exec}" "${shared_stub}" "${exec_stub}" "${host_cache_fixture}"; }
 trap cleanup EXIT
@@ -184,6 +188,16 @@ assert "enable policy-checks the derivative local repo is live" \
    grep -q 'aptrepo_local/whonix' "${rec_exec}"
 assert "enable resolves the host cache under the orchestrator-pinned base (slot-threaded, not slot-less)" \
    grep -q 'cachepath-base=/srv/derivative-maker/SLOT' "${rec_attach}"
+
+## CANARY (fix D): an INCOMPLETE mirror (a base suite missing) must be INCONCLUSIVE (SETUP_RC), never
+## a pass -- check 3 upgrades from local-ONLY sources, so a missing trixie-security would otherwise
+## SILENTLY exclude security updates. Drop debian-security and re-run enable; expect rc 2 BEFORE the
+## guest apt ops (host_cache_fixture is not used after this).
+safe-rm --recursive --force -- "${host_cache_fixture}/debian-security"
+dmiss_rc=0
+( ws_func_enable_local_repo ) >/dev/null 2>&1 || dmiss_rc=$?
+assert "enable FAILS SETUP_RC when a base suite (trixie-security) is missing from the mirror" \
+   test "${dmiss_rc}" -eq 2
 
 ## with --local-repo UNSET, boot_workstation_user must NOT attach (byte-unchanged path).
 true > "${rec_attach}"
