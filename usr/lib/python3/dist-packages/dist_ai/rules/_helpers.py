@@ -105,7 +105,7 @@ def effective_command(call, source):
                 ## Scan the LITERAL flag letters, never raw source -- else a
                 ## v/V inside an expansion NAME ('command -"$opts" NAME') is
                 ## misread as the describe flag.
-                lit = bash_ast.word_literal_prefix(word)
+                lit = bash_ast.word_literal_letters(word)
                 if wrapper == "command" and not text.startswith("--") \
                         and ("v" in lit[1:] or "V" in lit[1:]):
                     return None
@@ -176,7 +176,7 @@ def effective_call(call, source):
                 ## Scan the LITERAL flag letters, never raw source -- else a
                 ## v/V inside an expansion NAME ('command -"$opts" NAME') is
                 ## misread as the describe flag.
-                lit = bash_ast.word_literal_prefix(word)
+                lit = bash_ast.word_literal_letters(word)
                 if wrapper == "command" and not text.startswith("--") \
                         and ("v" in lit[1:] or "V" in lit[1:]):
                     return None
@@ -844,24 +844,27 @@ SHELL_C_WRAPPERS = frozenset({
 
 
 def _c_opt_program(word):
-    """Classify the '-c' in a short-option cluster WORD. Reads the LITERAL
-    flag-letter prefix (word_literal_prefix), never raw source, so a 'c' inside an
-    expansion NAME ('-"$config"') is NOT misread as the -c flag. Returns
-    ("separate", None) when '-c' is the LAST literal char of a FULLY literal word
-    ('-c'/'-lc'/'-ec'), so the program is the NEXT word; ("attached", CI) when a
-    program is glued into this word -- either a literal '-c"prog"' (CI = 'c's
-    index) or a '-c' whose trailing value EXPANDS ('-c"$x"', 'c' last-literal but
-    the word is not fully literal); the caller slices the program at
-    <value>[CI + 2:] (+1 re-adds the leading '-', +1 skips the 'c'). None when the
-    LITERAL prefix is not a '-c' short cluster. SCOPE: real bash/sh/dash reject a
-    glued '-c<cmd>' -- the chars after 'c' parse as more option letters and the
-    command is the NEXT word -- so a trailing-letter cluster like '-ce' is classed
-    'attached' here though bash reads it 'separate'. Telling a flag cluster from a
-    glued-command attempt needs a bash option-letter model we do not reinvent; the
-    realistic forms (the valid separate '-c <prog>' and the common bad-style glued
-    '-c'prog'') are both served, and a mis-split '-ce <prog>' only UNDER-reports
-    its next-word payload (safe direction)."""
-    lit = bash_ast.word_literal_prefix(word)
+    """Classify the '-c' in a short-option cluster WORD. Reads the LITERAL flag
+    letters (word_literal_letters), never raw source, so a 'c' inside an expansion
+    NAME ('-"$config"') is NOT misread as the -c flag, while a literal 'c' after an
+    interpolated value ('-B"$x"c') IS seen. Returns ("separate", None) when '-c' is
+    the LAST literal char and the word ENDS in a literal ('-c'/'-lc'/'-ec'), so the
+    program is the NEXT word; ("attached", CI) when a program is glued into this
+    word -- either a literal '-c"prog"' (CI = 'c's index) or a '-c' whose trailing
+    value EXPANDS ('-c"$x"', 'c' last-literal but the word does not end in a
+    literal); the caller slices the program at <value>[CI + 2:] (+1 re-adds the
+    leading '-', +1 skips the 'c'). None when the literal cluster is not a '-c'
+    short cluster. SCOPE: real bash/sh/dash reject a glued '-c<cmd>' -- the chars
+    after 'c' parse as more option letters and the command is the NEXT word -- so a
+    trailing-letter cluster like '-ce' is classed 'attached' here though bash reads
+    it 'separate'. Telling a flag cluster from a glued-command attempt needs a bash
+    option-letter model we do not reinvent; the realistic forms (the valid separate
+    '-c <prog>' and the common bad-style glued '-c'prog'') are both served, and a
+    mis-split '-ce <prog>' only UNDER-reports its next-word payload (safe
+    direction). CI indexes the literal letters, so a quote/expansion BEFORE the 'c'
+    ('-"c$x"') shifts the raw-source slice -- an invalid glued spelling bash itself
+    rejects, left as a documented miss, not parsed."""
+    lit = bash_ast.word_literal_letters(word)
     if not lit.startswith("-") or lit.startswith("--") or len(lit) < 2:
         return None
     cluster = lit[1:]
@@ -869,9 +872,8 @@ def _c_opt_program(word):
         return None
     ci = cluster.index("c")
     ## 'c' is the LAST literal char: the program is the next word only when the
-    ## word is fully literal; a trailing expansion ('-c"$x"') is a glued value.
-    if ci == len(cluster) - 1 \
-            and bash_ast.word_string(word) is not None:
+    ## word ENDS in a literal; a trailing expansion ('-c"$x"') is a glued value.
+    if ci == len(cluster) - 1 and bash_ast.word_ends_literal(word):
         return "separate", None
     return "attached", ci
 
@@ -1268,10 +1270,10 @@ def _python_call_mode(call, source):
                 return _python_operand_mode(tokens[index + 1:])
             if text.startswith("--"):
                 continue  ## a long info flag ('--version'); no script yet
-            ## Scan the LITERAL flag letters (word_literal_prefix), never raw
+            ## Scan the LITERAL flag letters (word_literal_letters), never raw
             ## source -- else a c/m inside an expansion NAME ('python -"$opts"')
             ## is misread as the -c/-m interpreter mode.
-            mode = _python_cluster_mode(bash_ast.word_literal_prefix(word)[1:])
+            mode = _python_cluster_mode(bash_ast.word_literal_letters(word)[1:])
             if mode is not None:
                 return mode
             continue  ## an ordinary short flag ('-Bsu', '-E', '-I')

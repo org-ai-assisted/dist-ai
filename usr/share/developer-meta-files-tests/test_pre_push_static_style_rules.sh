@@ -1019,6 +1019,19 @@ expect_rule "R-200" "timeout${sp}-${dollar}kopt${sp}5${sp}cmd" "present"
 ## name's 'c' and emits the wrong '-c' guidance.
 expect_rule "embedded python program (-c)" "python3${sp}-${dollar}copts${sp}s.py" "absent"
 expect_rule "run the +x script directly"  "python3${sp}-${dollar}copts${sp}s.py" "present"
+## A literal flag letter AFTER an interpolated value ('-v"$x"R') is still a flag:
+## the cluster scan reads ALL literal letters (word_literal_letters), not just the
+## leading prefix, so a flag is not lost when a value interpolates mid-word. These
+## guard against a leading-prefix-only cut (which misreads '-v"$x"R' as non-recursive
+## '-v', emitting wrong advice / a corrupting fix).
+## chmod '-v"$x"R' is recursive ('-vR') -> NOT the install-d shape -> R-173 absent.
+expect_rule "R-173" "${mkd}${sp}${dir173}${nlreal}${chm}${sp}-v${dq}${dollar}x${dq}R${sp}700${sp}${dir173}" "absent"
+## timeout '-v"$x"k 5 10' carries -k ('-vk') -> R-200 must NOT fire.
+expect_rule "R-200" "timeout${sp}-v${dq}${dollar}x${dq}k${sp}5${sp}10${sp}cmd" "absent"
+## mkdir '-p"$x"m 750' passes a mode via -m -> the 'use --mode not -m' message fires.
+expect_rule "use --mode not -m" "${mkd}${sp}-p${dq}${dollar}x${dq}m${sp}750${sp}--${sp}${dq}${tv}${dq}" "present"
+## grep '-v"$x"q' is quiet ('-vq') -> R-161 fires.
+expect_rule "R-161" "grep${sp}-v${dq}${dollar}x${dq}q${sp}foo${sp}${dir173}" "present"
 
 ## R-010: seven COPIES of one directive must NOT satisfy the block (DISTINCT
 ## directives are counted); the seven distinct directives pass.

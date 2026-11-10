@@ -233,10 +233,10 @@ def _grep_quiet(call, source):
             if bash_ast.resolve_long(name, GREP_QUIET) is not None:
                 is_quiet = True
         elif text.startswith("-") and not text.startswith("--"):
-            ## Scan the LITERAL flag letters (word_literal_prefix), never raw
+            ## Scan the LITERAL flag letters (word_literal_letters), never raw
             ## source -- else a 'q' inside an expansion NAME ('-"$opts"') reads
             ## as the short -q flag. See _mkdir_parents_flag for the idiom.
-            cluster = bash_ast.word_literal_prefix(word)[1:]
+            cluster = bash_ast.word_literal_letters(word)[1:]
             flags = cluster
             for position, letter in enumerate(cluster):
                 if letter in GREP_VALUE_SHORT:
@@ -413,7 +413,7 @@ class MkdirTmpMode(Rule):
                     if bash_ast.resolve_long(name, MKDIR_LONG) == "mode":
                         has_long = True
                 elif text.startswith("-") and not text.startswith("--") \
-                        and "m" in bash_ast.word_literal_prefix(word)[1:]:
+                        and "m" in bash_ast.word_literal_letters(word)[1:]:
                     has_short_m = True
             if has_long:
                 continue
@@ -679,7 +679,7 @@ def _mkdir_parents_flag(call, source):
         ## dir exists, so the message is moot. No getopt letter-set parser here;
         ## that is the crafted case the module's threat model excludes.
         if not text.startswith("--"):
-            for letter in bash_ast.word_literal_prefix(word)[1:]:
+            for letter in bash_ast.word_literal_letters(word)[1:]:
                 if letter == "p":
                     return True
                 if letter == "m":
@@ -709,11 +709,11 @@ def _chmod_is_recursive(call, source):
         if name is not None:
             if bash_ast.resolve_long(name, CHMOD_LONG) == "recursive":
                 return True
-        ## Scan the LITERAL flag letters (word_literal_prefix), never raw source
+        ## Scan the LITERAL flag letters (word_literal_letters), never raw source
         ## -- else an 'R' inside an expansion NAME ('-"$Ropt"') reads as the
         ## short -R recursive flag. See _mkdir_parents_flag for the idiom.
         elif not text.startswith("--") \
-                and "R" in bash_ast.word_literal_prefix(word)[1:]:
+                and "R" in bash_ast.word_literal_letters(word)[1:]:
             return True
     return False
 
@@ -1045,7 +1045,7 @@ class TimeoutKillAfter(Rule):
                     elif resolved in ("help", "version"):
                         informational = True
                 elif text.startswith("-") and _timeout_cluster_has_kill(
-                        bash_ast.word_literal_prefix(word)[1:]):
+                        bash_ast.word_literal_letters(word)[1:]):
                     has_kill = True
             if has_kill or informational:
                 continue
@@ -1101,7 +1101,7 @@ class TimeoutKillAfter(Rule):
                     elif resolved in ("help", "version"):
                         informational = True
                 elif text.startswith("-") and _timeout_cluster_has_kill(
-                        bash_ast.word_literal_prefix(word)[1:]):
+                        bash_ast.word_literal_letters(word)[1:]):
                     has_kill = True
             if has_kill or informational or duration_word is None:
                 continue

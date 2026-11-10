@@ -365,6 +365,57 @@ def word_literal_prefix(word):
     return "".join(out)
 
 
+def word_literal_letters(word):
+    """ALL statically-known literal characters of WORD, with expansion
+    (parameter/command/arithmetic) segments SKIPPED and the scan CONTINUING past
+    them: '-v"$x"R' -> '-vR', '-"$opts"' -> '-', '-pm700' -> '-pm700', '-$x' ->
+    '-'. Unlike word_literal_prefix (which STOPS at the first expansion), this
+    keeps the literal option-flag letters that FOLLOW an interpolated value, so a
+    cluster scan does not lose a flag ('-vR' recursive) when a value interpolates
+    mid-word. Use it, not word_literal_prefix, for a short-option CLUSTER-LETTER
+    scan: the KNOWN flag letters are every literal char, wherever they sit.
+    SCOPE (accident, not adversary, as word_string): an expansion contributes zero
+    letters, so a letter it would supply -- INCLUDING a value-taking letter that
+    would consume the chars after it -- is not modeled (a crafted '-"$x"R' with
+    $x a value-taker that eats R is out of scope); a $'...' part is taken raw. Pair
+    with word_ends_literal for the value-taker 'takes the NEXT word' decision."""
+    if word is None:
+        return ""
+    out = []
+    for part in word.get("Parts") or []:
+        kind = part.get("Type")
+        if kind == "Lit":
+            out.append(_deescape_unquoted_lit(part.get("Value") or ""))
+        elif kind == "SglQuoted":
+            out.append(part.get("Value") or "")
+        elif kind == "DblQuoted":
+            ## keep each literal sub-segment, SKIP expansion sub-segments.
+            for sub in part.get("Parts") or []:
+                if sub.get("Type") == "Lit":
+                    out.append(sub.get("Value") or "")
+    return "".join(out)
+
+
+def word_ends_literal(word):
+    """True if WORD's FINAL character is statically known -- its last Part is a
+    literal (Lit / single-quoted / a double-quote whose last sub-part is literal),
+    not an expansion. A value-taking option letter that is the last LITERAL char
+    of word_literal_letters is the last char of the WHOLE word only when this holds
+    -- then it takes the NEXT word as its value; otherwise a trailing expansion
+    ('-u"$x"') is an inline value, not a next-word consume."""
+    parts = (word or {}).get("Parts") or []
+    if not parts:
+        return False
+    last = parts[-1]
+    kind = last.get("Type")
+    if kind in ("Lit", "SglQuoted"):
+        return True
+    if kind == "DblQuoted":
+        subs = last.get("Parts") or []
+        return bool(subs) and subs[-1].get("Type") == "Lit"
+    return False
+
+
 def _deescape_unquoted_lit(value):
     """Strip the backslash-escapes bash removes from an UNQUOTED word before it uses
     it: '\\rm' -> 'rm', 'rm\\ x' -> 'rm x', '\\\\' -> '\\'. shfmt keeps the backslash
