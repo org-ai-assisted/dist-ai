@@ -247,6 +247,26 @@ check "inst match: passed --mode functional" \
 check "inst match: did NOT pass --mode leak" \
    "$(grep --quiet -- '--mode leak' "${PAIR_ARGV}" && printf '%s' "false" || printf '%s' "true")"
 
+## #1 (codex + claude, CONFIRMED): the evidence CAPTURE must NEVER change the verdict. A tee/tail
+## write failure on the capture pipe (ENOSPC, SIGXFSZ, EPIPE) during a PASSING battery must still
+## publish PASS -- the lane reads dm-whonix-pair's OWN rc via PIPESTATUS, not the pipeline's.
+## Canary: the pre-fix pipeline took the whole pipeline's status under pipefail, so a failing tee
+## turned a real PASS into a published FAIL. Install a failing `tee` stub for this one call.
+printf '%s\n' 'Value: 18.2.3.5' > "${MARKER_RESPONSE_FILE}"
+printf '%s' "" > "${PAIR_ARGV}"
+cat > "${stubbin}/tee" <<'EOF'
+#!/bin/bash
+cat >/dev/null 2>&1 || true
+exit 1
+EOF
+chmod 0755 -- "${stubbin}/tee"
+rc_cap="$(run_lane rt_lane_whonix_inst persist-inst-whonix)"
+safe-rm --force -- "${stubbin}/tee"
+check "capture tee FAILURE on a PASS: verdict stays 0 (capture never changes the verdict)" \
+   "$([ "${rc_cap}" = '0' ] && printf '%s' "true" || printf '%s' "false")"
+check "capture tee failure: dm-whonix-pair still ran (pipeline reached)" \
+   "$([ -s "${PAIR_ARGV}" ] && printf '%s' "true" || printf '%s' "false")"
+
 ## #2 (grok/codex firmware honesty): the version marker matches but the pair's ACTUAL firmware is
 ## EFI (a stale pair) -> the lane must REFUSE (SETUP_RC) before dm-whonix-pair, never publishing a
 ## mislabeled -bios cell. Canary: without the showvminfo firmware verify, the lane proceeds + runs.

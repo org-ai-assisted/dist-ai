@@ -203,6 +203,12 @@ eph_account=""
 ## Per-run built-ISO staging dir (set by the kicksecure lane), removed by rt_eph_cleanup
 ## on ANY exit path so a staged multi-GB copy never leaks on an error return or a signal.
 rt_staged_dir=""
+## Per-run whonix functional-lane output capture (the step's stdout EVIDENCE), reaped by
+## rt_eph_cleanup on ANY exit path (incl. a signal mid-battery) so it never leaks.
+rt_func_log=""
+## Cap the capture so a runaway battery log cannot fill the disk; the emitter publishes only a
+## tail anyway (image-test-result-emit TAIL_BYTES), so this bound loses nothing in practice.
+rt_funclog_max=1048576
 
 ## fd holding the shared-account lock (rt_lock_account); held until this process exits.
 rt_lock_fd=""
@@ -1041,6 +1047,11 @@ rt_eph_cleanup() {
       safe-rm --recursive --force -- "${rt_staged_dir}" 2>/dev/null || true
       rt_staged_dir=""
    fi
+   ## Reap the whonix functional-lane capture on ANY exit (signal included), same as the staged dir.
+   if [ -n "${rt_func_log}" ]; then
+      safe-rm --force -- "${rt_func_log}" 2>/dev/null || true
+      rt_func_log=""
+   fi
    [ -n "${eph_account}" ] || return 0
    rt_eph_reclaim "${eph_account}"
 }
@@ -1566,7 +1577,7 @@ rt_build_local_repo_provenance() {
 ## inst lane: the functional release-check battery (>= the kicksecure coverage) run on the
 ## Workstation of a persist-inst- pair, after the Gateway's Tor bootstrap gate.
 rt_lane_whonix_inst() {
-   local account version gw ws rc check_log func_log=""
+   local account version gw ws rc check_log
    account="$1"
    version="$2"
    gw="Whonix-Gateway-${desktop}"
@@ -1633,14 +1644,25 @@ rt_lane_whonix_inst() {
       LOCAL_APT_REPOSITORY_BASE="${lr_base}" "${DM_SHARED_APT_REPO}" expose \
          || log warn "dm-shared-apt-repo expose failed; the WS base-local upgrade may be INCONCLUSIVE"
    fi
-   ## Capture the lane's FULL output (per-check PASS lines + check 3's file:// upgrade proof) while
-   ## STILL streaming it live: tee passes through to the console AND a root-owned file, so a PASS
-   ## publishes real EVIDENCE (the step's stdout tail) instead of a black box. Best-effort -- a
-   ## failed mktemp just omits the tail, never aborts the lane. pipefail keeps dm-whonix-pair's rc
-   ## authoritative (tee rc 0 cannot mask a lane failure). The emitter reads it no-follow.
-   func_log="$(mktemp --tmpdir "dm-release-test-whonix-funclog.XXXXXX" 2>/dev/null || true)"
-   if [ -n "${func_log}" ]; then
-      sudo -u "${account}" -- "${rt_session_env[@]}" "${DM_WHONIX_PAIR}" --mode functional --interface "${wp_interface}" --check-log "${check_log}" "${lr_args[@]}" --gw "${gw}" --ws "${ws}" 2>&1 | tee -- "${func_log}" || rc=$?
+   ## Capture the lane's output for the step's stdout EVIDENCE (a PASS carries the per-check PASS
+   ## lines + check 3's file:// upgrade proof, not a black box) while STILL streaming it live. The
+   ## capture must NEVER change the verdict and must never fill the disk:
+   ##   - rc comes from dm-whonix-pair's OWN exit via PIPESTATUS[0] (per-command, independent of
+   ##     pipefail), captured without aborting -- a tee/tail write failure (ENOSPC, SIGXFSZ, EPIPE)
+   ##     cannot turn a PASS into a published FAIL. The pipeline sits on the LHS of `&&`/`||` so
+   ##     errexit does not fire on it, and PIPESTATUS is copied before any later command clobbers it.
+   ##   - `tee /dev/stderr` streams the output live (merged into the run's durable log); `tail -c`
+   ##     keeps only the last ${rt_funclog_max} bytes, so a runaway log cannot exhaust the disk.
+   ##   - rt_func_log is a GLOBAL reaped by the EXIT trap, so a signal mid-battery does not leak it.
+   ## Best-effort: a failed mktemp just omits the evidence tail, never aborts the lane.
+   rt_func_log="$(mktemp --tmpdir "dm-release-test-whonix-funclog.XXXXXX" 2>/dev/null || true)"
+   if [ -n "${rt_func_log}" ]; then
+      local -a rt_pipe_status=()
+      sudo -u "${account}" -- "${rt_session_env[@]}" "${DM_WHONIX_PAIR}" --mode functional --interface "${wp_interface}" --check-log "${check_log}" "${lr_args[@]}" --gw "${gw}" --ws "${ws}" 2>&1 \
+         | tee /dev/stderr \
+         | tail -c "${rt_funclog_max}" > "${rt_func_log}" \
+         && rt_pipe_status=( "${PIPESTATUS[@]}" ) || rt_pipe_status=( "${PIPESTATUS[@]}" )
+      rc="${rt_pipe_status[0]}"
    else
       sudo -u "${account}" -- "${rt_session_env[@]}" "${DM_WHONIX_PAIR}" --mode functional --interface "${wp_interface}" --check-log "${check_log}" "${lr_args[@]}" --gw "${gw}" --ws "${ws}" || rc=$?
    fi
@@ -1650,7 +1672,7 @@ rt_lane_whonix_inst() {
    [ -s "${check_log}" ] && rt_check_log="${check_log}"
    ## Publish the captured lane output as the step's stdout tail -- evidence on a PASS too.
    rt_stdout_log=""
-   [ -s "${func_log}" ] && rt_stdout_log="${func_log}"
+   [ -s "${rt_func_log}" ] && rt_stdout_log="${rt_func_log}"
    ## HONEST provenance: on a --local-repo run record WHAT was delivered (derivative, host repoPath,
    ## build sourceSha, the Packages name=version list) as the result.json localRepo block, so the
    ## site shows the exact local build the verdict applies to. Host-side read (no guest round-trip).
@@ -1677,7 +1699,7 @@ rt_lane_whonix_inst() {
          log error "localRepo provenance for ${local_repo} failed (gen_before_rc ${rt_local_repo_gen_rc}, gen_now_rc ${gen_now_rc}, build_rc ${prov_rc}) -- refusing to publish a local-repo run as a published-repo run"
          rt_publish_result whonix "${version}" "${account}" whonix-func "${SETUP_RC}" "" release-checks
          sudo -u "${account}" -- safe-rm --force -- "${check_log}" 2>/dev/null || true
-         if [ -n "${func_log}" ]; then safe-rm --force -- "${func_log}" 2>/dev/null || true; fi
+         if [ -n "${rt_func_log}" ]; then safe-rm --force -- "${rt_func_log}" 2>/dev/null || true; rt_func_log=""; fi
          return "${SETUP_RC}"
       fi
       [ -n "${rt_local_repo_json}" ] \
@@ -1685,7 +1707,7 @@ rt_lane_whonix_inst() {
    fi
    rt_publish_result whonix "${version}" "${account}" whonix-func "${rc}" "" release-checks
    sudo -u "${account}" -- safe-rm --force -- "${check_log}" 2>/dev/null || true
-   if [ -n "${func_log}" ]; then safe-rm --force -- "${func_log}" 2>/dev/null || true; fi
+   if [ -n "${rt_func_log}" ]; then safe-rm --force -- "${rt_func_log}" 2>/dev/null || true; rt_func_log=""; fi
    return "${rc}"
 }
 
