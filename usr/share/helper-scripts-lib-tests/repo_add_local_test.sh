@@ -101,27 +101,31 @@ fi
 ## the Tor remotes (covering this derivative repo and the Debian-base cache sources).
 pin_file="${tmp}/prefs/local-apt-repo.pref"
 if [ -f "${pin_file}" ] && [ "$(cat -- "${pin_file}")" = "$(local_apt_repo_pin)" ]; then
-   ok "wrote the local-sources pin (priority 1000) matching the shared generator"
+   ok "wrote the local-sources pin matching the shared generator"
 else
    bad "did not write the expected pin to ${pin_file}"
 fi
 
-## --- mnt location + Debian-base cache: resident-component base sources + pin --------------------
+## --- mnt location + Debian-base mirror: resident-component base sources + pin --------------------
 ## Drive the mnt path via the REPO_ADD_LOCAL_GUEST_MOUNT seam (fixture, no real mountpoint): a
-## derivative 'local' repo PLUS an aptcache whose 'debian' nick offers main (RESIDENT) + contrib
-## (OFFERED but uncached) for the host codename. Expect base sources with ONLY the resident
-## component, not Trusted:yes, plus the pin.
+## derivative 'local' repo PLUS an aptcache whose 'debian' nick offers main (RESIDENT, via the
+## COMPRESSED index a real mirror stores -- the F1 path) + contrib (OFFERED but ABSENT on disk)
+## for the host codename. Expect base sources with ONLY the resident component, not Trusted:yes,
+## plus the pin.
 mnt_cn="$( . /etc/os-release 2>/dev/null || true; printf '%s' "${VERSION_CODENAME:-trixie}" )"
 mnt_arch="$(dpkg --print-architecture 2>/dev/null || printf '%s' amd64)"
 mnt_dists="${tmp}/mnt/aptcache/debian/dists/${mnt_cn}"
 mkdir --parents -- \
    "${tmp}/mnt/aptrepo_local/whonix/dists/local" \
-   "${mnt_dists}/main/binary-${mnt_arch}/by-hash/SHA256" \
-   "${mnt_dists}/contrib/binary-${mnt_arch}/by-hash/SHA256" \
+   "${mnt_dists}/main/binary-${mnt_arch}" \
    "${tmp}/mnt-sources" "${tmp}/mnt-prefs"
 mnt_mh="$(printf '%s' mainidx | sha256sum | cut -d' ' -f1)"
 mnt_ch="$(printf '%s' contribidx | sha256sum | cut -d' ' -f1)"
-touch -- "${mnt_dists}/main/binary-${mnt_arch}/by-hash/SHA256/${mnt_mh}"
+## main resident via the compressed index ONLY (no uncompressed Packages, no by-hash -- the real
+## mirror form); contrib is offered by InRelease but has no index on disk, so it must be excluded.
+touch -- \
+   "${mnt_dists}/main/binary-${mnt_arch}/Packages.gz" \
+   "${mnt_dists}/main/binary-${mnt_arch}/Packages.xz"
 printf '%s\n' "SHA256:" \
    " ${mnt_mh} 12345 main/binary-${mnt_arch}/Packages" \
    " ${mnt_ch} 6789 contrib/binary-${mnt_arch}/Packages" \

@@ -59,13 +59,14 @@ codename="local"
 share_name="shared"
 guest_mount="/mnt/shared"
 
-## Host apt cache (approx) exposed file-based to the guest: bind-mounted READ-ONLY under the shared
-## tree so the single 'shared' vboxsf carries it to ${guest_mount}/aptcache. A guest full upgrade
-## then pulls the DEBIAN BASE from local file: content (no Tor) -- fast + offline, testing the
-## built packages against a current base. Overridable + absent-safe: a host without the approx
-## cache just skips this and the guest base stays on its normally-configured sources (generic for
-## any image type / non-approx host).
-approx_cache="${APPROX_CACHE_DIR:-/var/cache/approx-derivative-maker}"
+## Local COMPLETE Debian mirror exposed file-based to the guest: bind-mounted READ-ONLY under the
+## shared tree so the single 'shared' vboxsf carries it to ${guest_mount}/aptcache. A guest full
+## upgrade then pulls the DEBIAN BASE from local file: content (no Tor) -- fast + offline, testing
+## the built packages against a current base. The mirror (private-ai-config's debian-mirror-sync,
+## server-only) holds debian/ + debian-security/, each a genuine signed archive. Overridable +
+## absent-safe: a host without the mirror skips this and the guest base stays on its normally-
+## configured sources (generic for any image type / non-mirror host).
+mirror_dir="${DEBIAN_MIRROR_DIR:-/srv/debian-mirror}"
 cache_mount="${repo_parent}/aptcache"
 
 die() {
@@ -93,25 +94,25 @@ check_derivative() {
 
 repo_dir_for() { printf '%s' "${repo_parent}/aptrepo_local/${1}"; }
 
-## Expose the host approx Debian cache under the shared tree (read-only bind-mount) so the guest
-## reaches it at ${guest_mount}/aptcache via the existing 'shared' vboxsf. Idempotent
-## (mountpoint-guarded) and GENERIC: a host without the approx cache skips silently, so the guest
-## base simply stays on its configured sources. Needs root for the bind-mount (sudo; dm's build
-## user has it). A plain 'mount --bind' is read-write, so a second remount pass makes it read-only
-## (the guest must not mutate the host cache).
+## Expose the local Debian mirror under the shared tree (read-only bind-mount) so the guest reaches
+## it at ${guest_mount}/aptcache via the existing 'shared' vboxsf. Idempotent (mountpoint-guarded)
+## and GENERIC: a host without the mirror skips silently, so the guest base simply stays on its
+## configured sources. Needs root for the bind-mount (sudo; dm's build user has it). A plain
+## 'mount --bind' is read-write, so a second remount pass makes it read-only (the guest must not
+## mutate the host mirror).
 expose_cache() {
-   if [ ! -d "${approx_cache}" ]; then
-      printf '%s\n' "${me}: no apt cache at ${approx_cache}; Debian base stays on its configured sources (ok)"
+   if [ ! -d "${mirror_dir}" ]; then
+      printf '%s\n' "${me}: no Debian mirror at ${mirror_dir}; Debian base stays on its configured sources (ok)"
       return 0
    fi
    if mountpoint --quiet -- "${cache_mount}" 2>/dev/null; then
-      printf '%s\n' "${me}: apt cache already exposed at ${cache_mount}"
+      printf '%s\n' "${me}: Debian mirror already exposed at ${cache_mount}"
       return 0
    fi
    mkdir --parents -- "${cache_mount}"
-   sudo mount --bind -- "${approx_cache}" "${cache_mount}"
+   sudo mount --bind -- "${mirror_dir}" "${cache_mount}"
    sudo mount -o remount,ro,bind -- "${cache_mount}"
-   printf '%s\n' "${me}: exposed apt cache ${approx_cache} -> ${cache_mount} (guest: ${guest_mount}/aptcache)"
+   printf '%s\n' "${me}: exposed Debian mirror ${mirror_dir} -> ${cache_mount} (guest: ${guest_mount}/aptcache)"
 }
 
 do_prepare() {
@@ -132,7 +133,7 @@ do_prepare() {
    ## caller CWD (e.g. invoked from another user's home) -- that failure is non-zero
    ## and would abort under errexit.
    ( cd -- "${rd}" && find . -type d -exec chmod o+rx -- {} + )
-   ## Also expose the host apt cache (Debian base) under the shared tree, so the guest's full
+   ## Also expose the local Debian mirror (Debian base) under the shared tree, so the guest's full
    ## upgrade can pull the base locally too, not just the derivative repo. Absent-safe (skips).
    expose_cache
    printf '%s\n' \
