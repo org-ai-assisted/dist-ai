@@ -20,6 +20,7 @@
 import ast
 import inspect
 import sys
+import time
 
 from st_qt_platform import require_wayland
 require_wayland('secure-terminal-tests(review)')
@@ -1449,6 +1450,27 @@ ok(_ne.source() == '', 'Ctrl-zoom with no zoomable window is a safe no-op (nothi
 # the overlap only manifests under the shot's host+show+adjustSize sizing, which a bare
 # ReviewBar.adjustSize() here does NOT reproduce (so a bar-only geometry assertion would
 # pass on the buggy tree too -- no teeth).
+
+# --- REGRESSION: the revealed box renders in LINEAR time (no per-run relayout DoS) ---
+# A revealed paste whose chars alternate marking classes expands into one render run
+# PER character; RevealedEditor._render rebuilds the whole document, so inserting each
+# run OUTSIDE a QTextCursor edit block re-laid-out the growing block on every call --
+# O(n^2). A few-thousand-char review paste then froze the box for tens of seconds to
+# minutes (a DoS on the one surface that handles untrusted text). The fix wraps the
+# rebuild in beginEditBlock/endEditBlock (one relayout). Bound generously: the fixed
+# path renders this in well under a second; the quadratic path needs tens of seconds.
+_tdos = _FakeTerm()
+_dos_payload = (CYR_A + 'a') * 2000        # 4000 chars, a new marking run per char
+_t0 = time.monotonic()
+_bar.show_review(_tdos, _dos_payload, 0, 'paste')
+_dos_dt = time.monotonic() - _t0
+ok(_bar._editor.document().characterCount() > 4000,
+   'the revealed box rendered the large payload (not truncated): %d chars'
+   % _bar._editor.document().characterCount())
+ok(_dos_dt < 10.0,
+   'revealed-box render of a 4000-char alternating payload is linear-fast '
+   '(%.2fs; the pre-fix per-run relayout was quadratic -- tens of seconds)' % _dos_dt)
+_bar.hide_review()
 
 APP.processEvents()
 print('secure-terminal-tests(review): all passed' if not _failures else

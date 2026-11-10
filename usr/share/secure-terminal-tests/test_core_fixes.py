@@ -11,6 +11,8 @@ replay), colors=false in TUI, TUI scrollback repaint on a theme toggle, the CLI 
 prefix, the zero-width mid-row-gap cursor advance, the PROMPT_START split carry, and the
 OSC-52 modal notifier guard."""
 
+import time
+
 from test_widget_common import *   # noqa: F401,F403  (shared harness)
 
 from PyQt6.QtGui import QKeyEvent, QTextLayout
@@ -471,6 +473,27 @@ _jb_tc_90 = _jb_bar_too_close_calls(90)
 ok(_jb_tc_30 > 0 and _jb_tc_30 == _jb_tc_90,
    'JB-perf: space-visibility memoized -- too_close() calls are width-independent (%d vs %d); '
    'without the memo they grow one per styled space cell' % (_jb_tc_30, _jb_tc_90))
+
+
+# --- paint DoS: a long single line renders in LINEAR time (no per-run relayout) -------
+# _paint_line rebuilds the current line run-by-run; a single feed with no newline that
+# alternates marking classes produces one run PER char. Inserting each run OUTSIDE a
+# QTextCursor edit block re-laid-out the growing block on every call -- O(n^2), a
+# multi-second GUI freeze on a few-KB adversarial line. The fix wraps the repaint in
+# beginEditBlock/endEditBlock (one relayout). Bound generously: the fixed path paints
+# this in well under a second; the quadratic path needed tens of seconds to minutes.
+_pdos = SecureTerminal(command='/bin/cat')        # CLI/line mode
+_pdos_payload = ((chr(0x20ac) + 'a') * 4000).encode('utf-8')   # 8000 chars (U+20AC + a), no newline
+_pt0 = time.monotonic()
+feed_output(_pdos, _pdos_payload)
+_pdos_text = _pdos.toPlainText()                  # forces _force_current_frame -> _paint_line
+_pdos_dt = time.monotonic() - _pt0
+ok(len(_pdos_text) > 4000,
+   'paint-DoS: the long line rendered (not truncated): %d chars' % len(_pdos_text))
+ok(_pdos_dt < 10.0,
+   'paint-DoS: an 8000-char single-line feed+paint is linear-fast (%.2fs; the pre-fix '
+   'per-run relayout was quadratic -- tens of seconds to minutes)' % _pdos_dt)
+_pdos.shutdown()
 
 
 finish('core-fixes')

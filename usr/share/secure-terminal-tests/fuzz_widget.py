@@ -221,11 +221,17 @@ def phase_feed(rnd, iterations, seed):
         m = rnd.choice(modes)
         term = pool[m]
         raw = _rand_bytes_chunk(rnd)
-        dt = _feed(term, raw)
-        _assert(dt < _FEED_BUDGET_S,
-                'CLI {0} feed took {1:.1f}s (DoS) on {2} bytes'
-                .format(m, dt, len(raw)), seed)
+        # Time the feed AND the forced render together: the paint is debounced, so
+        # _feed alone misses a per-run paint blow-up; _check_document's toPlainText
+        # forces the frame, bringing the RENDER inside the DoS window. A render DoS
+        # must fail LOUD with a replay seed, not silently overrun the suite timeout.
+        start = time.monotonic()
+        _feed(term, raw)
         _check_document(term, seed, 'cli-feed:' + m)
+        dt = time.monotonic() - start
+        _assert(dt < _FEED_BUDGET_S,
+                'CLI {0} feed+render took {1:.1f}s (DoS) on {2} bytes'
+                .format(m, dt, len(raw)), seed)
 
 
 def phase_tui(rnd, iterations, seed):
@@ -236,10 +242,14 @@ def phase_tui(rnd, iterations, seed):
     for _ in _bounded(iterations, _PHASE_BUDGET_S):
         term.apply_mode(rnd.choice(modes))
         raw = _rand_bytes_chunk(rnd)
-        dt = _feed(term, raw)
-        _assert(dt < _FEED_BUDGET_S,
-                'TUI feed took {0:.1f}s (DoS) on {1} bytes'.format(dt, len(raw)), seed)
+        # Feed + forced render inside one DoS window (see phase_feed): catch a per-run
+        # paint blow-up as a loud seeded assertion, not a silent suite timeout.
+        start = time.monotonic()
+        _feed(term, raw)
         _check_document(term, seed, 'tui-feed')
+        dt = time.monotonic() - start
+        _assert(dt < _FEED_BUDGET_S,
+                'TUI feed+render took {0:.1f}s (DoS) on {1} bytes'.format(dt, len(raw)), seed)
         _check_cells_bounded(term, seed, 'tui-feed')
 
 
@@ -331,6 +341,11 @@ def phase_review(rnd, iterations, seed):
     QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes)
     try:
         for _ in _bounded(iterations, _PHASE_BUDGET_S):
+            # Bound the whole iteration: show_review -> set_source_revealed -> _render
+            # rebuilds the box per run, a quadratic-render DoS surface on a revealed
+            # payload that expands into hundreds of badges. Fail LOUD with a replay
+            # seed rather than silently overrunning the suite timeout.
+            start = time.monotonic()
             raw = ''.join(_rand_token(rnd) for _ in range(rnd.randint(0, 15)))
             bar.show_review(term, raw, rnd.randint(0, 3),
                             rnd.choice(('paste', 'copy', 'clipboard', 'bogus')))
@@ -359,6 +374,9 @@ def phase_review(rnd, iterations, seed):
             bar.hide_review()
             # drive the REAL Deliver path with a populated un-shown tail
             _fuzz_review_delivery(rnd, bar, term, seed)
+            dt = time.monotonic() - start
+            _assert(dt < _FEED_BUDGET_S,
+                    'review iteration took {0:.1f}s (DoS) on {1!r}'.format(dt, raw), seed)
     finally:
         QMessageBox.question = _saved_q
 
