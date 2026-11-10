@@ -43,7 +43,9 @@ fail() { fail_count=$((fail_count + 1)); printf '%s\n' "FAIL: $*" >&2; }
 
 work_dir="$(mktemp --directory)"
 # shellcheck disable=SC2317  # reached via the EXIT trap
-cleanup() { safe-rm --recursive --force -- "${work_dir}"; }
+## Best-effort: a cleanup failure must not fire errexit in the trap and flip a
+## passing case to a non-zero exit (the suite runner keys on the exit code).
+cleanup() { safe-rm --recursive --force -- "${work_dir}" || true; }
 trap cleanup EXIT
 stub_bin="${work_dir}/bin"
 mkdir --parents -- "${stub_bin}"

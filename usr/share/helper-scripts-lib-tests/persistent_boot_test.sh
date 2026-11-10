@@ -54,7 +54,9 @@ pass() { pass_count=$(( pass_count + 1 )); printf '%s\n' "PASS: $1"; }
 fail() { fail_count=$(( fail_count + 1 )); printf '%s\n' "FAIL: $1"; }
 
 workdir="$(mktemp --directory)"
-cleanup() { safe-rm --recursive --force -- "${workdir}"; }
+## Best-effort: a cleanup failure must not fire errexit in the trap and flip a
+## passing case to a non-zero exit (the suite runner keys on the exit code).
+cleanup() { safe-rm --recursive --force -- "${workdir}" || true; }
 trap cleanup EXIT
 
 cmdline_file="${workdir}/cmdline"

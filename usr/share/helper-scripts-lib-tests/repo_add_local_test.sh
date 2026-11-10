@@ -52,7 +52,9 @@ ok() { pass_count=$(( pass_count + 1 )); printf '%s\n' "PASS: $1"; }
 bad() { fail_count=$(( fail_count + 1 )); printf '%s\n' "FAIL: $1"; }
 
 tmp="$(mktemp --directory)"
-cleanup() { rm --recursive --force -- "${tmp}"; }
+## Best-effort: a cleanup failure must not fire errexit in the trap and flip a
+## passing case to a non-zero exit (the suite runner keys on the exit code).
+cleanup() { safe-rm --recursive --force -- "${tmp}" || true; }
 trap cleanup EXIT
 
 ## Fixtures: a fake 'local' repo, a sources dir, PATH stubs (root/network actions).

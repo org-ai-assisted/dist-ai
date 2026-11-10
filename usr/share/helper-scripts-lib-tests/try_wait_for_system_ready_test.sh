@@ -72,7 +72,11 @@ fail() { fail_count=$((fail_count + 1)); printf '%s\n' "FAIL: $*" >&2; }
 
 work_dir="$(mktemp --directory)"
 # shellcheck disable=SC2317  # reached via the EXIT trap
-cleanup() { safe-rm --recursive --force -- "${work_dir}"; }
+## Best-effort removal: '|| true' keeps a cleanup failure from firing errexit
+## INSIDE the EXIT trap, which would flip an all-assertions-passed run to a
+## non-zero exit that the suite runner mis-counts as a FAILED case (the case still
+## printed '0 fail'). The real verdict is the final '[ fail_count -eq 0 ]' below.
+cleanup() { safe-rm --recursive --force -- "${work_dir}" || true; }
 trap cleanup EXIT
 
 probe_log="${work_dir}/leaprun-calls"
@@ -213,31 +217,43 @@ else
 fi
 
 ## A non-ready, non-empty state ('starting', exit!=0) is NOT accepted: the loop
-## keeps probing to the cap. Regression: a subject treating any non-empty output
-## as ready returns after 1 probe.
+## keeps probing until the cap, then returns 0 (best-effort). Regression: a
+## subject treating any non-empty output as ready returns after 1 probe, in ~0s.
+## Discriminate by ELAPSED (did it WAIT OUT the cap?), not by probe count: a probe
+## count under a tight wall-clock cap couples to load -- a slow first probe can
+## leave only 1 probe inside a 2s cap and flake a 'probes >= 2' assertion, while a
+## wrongly-accepting subject still returns in ~0s. Load only grows elapsed, so the
+## 'waited at least one light_sleep' lower bound stays robust.
 reset_stub
 export LEAPRUN_FAKE_RESULT='starting'
 rc=0
+t0="$(date +%s)"
 system_ready_wait_max_seconds=2 try_wait_for_system_ready || rc="$?"
+t1="$(date +%s)"
+elapsed=$(( t1 - t0 ))
 probe_calls="$(wc -l <"${probe_log}")"
-if [ "${rc}" = '0' ] && [ "${probe_calls}" -ge 2 ]; then
-   pass "'starting' not accepted -> kept probing to cap (${probe_calls} probes)"
+if [ "${rc}" = '0' ] && [ "${probe_calls}" -ge 1 ] && [ "${elapsed}" -ge 1 ]; then
+   pass "'starting' not accepted -> waited out the cap (${elapsed}s, ${probe_calls} probes)"
 else
-   fail "'starting' -> rc=${rc}, probes=${probe_calls} (want 0, >=2)"
+   fail "'starting' -> rc=${rc}, elapsed=${elapsed}s, probes=${probe_calls} (want 0, >=1s, >=1 probe)"
 fi
 
 ## A state that merely CONTAINS 'running' as a substring ('not-running') is NOT
 ## ready: the match is whole-line. Regression: a subject using an unanchored
-## 'grep -E running|degraded' accepts it and returns after 1 probe.
+## 'grep -E running|degraded' accepts it and returns after 1 probe in ~0s.
+## Elapsed-based for the same load-robustness reason as the 'starting' case.
 reset_stub
 export LEAPRUN_FAKE_RESULT='not-running'
 rc=0
+t0="$(date +%s)"
 system_ready_wait_max_seconds=2 try_wait_for_system_ready || rc="$?"
+t1="$(date +%s)"
+elapsed=$(( t1 - t0 ))
 probe_calls="$(wc -l <"${probe_log}")"
-if [ "${rc}" = '0' ] && [ "${probe_calls}" -ge 2 ]; then
-   pass "'not-running' (substring) not accepted -> kept probing (${probe_calls} probes)"
+if [ "${rc}" = '0' ] && [ "${probe_calls}" -ge 1 ] && [ "${elapsed}" -ge 1 ]; then
+   pass "'not-running' (substring) not accepted -> waited out the cap (${elapsed}s, ${probe_calls} probes)"
 else
-   fail "'not-running' -> rc=${rc}, probes=${probe_calls} (want 0, >=2)"
+   fail "'not-running' -> rc=${rc}, elapsed=${elapsed}s, probes=${probe_calls} (want 0, >=1s, >=1 probe)"
 fi
 
 ## CANARY (wall-clock): never ready, each probe SLOW (3s), cap 3s. A monotonic

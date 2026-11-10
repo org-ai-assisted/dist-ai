@@ -72,7 +72,9 @@ fi
 as_root() { :; }
 
 work="$(mktemp --directory)"
-cleanup() { safe-rm --recursive --force -- "${work}"; }
+## Best-effort: a cleanup failure must not fire errexit in the trap and flip a
+## passing case to a non-zero exit (the suite runner keys on the exit code).
+cleanup() { safe-rm --recursive --force -- "${work}" || true; }
 trap cleanup EXIT
 
 ## Mirror the subject's derived layout: dkms_mok_variables_set computes
