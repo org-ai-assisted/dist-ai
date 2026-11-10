@@ -337,6 +337,34 @@ def word_lit(word):
     return None
 
 
+def word_literal_prefix(word):
+    """WORD's leading run of statically-known literal characters, stopping at the
+    first expansion (parameter/command/arithmetic): '-p"$x"' -> '-p', '"-p$x"' ->
+    '-p', '-$opt' -> '-', '-pv' -> '-pv'. Reads the KNOWN option-flag letters of a
+    word whose tail expands, where word_string (the whole-word form) returns None
+    because a part expands. Same accident-not-adversary scope as word_string: an
+    ANSI-C $'...' part is taken raw, not decoded."""
+    if word is None:
+        return ""
+    out = []
+    for part in word.get("Parts") or []:
+        kind = part.get("Type")
+        if kind == "Lit":
+            out.append(_deescape_unquoted_lit(part.get("Value") or ""))
+        elif kind == "SglQuoted":
+            out.append(part.get("Value") or "")
+        elif kind == "DblQuoted":
+            ## take the quote's leading literal text, stopping at its first expansion.
+            for sub in part.get("Parts") or []:
+                if sub.get("Type") == "Lit":
+                    out.append(sub.get("Value") or "")
+                else:
+                    return "".join(out)
+        else:
+            return "".join(out)
+    return "".join(out)
+
+
 def _deescape_unquoted_lit(value):
     """Strip the backslash-escapes bash removes from an UNQUOTED word before it uses
     it: '\\rm' -> 'rm', 'rm\\ x' -> 'rm x', '\\\\' -> '\\'. shfmt keeps the backslash

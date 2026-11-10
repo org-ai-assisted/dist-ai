@@ -969,11 +969,15 @@ expect_rule "install -d -m MODE -- DIR" "${mkd}${sp}-pm700${sp}--${sp}${dq}${dir
 ## the cluster remainder), so it KEEPS the lock-dir message; guards against a naive
 ## '"p" in text[1:]' simplification that would misread the mode value as a parents flag.
 expect_rule "mkdir --mode=MODE -- DIR" "${mkd}${sp}-mp700${sp}--${sp}${dq}${dir173}${dq}${nlreal}${chm}${sp}0700${sp}--${sp}${dq}${dir173}${dq}" "present"
-## A NON-LITERAL option word ('-$opt') carries its raw source as the opt token, whose
-## letters ('p' in the var name 'opt') are the spelling, not the runtime flags -- so the
-## cluster scan must NOT read it as --parents. It falls through to the lock-dir default.
+## A NON-LITERAL option word whose 'p' lives INSIDE an expansion ('-$opt', the 'p' is
+## in the var NAME) is NOT the parents flag -- the cluster scan reads only the word's
+## LITERAL PREFIX ('-'), so it falls through to the lock-dir default.
 expect_rule "mkdir --mode=MODE -- DIR" "${mkd}${sp}-${dollar}opt${sp}--${sp}${dq}${dir173}${dq}${nlreal}${chm}${sp}0700${sp}--${sp}${dq}${dir173}${dq}" "present"
 expect_rule "install -d -m MODE -- DIR" "${mkd}${sp}-${dollar}opt${sp}--${sp}${dq}${dir173}${dq}${nlreal}${chm}${sp}0700${sp}--${sp}${dq}${dir173}${dq}" "absent"
+## ...but a LITERAL '-p' prefix FOLLOWED by an expansion ('-p"$x"', '-pm"$mode"') DOES
+## carry the parents flag (the 'p' is a literal flag letter), so it gets 'install -d -m'.
+expect_rule "install -d -m MODE -- DIR" "${mkd}${sp}-p${dq}${dollar}suffix${dq}${sp}--${sp}${dq}${dir173}${dq}${nlreal}${chm}${sp}0700${sp}--${sp}${dq}${dir173}${dq}" "present"
+expect_rule "install -d -m MODE -- DIR" "${mkd}${sp}-pm${dq}${dollar}mode${dq}${sp}--${sp}${dq}${dir173}${dq}${nlreal}${chm}${sp}0700${sp}--${sp}${dq}${dir173}${dq}" "present"
 
 ## R-010: seven COPIES of one directive must NOT satisfy the block (DISTINCT
 ## directives are counted); the seven distinct directives pass.
