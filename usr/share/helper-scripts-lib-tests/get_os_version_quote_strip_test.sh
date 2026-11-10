@@ -65,7 +65,9 @@ has() {
 
 test_dir="$(mktemp --directory)"
 test_cleanup_handler() {
-   safe-rm --recursive --force -- "${test_dir}"
+   ## Best-effort: a cleanup failure must not fire errexit in the trap and flip a
+   ## passing case to a non-zero exit (the suite runner keys on the exit code).
+   safe-rm --recursive --force -- "${test_dir}" || true
 }
 trap test_cleanup_handler EXIT
 

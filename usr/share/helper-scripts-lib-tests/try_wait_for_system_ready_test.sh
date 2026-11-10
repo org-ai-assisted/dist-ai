@@ -217,43 +217,35 @@ else
 fi
 
 ## A non-ready, non-empty state ('starting', exit!=0) is NOT accepted: the loop
-## keeps probing until the cap, then returns 0 (best-effort). Regression: a
-## subject treating any non-empty output as ready returns after 1 probe, in ~0s.
-## Discriminate by ELAPSED (did it WAIT OUT the cap?), not by probe count: a probe
-## count under a tight wall-clock cap couples to load -- a slow first probe can
-## leave only 1 probe inside a 2s cap and flake a 'probes >= 2' assertion, while a
-## wrongly-accepting subject still returns in ~0s. Load only grows elapsed, so the
-## 'waited at least one light_sleep' lower bound stays robust.
+## keeps re-probing until the cap, then returns 0 (best-effort). Assert it PROBED
+## AGAIN (>=2 probes) -- a subject that treats any non-empty output as ready
+## returns after ONE probe. The cap is 5s (not 2s) so >=2 probes occur reliably
+## even on a loaded runner: under a 2s cap a slow first probe plus the 1s
+## light_sleep could overrun it after a single probe and flake this assertion.
 reset_stub
 export LEAPRUN_FAKE_RESULT='starting'
 rc=0
-t0="$(date +%s)"
-system_ready_wait_max_seconds=2 try_wait_for_system_ready || rc="$?"
-t1="$(date +%s)"
-elapsed=$(( t1 - t0 ))
+system_ready_wait_max_seconds=5 try_wait_for_system_ready || rc="$?"
 probe_calls="$(wc -l <"${probe_log}")"
-if [ "${rc}" = '0' ] && [ "${probe_calls}" -ge 1 ] && [ "${elapsed}" -ge 1 ]; then
-   pass "'starting' not accepted -> waited out the cap (${elapsed}s, ${probe_calls} probes)"
+if [ "${rc}" = '0' ] && [ "${probe_calls}" -ge 2 ]; then
+   pass "'starting' not accepted -> kept probing to cap (${probe_calls} probes)"
 else
-   fail "'starting' -> rc=${rc}, elapsed=${elapsed}s, probes=${probe_calls} (want 0, >=1s, >=1 probe)"
+   fail "'starting' -> rc=${rc}, probes=${probe_calls} (want 0, >=2)"
 fi
 
 ## A state that merely CONTAINS 'running' as a substring ('not-running') is NOT
 ## ready: the match is whole-line. Regression: a subject using an unanchored
-## 'grep -E running|degraded' accepts it and returns after 1 probe in ~0s.
-## Elapsed-based for the same load-robustness reason as the 'starting' case.
+## 'grep -E running|degraded' accepts it and returns after 1 probe. Cap 5s for
+## the same load-robust >=2-probe reason as the 'starting' case.
 reset_stub
 export LEAPRUN_FAKE_RESULT='not-running'
 rc=0
-t0="$(date +%s)"
-system_ready_wait_max_seconds=2 try_wait_for_system_ready || rc="$?"
-t1="$(date +%s)"
-elapsed=$(( t1 - t0 ))
+system_ready_wait_max_seconds=5 try_wait_for_system_ready || rc="$?"
 probe_calls="$(wc -l <"${probe_log}")"
-if [ "${rc}" = '0' ] && [ "${probe_calls}" -ge 1 ] && [ "${elapsed}" -ge 1 ]; then
-   pass "'not-running' (substring) not accepted -> waited out the cap (${elapsed}s, ${probe_calls} probes)"
+if [ "${rc}" = '0' ] && [ "${probe_calls}" -ge 2 ]; then
+   pass "'not-running' (substring) not accepted -> kept probing (${probe_calls} probes)"
 else
-   fail "'not-running' -> rc=${rc}, elapsed=${elapsed}s, probes=${probe_calls} (want 0, >=1s, >=1 probe)"
+   fail "'not-running' -> rc=${rc}, probes=${probe_calls} (want 0, >=2)"
 fi
 
 ## CANARY (wall-clock): never ready, each probe SLOW (3s), cap 3s. A monotonic

@@ -73,8 +73,11 @@ fi
 ## With a failing 'safe-rm' in the sibling's EXIT-trap cleanup, a GUARDED case
 ## still exits 0 (assertions passed; cleanup is best-effort). Pre-fix (unguarded)
 ## the failing removal fires errexit in the trap and the case exits non-zero.
+## TMPDIR="${work}" puts the sibling's own mktemp dir under ours, so our parent
+## cleanup removes it: the injected failing safe-rm leaves the sibling unable to
+## remove its work dir, which would otherwise leak once per run.
 inject_rc=0
-PATH="${work}:${PATH}" "${sibling}" >/dev/null 2>&1 || inject_rc=$?
+PATH="${work}:${PATH}" TMPDIR="${work}" "${sibling}" >/dev/null 2>&1 || inject_rc=$?
 if [ "${inject_rc}" -eq 0 ]; then
    ok "passing case tolerates a failing EXIT-trap cleanup (exit 0)"
 else

@@ -69,7 +69,9 @@ fi
 
 test_dir="$(mktemp --directory)"
 cleanup_handler() {
-   safe-rm -r -f -- "${test_dir}"
+   ## Best-effort: a cleanup failure must not fire errexit in the trap and flip a
+   ## passing case to a non-zero exit (the suite runner keys on the exit code).
+   safe-rm -r -f -- "${test_dir}" || true
 }
 trap cleanup_handler EXIT
 
