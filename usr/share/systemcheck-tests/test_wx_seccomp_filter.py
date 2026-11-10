@@ -152,6 +152,14 @@ class WxParserFidelityTest(unittest.TestCase):
     def test_errno_is_soft_accepts_numeric_errno_in_range(self) -> None:
         self.assertTrue(errno_is_soft('13'))
 
+    def test_errno_is_soft_accepts_name_aliases(self) -> None:
+        ## errno.errorcode keeps only one name per number, dropping the alias of each pair
+        ## (EOPNOTSUPP/ENOTSUP, EDEADLOCK/EDEADLK) which systemd accepts -- the valid-name set must
+        ## be built from every errno.E* constant, else a unit using the dropped alias is wrongly
+        ## reported 'kill' (a false lint failure). WHICH alias errorcode drops is platform-dependent.
+        self.assertTrue(errno_is_soft('EOPNOTSUPP'))
+        self.assertTrue(errno_is_soft('EDEADLOCK'))
+
     def test_missing_required_unit_fails_not_skips(self) -> None:
         ## A missing REQUIRED unit must be an error, never a vacuous skip.
         probe = WxSeccompErrnoTest('test_gui_units_deny_memfd_soft_not_sigsys')

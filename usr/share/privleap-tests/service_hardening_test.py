@@ -100,6 +100,11 @@ def main() -> int:
                   errno_is_soft('E2BIG'))
     results.check('errno_is_soft accepts a numeric errno in range (13 -> soft)',
                   errno_is_soft('13'))
+    ## errno NAME aliases: errno.errorcode keeps only one name per number, dropping the alias of
+    ## each pair (EOPNOTSUPP/ENOTSUP, EDEADLOCK/EDEADLK) which systemd accepts. The valid set must
+    ## be built from every errno.E* constant, else a unit using the dropped alias is mis-reported kill.
+    results.check('errno_is_soft accepts errno name aliases (EOPNOTSUPP/EDEADLOCK -> soft)',
+                  errno_is_soft('EOPNOTSUPP') and errno_is_soft('EDEADLOCK'))
     results.check('memfd_denial honors a later positive re-allow of the syscall',
                   memfd_denial('[Service]\nSystemCallFilter=~memfd_create:EPERM\n'
                                'SystemCallFilter=memfd_create\n') == 'none')
