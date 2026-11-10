@@ -6,19 +6,20 @@
 ## AI-Assisted
 
 ## dist-encrypted 'rsync-delete-versions': the download-server pruning script
-## that archives old release versions by deleting ONLY their large binary images
-## (ISOs, disk/VM images, installers) while KEEPING the small files (SBOM,
-## signatures, hash lists, buildinfo, torrents) and the version directory.
+## that archives old release versions by deleting their LARGE files (over 1 MiB
+## and not a kept sidecar) while KEEPING the small sidecars (SBOM, signatures,
+## hash lists, buildinfo, torrents) and the version directory.
 ##
 ## The script is source-able (was_executed guard, strict confined to main()), so
-## this test sources it and drives the pure function directly:
-##   - prune_version_dir   deletes only >1M non-sidecar files in a version dir.
-## It also RUNS the whole script against a temp tree (RSYNC_DELETE_BASE_DIR) in
-## dry-run and with a stubbed safe-rm, to cover the whitelist, the skip-dirs, the
-## version-name sanity guard, and the "no files" message.
+## this test sources it and drives the pure prune_version_dir directly, and also
+## RUNS the whole script against a temp tree (RSYNC_DELETE_BASE_DIR).
 ##
-## No root, no network, NEVER a real /var/rsync. A missing subject is an OPTIONAL
-## target -> SKIP (77); a missing check_runtime.bsh is a HARD FAIL (exit 1).
+## SAFETY (this drives a DESTRUCTIVE script): the stubbed safe-rm REFUSES any
+## path outside the per-run temp tree, TMPDIR is redirected under that tree so
+## the subject's own mktemp cannot escape it, and positional args are cleared so
+## a (stale) subject sourced at the top cannot inherit a '--force'. Never a real
+## /var/rsync, no root, no network. A missing subject is an OPTIONAL target ->
+## SKIP (77); a missing check_runtime.bsh is a HARD FAIL (exit 1).
 
 set -o errexit
 set -o nounset
@@ -27,6 +28,11 @@ set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
+
+## Clear positional args: a stale subject that still runs main "$@" at top level
+## must not inherit a '--force' through 'source' when this case is invoked with
+## arguments.
+set --
 
 [ -v DIST_ENCRYPTED_REPO ] || DIST_ENCRYPTED_REPO=""
 if [ -n "${DIST_ENCRYPTED_REPO}" ]; then
@@ -51,18 +57,33 @@ fi
 export HELPER_SCRIPTS_PATH="${HELPER_SCRIPTS_PATH:-}"
 
 test_dir="$(mktemp --directory)"
+## Confine the test: safe-rm may only touch paths at or under this root, and the
+## subject's own mktemp lands here too (TMPDIR), so nothing can escape the tree.
+export RDV_TEST_CONFINE="${test_dir}"
+export TMPDIR="${test_dir}/tmp"
+## test_dir already exists (mktemp, 0700); --parents only creates the deepest
+## 'tmp', which --mode sets -- the SC2174 parent-perms caveat does not apply.
+# shellcheck disable=SC2174
+mkdir --mode=0700 --parents -- "${TMPDIR}"
 
-## A stubbed safe-rm recorder, set up BEFORE the cleanup trap so the trap can
-## use safe-rm with no forbidden rm fallback. It also makes 'command -v safe-rm'
-## succeed and lets a --force run delete for real within the temp tree.
+## A stubbed safe-rm set up BEFORE the cleanup trap (so the trap needs no rm
+## fallback). It REFUSES any argument not under RDV_TEST_CONFINE, so even a
+## misbehaving subject that passes a real path (e.g. /var/rsync) deletes
+## nothing; within the tree it deletes for real so --force cases are exercised.
 stub_bin="${test_dir}/bin"
 mkdir --parents -- "${stub_bin}"
 cat > "${stub_bin}/safe-rm" <<'STUB'
 #!/bin/bash
 for arg in "$@"; do
    case "${arg}" in
-      --*) ;;
-      *) rm --force --recursive -- "${arg}" ;;
+      --*) continue ;;
+   esac
+   case "${arg}" in
+      "${RDV_TEST_CONFINE}"|"${RDV_TEST_CONFINE}"/*)
+         rm --force --recursive -- "${arg}" ;;
+      *)
+         printf '%s\n' "stub safe-rm: REFUSING path outside test tree: ${arg}" >&2
+         exit 1 ;;
    esac
 done
 STUB
@@ -86,8 +107,8 @@ check() {
    fi
 }
 
-## Build a version directory with the standard mix of big images + small
-## sidecars (a >1M SBOM among them). Echoed name of the big files for assertions.
+## Build a version directory with the standard mix of big files + small
+## sidecars (a >1M SBOM among them).
 make_version() {
    local dir="$1"
    mkdir --parents -- "${dir}"
@@ -106,37 +127,46 @@ make_version() {
 
 present() { find "$1" -maxdepth 1 -type f -printf '%f\n' | sort | tr '\n' ' '; }
 
-## ===== source-ability: functions defined, no auto-run, no strict leak =====
-# shellcheck disable=SC1090
-src_out="$(source "${subject}" 2>&1)" \
-   || { printf '%s\n' "FATAL: sourcing '${subject}' failed: ${src_out}" >&2; exit 1; }
-check "sourcing does not auto-run (no output)" "${src_out}" ""
+## ===== source-ability, verified in a PROBE subprocess =====
+## A subject that exits on source, or leaks ANY strict option / EXIT trap into a
+## non-strict caller, or fails to define the functions, must FAIL this test --
+## not kill it or false-pass it. The probe sources the subject in a fresh
+## (errexit-off) shell, prints a sentinel only if the source RETURNED, then
+## checks every option and the functions. Only a clean probe lets the test
+## source the subject in its own shell below.
+probe="${test_dir}/source-probe.sh"
+cat > "${probe}" <<'PROBE'
+#!/bin/bash
+source "$1"
+printf '%s\n' 'SOURCE_RETURNED'
+rc=0
+[ "$(type -t main)" = function ] || { printf '%s\n' 'NO_MAIN'; rc=1; }
+[ "$(type -t prune_version_dir)" = function ] || { printf '%s\n' 'NO_PRUNE'; rc=1; }
+for opt in errexit nounset pipefail errtrace; do
+   if [[ -o "${opt}" ]]; then printf '%s\n' "LEAK_${opt}"; rc=1; fi
+done
+if shopt -q inherit_errexit; then printf '%s\n' 'LEAK_inherit_errexit'; rc=1; fi
+[ -z "$(trap -p EXIT)" ] || { printf '%s\n' 'LEAK_EXIT_TRAP'; rc=1; }
+exit "${rc}"
+PROBE
+probe_rc=0
+probe_out="$(bash "${probe}" "${subject}")" || probe_rc=$?
+check "source returns without exiting" \
+   "$(case "${probe_out}" in *SOURCE_RETURNED*) printf '%s' yes ;; *) printf '%s' no ;; esac)" "yes"
+check "source defines fns + leaks no strict option/trap (probe rc 0)" "${probe_rc}" "0"
+
+## Source the (probe-verified source-safe) subject to drive the pure function.
 # shellcheck disable=SC1090
 source "${subject}"
-check "main is defined"               "$(type -t main)"               "function"
-check "prune_version_dir is defined"  "$(type -t prune_version_dir)"  "function"
-## No strict-mode leak: a fresh shell (bash <script>, errexit OFF by default)
-## that sources the subject must survive a 'false' -- a leaked 'set -o errexit'
-## would abort it. A probe script gives that shell without toggling errexit here.
-leak_probe="${test_dir}/leak-probe.sh"
-## '$1' is literal: it is the generated probe's own argument, not expanded here.
-# shellcheck disable=SC2016
-printf '%s\n' '#!/bin/bash' 'source "$1"' 'false' 'true' > "${leak_probe}"
-leak_rc=0
-bash "${leak_probe}" "${subject}" || leak_rc=$?
-check "no strict-mode leak on source" "${leak_rc}" "0"
 
 ## ===== prune_version_dir (pure): the keep/delete filter =====
 v="${test_dir}/unit/18.5.0.0"
 make_version "${v}"
-## Dry-run: lists the big binaries, deletes nothing.
 dry_out="$(prune_version_dir "${v}" true)"
 check "prune dry-run lists Whonix.iso"      "$(printf '%s' "${dry_out}" | grep -c "Whonix.iso'")" "1"
 check "prune dry-run lists Whonix.qcow2.xz" "$(printf '%s' "${dry_out}" | grep -c 'Whonix.qcow2.xz')" "1"
 check "prune dry-run deletes nothing"       "$(present "${v}")" \
    "README.txt Whonix.cdx.json Whonix.dm-buildinfo Whonix.iso Whonix.iso.asc Whonix.iso.sig Whonix.qcow2.xz Whonix.sha512sums Whonix.torrent WhonixSetup.exe "
-## Force: big binaries gone; the >1M SBOM, every sidecar, the stray small file,
-## and the directory itself remain.
 prune_version_dir "${v}" false >/dev/null
 check "prune --force keeps sidecars + large SBOM + stray, drops images" "$(present "${v}")" \
    "README.txt Whonix.cdx.json Whonix.dm-buildinfo Whonix.iso.asc Whonix.iso.sig Whonix.sha512sums Whonix.torrent "
@@ -153,53 +183,56 @@ check "prune does not descend into subdirectories (maxdepth 1)" \
    "$(test -f "${nested}/sub/deep.iso" && printf '%s' yes || printf '%s' no)" "yes"
 
 ## ===== whole script via RSYNC_DELETE_BASE_DIR (temp tree, never /var/rsync) =====
+## One invocation per case; capture BOTH its output and status, and assert both.
 run_main() {
-   ## $1 = base dir, rest = args; prints combined output, sets global run_rc.
    local base="$1"; shift
    run_rc=0
-   RSYNC_DELETE_BASE_DIR="${base}" "${subject}" "$@" 2>&1 || run_rc=$?
+   run_out="$(RSYNC_DELETE_BASE_DIR="${base}" "${subject}" "$@" 2>&1)" || run_rc=$?
 }
 
-## Default is dry-run: nothing is removed.
 base1="${test_dir}/base1"
 make_version "${base1}/iso/18.5.0.0"
 run_main "${base1}"
 check "main default is dry-run (rc 0)" "${run_rc}" "0"
 check "main default deletes nothing"   "$(test -f "${base1}/iso/18.5.0.0/Whonix.iso" && printf '%s' yes || printf '%s' no)" "yes"
 
-## --force prunes images, keeps the sidecars.
 run_main "${base1}" --force
 check "main --force rc 0" "${run_rc}" "0"
 check "main --force removes the image"       "$(test -e "${base1}/iso/18.5.0.0/Whonix.iso" && printf '%s' yes || printf '%s' no)" "no"
 check "main --force keeps the SBOM sidecar"  "$(test -f "${base1}/iso/18.5.0.0/Whonix.cdx.json" && printf '%s' yes || printf '%s' no)" "yes"
 
-## A whitelisted version is kept ENTIRELY (image not removed even with --force).
+## A whitelisted version is kept ENTIRELY (image kept even with --force).
 base2="${test_dir}/base2"
 make_version "${base2}/iso/18.0.9.5"
 run_main "${base2}" --force
+check "main skips whitelisted version (rc 0)" "${run_rc}" "0"
 check "main skips whitelisted version (image kept)" "$(test -f "${base2}/iso/18.0.9.5/Whonix.iso" && printf '%s' yes || printf '%s' no)" "yes"
-check "main reports the whitelist skip" "$(printf '%s' "${run_output:=$(RSYNC_DELETE_BASE_DIR="${base2}" "${subject}" --force 2>&1)}" | grep -c 'Skipping whitelisted version')" "1"
+check "main reports the whitelist skip" "$(printf '%s' "${run_out}" | grep -c 'Skipping whitelisted version')" "1"
 
 ## The reserved skip-dirs are left untouched.
 base3="${test_dir}/base3"
 make_version "${base3}/developer-meta-files/18.5.0.0"
 run_main "${base3}" --force
-check "main leaves developer-meta-files untouched" "$(test -f "${base3}/developer-meta-files/18.5.0.0/Whonix.iso" && printf '%s' yes || printf '%s' no)" "yes"
+check "main leaves developer-meta-files untouched (rc 0)" "${run_rc}" "0"
+check "main leaves developer-meta-files untouched (image kept)" "$(test -f "${base3}/developer-meta-files/18.5.0.0/Whonix.iso" && printf '%s' yes || printf '%s' no)" "yes"
 
-## A version directory whose name is not digits-and-dots is rejected (safety).
+## A version directory whose name is not digits-and-dots is rejected (rc 1).
 base4="${test_dir}/base4"
 mkdir --parents -- "${base4}/iso/not-a-version"
-touch -- "${base4}/iso/not-a-version/x"
+dd if=/dev/zero of="${base4}/iso/not-a-version/big.iso" bs=1024k count=2 status=none
 run_main "${base4}" --force
 check "main rejects a non-numeric version name (rc 1)" "${run_rc}" "1"
+check "main does not delete under a rejected name" "$(test -f "${base4}/iso/not-a-version/big.iso" && printf '%s' yes || printf '%s' no)" "yes"
 
-## Nothing to prune -> the explicit message.
+## Nothing large -> the explicit message, in the SAME run, and the sidecar stays.
 base5="${test_dir}/base5"
 mkdir --parents -- "${base5}/iso/18.5.0.0"
 touch -- "${base5}/iso/18.5.0.0/Whonix.sha512sums"
 run_main "${base5}" --force
 check "main reports no deletions when only sidecars exist" \
-   "$(printf '%s' "${run_output_none:=$(RSYNC_DELETE_BASE_DIR="${base5}" "${subject}" --force 2>&1)}" | grep -c 'No files were deleted')" "1"
+   "$(printf '%s' "${run_out}" | grep -c 'No files were deleted')" "1"
+check "main keeps the sidecar in the no-deletion case" \
+   "$(test -f "${base5}/iso/18.5.0.0/Whonix.sha512sums" && printf '%s' yes || printf '%s' no)" "yes"
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
