@@ -4755,6 +4755,8 @@ for _tsci in range(200):
     _tsc._append('tuiline %d\n' % _tsci)
 _tscbar = _tsc.verticalScrollBar()
 _tsc_bottom = _tscbar.value()                # at the bottom after the output
+ok(not _tsc._grid_fixed_canvas(),
+   'canary: a TUI buffer with real scrollback is NOT a fixed canvas (the scroll path below)')
 _tscsent = spy_writes(_tsc)
 key(_tsc, Qt.Key.Key_PageUp, mods=Qt.KeyboardModifier.ShiftModifier)
 _tsc_up = _tscbar.value()
@@ -4766,6 +4768,25 @@ eq(_tscsent, [], 'TUI: Shift+PageDown is local too, nothing sent to the child')
 key(_tsc, Qt.Key.Key_PageUp)                 # plain PageUp still reaches the child
 eq(_tscsent, [b'\x1b[5~'], 'TUI: plain PageUp is forwarded to the child as VT input')
 
+# codex-found regression: on a FIXED TUI canvas (the alt screen, or an exact-fit primary
+# grid with no promoted scrollback) there is no scrollback to reach, and ScrollBarAlwaysOff
+# HIDES but does not CLEAR a spurious 1-row range -- a local Shift+PageDown scroll rode it
+# and shoved the program's OWN row 0 off the top. So on a fixed canvas the scroll keys must
+# fall THROUGH to the child (konsole AppScreen), never be consumed as a local scroll.
+_fx = SecureTerminal(command='/bin/cat', tui=True)
+_fx.resize(500, 300)
+_fx.show()
+feed_output(_fx, b'\x1b[?1049h\x1b[H' + b'\r\n'.join(('ROW%02d' % _i).encode() for _i in range(16)))
+_fx._render_tui()
+APP.processEvents()
+ok(_fx._grid_fixed_canvas(), 'canary: the alt screen is a fixed canvas')
+_fxbar = _fx.verticalScrollBar()
+_fx_top = _fxbar.value()
+_fxsent = spy_writes(_fx)
+key(_fx, Qt.Key.Key_PageDown, mods=Qt.KeyboardModifier.ShiftModifier)
+ok(_fxsent, 'fixed canvas: Shift+PageDown reaches the child, not consumed as a local scroll')
+eq(_fxbar.value(), _fx_top, 'fixed canvas: the program top row stays pinned (no spurious scroll)')
+
 # a tooltip over empty space (no codepoint) hides any tip
 _tt = SecureTerminal(command='/bin/cat')
 _hv = QHelpEvent(QEvent.Type.ToolTip, QPoint(3, 3), _tt.mapToGlobal(QPoint(3, 3)))
@@ -4775,7 +4796,7 @@ ok(True, 'a tooltip over empty space hides the tip without error')
 # stop any repeating timers these grid/TUI terminals started, so they do not
 # fire into the offscreen platform's static teardown (which would crash a
 # process that has otherwise passed cleanly)
-for _tstop in (_gz, _tk2, _rt2, _es, _am, _tsc):
+for _tstop in (_gz, _tk2, _rt2, _es, _am, _tsc, _fx):
     for _tmr in ('_render_timer', '_sync_timer'):
         _t = getattr(_tstop, _tmr, None)
         if _t is not None:
