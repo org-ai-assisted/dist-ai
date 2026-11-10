@@ -57,6 +57,14 @@ workdir="$(mktemp --directory)"
 ## Best-effort: a cleanup failure must not fire errexit in the trap and flip a
 ## passing case to a non-zero exit (the suite runner keys on the exit code).
 cleanup() { safe-rm --recursive --force -- "${workdir}" || true; }
+## safe-rm is a required dep (dist-ai CI installs it); the cleanup trap's
+## 'safe-rm ... || true' tolerates a runtime rm failure but would also MASK
+## safe-rm being absent -- assert it up front so a missing dep fails loud.
+if ! type -P safe-rm >/dev/null 2>&1; then
+   printf '%s\n' "FATAL: safe-rm not on PATH" >&2
+   exit 1
+fi
+
 trap cleanup EXIT
 
 cmdline_file="${workdir}/cmdline"

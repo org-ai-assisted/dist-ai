@@ -77,6 +77,14 @@ work_dir="$(mktemp --directory)"
 ## non-zero exit that the suite runner mis-counts as a FAILED case (the case still
 ## printed '0 fail'). The real verdict is the final '[ fail_count -eq 0 ]' below.
 cleanup() { safe-rm --recursive --force -- "${work_dir}" || true; }
+## safe-rm is a required dep (dist-ai CI installs it); the cleanup trap's
+## 'safe-rm ... || true' tolerates a runtime rm failure but would also MASK
+## safe-rm being absent -- assert it up front so a missing dep fails loud.
+if ! type -P safe-rm >/dev/null 2>&1; then
+   printf '%s\n' "FATAL: safe-rm not on PATH" >&2
+   exit 1
+fi
+
 trap cleanup EXIT
 
 probe_log="${work_dir}/leaprun-calls"

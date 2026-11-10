@@ -37,6 +37,14 @@ fi
 work="$(mktemp --directory)"
 # shellcheck disable=SC2317  # reached via the EXIT trap
 cleanup() { safe-rm --recursive --force -- "${work}" || true; }
+## safe-rm is a required dep (dist-ai CI installs it); the cleanup trap's
+## 'safe-rm ... || true' tolerates a runtime rm failure but would also MASK
+## safe-rm being absent -- assert it up front so a missing dep fails loud.
+if ! type -P safe-rm >/dev/null 2>&1; then
+   printf '%s\n' "FATAL: safe-rm not on PATH" >&2
+   exit 1
+fi
+
 trap cleanup EXIT
 
 ## A 'safe-rm' that ALWAYS fails, shadowing the real one on PATH so the sibling's

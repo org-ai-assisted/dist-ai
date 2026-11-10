@@ -66,6 +66,14 @@ test_cleanup_handler() {
    safe-rm --recursive --force -- "${work_dir}" || true
 }
 
+## safe-rm is a required dep (dist-ai CI installs it); the cleanup trap's
+## 'safe-rm ... || true' tolerates a runtime rm failure but would also MASK
+## safe-rm being absent -- assert it up front so a missing dep fails loud.
+if ! type -P safe-rm >/dev/null 2>&1; then
+   printf '%s\n' "FATAL: safe-rm not on PATH" >&2
+   exit 1
+fi
+
 trap test_cleanup_handler EXIT
 
 cd -- "${work_dir}"
