@@ -55,7 +55,7 @@ if os.path.isdir(_LIB) and _LIB not in sys.path:
 
 # pylint: disable=wrong-import-position
 from dist_ai_seccomp import (  # noqa: E402
-    errno_is_soft, memfd_denial, service_values)
+    errno_is_soft, memfd_denial, service_lines, service_values)
 
 ## user-scope units that spawn a memfd-using GUI helper as a direct child.
 GUI_UNITS = ('updatecheck.service', 'systemcheck.service')
@@ -159,6 +159,55 @@ class WxParserFidelityTest(unittest.TestCase):
         ## reported 'kill' (a false lint failure). WHICH alias errorcode drops is platform-dependent.
         self.assertTrue(errno_is_soft('EOPNOTSUPP'))
         self.assertTrue(errno_is_soft('EDEADLOCK'))
+
+    def test_service_header_after_continuation_stays_in_prior_value(self) -> None:
+        ## systemd JOINS a trailing-'\' line to the next BEFORE testing the section
+        ## header, so 'Description=x \' + '[Service]' keeps '[Service]' part of the
+        ## [Unit] Description VALUE -- the unit never enters [Service], and a directive
+        ## below is NOT applied. Testing the header per physical line (pre-join) would
+        ## credit a [Service] section systemd never opened: a false pass.
+        unit = ('[Unit]\n'
+                'Description=continued \\\n'
+                '[Service]\n'
+                'MemoryDenyWriteExecute=yes\n')
+        self.assertEqual(
+            service_values(service_lines(unit), 'MemoryDenyWriteExecute'), [])
+
+    def test_filter_after_continued_header_is_not_denied(self) -> None:
+        ## Same continuation swallow for the memfd verdict: the SystemCallFilter is
+        ## really in [Unit] (ignored), so memfd_create is NOT denied.
+        unit = ('[Unit]\n'
+                'Description=continued \\\n'
+                '[Service]\n'
+                'SystemCallFilter=~memfd_create:EPERM\n')
+        self.assertEqual(memfd_denial(unit), 'none')
+
+    def test_nbsp_before_key_is_an_unknown_directive(self) -> None:
+        ## systemd strips ASCII whitespace only; a U+00A0 (NBSP) before the key leaves
+        ## '\xa0SystemCallFilter' an UNKNOWN directive systemd ignores. str.strip()
+        ## would drop the NBSP and read it as a real filter -- crediting a denial
+        ## systemd never applies (a false pass).
+        unit = '[Service]\n\xa0SystemCallFilter=~memfd_create:EPERM\n'
+        self.assertEqual(memfd_denial(unit), 'none')
+        self.assertEqual(
+            service_values(['\xa0SystemCallFilter=x'], 'SystemCallFilter'), [])
+
+    def test_nbsp_inside_filter_value_is_not_a_token_split(self) -> None:
+        ## systemd splits filter tokens on ASCII whitespace only, so
+        ## 'memfd_create\xa0foo' is ONE token != memfd_create -- not a denial.
+        ## str.split() would split on the NBSP, see a 'memfd_create' token, and
+        ## report a denial systemd never makes.
+        unit = '[Service]\nSystemCallFilter=~memfd_create\xa0foo\n'
+        self.assertEqual(memfd_denial(unit), 'none')
+
+    def test_formfeed_does_not_start_a_new_directive(self) -> None:
+        ## systemd splits physical lines on '\n' only; a form-feed (U+000C) stays in
+        ## the value, so what follows is part of the first SystemCallFilter value, not
+        ## its own directive. str.splitlines() would split on it and read a second,
+        ## denying filter that systemd never sees.
+        unit = ('[Service]\n'
+                'SystemCallFilter=x\x0cSystemCallFilter=~memfd_create:EPERM\n')
+        self.assertEqual(memfd_denial(unit), 'none')
 
     def test_missing_required_unit_fails_not_skips(self) -> None:
         ## A missing REQUIRED unit must be an error, never a vacuous skip.

@@ -41,7 +41,8 @@ if HERE not in sys.path:
 # pylint: disable=wrong-import-position
 from dist_ai_seccomp import (  # noqa: E402
     effective_allowset, is_allowlist, memfd_denial, service_lines,
-    service_values, syscall_filter_simple, syscall_filter_values)
+    service_values, syscall_filter_simple, syscall_filter_values,
+    systemd_fields, systemd_strip)
 
 ## systemd treats true/yes/on/1 as enabled, so accept any of them, not only the
 ## literal 'true' (units in this rollout mix '=yes' and '=true').
@@ -58,11 +59,14 @@ def _path_set(text: str, key: str) -> set:
     accumulated list; otherwise tokens accumulate)."""
     effective: set = set()
     for value in service_values(service_lines(text), key):
-        stripped = value.strip()
+        ## ASCII-only strip/split (systemd_strip/systemd_fields): a non-ASCII space
+        ## hidden in a NoExecPaths/ExecPaths list must NOT silently split or vanish
+        ## -- systemd keeps it literal, so the lint's token set must match the kernel's.
+        stripped = systemd_strip(value)
         if stripped == '':
             effective = set()
         else:
-            effective |= set(stripped.split())
+            effective |= set(systemd_fields(stripped))
     return effective
 
 

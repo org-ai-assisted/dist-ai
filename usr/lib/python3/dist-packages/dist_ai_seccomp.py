@@ -42,49 +42,98 @@ _VALID_ERRNO_NAMES = frozenset(
     name for name in dir(errno)
     if name.startswith('E') and isinstance(getattr(errno, name), int))
 
+## systemd strips/splits config tokens on ASCII WHITESPACE only (src/fundamental/
+## string-util.h: " \t\n\r") -- NOT \f, \v, NBSP or other Unicode whitespace that
+## Python's str.strip()/str.split()/str.splitlines() ALSO treat as separators.
+## Using the Python defaults lets a unit hide a directive behind a non-ASCII space
+## (systemd keeps '\xa0Key' an unknown key and ignores it) while the lint reads it
+## as applied -- a false "hardened" verdict. These mirror systemd's strstrip /
+## extract_first_word so the lint sees the same tokens the kernel does.
+_SYSTEMD_WS = ' \t\n\r'
+
+
+def systemd_strip(text: str) -> str:
+    return text.strip(_SYSTEMD_WS)
+
+
+def systemd_fields(text: str) -> list:
+    return [tok for tok in re.split('[ \t\n\r]+', text) if tok]
+
+
+def _ends_continued(line: str) -> bool:
+    ## systemd treats a line ending in an ODD run of backslashes as continued
+    ## (parity), measured BEFORE trailing-whitespace stripping.
+    count = 0
+    for char in reversed(line):
+        if char != '\\':
+            break
+        count += 1
+    return count % 2 == 1
+
 
 def service_lines(text: str) -> list:
-    """Logical directive lines inside the [Service] section, '\\'-continuations
-    joined. systemd ignores these directives outside [Service], so the lint must
-    too."""
+    """Logical [Service] directive lines, modeling systemd's config_parse order:
+    physical lines split on '\\n'; a '#'/';' comment is dropped per-PHYSICAL-line
+    BEFORE any continuation join (and does NOT clear a pending continuation); a
+    trailing-'\\' line (odd backslash parity) is joined to the next BEFORE the
+    section-header test, so a '[Service]' that merely continues a prior value
+    stays part of that value instead of opening the section; the section-header
+    and directive tests run on the joined, ASCII-stripped line. systemd ignores
+    directives outside [Service], so this does too."""
     out: list = []
-    buf: str = ''
+    continuation = None
     in_service: bool = False
-    for raw in text.splitlines():
-        stripped = raw.strip()
-        if stripped.startswith('[') and stripped.endswith(']'):
-            ## systemd section names are CASE-SENSITIVE: directives under a
-            ## '[service]' header are ignored, so a case-insensitive match would
-            ## credit hardening systemd never applies.
-            in_service = stripped == '[Service]'
+
+    def emit(logical: str) -> None:
+        nonlocal in_service
+        stripped = systemd_strip(logical)
+        if not stripped:
+            return
+        if stripped.startswith('['):
+            ## systemd changes section only on a well-formed '[Name]' (CASE-
+            ## SENSITIVE: a '[service]' header is ignored). A '['-line not ending
+            ## in ']' is an invalid header -- ignored, section left unchanged.
+            if stripped.endswith(']'):
+                in_service = stripped == '[Service]'
+            return
+        if in_service:
+            out.append(stripped)
+
+    for raw in text.split('\n'):
+        ## Comment test: per physical line, leading-ASCII-ws skipped, BEFORE the
+        ## join. systemd drops the comment via 'continue' WITHOUT clearing a
+        ## pending continuation, so an in-progress join carries across it.
+        if raw.lstrip(_SYSTEMD_WS)[:1] in ('#', ';'):
             continue
-        ## systemd ignores lines starting with '#' OR ';' (comments).
-        if not in_service or stripped.startswith('#') or stripped.startswith(';'):
+        joined = raw if continuation is None else continuation + raw
+        if _ends_continued(joined):
+            ## systemd replaces the final backslash with a space and accumulates.
+            continuation = joined[:-1] + ' '
             continue
-        if stripped.endswith('\\'):
-            buf += stripped[:-1] + ' '
-        else:
-            out.append((buf + stripped).strip())
-            buf = ''
-    if buf:
-        out.append(buf.strip())
+        continuation = None
+        emit(joined)
+    if continuation is not None:
+        ## EOF with a dangling continuation: systemd parses the buffer once more.
+        emit(continuation)
     return out
 
 
 def service_values(lines: list, key: str) -> list:
     ## Split on the FIRST '=' and strip both sides: systemd ignores whitespace
     ## around '=' ("Key = value"), so a prefix-only match would miss a spaced
-    ## assignment and silently under-read the effective filter.
+    ## assignment and silently under-read the effective filter. ASCII-only strip
+    ## (systemd_strip): a non-ASCII space before the key leaves it an unknown
+    ## directive systemd ignores, so it must NOT match here.
     out: list = []
     for line in lines:
         name, sep, value = line.partition('=')
-        if sep and name.strip() == key:
-            out.append(value.strip())
+        if sep and systemd_strip(name) == key:
+            out.append(systemd_strip(value))
     return out
 
 
 def errno_is_soft(value: str) -> bool:
-    val = value.strip()
+    val = systemd_strip(value)
     if not val or val.lower() == 'kill':
         return False
     if val.upper() in _RETRYABLE_ERRNOS:
@@ -120,7 +169,7 @@ def memfd_denial(text: str) -> str:
     for value in effective:
         negate = value.startswith('~')
         body = value[1:] if negate else value
-        tokens = body.split()
+        tokens = systemd_fields(body)
         ## A POSITIVE syscall-GROUP line (e.g. '@ipc', '@system-service' -- both
         ## CONTAIN memfd_create) re-allows syscalls this module cannot expand. Be
         ## conservative: treat memfd_create as no longer reliably denied, so the
@@ -174,13 +223,13 @@ def _effective_filter(text: str):
     mode = None
     allow: set = set()
     for value in syscall_filter_values(text):
-        stripped = value.strip()
+        stripped = systemd_strip(value)
         if stripped == '':
             mode = None
             allow = set()
             continue
         negated = stripped.startswith('~')
-        tokens = set((stripped[1:] if negated else stripped).split())
+        tokens = set(systemd_fields(stripped[1:] if negated else stripped))
         if mode is None:
             mode = 'deny' if negated else 'allow'
             allow = set() if negated else set(tokens)
@@ -239,14 +288,14 @@ def syscall_filter_simple(text: str) -> bool:
     out of scope -- no Kicksecure/Whonix unit uses one."""
     effective: list = []
     for value in syscall_filter_values(text):
-        stripped = value.strip()
+        stripped = systemd_strip(value)
         if stripped == '':
             effective = []
         else:
             effective.append(stripped)
     for value in effective:
         body = value[1:] if value.startswith('~') else value
-        for token in body.split():
+        for token in systemd_fields(body):
             if not _PLAIN_SYSCALL_RE.match(token):
                 return False
     return True
