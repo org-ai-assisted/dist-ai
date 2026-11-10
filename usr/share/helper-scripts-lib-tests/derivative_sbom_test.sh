@@ -169,6 +169,99 @@ check "generate: wrapper wrote EXACTLY --out (no .cdx.json suffix)" "$(yn test -
 check "generate: no suffixed stray file" "$(yn test -e "${gen_out}.cdx.json")"        "no"
 check "generate: output is the SBOM, redirected" "$(cat -- "${gen_out}" 2>/dev/null)" "STUB-SBOM-ON-STDOUT"
 
+## ===== fragment merge: non-dpkg components spliced into components[] =====
+## A JSON-emitting debsbom stub (the merge path needs parseable CycloneDX) +
+## a fragments dir. This exercises the REAL sbom-fragment-merge from the
+## checkout (derivative-sbom invokes it via HELPER_SCRIPTS_PATH).
+merge_tool="${HELPER_SCRIPTS_REPO:-}/usr/libexec/helper-scripts/sbom-fragment-merge"
+[ -n "${HELPER_SCRIPTS_REPO}" ] || merge_tool="/usr/libexec/helper-scripts/sbom-fragment-merge"
+if [ ! -x "${merge_tool}" ]; then
+   printf '%s\n' "FATAL: sbom-fragment-merge not executable at '${merge_tool}'" >&2
+   exit 1
+fi
+
+jsonbin="${test_dir}/jsonbin"
+mkdir --parents -- "${jsonbin}"
+cat > "${jsonbin}/debsbom" <<'EOF'
+#!/bin/bash
+printf '%s\n' '{"bomFormat":"CycloneDX","specVersion":"1.6","components":[{"type":"library","name":"bash","purl":"pkg:deb/debian/bash@5.2"}]}'
+exit 0
+EOF
+chmod +x -- "${jsonbin}/debsbom"
+
+frag_dir="${test_dir}/fragments.d"
+mkdir --parents -- "${frag_dir}"
+cat > "${frag_dir}/tor-browser.cdx.json" <<'EOF'
+{
+  "type": "application",
+  "bom-ref": "tor-browser@14.5.3",
+  "name": "Tor Browser",
+  "version": "14.5.3",
+  "purl": "pkg:generic/tor-browser@14.5.3?arch=linux-x86_64"
+}
+EOF
+
+merged_out="${test_dir}/merged.cdx.json"
+PATH="${jsonbin}:${PATH}" SBOM_ETC_DIR="${etc}" SBOM_FRAGMENTS_DIR="${frag_dir}" \
+   derivative_sbom_generate "${merged_out}" "${want_ts}"
+## Valid-JSON check without inline python: re-parse through the merge tool
+## itself (empty fragments dir -> no merge), exit 0 iff the output parses.
+vcheck_frag="${test_dir}/vcheck.d"
+mkdir --parents -- "${vcheck_frag}"
+vrc=0
+"${merge_tool}" "${vcheck_frag}" < "${merged_out}" >/dev/null 2>&1 || vrc=$?
+check "merge: valid JSON out" "${vrc}" "0"
+check "merge: base dpkg component kept" \
+   "$(grep -c 'pkg:deb/debian/bash@5.2' "${merged_out}")" "1"
+check "merge: TB fragment component spliced in" \
+   "$(grep -c 'pkg:generic/tor-browser@14.5.3' "${merged_out}")" "1"
+
+## Re-running with the SAME fragment must not double-insert (dedup by purl).
+PATH="${jsonbin}:${PATH}" SBOM_ETC_DIR="${etc}" SBOM_FRAGMENTS_DIR="${frag_dir}" \
+   derivative_sbom_generate "${merged_out}" "${want_ts}"
+check "merge: dedup keeps one TB component on rerun" \
+   "$(grep -c 'pkg:generic/tor-browser@14.5.3' "${merged_out}")" "1"
+
+## A second fragment duplicating a base purl must be dropped, not doubled.
+cat > "${frag_dir}/dup.cdx.json" <<'EOF'
+{"type":"library","name":"bash","purl":"pkg:deb/debian/bash@5.2"}
+EOF
+PATH="${jsonbin}:${PATH}" SBOM_ETC_DIR="${etc}" SBOM_FRAGMENTS_DIR="${frag_dir}" \
+   derivative_sbom_generate "${merged_out}" "${want_ts}"
+check "merge: duplicate-purl fragment deduped against base" \
+   "$(grep -c 'pkg:deb/debian/bash@5.2' "${merged_out}")" "1"
+safe-rm --force -- "${frag_dir}/dup.cdx.json"
+
+## No fragments -> output is EXACTLY debsbom's own (byte-identical passthrough,
+## so a plain image's SBOM is unaffected).
+empty_frag="${test_dir}/empty-fragments.d"
+mkdir --parents -- "${empty_frag}"
+plain_out="${test_dir}/plain.cdx.json"
+PATH="${jsonbin}:${PATH}" SBOM_ETC_DIR="${etc}" SBOM_FRAGMENTS_DIR="${empty_frag}" \
+   derivative_sbom_generate "${plain_out}" "${want_ts}"
+"${jsonbin}/debsbom" > "${test_dir}/debsbom-raw.json"
+check "merge: no-fragments output is byte-identical to debsbom" \
+   "$(if cmp --silent -- "${plain_out}" "${test_dir}/debsbom-raw.json"; then printf '%s' same; else printf '%s' diff; fi)" "same"
+
+## ===== sbom-fragment-merge: shape handling (invoked directly) =====
+whole_frag="${test_dir}/whole-fragments.d"
+mkdir --parents -- "${whole_frag}"
+## A whole CycloneDX document fragment: its components[] are merged.
+cat > "${whole_frag}/doc.cdx.json" <<'EOF'
+{"bomFormat":"CycloneDX","components":[{"type":"application","name":"X","purl":"pkg:generic/x@1"}]}
+EOF
+whole_merged="$("${jsonbin}/debsbom" | "${merge_tool}" "${whole_frag}")"
+check "merge-tool: whole-doc fragment components merged" \
+   "$(printf '%s' "${whole_merged}" | grep -c 'pkg:generic/x@1')" "1"
+
+## Malformed fragment JSON is a HARD error (never a silently-incomplete SBOM).
+bad_frag="${test_dir}/bad-fragments.d"
+mkdir --parents -- "${bad_frag}"
+printf '%s\n' '{ not json' > "${bad_frag}/bad.cdx.json"
+badrc=0
+{ "${jsonbin}/debsbom" | "${merge_tool}" "${bad_frag}" >/dev/null 2>&1; } || badrc=$?
+check "merge-tool: malformed fragment fails closed (exit 1)" "${badrc}" "1"
+
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
    printf '%s\n' "FAILED"
