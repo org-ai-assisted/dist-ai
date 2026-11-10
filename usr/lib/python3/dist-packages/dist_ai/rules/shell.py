@@ -669,6 +669,12 @@ def _mkdir_parents_flag(call, source):
         ## default. '-m' consumes the REST of a cluster as its mode value (bash_ast
         ## cluster rule), so a 'p' after an 'm' is mode text; 'p' is never a valid
         ## mode char, so that case differs only on a broken mkdir.
+        ## SCOPE (accident, not adversary, as bash_ast): the prefix is the literal
+        ## SPELLING, not validated against getopt, so a word that QUOTES an invalid
+        ## option char ahead of a 'p' (e.g. a quoted backslash or dollar before 'p')
+        ## is misread -- but such a word is an invalid mkdir that errors before any
+        ## dir exists, so the message is moot. No getopt letter-set parser here;
+        ## that is the crafted case the module's threat model excludes.
         if not text.startswith("--"):
             for letter in bash_ast.word_literal_prefix(word)[1:]:
                 if letter == "p":
