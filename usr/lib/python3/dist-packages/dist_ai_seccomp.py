@@ -32,6 +32,13 @@ _RETRYABLE_ERRNOS = {
     'EINTR', 'EAGAIN', 'EWOULDBLOCK',
     'ERESTART', 'ERESTARTSYS', 'ERESTARTNOINTR', 'ERESTARTNOHAND',
 }
+## The same retryable errnos BY NUMBER. systemd accepts SystemCallErrorNumber= as a
+## name OR a number, so a numeric retryable value (EAGAIN=11, EINTR=4) is the SAME
+## bad soft-deny and must be rejected too -- the name check never sees the numeric
+## form. Only the userspace errnos exist in Python's errno (the ERESTART* are
+## kernel-internal, neither nameable via errno nor settable in a real unit).
+_RETRYABLE_ERRNO_NUMBERS = frozenset(
+    getattr(errno, name) for name in _RETRYABLE_ERRNOS if hasattr(errno, name))
 ## A real errno name. systemd IGNORES an unknown name (e.g. EBOGUS) and keeps the
 ## default KILL action, so an invalid name is NOT a soft deny -- reporting 'soft'
 ## for it is a false pass. Enumerate every E* constant (not errorcode.values(),
@@ -142,7 +149,12 @@ def errno_is_soft(value: str) -> bool:
     ## then raises ValueError and crashes the lint. systemd accepts only ASCII
     ## 1..4095, so a non-ASCII digit is not a valid errno -- fall through to False.
     if val.isascii() and val.isdigit():
-        return _ERRNO_MIN <= int(val) <= _ERRNO_MAX
+        number = int(val)
+        ## a retryable errno given numerically (EAGAIN=11, EINTR=4) is the same
+        ## spinning bad soft-deny as its name, which the check above cannot see.
+        if number in _RETRYABLE_ERRNO_NUMBERS:
+            return False
+        return _ERRNO_MIN <= number <= _ERRNO_MAX
     ## an errno NAME must be a REAL errno: systemd ignores an unknown name and keeps
     ## the KILL action, so a bogus name (EBOGUS) is not a soft deny. A real name
     ## carrying a digit (E2BIG, EL2HLT) is NOT numeric -- .isdigit() is False, so it

@@ -37,6 +37,7 @@ deliberate, sound choice -- so this lint does not require a soft errno there.
 Resolves units via SYSTEMCHECK_REPO (dist-ai/CLAUDE.md).
 """
 
+import errno
 import os
 import sys
 import unittest
@@ -100,6 +101,18 @@ class WxParserFidelityTest(unittest.TestCase):
 
     def test_errno_is_soft_rejects_eintr(self) -> None:
         self.assertFalse(errno_is_soft('EINTR'))
+
+    def test_errno_is_soft_rejects_retryable_by_number(self) -> None:
+        ## systemd accepts SystemCallErrorNumber= as a name OR a number, so a retryable
+        ## errno in numeric form (EAGAIN=11, EINTR=4) is the SAME spinning bad soft-deny
+        ## as the name -- it must not slip through just because the name check cannot see
+        ## the number. memfd_create stays denied, but via the default kill, not a 'soft'.
+        self.assertFalse(errno_is_soft(str(errno.EAGAIN)))
+        self.assertFalse(errno_is_soft(str(errno.EINTR)))
+        unit = ('[Service]\n'
+                'SystemCallFilter=~memfd_create\n'
+                f'SystemCallErrorNumber={errno.EAGAIN}\n')
+        self.assertEqual(memfd_denial(unit), 'kill')
 
     def test_memfd_denial_eintr_is_kill_not_soft(self) -> None:
         unit = ('[Service]\n'
