@@ -99,6 +99,11 @@ function load(bodyHtml, opts) {
 }
 
 const tick = () => new Promise((r) => setTimeout(r, 5));
+// Drive requestAnimationFrame SYNCHRONOUSLY (callback runs inline). app.js schedules deferred
+// work via rAF (e.g. initBackToTop arms .btt-anim a frame after the hidden state paints, instead
+// of a synchronous forced reflow); a sync rAF makes that deferral observable in a unit test
+// without depending on jsdom's frame-timer cadence. Install via load()'s preEval.
+const syncRaf = (w) => { w.requestAnimationFrame = (cb) => { cb(0); return 0; }; };
 
 // ---- code-select / copy widgets ------------------------------------------------------------
 
@@ -454,7 +459,9 @@ test("back-to-top: static anchor is wired hidden and reveals past the scroll thr
   // Back-to-top is STATIC HTML now (page.py: <a class="back-to-top" href="#top">) so it works
   // with no JS; initBackToTop ENHANCES the existing element -- it marks the root js-capable
   // (floor steps aside) and fades the control via the .btt-hidden class instead of [hidden].
-  const w = load('<main>x</main><a class="back-to-top" href="#top">Top</a>');
+  // .btt-anim is armed via a double rAF (a frame after the hidden state paints, not a synchronous
+  // forced reflow); syncRaf runs that deferral inline so it is observable here.
+  const w = load('<main>x</main><a class="back-to-top" href="#top">Top</a>', { preEval: syncRaf });
   const btn = w.document.querySelector(".back-to-top");
   assert.ok(btn && btn.classList.contains("btt-hidden"), "present and hidden at top");
   assert.ok(w.document.documentElement.classList.contains("js"), "root marked js-capable");

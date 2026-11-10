@@ -3215,6 +3215,100 @@ def audited_pages(root, policy, curated_file=None):
     return pages
 
 
+# Properties Chrome animates on the COMPOSITOR thread; a CSS @keyframes animating anything
+# else runs on the main thread (Lighthouse "avoid non-composited animations": janky, can grow
+# CLS). Animating a discrete/non-interpolable property like visibility is the common offender
+# (a scroll/opacity reveal belongs on transform/opacity). The individual transform longhands
+# (translate/rotate/scale) composite too.
+_COMPOSITABLE_ANIM_PROPS = frozenset({
+    'transform', 'opacity', 'translate', 'rotate', 'scale',
+})
+_KEYFRAMES_OPEN_RE = re.compile(r'@(?:-[a-z]+-)?keyframes\s+([\w-]+)\s*\{', re.IGNORECASE)
+# A deliberate non-composited keyframe is waived by a `/* composited-ok: <name> */` comment in
+# ANY of the site's CSS: the name is searched across sheets, so a waiver in the readable source
+# also clears its minified twin (whose comments the minifier strips).
+_COMPOSITED_OK_RE = re.compile(r'composited-ok:\s*([\w-]+)')
+# A property declaration inside a keyframes body: `<prop>:` right after a `{` or `;` (the
+# `from`/`to`/`0%` selectors sit before `{`, so they are never captured).
+_CSS_DECL_PROP_RE = re.compile(r'(?:[{;])\s*([a-zA-Z-]+)\s*:')
+
+
+def _keyframe_blocks(text):
+    """Yield (name, body) for each @keyframes rule, brace-matched so the body is exact."""
+    for match in _KEYFRAMES_OPEN_RE.finditer(text):
+        start = match.end()
+        depth = 1
+        i = start
+        while i < len(text) and depth:
+            char = text[i]
+            if char == '{':
+                depth += 1
+            elif char == '}':
+                depth -= 1
+            i += 1
+        yield match.group(1), text[start:i - 1]
+
+
+def check_css_animations(root, failures):
+    """No CSS @keyframes animates a non-compositable property (Lighthouse 'avoid non-composited
+    animations'). Scans every stylesheet in the tree (site-wide: a handful of files). Waive a
+    deliberate one with `/* composited-ok: <keyframe-name> */` in any sheet."""
+    sheets = []
+    waived = set()
+    for base_dir, dirs, files in os.walk(root):
+        _prune_git(dirs)
+        for name in files:
+            if not name.endswith('.css'):
+                continue
+            path = os.path.join(base_dir, name)
+            text = _read_css_text(path)
+            sheets.append((os.path.relpath(path, root), text))
+            waived.update(_COMPOSITED_OK_RE.findall(text))
+    for crel, text in sheets:
+        for name, body in _keyframe_blocks(_strip_css_comments(text)):
+            if name in waived:
+                continue
+            bad = sorted({p.lower() for p in _CSS_DECL_PROP_RE.findall(body)}
+                         - _COMPOSITABLE_ANIM_PROPS)
+            if bad:
+                failures.append(
+                    "%s: @keyframes %s animates non-composited %s %s "
+                    "(Lighthouse 'avoid non-composited animations'); animate "
+                    "transform/opacity, or waive with /* composited-ok: %s */"
+                    % (crel, name, 'property' if len(bad) == 1 else 'properties',
+                       ', '.join(bad), name))
+
+
+# A layout read (geometry property / getBoundingClientRect) whose value is DISCARDED via `void`
+# has no purpose but to force a synchronous relayout -- the main-thread stall Lighthouse flags as
+# "Forced reflow". Only the discarded form is gated: a real measurement keeps its value, so this
+# never flags a legitimate read. Defer the dependent change with requestAnimationFrame instead.
+_VOID_REFLOW_RE = re.compile(
+    r'\bvoid\s[^;{}]*?\.(?:offset(?:Width|Height|Top|Left)|scroll(?:Width|Height|Top|Left)'
+    r'|client(?:Width|Height)|getBoundingClientRect)\b')
+
+
+def check_forced_reflow(root, failures):
+    """No `void <node>.<layout-read>` forced-reflow idiom in the site's JS (Lighthouse 'Forced
+    reflow'). Scans every .js/.mjs in the tree."""
+    for base_dir, dirs, files in os.walk(root):
+        _prune_git(dirs)
+        for name in files:
+            if not (name.endswith('.js') or name.endswith('.mjs')):
+                continue
+            path = os.path.join(base_dir, name)
+            try:
+                with open(path, encoding='utf-8') as handle:
+                    text = handle.read()
+            except OSError:
+                continue
+            for match in _VOID_REFLOW_RE.finditer(text):
+                failures.append(
+                    "%s: `%s` forces a synchronous reflow (Lighthouse 'Forced reflow'); "
+                    'defer the dependent change via requestAnimationFrame'
+                    % (os.path.relpath(path, root), match.group(0)[:60].strip()))
+
+
 def main():
     from dist_ai.webcheck import cli
     argv_roots = sys.argv[1:]
@@ -3288,6 +3382,11 @@ def main():
         check_fouc(root, failures, pages)
         check_supply_chain(root, failures, pages)
         check_image_format(root, failures, pages)
+        # Site-wide asset hygiene (CSS/JS files, not per-page): no non-composited CSS animation
+        # and no discarded-layout-read forced reflow (Lighthouse perf insights the score-based
+        # lighthouse gate, being UNSCORED, never catches).
+        check_css_animations(root, failures)
+        check_forced_reflow(root, failures)
         # Orphaned-image detection needs the WHOLE corpus (an image is orphaned only
         # when NO page references it), so it is meaningless on a curated subset and
         # far too slow on a full wiki tree -- family/CSR only.

@@ -1031,6 +1031,68 @@ def run():
     check('check_fouc invoked from main()',
           'check_fouc(root' in main_body)
 
+    # check_css_animations: a CSS @keyframes animating a non-compositable property (Lighthouse
+    # "avoid non-composited animations"). transform/opacity (and the individual transform
+    # longhands) are composited; visibility/width/background/... are not.
+    def _anim_failures(root):
+        failures: list[str] = []
+        check_site.check_css_animations(root, failures)
+        return failures
+
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'style.css', '@keyframes reveal{from{transform:scale(0)}to{transform:scale(1)}}')
+        check('composited (transform) keyframe passes', _anim_failures(root) == [],
+              repr(_anim_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'style.css', '@keyframes reveal{from{visibility:hidden}to{visibility:visible}}')
+        check('visibility keyframe flagged (non-composited)',
+              any('visibility' in f and 'reveal' in f for f in _anim_failures(root)),
+              repr(_anim_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        # opacity + individual transform longhands are compositor-driven -> clean.
+        _write(root, 'a.css', '@keyframes fade{from{opacity:0}to{opacity:1}}'
+                              '@keyframes spin{to{rotate:360deg}}@keyframes grow{to{scale:2}}')
+        check('opacity/rotate/scale keyframes pass', _anim_failures(root) == [],
+              repr(_anim_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        # Waiver in the READABLE sheet clears the same-named keyframe in its comment-stripped
+        # minified twin (the deploy ships both).
+        _write(root, 'style.css', '/* composited-ok: pulse */\n'
+                                  '@keyframes pulse{from{background:red}to{background:blue}}')
+        _write(root, 'style.min.css', '@keyframes pulse{from{background:red}to{background:blue}}')
+        check('composited-ok waiver clears the keyframe (incl. minified twin)',
+              _anim_failures(root) == [], repr(_anim_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'style.css', '@keyframes pulse{from{background:red}to{background:blue}}')
+        check('non-composited keyframe without a waiver is flagged',
+              any('pulse' in f for f in _anim_failures(root)), repr(_anim_failures(root)))
+    check('check_css_animations invoked from main()',
+          'check_css_animations(root' in main_body)
+
+    # check_forced_reflow: a discarded (`void`) layout read forces a synchronous relayout
+    # (Lighthouse "Forced reflow"); a read that keeps its value is a legitimate measurement.
+    def _reflow_failures(root):
+        failures: list[str] = []
+        check_site.check_forced_reflow(root, failures)
+        return failures
+
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'app.js', 'function f(el){el.classList.add("x");void el.offsetHeight;el.classList.add("y");}')
+        check('void offsetHeight forced-reflow idiom flagged',
+              any('offsetHeight' in f for f in _reflow_failures(root)), repr(_reflow_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'app.min.js', 'void a.getBoundingClientRect();')
+        check('void getBoundingClientRect forced-reflow flagged',
+              any('getBoundingClientRect' in f for f in _reflow_failures(root)),
+              repr(_reflow_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        # A measurement that KEEPS its value is legitimate -- not a forced-reflow idiom.
+        _write(root, 'app.js', 'var h=el.offsetHeight;use(h);void 0;')
+        check('kept layout read (and void 0) not flagged', _reflow_failures(root) == [],
+              repr(_reflow_failures(root)))
+    check('check_forced_reflow invoked from main()',
+          'check_forced_reflow(root' in main_body)
+
     # check_links: a '..'-traversal target that escapes the site root is a BROKEN
     # link (it would 404 on the deployed site), never validated against some
     # unrelated real file that happens to exist on the test host.
