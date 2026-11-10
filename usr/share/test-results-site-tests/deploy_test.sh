@@ -106,6 +106,8 @@ fi
 argv="$(cat -- "${argv_file}")"
 check "rsync remote targets the results plane"                 "${argv}" "server-admin:/var/www/results"
 check "rsync is RESUMABLE (--partial -- the wedge fix)"         "${argv}" "--partial"
+check "rsync verifies by content (--checksum -- persistent mirror, no stale/partial keep)" \
+   "${argv}" "--checksum"
 check "rsync is an exact delta mirror (--delete)"              "${argv}" "--delete"
 check "rsync excludes .git"                                    "${argv}" "--exclude=.git"
 check "rsync drops tree-escaping symlinks (--safe-links)"      "${argv}" "--safe-links"

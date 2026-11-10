@@ -184,8 +184,14 @@ printf '%s\n' "${me}: syncing results plane from ${rsync_remote}"
 ## slow link costs at most a slow FIRST sync, never a permanent wedge. --delete keeps the mirror an
 ## exact copy (a cell removed on the server drops from the site); --safe-links drops any symlink
 ## escaping the tree; .git is never part of the world-readable nginx-webroot plane.
+## --checksum: this mirror is PERSISTENT, so a file is kept across runs -- verify every file by
+## content, not the default size+second-mtime quick check. That quick check would silently keep a
+## stale cell whose replacement is the same size at the same mtime, AND would not re-fetch a
+## --partial leftover or a locally corrupted file that happens to match size -- either one publishes
+## a stale/false-green result. The checksums are computed on each end (local disk reads + a tiny
+## per-file checksum exchange), so delta efficiency over the slow link is preserved.
 rsync \
-   --recursive --links --perms --times \
+   --recursive --links --perms --times --checksum \
    --delete --partial --safe-links --exclude='.git' \
    --rsh="${rsync_rsh}" \
    -- "${rsync_remote}/" "${mirror}/" \
