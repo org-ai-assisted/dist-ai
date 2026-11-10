@@ -653,7 +653,7 @@ def _mkdir_parents_flag(call, source):
     '--parents' create, so detect() can steer a plain mkdir to 'mkdir --mode=' (NOT
     'install -d', which reuses an existing dir). _mkdir_fix_shape is the stricter
     parents-ONLY gate the autofix itself needs."""
-    for kind, _word, text in bash_ast.command_tokens(
+    for kind, word, text in bash_ast.command_tokens(
             call, source, frozenset("m"), frozenset({"mode"})):
         if kind != "opt" or text == "--":
             continue
@@ -661,11 +661,15 @@ def _mkdir_parents_flag(call, source):
         if name is not None and bash_ast.resolve_long(name, MKDIR_LONG) \
                 == "parents":
             return True
-        ## A bundled short-option cluster ('-pv', '-vp', '-pm700') is one opt token.
-        ## '-m' consumes the REST of the cluster as its mode value (bash_ast cluster
-        ## rule), so a 'p' AFTER an 'm' is mode text, not the parents flag; 'p' is
-        ## never a valid mode char, so this only differs on a broken mkdir.
-        if not text.startswith("--"):
+        ## A bundled short-option cluster ('-pv', '-vp', '-pm700') is one opt
+        ## token. Scan only a LITERAL cluster: a non-literal expansion ('-$opt')
+        ## surfaces its raw SOURCE as text, whose letters are the spelling, not
+        ## the runtime flags, so a 'p' in a var name must not read as --parents
+        ## (conservative: an unknown flag falls through to the lock-dir default).
+        ## '-m' consumes the REST of a cluster as its mode value (bash_ast cluster
+        ## rule), so a 'p' after an 'm' is mode text; 'p' is never a valid mode
+        ## char, so that case differs only on a broken mkdir.
+        if not text.startswith("--") and bash_ast.word_string(word) is not None:
             for letter in text[1:]:
                 if letter == "p":
                     return True
