@@ -6,22 +6,16 @@
 ## paths are error/validation branches, so they already fail ungracefully today.
 ##
 ## Fix convention (operator decision): mirror each file's neighbors --
-## help-steps build family -> source pre (keeps error()); usr/bin + libexec tools
-## -> source log_run_die.sh and use die(); a `has` caller -> source has.bsh.
-
-## help-steps orchestrator. `error` needs pre's full framework (ERR/EXIT traps,
-## sudo probes, set +o errexit) -- sourcing pre here is heavy and changes the
-## orchestrator's error handling, so fix needs the die-vs-pre call. HELD.
-help-steps/dm-build-official-one	error
-
-## developer-meta-files dm tools: already-die-style; convert error -> die 1
-## (dm-packaging already sources log_run_die.sh + uses die 11x).
-packages/kicksecure/developer-meta-files/usr/bin/dm-packaging-helper-script	error
-packages/kicksecure/developer-meta-files/usr/bin/dm-replace-list	error
-
-## initializer-dist chroot-scripts-post.d: run via run-parts in the chroot; `error`
-## does not exist there. Fix: source log_run_die.sh, error -> die 1.
-packages/kicksecure/initializer-dist/usr/libexec/initializer-dist/chroot-scripts-post.d/20_sanity_checks	error
+## usr/bin + libexec tools -> source log_run_die.sh and use die(); a `has` caller
+## -> source has.bsh. (The dm-parent + developer-meta-files breaks are already
+## fixed and removed from this list.)
+##
+## Why the entries below are still here: the one-line import fix is correct and
+## parses, but these are upstream-derived package files and the dist-ai-style
+## gate scans the WHOLE file, so a touch surfaces PRE-EXISTING debt (incomplete
+## R-010 strict block, SC2250 bracing). Landing needs either a restyle (which
+## conflicts with upstream remaster -- discouraged) or ALLOW_STYLE_COMMIT (a
+## commit-hook bypass requiring written operator approval). HELD for that call.
 
 ## msgcollector daemons: `error` is undefined (not a helper-scripts function).
 ## Fix: source log_run_die.sh (get_colors already sourced), error -> die 1.
@@ -29,15 +23,20 @@ packages/kicksecure/msgcollector/usr/libexec/msgcollector/msgcollector	error
 packages/kicksecure/msgcollector/usr/libexec/msgcollector/msgprogress	error
 packages/kicksecure/msgcollector/usr/libexec/msgcollector/msgprogressbar	error
 
+## initializer-dist chroot-scripts-post.d: run via run-parts in the chroot; `error`
+## does not exist there. Fix: source log_run_die.sh, error -> die 1.
+packages/kicksecure/initializer-dist/usr/libexec/initializer-dist/chroot-scripts-post.d/20_sanity_checks	error
+
 ## Whonix anon-gw: calls `has qubesdb-read` without sourcing has.bsh. Fix: source
-## has.bsh. (Whonix submodule.)
+## has.bsh. (anon-verify also carries pre-existing SC2250 bracing debt.)
 packages/whonix/anon-gw-anonymizer-config/usr/bin/anon-verify	has
 
-## Qubes template builder: `error` with no definer sourced (vars.sh/distribution.sh
-## do not define it). Fix per package convention. (Qubes/Whonix submodule.)
+## Qubes template builder: `error` with no definer sourced. Also on branch master
+## (not ai), so needs branch handling too. Fix per package convention.
 qubes/qubes-template-whonix/whonix-gateway/04_install_qubes_post.sh	error
 
 ## Whonix-Starter: `die 1 "Do not source this script!"` but only check_runtime.bsh
-## is sourced, not log_run_die.sh. Fix: source log_run_die.sh.
+## is sourced, not log_run_die.sh. Fix: source log_run_die.sh. (Files also have an
+## incomplete R-010 strict block.)
 windows/Whonix-Starter/build_on_linux_for_linux	die
 windows/Whonix-Starter/build_on_linux_for_win64	die
