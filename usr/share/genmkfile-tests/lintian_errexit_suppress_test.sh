@@ -50,20 +50,17 @@ cleanup_handler() {
 
 trap cleanup_handler EXIT
 
-## Extract the function under test rather than sourcing the whole library, matching
-## version_parse_test.sh. '^make_lintian()' does not match 'make_lintian_on_warning()'.
-sed -n '/^make_lintian()/,/^}/p' -- "${helper_file}" \
-   > "${test_root}/function_under_test.sh"
-
-if ! test -s "${test_root}/function_under_test.sh" ; then
-   printf '%s\n' "ERROR: could not extract make_lintian." >&2
+## Source the REAL helper WHOLE (sourced-only lib, was_executed-gated), so make_lintian and
+## every sibling it reaches are defined without running the CLI. A single-function sed cut
+## silently drifts the moment the subject gains an intra-file dependency -- the
+## extract-a-function anti-pattern dist-ai's CLAUDE.md forbids. The stubs below are defined
+## AFTER the source so they override the helper's own reporting/failure helpers.
+# shellcheck disable=SC1090
+source "${helper_file}"
+if ! declare -F make_lintian >/dev/null ; then
+   printf '%s\n' "ERROR: make_lintian not defined after sourcing the helper." >&2
    exit 1
 fi
-
-## The extracted file is generated at runtime, so there is no path for a source=
-## directive to point at.
-# shellcheck disable=SC1091
-source "${test_root}/function_under_test.sh"
 
 ## Stub everything make_lintian reaches after it builds the opts, so the real
 ## opts-building code runs but nothing else does. lintian is stubbed to a

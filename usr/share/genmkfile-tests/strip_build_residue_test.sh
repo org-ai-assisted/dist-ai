@@ -69,31 +69,29 @@ check_present() {
    fi
 }
 
-## Minimal stubs for the harness helpers the function calls, so the real
-## function body runs without pulling in the whole build system.
+## Source the REAL helper WHOLE (sourced-only lib, was_executed-gated), so
+## make_strip_build_residue and every sibling it reaches are defined without running the
+## CLI. A single-function sed cut silently drifts the moment the subject gains an intra-file
+## dependency -- the extract-a-function anti-pattern dist-ai's CLAUDE.md forbids.
+# shellcheck disable=SC1090
+source "${helper_file}"
+if ! declare -F make_strip_build_residue >/dev/null ; then
+   printf '%s\n' "ERROR: make_strip_build_residue not defined after sourcing the helper." >&2
+   exit 1
+fi
+
+## Minimal stubs for the harness helpers the function calls, so the real function body runs
+## without pulling in the whole build system. Defined AFTER the source so they override the
+## helper's own.
+# shellcheck disable=SC2317
 make_require() {
    true
 }
 
+# shellcheck disable=SC2317
 make_output_info() {
    printf '%s\n' "info: $*"
 }
-
-## Extract only the function under test from the real file, so the test cannot
-## silently drift from a reimplementation of it.
-sed -n '/^make_strip_build_residue()/,/^}/p' -- "${helper_file}" \
-   > "${test_root}/function_under_test.sh"
-
-if ! test -s "${test_root}/function_under_test.sh" ; then
-   printf '%s\n' "ERROR: could not extract make_strip_build_residue." >&2
-   exit 1
-fi
-
-## Generated above by sed, so there is no in-tree path for shellcheck to
-## follow; SC1091 rather than a source= directive pointing at a file that does
-## not exist until runtime.
-# shellcheck disable=SC1091
-source "${test_root}/function_under_test.sh"
 
 ## Build a source tree carrying residue at several depths, plus files that
 ## must survive -- including names that merely resemble the residue names.

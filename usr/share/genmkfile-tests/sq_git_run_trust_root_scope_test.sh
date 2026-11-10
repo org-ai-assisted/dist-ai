@@ -48,10 +48,15 @@ cleanup_handler() {
 }
 trap cleanup_handler EXIT
 
-## Extract only the function under test.
-sed -n '/^sq_git_run() {/,/^}/p' -- "${helper_file}" > "${test_root}/fns.sh"
-if ! grep --quiet '^sq_git_run() {' "${test_root}/fns.sh"; then
-   printf '%s\n' "ERROR: could not extract sq_git_run." >&2
+## Source the REAL helper WHOLE (sourced-only lib, was_executed-gated), so sq_git_run and
+## every sibling it reaches are defined without running the CLI. A single-function sed cut
+## silently drifts the moment the subject gains an intra-file dependency -- the
+## extract-a-function anti-pattern dist-ai's CLAUDE.md forbids. The make_require/
+## make_output_info stubs below are defined AFTER the source so they override the real ones.
+# shellcheck disable=SC1090
+source "${helper_file}"
+if ! declare -F sq_git_run >/dev/null; then
+   printf '%s\n' "ERROR: sq_git_run not defined after sourcing the helper." >&2
    exit 1
 fi
 
@@ -67,14 +72,11 @@ chmod --recursive -- +x "${stub_dir}/sq-git"
 PATH="${stub_dir}:${PATH}"
 export PATH
 
-## Neutralise sq_git_run's non-recording dependencies.
+## Neutralise sq_git_run's non-recording dependencies (overrides the sourced helper's).
 # shellcheck disable=SC2317
 make_require() { :; }
 # shellcheck disable=SC2317
 make_output_info() { :; }
-
-# shellcheck disable=SC1091
-source "${test_root}/fns.sh"
 
 tests_total=0
 tests_failed=0

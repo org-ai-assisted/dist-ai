@@ -44,23 +44,25 @@ cleanup_handler() {
 }
 trap cleanup_handler EXIT
 
-## Extract only the two functions under test, matching the suite convention.
-sed -n '/^exit_with_error() {/,/^}/p' -- "${helper_file}" > "${test_root}/fns.sh"
-sed -n '/^make_output_error() {/,/^}/p' -- "${helper_file}" >> "${test_root}/fns.sh"
-if ! grep --quiet '^exit_with_error() {' "${test_root}/fns.sh" || ! grep --quiet '^make_output_error() {' "${test_root}/fns.sh"; then
-   printf '%s\n' "ERROR: could not extract exit_with_error/make_output_error." >&2
-   exit 1
-fi
-
+## Source the REAL helper WHOLE, then stub only what must be neutral. The helper is a
+## sourced-only library (its CLI body is was_executed-gated), so sourcing defines
+## exit_with_error, make_output_error AND every sibling they reach without running the CLI.
+## A single-function sed cut silently drifts the moment a subject gains an intra-file
+## dependency -- exactly the extract-a-function anti-pattern dist-ai's CLAUDE.md forbids.
 ## make_output_error sources trace.bsh (|| true when absent) and paints with $red/$bold/etc.
-## Neutralise the environment so the extracted functions run in isolation.
+## Neutralise the environment so the subjects run in isolation; the function_trace stub is
+## defined AFTER the source so it overrides the helper's own.
 export HELPER_SCRIPTS_PATH="${test_root}/absent"
 red='' bold='' cyan='' reset='' make_source_package_name='testpkg'
 export red bold cyan reset make_source_package_name
+# shellcheck disable=SC1090
+source "${helper_file}"
+if ! declare -F exit_with_error >/dev/null || ! declare -F make_output_error >/dev/null; then
+   printf '%s\n' "ERROR: exit_with_error/make_output_error not defined after sourcing the helper." >&2
+   exit 1
+fi
 # shellcheck disable=SC2317
 function_trace() { printf '%s' ''; }
-# shellcheck disable=SC1091
-source "${test_root}/fns.sh"
 
 tests_total=0
 tests_failed=0

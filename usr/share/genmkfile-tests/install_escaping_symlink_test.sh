@@ -42,33 +42,32 @@ cleanup() {
 }
 trap cleanup EXIT
 
-## Extract the real make_helper; stub only the reporting/guard helpers.
-{
-   # shellcheck disable=SC2016  # literal shell-function text written to fn.sh
-   printf '%s\n' 'exit_with_error() { printf "DIE: %s\n" "$2" >&2; exit "$1"; }'
-   printf '%s\n' 'make_require() { :; }'
-   printf '%s\n' 'make_output_info() { :; }'
-   # shellcheck disable=SC2016  # literal shell-function text written to fn.sh
-   printf '%s\n' 'make_output_warn() { printf "WARN: %s\n" "$1" >&2; }'
-   printf '%s\n' 'in_array() { return 1; }'
-   ## make_helper calls path_is_within_any (folder_permission_skip_list check) and
-   ## genmkfile_install_path_excluded (build-residue skip, backed by the
-   ## genmkfile_install_exclude_patterns array); extract the real ones so the
-   ## mode-fix path runs, rather than stubbing away real behaviour.
-   sed -n '/^path_is_within_any()/,/^}/p' -- "${helper_file}"
-   sed -n '/^genmkfile_install_exclude_patterns=(/,/^)/p' -- "${helper_file}"
-   sed -n '/^genmkfile_install_path_excluded()/,/^}/p' -- "${helper_file}"
-   sed -n '/^make_helper()/,/^}/p' -- "${helper_file}"
-} > "${work}/fn.sh"
-if ! grep --quiet '^make_helper()' "${work}/fn.sh" \
-   || ! grep --quiet '^path_is_within_any()' "${work}/fn.sh" \
-   || ! grep --quiet '^genmkfile_install_path_excluded()' "${work}/fn.sh" \
-   || ! grep --quiet '^genmkfile_install_exclude_patterns=(' "${work}/fn.sh"; then
-   printf '%s\n' 'ERROR: could not extract make_helper + path_is_within_any + genmkfile_install_path_excluded.' >&2
+## Source the REAL helper WHOLE (sourced-only lib, was_executed-gated), so make_helper and
+## the real path_is_within_any (folder_permission_skip_list check) /
+## genmkfile_install_path_excluded (build-residue skip, backed by the
+## genmkfile_install_exclude_patterns array) it reaches are defined without running the CLI.
+## A single-function sed cut silently drifts the moment the subject gains an intra-file
+## dependency -- the extract-a-function anti-pattern dist-ai's CLAUDE.md forbids. The
+## reporting/guard stubs below are defined AFTER the source so they override the helper's
+## own, leaving the real mode-fix path to run.
+# shellcheck disable=SC1090
+source "${helper_file}"
+if ! declare -F make_helper >/dev/null \
+   || ! declare -F path_is_within_any >/dev/null \
+   || ! declare -F genmkfile_install_path_excluded >/dev/null; then
+   printf '%s\n' 'ERROR: make_helper + path_is_within_any + genmkfile_install_path_excluded not defined after sourcing the helper.' >&2
    exit 1
 fi
-# shellcheck disable=SC1091
-source "${work}/fn.sh"
+# shellcheck disable=SC2317
+exit_with_error() { printf '%s\n' "DIE: $2" >&2; exit "$1"; }
+# shellcheck disable=SC2317
+make_require() { :; }
+# shellcheck disable=SC2317
+make_output_info() { :; }
+# shellcheck disable=SC2317
+make_output_warn() { printf '%s\n' "WARN: $1" >&2; }
+# shellcheck disable=SC2317
+in_array() { return 1; }
 
 shopt -s globstar nullglob
 

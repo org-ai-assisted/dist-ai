@@ -56,20 +56,16 @@ trap cleanup_handler EXIT
 tests_total=0
 tests_failed=0
 
-## Extract the function under test rather than sourcing the whole library, matching
-## test_strip_build_residue.sh.
-sed -n '/^make_parse_changelog_version()/,/^}/p' -- "${helper_file}" \
-   > "${test_root}/function_under_test.sh"
-
-if ! test -s "${test_root}/function_under_test.sh" ; then
-   printf '%s\n' "ERROR: could not extract make_parse_changelog_version." >&2
+## Source the REAL helper WHOLE (sourced-only lib, was_executed-gated), so
+## make_parse_changelog_version and every sibling it reaches are defined without running the
+## CLI. A single-function sed cut silently drifts the moment the subject gains an intra-file
+## dependency -- the extract-a-function anti-pattern dist-ai's CLAUDE.md forbids.
+# shellcheck disable=SC1090
+source "${helper_file}"
+if ! declare -F make_parse_changelog_version >/dev/null ; then
+   printf '%s\n' "ERROR: make_parse_changelog_version not defined after sourcing the helper." >&2
    exit 1
 fi
-
-## The extracted file is generated at runtime, so there is no path for a source=
-## directive to point at.
-# shellcheck disable=SC1091
-source "${test_root}/function_under_test.sh"
 
 check_parse() {
    local changelog_version="$1" want_epoch="$2" want_version="$3" want_revision="$4"
