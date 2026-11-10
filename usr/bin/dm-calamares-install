@@ -1848,14 +1848,27 @@ build_vm() {
          --type dvddrive --medium "${iso}" >/dev/null
       return 0
    fi
-   "${VBOXMANAGE}" unregistervm "${vm}" --delete 2>/dev/null || true
+   ## The VM is in one of two states: still REGISTERED (possibly running / session-locked), or
+   ## UNREGISTERED with a settings dir a crashed prior run left behind. These need opposite
+   ## handling, and the dir below is safe to delete ONLY in the unregistered case -- so decide by
+   ## the registration state, never by dir existence alone. showvminfo exits non-zero on an
+   ## unregistered VM (the file's established registration probe).
+   if "${VBOXMANAGE}" showvminfo "${vm}" --machinereadable >/dev/null 2>&1; then
+      ## Registered -> unregister (with --delete) BEFORE touching its on-disk dir. controlvm
+      ## poweroff above unlocks the session ASYNCHRONOUSLY, so unregistervm can transiently hit
+      ## "being unlocked"/"already locked"; vbox_config_retry rides that out (~30s bounded). A
+      ## genuinely stuck lock fails LOUD here -- never fall through to delete a live VM's settings
+      ## (that would lose the VM and still fail createvm, name still taken).
+      vbox_config_retry unregistervm "${vm}" --delete >/dev/null \
+         || die "${FAIL_RC}" "VM '${vm}' is still registered and its session will not release (locked?); refusing to delete its settings dir -- power it off and re-run"
+   fi
    safe-rm --force -- "${disk}"
-   ## A crashed prior run can leave this VM's settings dir on disk WITHOUT a registration, so the
-   ## swallowed unregistervm above is a no-op and createvm then dies VBOX_E_FILE_ERROR ("Machine
-   ## settings file ... already exists"). image-test-gc cannot clear it (it refuses persist-*), so
-   ## remove the stale per-VM dir HERE -- scoped to the one VM this path is about to recreate, NOT
-   ## an account wipe. It lives under VBox's configured default machine folder; query that (its
-   ## value may contain spaces, so strip only the label, not on whitespace).
+   ## VM now confirmed unregistered (it never was, or --delete above just removed it). A crashed
+   ## prior run can still leave this VM's settings dir WITHOUT a registration -> createvm then dies
+   ## VBOX_E_FILE_ERROR ("Machine settings file ... already exists"). image-test-gc cannot clear it
+   ## (it refuses persist-*), so remove the stale per-VM dir HERE -- scoped to the one VM this path
+   ## is about to recreate, NOT an account wipe. It lives under VBox's configured default machine
+   ## folder; query that (its value may contain spaces, so strip only the label, not on whitespace).
    local machine_folder
    machine_folder="$("${VBOXMANAGE}" list systemproperties \
       | sed -n 's/^Default machine folder:[[:space:]]*//p')"

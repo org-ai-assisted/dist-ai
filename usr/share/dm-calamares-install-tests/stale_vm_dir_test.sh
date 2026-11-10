@@ -62,6 +62,12 @@ if [ "$1" = list ] && [ "$2" = systemproperties ]; then
    printf '%s\n' "Default machine folder:          ${MACHINE_FOLDER}"
    exit 0
 fi
+if [ "$1" = showvminfo ]; then
+   ## This scenario is crash residue: the dir exists but the VM is NOT registered, so build_vm's
+   ## registration probe must fail (exit non-zero) and skip unregister -> go straight to the
+   ## stale-dir removal.
+   exit 1
+fi
 if [ "$1" = createvm ]; then
    if [ -e "${MACHINE_FOLDER}/testvm" ]; then
       ## Marker: createvm was REFUSED because the dir still exists (VBOX_E_FILE_ERROR). The fix
