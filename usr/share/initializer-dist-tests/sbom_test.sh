@@ -7,25 +7,17 @@
 
 ## initializer-dist chroot-scripts-post.d '76_sbom': the image-level SBOM hook.
 ##
-## Drives the REAL hook end-to-end (it has no functions to source -- a short,
-## top-to-bottom script), with its genuine externals stubbed so the run is
-## offline, deterministic and rootless:
-##   - debsbom  : the SBOM generator. Stubbed to RECORD its argv and create the
-##                --out file (so the subject's follow-up mtime pin has a target),
-##                never a real dpkg scan.
-##   - uuidgen  : stubbed to a fixed UUID + record argv, so the serial-derivation
-##                wiring (os-release -> --name) is asserted without depending on
-##                a real uuid.
-##   - dpkg     : stubbed to a fixed --print-architecture.
-## os-release and the output dir are redirected to tmpdir fixtures via the
-## subject's SBOM_OSRELEASE_FILE / SBOM_OUTPUT_DIR seams.
+## It is a THIN, build-specific wrapper around the shared 'derivative-sbom'
+## helper (whose generation logic is tested in helper-scripts-lib-tests/
+## derivative_sbom_test.sh). This test drives the REAL hook end-to-end with
+## derivative-sbom stubbed, and asserts ONLY the hook's own concerns:
+##   - the reproducibility context: it calls derivative-sbom with --out at the
+##     embedded path and --timestamp derived from SOURCE_DATE_EPOCH, then pins
+##     the output mtime to SOURCE_DATE_EPOCH;
+##   - the skip paths: SKIP_SCRIPTS membership, and a missing SOURCE_DATE_EPOCH
+##     (-> no SBOM, since a wall-clock timestamp would break reproducible builds).
 ##
-## Asserts: the reproducibility contract (pinned schema 1.6, serial from
-## uuidgen, timestamp from SOURCE_DATE_EPOCH, mtime pin), the os-release-derived
-## root component identity + serial name, and the two skip paths (SKIP_SCRIPTS
-## membership, and a missing SOURCE_DATE_EPOCH -> graceful no-op, no SBOM).
-##
-## A missing subject is a HARD FAIL (exit 1), never a skip. No root, no network.
+## A missing subject is a HARD FAIL (exit 1). No root, no network.
 
 set -o errexit
 set -o nounset
@@ -55,66 +47,35 @@ cleanup_handler() {
 }
 trap cleanup_handler EXIT
 
-## --- stub tree: record argv per command; debsbom also creates its --out file ---
+## Stub derivative-sbom: record argv and honor --out by creating that file (so
+## the hook's follow-up mtime pin has a target). Never a real dpkg scan.
 mockbin="${test_dir}/bin"
 rec="${test_dir}/rec"
 mkdir --parents -- "${mockbin}" "${rec}"
-
-## debsbom: record argv, honor --out by creating that file (a minimal valid
-## CycloneDX stub), exit 0. Never scans anything.
-cat > "${mockbin}/debsbom" <<'EOF'
+cat > "${mockbin}/derivative-sbom" <<'EOF'
 #!/bin/bash
-printf '%q ' "$@" >> "${REC_DIR}/debsbom.argv"
-printf '\n' >> "${REC_DIR}/debsbom.argv"
+printf '%q ' "$@" >> "${REC_DIR}/derivative-sbom.argv"
+printf '\n' >> "${REC_DIR}/derivative-sbom.argv"
 out=""
 while [ "$#" -gt 0 ]; do
    if [ "$1" = "--out" ]; then out="$2"; shift 2; continue; fi
    shift
 done
-if [ -n "${out}" ]; then
-   printf '%s\n' '{"bomFormat":"CycloneDX","specVersion":"1.6","version":1}' > "${out}"
-fi
+[ -z "${out}" ] || printf '%s\n' '{"bomFormat":"CycloneDX"}' > "${out}"
 exit 0
 EOF
-
-## uuidgen: fixed UUID, record argv (to assert the --name the subject builds).
-cat > "${mockbin}/uuidgen" <<'EOF'
-#!/bin/bash
-printf '%q ' "$@" >> "${REC_DIR}/uuidgen.argv"
-printf '\n' >> "${REC_DIR}/uuidgen.argv"
-printf '%s\n' "11111111-2222-5333-8444-555555555555"
-EOF
-
-## dpkg: fixed architecture.
-cat > "${mockbin}/dpkg" <<'EOF'
-#!/bin/bash
-printf '%q ' "$@" >> "${REC_DIR}/dpkg.argv"
-printf '\n' >> "${REC_DIR}/dpkg.argv"
-[ "$1" = "--print-architecture" ] && printf '%s\n' "amd64"
-exit 0
-EOF
-chmod +x -- "${mockbin}/debsbom" "${mockbin}/uuidgen" "${mockbin}/dpkg"
-
-## os-release fixture: a derivative identity (NOT the CI host's), so the derived
-## serial name and root component are deterministic.
-osrel="${test_dir}/os-release"
-printf '%s\n' 'ID=kicksecure' 'VERSION_ID=18' 'PRETTY_NAME="Kicksecure 18"' > "${osrel}"
+chmod +x -- "${mockbin}/derivative-sbom"
 
 outdir="${test_dir}/out"
 sbom_out="${outdir}/system.cdx.json"
 sde=1712345678
 ## SOURCE_DATE_EPOCH 1712345678 -> 2024-04-05T19:34:38+00:00 (UTC, LC_ALL=C).
 want_ts="2024-04-05T19:34:38+00:00"
-want_serial="11111111-2222-5333-8444-555555555555"
 
-## Run the real hook as a fresh process with the externals stubbed and the seams
-## pointed at fixtures. Returns the hook's exit code; its set -x trace is dropped.
 run_hook() {
-   REC_DIR="${rec}" PATH="${mockbin}:${PATH}" \
-      SBOM_OUTPUT_DIR="${outdir}" SBOM_OSRELEASE_FILE="${osrel}" \
+   REC_DIR="${rec}" PATH="${mockbin}:${PATH}" SBOM_OUTPUT_DIR="${outdir}" \
       bash "${subject}" >/dev/null 2>&1
 }
-
 reset_state() {
    safe-rm --recursive --force -- "${rec}" "${outdir}"
    mkdir --parents -- "${rec}"
@@ -131,58 +92,43 @@ check() {
       printf '%s\n' "FAIL: ${label} (got '${got}', want '${want}')" >&2; fail=$((fail + 1))
    fi
 }
-
-## True if debsbom's recorded argv contains the consecutive sequence of args.
-debsbom_called_with() {
-   local needle
-   needle="$(printf '%q ' "$@")"
-   [ -f "${rec}/debsbom.argv" ] && grep --quiet --fixed-strings -- "${needle}" "${rec}/debsbom.argv"
+called_with() {
+   [ -f "${rec}/derivative-sbom.argv" ] \
+      && grep --quiet --fixed-strings -- "$(printf '%q ' "$@")" "${rec}/derivative-sbom.argv"
 }
 yn() { if "$@"; then printf '%s' yes; else printf '%s' no; fi; }
 
-## ===================== Case 1: happy path, reproducibility contract =====================
+## ===================== happy path =====================
 reset_state
 rc=0
 SOURCE_DATE_EPOCH="${sde}" run_hook || rc=$?
 check "happy: hook exits 0" "${rc}" "0"
-check "happy: SBOM written to seam output path" "$(yn test -f "${sbom_out}")" "yes"
-check "happy: debsbom was invoked" "$(yn test -f "${rec}/debsbom.argv")" "yes"
-check "happy: CycloneDX only (--sbom-type cdx)" "$(yn debsbom_called_with --sbom-type cdx)" "yes"
-check "happy: schema pinned to 1.6" "$(yn debsbom_called_with --cdx-schema-version 1.6)" "yes"
-check "happy: serial pinned from uuidgen" "$(yn debsbom_called_with --cdx-serialnumber "${want_serial}")" "yes"
-check "happy: timestamp from SOURCE_DATE_EPOCH" "$(yn debsbom_called_with --timestamp "${want_ts}")" "yes"
-check "happy: root component name from os-release ID" "$(yn debsbom_called_with --distro-name kicksecure)" "yes"
-check "happy: root component version from os-release VERSION_ID" "$(yn debsbom_called_with --distro-version 18)" "yes"
-check "happy: output path passed via --out" "$(yn debsbom_called_with --out "${sbom_out}")" "yes"
-## serial derivation: uuidgen --name is built from os-release id + version + arch.
-uuidgen_name="no"
-[ -f "${rec}/uuidgen.argv" ] && grep --quiet --fixed-strings -- "$(printf '%q ' --name sbom:kicksecure:18:amd64)" "${rec}/uuidgen.argv" && uuidgen_name="yes"
-check "happy: uuidgen name = sbom:<id>:<version>:<arch>" "${uuidgen_name}" "yes"
-## mtime pinned to SOURCE_DATE_EPOCH (reproducible reimage preserves regular-file mtimes).
+check "happy: delegates to derivative-sbom" "$(yn test -f "${rec}/derivative-sbom.argv")" "yes"
+check "happy: writes to the embedded path via --out" "$(yn called_with --out "${sbom_out}")" "yes"
+check "happy: timestamp pinned from SOURCE_DATE_EPOCH" "$(yn called_with --timestamp "${want_ts}")" "yes"
+check "happy: SBOM present at output path" "$(yn test -f "${sbom_out}")" "yes"
 check "happy: output mtime pinned to SOURCE_DATE_EPOCH" "$(stat -c %Y -- "${sbom_out}")" "${sde}"
 
-## ===================== Case 2: SOURCE_DATE_EPOCH unset -> graceful skip =====================
+## ===================== SOURCE_DATE_EPOCH unset -> graceful skip =====================
 reset_state
 rc=0
-## Unset in a subshell: a CI that exports SOURCE_DATE_EPOCH would otherwise leak it into
-## run_hook and make this case generate an SBOM instead of exercising the missing-epoch path.
+## Unset in a subshell: a CI that exports SOURCE_DATE_EPOCH would otherwise leak it
+## into run_hook and make this case generate an SBOM instead of exercising the skip.
 ( unset SOURCE_DATE_EPOCH; run_hook ) || rc=$?
 check "no-epoch: hook exits 0 (graceful)" "${rc}" "0"
-check "no-epoch: debsbom NOT invoked" "$(yn test -f "${rec}/debsbom.argv")" "no"
+check "no-epoch: derivative-sbom NOT called" "$(yn test -f "${rec}/derivative-sbom.argv")" "no"
 check "no-epoch: no SBOM written" "$(yn test -f "${sbom_out}")" "no"
 
-## ===================== Case 3: SKIP_SCRIPTS membership -> skip =====================
+## ===================== SKIP_SCRIPTS membership -> skip =====================
 reset_state
 rc=0
 SOURCE_DATE_EPOCH="${sde}" SKIP_SCRIPTS='20_sanity 76_sbom 80_cleanup' run_hook || rc=$?
 check "skip-scripts: hook exits 0" "${rc}" "0"
-check "skip-scripts: debsbom NOT invoked" "$(yn test -f "${rec}/debsbom.argv")" "no"
-check "skip-scripts: no SBOM written" "$(yn test -f "${sbom_out}")" "no"
-## A longer name that merely contains the token is NOT a skip match (word, not substring).
+check "skip-scripts: derivative-sbom NOT called" "$(yn test -f "${rec}/derivative-sbom.argv")" "no"
+## A longer name that merely contains the token is NOT a match (word, not substring).
 reset_state
-rc=0
-SOURCE_DATE_EPOCH="${sde}" SKIP_SCRIPTS='76_sbom_extra' run_hook || rc=$?
-check "skip-scripts: substring is not a match -> runs" "$(yn test -f "${rec}/debsbom.argv")" "yes"
+SOURCE_DATE_EPOCH="${sde}" SKIP_SCRIPTS='76_sbom_extra' run_hook || true
+check "skip-scripts: substring is not a match -> runs" "$(yn test -f "${rec}/derivative-sbom.argv")" "yes"
 
 ## ================================ summary ================================
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
