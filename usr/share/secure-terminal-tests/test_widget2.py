@@ -4768,11 +4768,10 @@ eq(_tscsent, [], 'TUI: Shift+PageDown is local too, nothing sent to the child')
 key(_tsc, Qt.Key.Key_PageUp)                 # plain PageUp still reaches the child
 eq(_tscsent, [b'\x1b[5~'], 'TUI: plain PageUp is forwarded to the child as VT input')
 
-# codex-found regression: on a FIXED TUI canvas (the alt screen, or an exact-fit primary
-# grid with no promoted scrollback) there is no scrollback to reach, and ScrollBarAlwaysOff
-# HIDES but does not CLEAR a spurious 1-row range -- a local Shift+PageDown scroll rode it
-# and shoved the program's OWN row 0 off the top. So on a fixed canvas the scroll keys must
-# fall THROUGH to the child (konsole AppScreen), never be consumed as a local scroll.
+# ALT-SCREEN fall-through: the alternate screen has NO scrollback (the app owns paging),
+# so Shift+PageUp/Down fall THROUGH to the child as VT input (konsole AppScreen). This is
+# the ONE primary-vs-alt exception; the primary-buffer fixed-canvas case below does NOT
+# leak to the child.
 _fx = SecureTerminal(command='/bin/cat', tui=True)
 _fx.resize(500, 300)
 _fx.show()
@@ -4780,12 +4779,41 @@ feed_output(_fx, b'\x1b[?1049h\x1b[H' + b'\r\n'.join(('ROW%02d' % _i).encode() f
 _fx._render_tui()
 APP.processEvents()
 ok(_fx._grid_fixed_canvas(), 'canary: the alt screen is a fixed canvas')
+ok(_fx._alt_screen, 'canary: the alt screen is active')
 _fxbar = _fx.verticalScrollBar()
 _fx_top = _fxbar.value()
 _fxsent = spy_writes(_fx)
 key(_fx, Qt.Key.Key_PageDown, mods=Qt.KeyboardModifier.ShiftModifier)
-ok(_fxsent, 'fixed canvas: Shift+PageDown reaches the child, not consumed as a local scroll')
-eq(_fxbar.value(), _fx_top, 'fixed canvas: the program top row stays pinned (no spurious scroll)')
+ok(_fxsent, 'alt screen: Shift+PageDown reaches the child, not consumed as a local scroll')
+eq(_fxbar.value(), _fx_top, 'alt screen: the program top row stays pinned (no spurious scroll)')
+
+# agy-found F1 regression: in TUI mode on the PRIMARY buffer with less than one screen of
+# output (blockCount <= _grid_rows: a fixed canvas, but NOT the alt screen) Shift+PageUp/
+# Down must be CONSUMED locally and NEVER forwarded to the child -- a bash prompt reads a
+# raw \e[5~ / \e[6~ as history-search-backward. 3caf37b fell THROUGH to the child here.
+# The scroll is also SUPPRESSED (not merely unsent): such a canvas carries the spurious
+# 1-row scrollbar range ScrollBarAlwaysOff hides but does not clear, which a page-scroll
+# would ride, shoving the program's own row 0 off the top (the codex-found shove). So the
+# key is swallowed with no scroll and no byte to the child.
+_f1 = SecureTerminal(command='/bin/cat', tui=True)
+_f1.resize(500, 300)
+_f1.show()
+feed_output(_f1, b'\x1b[H' + b'\r\n'.join(('row%02d' % _i).encode() for _i in range(4)))
+_f1._render_tui()
+APP.processEvents()
+ok(_f1._grid_fixed_canvas(), 'canary: a sub-screen TUI primary grid is a fixed canvas')
+ok(not _f1._alt_screen, 'canary: the F1 case is the primary buffer, not the alt screen')
+_f1bar = _f1.verticalScrollBar()
+_f1_top = _f1bar.value()
+_f1sent = spy_writes(_f1)
+key(_f1, Qt.Key.Key_PageUp, mods=Qt.KeyboardModifier.ShiftModifier)
+key(_f1, Qt.Key.Key_PageDown, mods=Qt.KeyboardModifier.ShiftModifier)
+eq(_f1sent, [],
+   'TUI primary sub-screen: Shift+PageUp/Down consumed locally, nothing sent to the child')
+eq(_f1bar.value(), _f1_top,
+   'TUI primary sub-screen: no spurious scroll (program row 0 stays pinned)')
+key(_f1, Qt.Key.Key_PageUp)                  # plain PageUp (no Shift) still reaches the child
+eq(_f1sent, [b'\x1b[5~'], 'TUI primary sub-screen: plain PageUp still forwarded to the child')
 
 # a tooltip over empty space (no codepoint) hides any tip
 _tt = SecureTerminal(command='/bin/cat')
@@ -4796,7 +4824,7 @@ ok(True, 'a tooltip over empty space hides the tip without error')
 # stop any repeating timers these grid/TUI terminals started, so they do not
 # fire into the offscreen platform's static teardown (which would crash a
 # process that has otherwise passed cleanly)
-for _tstop in (_gz, _tk2, _rt2, _es, _am, _tsc, _fx):
+for _tstop in (_gz, _tk2, _rt2, _es, _am, _tsc, _fx, _f1):
     for _tmr in ('_render_timer', '_sync_timer'):
         _t = getattr(_tstop, _tmr, None)
         if _t is not None:
