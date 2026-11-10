@@ -263,27 +263,45 @@ check "1565: dm-whonix-pair NOT invoked on a failed repo-path lookup" \
 # shellcheck disable=SC2034
 DM_SHARED_APT_REPO="${shared_stub}"
 
-## --- finding 6: an UNEXPECTED provenance-build failure (e.g. jq missing from PATH) on a --local-repo
-## run must publish INCONCLUSIVE (SETUP_RC), NEVER a published-repo masquerade. A local-repo run
-## recorded with NO localRepo block is indistinguishable from one that tested the published repos.
-## This is distinct from the benign generation-change omit above (which stays rc 0): a provenance
-## TOOL failure is an environment bug, not a benign race. Simulate with a jq that exits non-zero on
-## PATH (the guest + gen capture use sha256sum/awk, not jq, so the lane reaches the provenance step
-## and fails only there). ---
-true > "${pair_argv}"
-true > "${prov_file}"
+## --- finding 6: an UNEXPECTED provenance-build failure on a --local-repo run must publish
+## INCONCLUSIVE (SETUP_RC), NEVER a published-repo masquerade -- a local-repo run recorded with NO
+## localRepo block is indistinguishable from one that tested the published repos. Distinct from the
+## benign generation-change omit above (which stays rc 0): a provenance TOOL failure is an
+## environment bug, not a benign race. Test BOTH jq error codes, especially exit 2 -- jq's (and
+## awk's) usage/system-error status: an earlier design reused exit 2 as the "generation omit"
+## sentinel, so a real jq/awk error (also exit 2) masqueraded as the benign omit. The generation
+## here is UNCHANGED (non-mutating pair) and the gen capture uses sha256sum/awk, not jq, so the lane
+## reaches the provenance build and fails only there. ---
 stubbin="${work}/stubbin"
 mkdir --parents -- "${stubbin}"
-printf '%s\n' '#!/bin/sh' 'exit 1' > "${stubbin}/jq"
-chmod +x -- "${stubbin}/jq"
-# shellcheck disable=SC2034
+for jq_rc in 1 2; do
+   true > "${pair_argv}"
+   true > "${prov_file}"
+   printf '%s\n' '#!/bin/sh' "exit ${jq_rc}" > "${stubbin}/jq"
+   chmod +x -- "${stubbin}/jq"
+   # shellcheck disable=SC2034  ## read as a global by the sourced rt_lane_whonix_inst
+   local_repo='whonix'
+   jqfail_rc=0
+   ( export PATH="${stubbin}:${PATH}"; rt_lane_whonix_inst persist-inst-whonix 18.2.3.5 ) >/dev/null 2>&1 || jqfail_rc=$?
+   check "finding 6 (jq exit ${jq_rc}): dm-whonix-pair WAS invoked (lane reached the provenance build)" \
+      "$(grep --quiet -- '--local-repo whonix' "${pair_argv}" && printf '%s' true || printf '%s' false)"
+   check "finding 6 (jq exit ${jq_rc}): a failed provenance build publishes INCONCLUSIVE (SETUP_RC 2), not a published-repo masquerade" \
+      "$([ "${jqfail_rc}" = '2' ] && printf '%s' true || printf '%s' false)" "${jqfail_rc}"
+done
+
+## --- finding 6 (variant): computing the generation id itself (sha256sum | awk) failing must ALSO
+## publish INCONCLUSIVE, not be swallowed as the benign unverifiable-generation omit. An awk that
+## exits non-zero makes rt_local_repo_gen_id fail; the caller must treat that as a tool/env error. ---
+true > "${pair_argv}"
+true > "${prov_file}"
+printf '%s\n' '#!/bin/sh' 'exit 2' > "${stubbin}/awk"
+chmod +x -- "${stubbin}/awk"
+# shellcheck disable=SC2034  ## read as a global by the sourced rt_lane_whonix_inst
 local_repo='whonix'
-jqfail_rc=0
-( export PATH="${stubbin}:${PATH}"; rt_lane_whonix_inst persist-inst-whonix 18.2.3.5 ) >/dev/null 2>&1 || jqfail_rc=$?
-check "finding 6: dm-whonix-pair WAS invoked (the lane reached the post-guest provenance step)" \
-   "$(grep --quiet -- '--local-repo whonix' "${pair_argv}" && printf '%s' true || printf '%s' false)"
-check "finding 6: a failed provenance build publishes INCONCLUSIVE (SETUP_RC 2), not a silent published-repo masquerade" \
-   "$([ "${jqfail_rc}" = '2' ] && printf '%s' true || printf '%s' false)" "${jqfail_rc}"
+awkfail_rc=0
+( export PATH="${stubbin}:${PATH}"; rt_lane_whonix_inst persist-inst-whonix 18.2.3.5 ) >/dev/null 2>&1 || awkfail_rc=$?
+check "finding 6 (gen-id awk failure): a failed generation-id computation publishes INCONCLUSIVE (SETUP_RC 2), not a published-repo masquerade" \
+   "$([ "${awkfail_rc}" = '2' ] && printf '%s' true || printf '%s' false)" "${awkfail_rc}"
 
 printf '%s\n' "" "$(basename -- "$0"): ${pass} pass, ${fail} fail, 0 skip"
 [ "${fail}" -eq 0 ] || exit 1

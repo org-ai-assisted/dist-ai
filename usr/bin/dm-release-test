@@ -1520,23 +1520,17 @@ rt_local_repo_gen_id() {
 ## Build the localRepo provenance JSON (host-side; no guest round-trip) for a --local-repo run:
 ## {derivative, repoPath, sourceSha, packages:[name=version,...]}. repoPath + the Packages index come
 ## from dm-shared-apt-repo repo-path (single source of the repo path -- never re-derive repo_parent
-## here). gen_before is the pre-upgrade generation id (rt_local_repo_gen_id): if the repo's Packages
-## changed since (a concurrent rebuild landed during the test window), the published versions may not
-## be what the guest upgraded from, so provenance is OMITTED (return 2) rather than bound to the
-## wrong generation -- CodeRabbit "omit when the tested generation cannot be verified". On a matching
-## generation it emits the JSON on stdout; a Packages read gap degrades to an EMPTY packages list.
-## Return contract (the caller MUST distinguish these): 0 = JSON emitted; 2 = provenance
-## DELIBERATELY omitted (generation unverifiable -- a benign concurrent-rebuild race); any OTHER
-## non-zero = an unexpected environment failure (e.g. a missing jq/awk under errexit) that the
-## caller must NOT swallow, else a local-repo run is published indistinguishably from a published one.
+## here). Emits the JSON on stdout; a Packages read gap degrades to an EMPTY packages list.
+## The "generation unverifiable" decision is DELIBERATELY the caller's (an explicit gen_before vs
+## gen_now compare), NOT signalled through this function's exit code: jq AND awk both exit 2 on an
+## ordinary error (jq usage error, awk read error), so any sentinel exit code would be
+## indistinguishable from a real tool failure and a tool failure would masquerade as the benign omit.
+## So here EVERY non-zero exit means a genuine build failure (jq/awk error under errexit); the caller
+## publishes INCONCLUSIVE for it, never a published-repo masquerade.
 rt_build_local_repo_provenance() {
-   local deriv="$1" gen_before="$2" repo_path pkgs_file sha pkgs_json gen_now
+   local deriv="$1" repo_path pkgs_file sha pkgs_json
    repo_path="$("${DM_SHARED_APT_REPO}" repo-path "${deriv}" 2>/dev/null || true)"
    pkgs_file="${repo_path}/dists/local/main/binary-amd64/Packages"
-   gen_now="$(rt_local_repo_gen_id "${deriv}")"
-   if [ -z "${gen_before}" ] || [ -z "${gen_now}" ] || [ "${gen_before}" != "${gen_now}" ]; then
-      return 2
-   fi
    sha="$(rt_local_repo_source_sha)"
    if [ -n "${repo_path}" ] && [ -r "${pkgs_file}" ]; then
       pkgs_json="$(awk '/^Package: /{p=$2} /^Version: /{if(p!=""){print p"="$2; p=""}}' "${pkgs_file}" \
@@ -1617,29 +1611,32 @@ rt_lane_whonix_inst() {
    ## HONEST provenance: on a --local-repo run record WHAT was delivered (derivative, host repoPath,
    ## build sourceSha, the Packages name=version list) as the result.json localRepo block, so the
    ## site shows the exact local build the verdict applies to. Host-side read (no guest round-trip).
-   ## A deliberate generation-unverifiable omit (rc 2) warns + publishes without the block; any other
-   ## provenance-build failure is an environment bug -> publish INCONCLUSIVE, never a published-repo
-   ## masquerade (see rt_build_local_repo_provenance's return contract).
    ## Consumed once by rt_publish_result; empty on a published-repo run (the key is then omitted).
    rt_local_repo_json=""
    if [ -n "${local_repo}" ]; then
-      local prov_rc=0
-      rt_local_repo_json="$(rt_build_local_repo_provenance "${local_repo}" "${rt_local_repo_gen}")" || prov_rc=$?
-      if [ "${prov_rc}" -eq 2 ]; then
-         ## Provenance DELIBERATELY omitted: the repo generation changed mid-test, so the
-         ## versions cannot be bound to what the guest upgraded from. Benign race -- publish the
-         ## verdict without the block (the key is omitted), with a warning.
-         rt_local_repo_json=""
-         log warn "local repo generation for ${local_repo} changed mid-test -- publishing without localRepo provenance"
-      elif [ "${prov_rc}" -ne 0 ]; then
-         ## Unexpected failure (e.g. jq/awk missing or a read error). Publishing a local-repo run
-         ## with NO localRepo block is indistinguishable from a published-repo run -- a provenance
-         ## lie. Fail INCONCLUSIVE instead, mirroring the repo-path-lookup guard above.
-         log error "building localRepo provenance for ${local_repo} failed (rc ${prov_rc}) -- refusing to publish a local-repo run as a published-repo run"
+      ## Classify "generation verifiable" HERE, NOT via the builder's exit code: jq AND awk both
+      ## exit 2 on an ordinary error, so a tool failure would be indistinguishable from any sentinel
+      ## exit and would masquerade as the benign omit. Two outcomes feed the block:
+      ##  * gen id UNREADABLE or CHANGED (rc 0, empty/mismatched) -- a benign race (a concurrent
+      ##    rebuild landed in the test window): publish the verdict WITHOUT the block.
+      ##  * gen id computation FAILS (sha256sum/awk error) OR the generation matches but the build
+      ##    FAILS (jq/awk error, read race) -- a real tool/env bug: publish INCONCLUSIVE, never a
+      ##    published-repo masquerade. A missing/empty localRepo block otherwise reads as a published
+      ##    run, so a tool failure must NOT be swallowed as the benign omit.
+      local rt_local_repo_gen_now="" gen_rc=0 prov_rc=0
+      rt_local_repo_gen_now="$(rt_local_repo_gen_id "${local_repo}")" || gen_rc=$?
+      if [ "${gen_rc}" -eq 0 ] && [ -n "${rt_local_repo_gen}" ] && [ -n "${rt_local_repo_gen_now}" ] \
+         && [ "${rt_local_repo_gen}" = "${rt_local_repo_gen_now}" ]; then
+         rt_local_repo_json="$(rt_build_local_repo_provenance "${local_repo}")" || prov_rc=$?
+      fi
+      if [ "${gen_rc}" -ne 0 ] || [ "${prov_rc}" -ne 0 ]; then
+         log error "localRepo provenance for ${local_repo} failed (gen_rc ${gen_rc}, build_rc ${prov_rc}) -- refusing to publish a local-repo run as a published-repo run"
          rt_publish_result whonix "${version}" "${account}" whonix-func "${SETUP_RC}" "" release-checks
          sudo -u "${account}" -- safe-rm --force -- "${check_log}" 2>/dev/null || true
          return "${SETUP_RC}"
       fi
+      [ -n "${rt_local_repo_json}" ] \
+         || log warn "local repo generation for ${local_repo} changed or is unreadable mid-test -- publishing without localRepo provenance"
    fi
    rt_publish_result whonix "${version}" "${account}" whonix-func "${rc}" "" release-checks
    sudo -u "${account}" -- safe-rm --force -- "${check_log}" 2>/dev/null || true
