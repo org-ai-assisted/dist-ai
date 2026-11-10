@@ -28,135 +28,34 @@ Two regressions it locks:
 The memfd check models systemd's effective-policy semantics (memfd_denial):
 [Service]-section only, SystemCallFilter= empty-reset, a per-syscall ':' action
 that overrides the global SystemCallErrorNumber, and errno validity -- a lint
-fooled by any of those would report a confident wrong pass. (The parser mirrors
-the one in systemcheck-tests/test_wx_seccomp_filter.py; a cross-suite shared
-module is not on either suite's import path, so the two are kept in step by hand,
-like sdwdate-tests/test_seccomp_filter.py.)
+fooled by any of those would report a confident wrong pass. That model is the
+SINGLE source dist_ai_seccomp, imported identically by
+systemcheck-tests/test_wx_seccomp_filter.py (no hand-synced copy to drift).
 
 Resolves the unit via PRIVLEAP_REPO (dist-ai/CLAUDE.md), else the installed path.
 """
 
-import errno
 import os
 import sys
 
 HERE: str = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
+## The seccomp policy model (memfd_denial / errno_is_soft / the directive parser) is a
+## SINGLE source shared with systemcheck-tests, shipped in dist-ai's dist-packages tree.
+## Insert it relative to this file (the dm_test_results idiom) so both suites import the
+## same code -- no hand-synced copy to drift.
+_LIB: str = os.path.join(
+    os.path.dirname(os.path.dirname(HERE)), 'lib', 'python3', 'dist-packages')
+if os.path.isdir(_LIB) and _LIB not in sys.path:
+    sys.path.insert(0, _LIB)
 
 # pylint: disable=wrong-import-position
 from pl_testlib import Results  # noqa: E402
+from dist_ai_seccomp import (  # noqa: E402
+    errno_is_soft, memfd_denial, service_lines, service_values)
 
 TRUE_VALUES = {'true', 'yes', '1', 'on'}
-## systemd accepts an errno name or a number 1..4095; anything else (empty,
-## 'kill', 0, out of range, junk) is NOT a soft-fail errno.
-_ERRNO_MIN, _ERRNO_MAX = 1, 4095
-## Retryable errnos are a BAD soft-deny: the caller re-issues the blocked syscall
-## in a tight loop instead of giving up, so memfd_create never settles. Reject them
-## by name (the form units use); a real soft deny is a terminal errno like EPERM.
-_RETRYABLE_ERRNOS = {
-    'EINTR', 'EAGAIN', 'EWOULDBLOCK',
-    'ERESTART', 'ERESTARTSYS', 'ERESTARTNOINTR', 'ERESTARTNOHAND',
-}
-## A real errno name. systemd IGNORES an unknown name (e.g. EBOGUS) and keeps the
-## default KILL action, so an invalid name is NOT a soft deny -- reporting 'soft'
-## for it is a false pass.
-_VALID_ERRNO_NAMES = frozenset(errno.errorcode.values())
-
-
-def service_lines(text: str) -> list:
-    """Logical directive lines inside the [Service] section, '\\'-continuations
-    joined. systemd ignores these directives outside [Service], so the lint must
-    too."""
-    out: list = []
-    buf: str = ''
-    in_service: bool = False
-    for raw in text.splitlines():
-        stripped = raw.strip()
-        if stripped.startswith('[') and stripped.endswith(']'):
-            ## systemd section names are CASE-SENSITIVE: directives under a
-            ## '[service]' header are ignored, so a case-insensitive match would
-            ## credit hardening systemd never applies.
-            in_service = stripped == '[Service]'
-            continue
-        ## systemd ignores lines starting with '#' OR ';' (comments).
-        if not in_service or stripped.startswith('#') or stripped.startswith(';'):
-            continue
-        if stripped.endswith('\\'):
-            buf += stripped[:-1] + ' '
-        else:
-            out.append((buf + stripped).strip())
-            buf = ''
-    if buf:
-        out.append(buf.strip())
-    return out
-
-
-def service_values(lines: list, key: str) -> list:
-    ## Split on the FIRST '=' and strip both sides: systemd ignores whitespace
-    ## around '=' ("Key = value"), so a prefix-only match would miss a spaced
-    ## assignment -- and for NoNewPrivileges that is a false PASS (value not found
-    ## -> the all() over an empty list is vacuously true).
-    out: list = []
-    for line in lines:
-        name, sep, value = line.partition('=')
-        if sep and name.strip() == key:
-            out.append(value.strip())
-    return out
-
-
-def errno_is_soft(value: str) -> bool:
-    val = value.strip()
-    if not val or val.lower() == 'kill':
-        return False
-    if val.upper() in _RETRYABLE_ERRNOS:
-        return False
-    if val.isdigit():
-        return _ERRNO_MIN <= int(val) <= _ERRNO_MAX
-    ## an errno NAME must be a REAL errno: systemd ignores an unknown name and keeps
-    ## the KILL action, so a bogus name (EBOGUS) is not a soft deny.
-    return val in _VALID_ERRNO_NAMES
-
-
-def memfd_denial(text: str) -> str:
-    """'none' | 'soft' | 'kill' for memfd_create under [Service], honoring
-    SystemCallFilter= empty-reset, a per-syscall ':' action (which overrides the
-    global SystemCallErrorNumber), and the global SystemCallErrorNumber. A '~'
-    token denies memfd_create; a later positive assignment of it re-allows it
-    (last wins). A full allowlist (whitelist) that omits memfd_create is out of
-    scope -- our units use the '~' denylist form."""
-    lines = service_lines(text)
-    effective: list = []
-    for value in service_values(lines, 'SystemCallFilter'):
-        if value == '':
-            effective = []
-        else:
-            effective.append(value)
-    denied = False
-    per_syscall = None
-    for value in effective:
-        negate = value.startswith('~')
-        for token in (value[1:] if negate else value).split():
-            if token.split(':', 1)[0] != 'memfd_create':
-                continue
-            if negate:
-                ## '~' denylist: memfd_create is denied; ':' sets its per-syscall action.
-                denied = True
-                per_syscall = token.split(':', 1)[1] if ':' in token else None
-            else:
-                ## a later POSITIVE assignment re-allows the syscall (systemd removes
-                ## it from the denylist), so it is no longer denied.
-                denied = False
-                per_syscall = None
-    if not denied:
-        return 'none'
-    if per_syscall is not None:
-        ## per-syscall action takes precedence over the global errno
-        return 'soft' if errno_is_soft(per_syscall) else 'kill'
-    errnos = service_values(lines, 'SystemCallErrorNumber')
-    if errnos and errno_is_soft(errnos[-1]):
-        return 'soft'
-    return 'kill'
 
 
 def service_path() -> str:
@@ -194,6 +93,13 @@ def main() -> int:
                   not errno_is_soft('EINTR'))
     results.check('errno_is_soft rejects a bogus errno name (systemd keeps the kill)',
                   not errno_is_soft('EBOGUS'))
+    ## A REAL errno whose name carries a digit (E2BIG) is accepted by systemd -- the
+    ## denied call returns that errno, it does not SIGSYS. .isdigit() is False (it has
+    ## letters), so it must be validated by name, never mis-classified as a kill.
+    results.check('errno_is_soft accepts a digit-in-name real errno (E2BIG -> soft)',
+                  errno_is_soft('E2BIG'))
+    results.check('errno_is_soft accepts a numeric errno in range (13 -> soft)',
+                  errno_is_soft('13'))
     results.check('memfd_denial honors a later positive re-allow of the syscall',
                   memfd_denial('[Service]\nSystemCallFilter=~memfd_create:EPERM\n'
                                'SystemCallFilter=memfd_create\n') == 'none')
