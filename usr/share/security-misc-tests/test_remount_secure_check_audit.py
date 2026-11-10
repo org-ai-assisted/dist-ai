@@ -103,32 +103,31 @@ class RemountSecureCheckAuditTest(unittest.TestCase):
         return self._run_with_findmnt_stub("%sexit %d\n" % (body, findmnt_rc))
 
     def _run_check_covering(self, covering_row):
-        """Drive the audit with a stub findmnt that models findmnt's --target
-        resolution for a dir that is NOT its own mountpoint. A WELL-FORMED target
-        query -- a --target / -T / --target=<path> flag and no end-of-options
-        '--' -- resolves to the COVERING mount: prints `covering_row`, exit 0.
-        Anything else exits 1 (empty). That is faithful to real findmnt in the
-        two ways that matter here, so a regression is CAUGHT rather than masked
-        as a covering read:
-        - a positional/exact-match query (the pre-fix lookup, no --target) finds
-          nothing, exit 1 -> N/A;
-        - real findmnt REFUSES --target combined with a '--' positional
-          (`findmnt --target -- <path>`), exit 1 -> N/A -- so that form would
-          silently N/A every dir (a global false green), and must not read as a
-          successful covering lookup.
-        The stub matches the flag, not the path, so it does not emulate findmnt's
-        full grammar beyond these forms."""
+        """Drive the audit with a stub findmnt that recognizes remount-secure's
+        ONE real invocation and FAILS SAFE on everything else.
+
+        The audit calls exactly `findmnt --noheadings --output options --target
+        <path>`. The stub returns the COVERING mount (prints `covering_row`, exit
+        0) ONLY for that exact argv vector (a real path operand, not '--'); ANY
+        other argv exits 1 (empty -> the audit reports N/A). Consequences:
+        - the fixed form resolves the covering mount -> deviation (GREEN);
+        - the pre-fix positional/exact-match form ('... -- <path>', no --target)
+          is N/A -> no deviation -> the test fails (RED on the old code), which
+          is the regression this guards.
+
+        Matching the exact command -- not parsing findmnt's option grammar --
+        means the test can NEVER false-GREEN: a regression to the positional form
+        OR any other findmnt spelling yields N/A and a RED test, never a silent
+        pass. It intentionally does not accept other valid findmnt spellings
+        (-T, --target=, ...) the audit never emits; such a refactor would
+        false-RED (safe, and flags that the audit's contract changed), not
+        false-green. Emulating findmnt's parser for forms the audit never uses is
+        exactly the parser-reinvention the house rules forbid."""
         printf_row = "printf '%%s\\n' \"%s\"" % covering_row
         stub_body = (
-            'has_target=0\n'
-            'has_ddash=0\n'
-            'for arg in "$@"; do\n'
-            '   case "$arg" in\n'
-            '      --target|-T|--target=*) has_target=1 ;;\n'
-            '      --) has_ddash=1 ;;\n'
-            '   esac\n'
-            'done\n'
-            'if [ "$has_target" = 1 ] && [ "$has_ddash" = 0 ]; then\n'
+            'if [ "$#" = 5 ] && [ "$1" = "--noheadings" ] \\\n'
+            '      && [ "$2" = "--output" ] && [ "$3" = "options" ] \\\n'
+            '      && [ "$4" = "--target" ] && [ "$5" != "--" ] ; then\n'
             "   %s\n"
             '   exit 0\n'
             'fi\n'
