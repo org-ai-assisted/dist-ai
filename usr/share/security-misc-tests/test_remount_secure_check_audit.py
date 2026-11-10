@@ -65,6 +65,8 @@ def _resolve_remount_secure():
 
 
 class RemountSecureCheckAuditTest(unittest.TestCase):
+    remount_secure: str
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.remount_secure = _resolve_remount_secure()
