@@ -61,6 +61,16 @@ select_installed_mode_offline() {
    ## symlink, so a stale (or planted) symlink at one of these request-dir paths would be followed
    ## and its target overwritten + chmodded. rm'ing first makes each '>' create a fresh regular file.
    safe-rm --force -- "${req_dir}/passphrase" "${req_dir}/disk" "${req_dir}/mode" "${req_dir}/format" 2>/dev/null || true
+   ## Verify the postcondition rather than trust the removal: the '|| true' above swallows
+   ## any safe-rm failure, so a symlink that survived cleanup would still be FOLLOWED by the
+   ## '>' writes (overwriting + chmodding its target). Refuse the request if any path remains
+   ## a symlink -- the writes below then only ever create fresh regular files.
+   local req_path
+   for req_path in "${req_dir}/passphrase" "${req_dir}/disk" "${req_dir}/mode" "${req_dir}/format"; do
+      if [ -L "${req_path}" ]; then
+         die "${FAIL_RC}" "refusing request: '${req_path}' is still a symlink after cleanup (planted or stale link)"
+      fi
+   done
    printf '%s' "${disk}" > "${req_dir}/disk"
    printf '%s' "${mode}" > "${req_dir}/mode"
    printf '%s' "${format}" > "${req_dir}/format"
