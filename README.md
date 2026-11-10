@@ -688,8 +688,17 @@ Delivers the derivative-maker local apt repo to the VBox fleet over a VBox SHARE
 -- works even for a Whonix-Workstation on an internal-only net). Delivery only: derivative-maker owns
 repo creation (`--skip-published-packages` populates `aptrepo_local/<derivative>`, codename `local`).
 Subcommands `prepare <kicksecure|whonix>`, `attach <vm> [--transient]` (auto-mounted by the guest's
-`mnt-shared-vbox.service` at `/mnt/shared`), `status [vm]`. The guest trusts this repo `[trusted=yes]`
+`mnt-shared-vbox.service` at `/mnt/shared`), `status [vm]`, plus the path queries
+`repo-path`/`cache-path`/`guest-cache-path`. The guest trusts this repo `[trusted=yes]`
 over a read-only vboxsf mount; the trust anchor is the host build user who owns the local repo store.
+
+`expose` additionally bind-mounts a COMPLETE local Debian mirror (`/srv/debian-mirror`:
+`debian/` + `debian-security/`, signed archives, synced server-side by private-ai-config's
+`debian-mirror-sync`) read-only under the shared tree, so the guest reaches the Debian base at
+`/mnt/shared/aptcache`. This is what lets a `--local-repo` upgrade (`dm-release-test ... --local-repo
+whonix`) pull BOTH the derivative packages and the Debian base from `file:` -- fully offline, no Tor.
+Generic + absent-safe: a host without the mirror skips it and the guest base stays on its configured
+sources.
 
 ### iso-download
 
