@@ -59,6 +59,12 @@ confine_grubenv_path() {
             exit 1
             ;;
       esac
+      ## A pre-existing ${label} must be a REGULAR file: grub-editenv OPENS it (and a FIFO,
+      ## which nosymfollow does not stop, would block this root process forever -> the caller
+      ## never reaches its device-teardown trap). grubenv absent is fine (grub-editenv creates
+      ## it) -- this block only runs when the path already exists.
+      [ -f "${confined}" ] \
+         || { printf '%s\n' "${me}: ERROR: ${label} is not a regular file ('${confined}'); refusing" >&2; exit 1; }
    fi
 }
 
@@ -101,8 +107,13 @@ main() {
          ;;
    esac
    grub_cfg="$(realpath -- "${grubdir}/grub.cfg" 2>/dev/null || true)"
-   { [ -n "${grub_cfg}" ] && [ -r "${grub_cfg}" ]; } \
-      || { printf '%s\n' "${me}: ERROR: no readable grub.cfg under '${grubdir}'" >&2; exit 1; }
+   ## Require a REGULAR file: a crafted guest can plant grub.cfg as a FIFO (or other special
+   ## file), and the grep below would block FOREVER on a writer-less FIFO. nosymfollow on the
+   ## image-mount does NOT stop FIFOs, and a hung read here means image-mount never reaches its
+   ## EXIT trap -> leaked nbd/LUKS devices. realpath already resolved symlinks, so -f tests the
+   ## final target.
+   { [ -n "${grub_cfg}" ] && [ -f "${grub_cfg}" ] && [ -r "${grub_cfg}" ]; } \
+      || { printf '%s\n' "${me}: ERROR: no readable regular grub.cfg under '${grubdir}'" >&2; exit 1; }
    case "${grub_cfg}/" in
       "${root_prefix}"*)
          true

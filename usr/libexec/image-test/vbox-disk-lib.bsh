@@ -145,6 +145,11 @@ nbd_connect() {
    local self_contained="${QEMU_IMAGE_SELF_CONTAINED:-${vbox_disk_lib_dir}/qemu-image-self-contained}"
    "${self_contained}" "${disk}" "${format}" \
       || die "refusing '${disk}': format '${format}' references a file outside the disk (crafted extent/backing -> host-path escalation)"
+   ## ACCEPTED-TOCTOU BOUNDARY (do NOT re-fix without operator sign-off): this gate closes crafted
+   ## IMAGE CONTENT, not an active swap of the "${disk}" PATH between the caller-side check and the
+   ## root-side open below. A path swap is the documented, operator-accepted disk-path TOCTOU
+   ## (trusted-vboxusers-runner model); the full fix is fd-passing (open O_NOFOLLOW once, hand the
+   ## fd to qemu-nbd) -- a known residual, out of scope here.
    if [ "${mode}" = 'readonly' ]; then
       qemu-nbd --read-only --format "${format}" --connect="${dev}" -- "${disk}"
    else
@@ -152,12 +157,20 @@ nbd_connect() {
    fi
 }
 
-## First unused /dev/nbdN (size 0 = not connected).
+## First unused WHOLE-DISK /dev/nbdN (size 0 = not connected). Whole-disk only: with
+## 'modprobe nbd max_part=16' the kernel also publishes partition nodes nbdNpM. An unused
+## partition slot reads size 0 and sorts BEFORE a free whole disk (nbd0p1 < nbd1 under
+## LC_ALL=C), so without the nbd[0-9]+ filter free_nbd could hand back a partition of a BUSY
+## device: the qemu-nbd connect then fails and the EXIT trap disconnects that partition (not a
+## device we hold) while the mount never happens though a whole disk was free. NBD_SYSFS_BASE
+## overrides the sysfs root for unit tests (production: /sys/class/block, byte-identical).
 free_nbd() {
-   local d
-   for d in /sys/class/block/nbd*; do
+   local d name base="${NBD_SYSFS_BASE:-/sys/class/block}"
+   for d in "${base}"/nbd*; do
+      name="${d##*/}"
+      [[ "${name}" =~ ^nbd[0-9]+$ ]] || continue
       if [ "$(cat "${d}/size")" = '0' ]; then
-         printf '%s' "/dev/${d##*/}"
+         printf '%s' "/dev/${name}"
          return 0
       fi
    done
@@ -192,9 +205,14 @@ candidate_filesystems() {
       local vg
       vg="$(pvs --devices "${mapped}" --noheadings --options vg_name -- "${mapped}" 2>/dev/null | tr -d ' ' || true)"
       if [ -n "${vg}" ]; then
-         vgchange --devices "${mapped}" --activate y -- "${vg}" >/dev/null
+         ## Record the VG for cleanup BEFORE activating. A vgchange that activates one LV then
+         ## returns nonzero (a second LV with an unsupported segment) aborts under errexit
+         ## before any post-call assignment, so recording AFTER the call would leave
+         ## vg_activated empty and cleanup would skip 'vgchange --activate n' -- leaking the
+         ## activated LV + nbd + LUKS mapping. vg and mapped are both known here.
          vg_activated="${vg}"
          vg_dev="${mapped}"
+         vgchange --devices "${mapped}" --activate y -- "${vg}" >/dev/null
          lvs --devices "${mapped}" --noheadings --options lv_path -- "${vg}" 2>/dev/null | tr -d ' '
       else
          printf '%s\n' "${mapped}"

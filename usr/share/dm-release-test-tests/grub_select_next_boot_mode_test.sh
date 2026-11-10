@@ -212,5 +212,39 @@ else
    fail=$(( fail + 1 ))
 fi
 
+## 7. CANARY (device-leak/DoS): a crafted guest with grub.cfg as a FIFO (no writer) would
+## block the 'grep ^menuentry' FOREVER, so image-mount never reaches its device-teardown trap
+## -> leaked nbd/LUKS. nosymfollow does NOT stop FIFOs. The helper MUST refuse a non-regular
+## grub.cfg up front. Run under 'timeout': the fix exits fast (refused, rc=1); the pre-fix grep
+## hangs until timeout kills it (rc 124).
+root_fifo="${work_dir}/fifo_cfg"
+mkdir --parents -- "${root_fifo}/boot/grub"
+mkfifo -- "${root_fifo}/boot/grub/grub.cfg"
+rc_f=0
+MOUNTPOINT="${root_fifo}" timeout --kill-after=10 10 "${helper}" persistent-sysmaint >/dev/null 2>&1 || rc_f=$?
+if [ "${rc_f}" -ne 0 ] && [ "${rc_f}" -ne 124 ]; then
+   printf '%s\n' "PASS: FIFO grub.cfg refused promptly (rc=${rc_f}), no hang"
+   pass=$(( pass + 1 ))
+else
+   printf '%s\n' "FAIL: FIFO grub.cfg not refused cleanly (rc=${rc_f}; 124 = hung until timeout)"
+   fail=$(( fail + 1 ))
+fi
+
+## 8. CANARY: grubenv as a FIFO (grub-editenv OPENS it) would likewise block this root process.
+## With a valid regular grub.cfg, a FIFO grubenv must be refused at the path-confine step,
+## before any grub-editenv open -- same timeout discriminator.
+root_fifo_env="${work_dir}/fifo_grubenv"
+make_root "${root_fifo_env}" "gnulinux-persistent-sysmaint-${dev}"
+mkfifo -- "${root_fifo_env}/boot/grub/grubenv"
+rc_fe=0
+MOUNTPOINT="${root_fifo_env}" timeout --kill-after=10 10 "${helper}" persistent-sysmaint >/dev/null 2>&1 || rc_fe=$?
+if [ "${rc_fe}" -ne 0 ] && [ "${rc_fe}" -ne 124 ]; then
+   printf '%s\n' "PASS: FIFO grubenv refused promptly (rc=${rc_fe}), no hang"
+   pass=$(( pass + 1 ))
+else
+   printf '%s\n' "FAIL: FIFO grubenv not refused cleanly (rc=${rc_fe}; 124 = hung until timeout)"
+   fail=$(( fail + 1 ))
+fi
+
 printf '%s\n' "" "${pass} pass, ${fail} fail"
 [ "${fail}" -eq 0 ]
