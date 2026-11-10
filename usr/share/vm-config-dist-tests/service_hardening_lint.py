@@ -36,7 +36,7 @@ def main() -> int:
         'VM_CONFIG_DIST_REPO',
         'usr/lib/systemd/user/wlr-resize-watcher.service',
         lambda text: denylist_findings(
-            text, noexecpaths='/tmp /var/tmp /dev/shm'))
+            text, noexecpaths='/tmp /var/tmp /dev/shm'))  # nosec B108 -- systemd NoExecPaths directive value, not a temp path
     return lint.finish()
 
 

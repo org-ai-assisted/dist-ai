@@ -15,16 +15,20 @@ profile READ from that unit). Parsing is dist_ai_seccomp (the single source);
 this module adds only the assertions, the present-vs-absent / exit-77 skip
 discipline, and parser-fidelity self-checks.
 
-memfd_create policy for these leaf daemons: SIGSYS (the systemd DEFAULT for a
-blocklist with no SystemCallErrorNumber, or an allowlist that omits the call) is
-CORRECT. EPERM (SystemCallErrorNumber) is deliberately RESERVED for the
-ESCALATORS (privleapd, systemcheck) whose seccomp filter INHERITS into fork+exec'd
-children, where default SIGSYS would collaterally hard-kill a legitimate child
-that touches memfd_create. A leaf daemon execs no such arbitrary children, so the
-stricter SIGSYS is intended. Security is identical either way (memfd_create is
-denied; the W^X bypass is closed) -- only the failure MODE differs. Do NOT "fix" a
-leaf daemon by adding SystemCallErrorNumber=EPERM (see privleap
-service_hardening_test.py).
+memfd_create denial MODE (assert each unit's REAL value; the memfd= arg picks it):
+- SIGSYS (the systemd DEFAULT: a blocklist with no SystemCallErrorNumber, or an
+  allowlist that omits the call) is CORRECT for a daemon that NEVER calls
+  memfd_create itself -- the stricter kill.
+- EPERM (SystemCallErrorNumber=EPERM) is for a daemon whose OWN code, or an
+  inherited child, legitimately calls memfd_create and must fail SOFT instead of
+  dying. Two cases: the ESCALATORS (privleapd, systemcheck) whose filter inherits
+  into fork+exec'd children, and the GUI/Wayland daemons (msgcollector, sdwdate-gui,
+  livecheck) whose Qt/libwayland code maps shm draw buffers via memfd_create and
+  would SIGSYS-die on first draw. EPERM keeps the W^X bypass CLOSED identically
+  (memfd_create still denied) -- only the failure mode differs.
+So the memfd mode is a per-daemon fact: do NOT blanket-apply either. SIGSYS for a
+leaf daemon that never touches memfd_create; EPERM for one whose own/inherited
+code does (see privleap service_hardening_test.py and agents/systemd-wx-hardening.md).
 """
 
 import os
@@ -36,8 +40,8 @@ if HERE not in sys.path:
 
 # pylint: disable=wrong-import-position
 from dist_ai_seccomp import (  # noqa: E402
-    effective_allowset, is_allowlist, memfd_denial, service_lines,
-    service_values, syscall_filter_values)
+    effective_allowset, has_syscall_group, is_allowlist, memfd_denial,
+    service_lines, service_values, syscall_filter_values)
 
 ## systemd treats true/yes/on/1 as enabled, so accept any of them, not only the
 ## literal 'true' (units in this rollout mix '=yes' and '=true').
@@ -48,17 +52,22 @@ def _enabled(values) -> bool:
     return bool(values) and values[-1].lower() in TRUE_VALUES
 
 
-def _noexec_set(text: str) -> set:
-    """Effective NoExecPaths token set under systemd reset semantics (an empty
-    value clears the accumulated list; otherwise tokens accumulate)."""
+def _path_set(text: str, key: str) -> set:
+    """Effective token set of a space-list path directive (NoExecPaths /
+    ExecPaths) under systemd reset semantics (an empty value clears the
+    accumulated list; otherwise tokens accumulate)."""
     effective: set = set()
-    for value in service_values(service_lines(text), 'NoExecPaths'):
+    for value in service_values(service_lines(text), key):
         stripped = value.strip()
         if stripped == '':
             effective = set()
         else:
             effective |= set(stripped.split())
     return effective
+
+
+def _noexec_set(text: str) -> set:
+    return _path_set(text, 'NoExecPaths')
 
 
 def _base_findings(text: str, noexecpaths: str, nnp: bool) -> list:
@@ -78,6 +87,12 @@ def _base_findings(text: str, noexecpaths: str, nnp: bool) -> list:
     have = _noexec_set(text)
     out.append(('NoExecPaths == %r' % sorted(want), have == want,
                 'got %r' % sorted(have)))
+    ## ExecPaths= nested under a NoExecPaths= subtree makes that subtree
+    ## executable again (systemd.exec). A hardened unit must not carry one, or the
+    ## NoExecPaths assertion above is hollow. None of these units set it.
+    execpaths = _path_set(text, 'ExecPaths')
+    out.append(('no ExecPaths re-opening NoExecPaths', not execpaths,
+                'ExecPaths=%r' % sorted(execpaths)))
     nnp_enabled = _enabled(service_values(lines, 'NoNewPrivileges'))
     out.append(('NoNewPrivileges %s' % ('enabled' if nnp else 'disabled'),
                 nnp_enabled == nnp,
@@ -121,6 +136,13 @@ def allowlist_findings(text: str, *, noexecpaths: str, required_syscalls,
     out = _base_findings(text, noexecpaths, nnp)
     out.append(('SystemCallFilter is an allowlist (no "~" denylist)',
                 is_allowlist(text), 'values=%r' % syscall_filter_values(text)))
+    ## FAIL CLOSED on a syscall GROUP: '@ipc' / '@system-service' CONTAIN
+    ## memfd_create, and this lint does not expand groups, so the "memfd_create
+    ## absent" check below cannot be trusted when one is present. onion-grater
+    ## lists syscalls explicitly, so this does not fire for it.
+    out.append(('allowlist names no @syscall-group the lint cannot expand',
+                not has_syscall_group(text),
+                'values=%r' % syscall_filter_values(text)))
     allow = effective_allowset(text)
     out.append(('memfd_create absent from the allowlist (SIGSYS-killed)',
                 'memfd_create' not in allow, 'memfd_create in allowset=%r'
@@ -269,7 +291,7 @@ def self_check() -> None:
                        _GOOD_DENYLIST, noexecpaths=_DENYLIST_OK, memfd='soft'))))
     checks.append(('wrong NoExecPaths fails',
                    not _all_ok(denylist_findings(
-                       _GOOD_DENYLIST, noexecpaths='/tmp /var/tmp /dev/shm'))))
+                       _GOOD_DENYLIST, noexecpaths='/tmp /var/tmp /dev/shm'))))  # nosec B108 -- systemd NoExecPaths directive value, not a temp path
     checks.append(('NoNewPrivileges missing fails for a non-escalator',
                    not _all_ok(denylist_findings(
                        _GOOD_DENYLIST.replace('NoNewPrivileges=yes\n', ''),
@@ -296,6 +318,34 @@ def self_check() -> None:
     checks.append(('empty SystemCallFilter reset drops the memfd denial',
                    memfd_denial('[Service]\nSystemCallFilter=~memfd_create\n'
                                 'SystemCallFilter=\n') == 'none'))
+    ## systemd '~'-removal semantics (NOT a denylist flip): a '~' line after a
+    ## positive allowlist only REMOVES syscalls, so it stays an allowlist.
+    checks.append(('"~"-removal after a positive list stays an allowlist',
+                   is_allowlist(_GOOD_ALLOWLIST + 'SystemCallFilter=~write\n')))
+    checks.append(('"~"-removal allowlist still passes (write dropped, read kept)',
+                   _all_ok(allowlist_findings(
+                       _GOOD_ALLOWLIST + 'SystemCallFilter=~write\n',
+                       noexecpaths='/run /tmp /var/tmp /dev/shm',
+                       required_syscalls={'read', 'execve'}))))
+    ## A syscall GROUP in an allowlist fails CLOSED ('@ipc' hides memfd_create).
+    checks.append(('a @group in an allowlist fails (unexpandable)',
+                   not _all_ok(allowlist_findings(
+                       _GOOD_ALLOWLIST.replace(
+                           'SystemCallFilter=read write execve openat',
+                           'SystemCallFilter=read write execve openat @ipc'),
+                       noexecpaths='/run /tmp /var/tmp /dev/shm',
+                       required_syscalls={'read'}))))
+    ## A positive @group re-allowing memfd_create after '~memfd_create' fails the
+    ## denylist (memfd_denial must report it as no longer denied).
+    checks.append(('a positive @group re-allowing memfd fails the denylist',
+                   not _all_ok(denylist_findings(
+                       _GOOD_DENYLIST + 'SystemCallFilter=@ipc\n',
+                       noexecpaths=_DENYLIST_OK))))
+    ## ExecPaths= re-opening a NoExecPaths subtree fails.
+    checks.append(('ExecPaths re-opening NoExecPaths fails',
+                   not _all_ok(denylist_findings(
+                       _GOOD_DENYLIST + 'ExecPaths=/tmp/payload\n',
+                       noexecpaths=_DENYLIST_OK))))
 
     bad = [name for name, ok in checks if not ok]
     if bad:

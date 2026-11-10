@@ -26,6 +26,7 @@ installed path.
 
 import glob
 import os
+import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -83,10 +84,17 @@ def main() -> int:
         'ANON_WS_DISABLE_STACKED_TOR_REPO',
         'usr/libexec/anon-ws-disable-stacked-tor/systemd-unit-files-generator')
     if os.path.isfile(gen_path):
-        gen_text = read_text(gen_path)
+        ## Match each directive as a WHOLE token on a NON-comment source line,
+        ## terminated by end-of-line, whitespace, or the here-string's closing
+        ## quote -- so a commented-out copy (# SystemCallFilter=...) or a longer
+        ## value ('/dev' vs '/dev/pts') cannot false-match a raw substring.
+        gen_lines = [ln.strip() for ln in read_text(gen_path).splitlines()
+                     if not ln.strip().startswith('#')]
         for directive in GENERATOR_REQUIRED:
+            pattern = re.compile('^' + re.escape(directive) + r'(?:$|\s|")')
             lint.assert_true(
-                'generator emits %r' % directive, directive in gen_text)
+                'generator emits %r' % directive,
+                any(pattern.match(line) for line in gen_lines))
         lint.checked += 1
     elif gen_repo_set:
         lint.assert_true('generator present', False, 'missing: %s' % gen_path)

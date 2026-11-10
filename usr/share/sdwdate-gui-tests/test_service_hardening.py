@@ -64,7 +64,7 @@ class ServiceHardeningTest(unittest.TestCase):
         ## Its backgrounded PyQt5 GUI renders -> EPERM so it falls back to
         ## shm_open instead of SIGSYS-dying on first draw.
         self._check('usr/lib/systemd/user/sdwdate-gui.service',
-                    noexecpaths='/tmp /var/tmp /dev/shm', memfd='soft')
+                    noexecpaths='/tmp /var/tmp /dev/shm', memfd='soft')  # nosec B108 -- systemd NoExecPaths directive value, not a temp path
 
     def test_qubes_proxy_stays_sigsys(self) -> None:
         ## systemd-socket-proxyd: maps no surface, never calls memfd_create, so

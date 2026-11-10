@@ -38,7 +38,7 @@ def main() -> int:
         'MSGCOLLECTOR_REPO',
         'usr/lib/systemd/user/msgcollector-gui.service',
         lambda text: denylist_findings(
-            text, noexecpaths='/tmp /var/tmp /dev/shm', memfd='soft'))
+            text, noexecpaths='/tmp /var/tmp /dev/shm', memfd='soft'))  # nosec B108 -- systemd NoExecPaths directive value, not a temp path
     return lint.finish()
 
 

@@ -35,7 +35,13 @@ python3 -- "${tests_dir}/onion_grater_profile_test.py" "$@" || rc=$?
 ## suite; a 77 (unit genuinely absent, no ONION_GRATER_REPO) does not.
 hardening_rc=0
 "${tests_dir}/service_hardening_lint.py" "$@" || hardening_rc=$?
-if [ "${hardening_rc}" -ne 0 ] && [ "${hardening_rc}" -ne 77 ]; then
+if [ "${hardening_rc}" -eq 77 ]; then
+   ## A 77 means the lint found no unit to check (no ONION_GRATER_REPO and the
+   ## unit is not installed) -- a genuine optional skip, not a pass. Surface it so
+   ## it is never a silent green. The --component CI run wires ONION_GRATER_REPO,
+   ## so there the lint always runs against the checkout unit.
+   printf '%s\n' 'onion-grater-tests: NOTE: W^X hardening lint SKIPPED (exit 77: no unit to check).' >&2
+elif [ "${hardening_rc}" -ne 0 ]; then
    rc=1
 fi
 exit "${rc}"

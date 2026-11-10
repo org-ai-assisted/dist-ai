@@ -33,8 +33,13 @@ _RETRYABLE_ERRNOS = {
 }
 ## A real errno name. systemd IGNORES an unknown name (e.g. EBOGUS) and keeps the
 ## default KILL action, so an invalid name is NOT a soft deny -- reporting 'soft'
-## for it is a false pass.
-_VALID_ERRNO_NAMES = frozenset(errno.errorcode.values())
+## for it is a false pass. Enumerate every E* constant (not errorcode.values(),
+## which keeps ONE name per number and so DROPS systemd-valid aliases that share a
+## number -- EOPNOTSUPP/ENOTSUP, EDEADLOCK/EDEADLK; a unit using the dropped alias
+## would be mis-reported as a hard kill).
+_VALID_ERRNO_NAMES = frozenset(
+    name for name in dir(errno)
+    if name.startswith('E') and isinstance(getattr(errno, name), int))
 
 
 def service_lines(text: str) -> list:
@@ -83,7 +88,10 @@ def errno_is_soft(value: str) -> bool:
         return False
     if val.upper() in _RETRYABLE_ERRNOS:
         return False
-    if val.isdigit():
+    ## isascii() guard: a non-ASCII digit (e.g. U+00B2) passes isdigit() but int()
+    ## then raises ValueError and crashes the lint. systemd accepts only ASCII
+    ## 1..4095, so a non-ASCII digit is not a valid errno -- fall through to False.
+    if val.isascii() and val.isdigit():
         return _ERRNO_MIN <= int(val) <= _ERRNO_MAX
     ## an errno NAME must be a REAL errno: systemd ignores an unknown name and keeps
     ## the KILL action, so a bogus name (EBOGUS) is not a soft deny. A real name
@@ -110,7 +118,17 @@ def memfd_denial(text: str) -> str:
     per_syscall = None
     for value in effective:
         negate = value.startswith('~')
-        for token in (value[1:] if negate else value).split():
+        body = value[1:] if negate else value
+        tokens = body.split()
+        ## A POSITIVE syscall-GROUP line (e.g. '@ipc', '@system-service' -- both
+        ## CONTAIN memfd_create) re-allows syscalls this module cannot expand. Be
+        ## conservative: treat memfd_create as no longer reliably denied, so the
+        ## caller fails CLOSED instead of greening a unit that may permit it.
+        if not negate and any(tok.startswith('@') for tok in tokens):
+            denied = False
+            per_syscall = None
+            continue
+        for token in tokens:
             if token.split(':', 1)[0] != 'memfd_create':
                 continue
             if negate:
@@ -139,26 +157,72 @@ def syscall_filter_values(text: str) -> list:
     return service_values(service_lines(text), 'SystemCallFilter')
 
 
+def _effective_filter(text: str):
+    """(mode, allowset) after systemd's SystemCallFilter merge + reset semantics.
+
+    mode is 'allow' (allowlist / default-deny), 'deny' (denylist / default-allow),
+    or None (no filter). The FIRST value after the last reset sets the mode; an
+    empty value resets both mode and set. systemd MERGES subsequent lines -- it
+    does NOT flip the mode: in allowlist mode a positive line ADDS syscalls and a
+    '~' line REMOVES them (man systemd.exec: allow 'read write', then '~write',
+    leaves 'read' -- still an allowlist). In denylist mode a further line edits the
+    deny set; allowset is only meaningful for an allowlist, so it stays empty there.
+
+    Group tokens ('@ipc', ...) are kept LITERAL (not expanded) -- see
+    has_syscall_group()."""
+    mode = None
+    allow: set = set()
+    for value in syscall_filter_values(text):
+        stripped = value.strip()
+        if stripped == '':
+            mode = None
+            allow = set()
+            continue
+        negated = stripped.startswith('~')
+        tokens = set((stripped[1:] if negated else stripped).split())
+        if mode is None:
+            mode = 'deny' if negated else 'allow'
+            allow = set() if negated else set(tokens)
+        elif mode == 'allow':
+            if negated:
+                allow -= tokens
+            else:
+                allow |= tokens
+    return mode, allow
+
+
 def is_allowlist(text: str) -> bool:
-    """True iff there is at least one SystemCallFilter= and NONE is a '~' denylist.
-    An allowlist permits ONLY the named syscalls (default-deny: everything else is
-    SIGSYS-killed). A single '~' directive flips it to a denylist that permits every
-    UNNAMED syscall and removes the sandbox, so a stray '~' must fail the allowlist
-    assertion."""
-    values = syscall_filter_values(text)
-    return bool(values) and all(not v.strip().startswith('~') for v in values)
+    """True iff the effective SystemCallFilter is an ALLOWLIST (default-deny): at
+    least one value, and the FIRST one after the last reset is positive (no '~').
+    systemd sets the mode from that first value; a LATER '~' line only REMOVES
+    syscalls and does NOT flip to a denylist, so it stays an allowlist. A first
+    '~' (or an empty-reset immediately before one) IS a denylist and fails here --
+    that is the 'sandbox silently removed' regression the allowlist lint guards."""
+    mode, _ = _effective_filter(text)
+    return mode == 'allow'
 
 
 def effective_allowset(text: str) -> set:
-    """The effective allowed-syscall set after systemd reset semantics: an empty
-    value OR a '~' value clears the set; otherwise tokens accumulate. Meaningful
-    for an allowlist (is_allowlist); when a '~' is present the sandbox is a
-    denylist and the returned set is only what follows the last reset."""
-    effective: set = set()
+    """The effective allowed-syscall set of an ALLOWLIST (positive lines add, '~'
+    lines remove, empty resets). Empty for a denylist (not meaningful there;
+    callers check is_allowlist first).
+
+    NOTE: syscall GROUP tokens ('@ipc', '@system-service', ...) are kept LITERAL;
+    this does NOT expand them, so a membership test against this set cannot see a
+    syscall hidden inside a group. Use has_syscall_group() to FAIL CLOSED."""
+    _, allow = _effective_filter(text)
+    return allow
+
+
+def has_syscall_group(text: str) -> bool:
+    """True if any SystemCallFilter value names a syscall GROUP ('@ipc', ...).
+
+    This module does NOT expand groups (systemd ships ~30, each with many members,
+    e.g. '@ipc' and '@system-service' both contain memfd_create), so a lint that
+    reasons about a specific syscall (memfd_create present/absent) must FAIL CLOSED
+    when a group is used rather than trust an incomplete literal token set."""
     for value in syscall_filter_values(text):
-        stripped = value.strip()
-        if stripped == '' or stripped.startswith('~'):
-            effective = set()
-        else:
-            effective |= set(stripped.split())
-    return effective
+        for token in value.strip().lstrip('~').split():
+            if token.startswith('@'):
+                return True
+    return False
