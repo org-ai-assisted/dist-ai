@@ -61,7 +61,7 @@ def main():
         info = json.loads(completed.stdout)
     except Exception:
         return 1
-    refs = []
+    refs: list[str] = []
     collect_paths(info, refs)
     if not refs:
         return 1
