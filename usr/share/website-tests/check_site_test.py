@@ -2757,6 +2757,34 @@ def run():
         _fails = []
         check_site.check_video_captions(root, _fails)
         check('check_video_captions passes a <video> with a captions track', not _fails, _fails)
+    # F1: a <video> inside an HTML comment or a <script> string is NOT browser-rendered -> not
+    # flagged (html.parser makes it invisible, like every other audit; a raw-text regex flagged it).
+    for _buried in ('<!-- <video src="x.mp4"></video> -->',
+                    '<script>var h = "<video src=x></video>";</script>'):
+        with tempfile.TemporaryDirectory() as root:
+            _write(root, 'index.html',
+                   '<!doctype html><html><body>%s</body></html>' % _buried)
+            _fails = []
+            check_site.check_video_captions(root, _fails)
+            check('check_video_captions ignores a <video> in comment/script', not _fails, _fails)
+    # F2: HTML5 allows single-quoted and unquoted attribute values -> a captioned <video> passes.
+    for _tr in ('<track kind=\'captions\' src="a.vtt">', '<track kind=captions src="a.vtt">'):
+        with tempfile.TemporaryDirectory() as root:
+            _write(root, 'index.html',
+                   '<!doctype html><html><body><video src="x.mp4" controls>%s'
+                   '</video></body></html>' % _tr)
+            _fails = []
+            check_site.check_video_captions(root, _fails)
+            check('check_video_captions accepts %s (any quoting)' % _tr, not _fails, _fails)
+    # F3: data-kind="captions" must NOT satisfy the check (keyed on the attribute NAME kind).
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               '<!doctype html><html><body><video src="x.mp4" controls>'
+               '<track data-kind="captions" src="a.vtt"></video></body></html>')
+        _fails = []
+        check_site.check_video_captions(root, _fails)
+        check('check_video_captions does not accept data-kind="captions"',
+              any('track kind="captions"' in f for f in _fails), _fails)
     # canaries: an id inside <textarea>/<title> (RCDATA = literal text in a browser) or a
     # <template> (separate DocumentFragment tree) is NOT a document duplicate.
     for _scope in ('textarea', 'title', 'template'):
