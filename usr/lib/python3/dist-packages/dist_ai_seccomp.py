@@ -20,6 +20,7 @@ and errno validity -- a lint fooled by any of those would report a confident wro
 """
 
 import errno
+import re
 
 ## systemd accepts an errno name or a number 1..4095; anything else (empty,
 ## 'kill', 0, out of range, junk) is NOT a soft-fail errno.
@@ -169,7 +170,7 @@ def _effective_filter(text: str):
     deny set; allowset is only meaningful for an allowlist, so it stays empty there.
 
     Group tokens ('@ipc', ...) are kept LITERAL (not expanded) -- see
-    has_syscall_group()."""
+    syscall_filter_simple()."""
     mode = None
     allow: set = set()
     for value in syscall_filter_values(text):
@@ -209,20 +210,43 @@ def effective_allowset(text: str) -> set:
 
     NOTE: syscall GROUP tokens ('@ipc', '@system-service', ...) are kept LITERAL;
     this does NOT expand them, so a membership test against this set cannot see a
-    syscall hidden inside a group. Use has_syscall_group() to FAIL CLOSED."""
+    syscall hidden inside a group. Use syscall_filter_simple() to FAIL CLOSED."""
     _, allow = _effective_filter(text)
     return allow
 
 
-def has_syscall_group(text: str) -> bool:
-    """True if any SystemCallFilter value names a syscall GROUP ('@ipc', ...).
+## A PLAIN syscall token: a bare name, no '@' group, no ':action' per-syscall
+## errno, no '\\' escape. The membership reasoning in effective_allowset (is a
+## SPECIFIC syscall present/absent) is only sound over plain tokens.
+_PLAIN_SYSCALL_RE = re.compile(r'^[A-Za-z0-9_]+$')
 
-    This module does NOT expand groups (systemd ships ~30, each with many members,
-    e.g. '@ipc' and '@system-service' both contain memfd_create), so a lint that
-    reasons about a specific syscall (memfd_create present/absent) must FAIL CLOSED
-    when a group is used rather than trust an incomplete literal token set."""
+
+def syscall_filter_simple(text: str) -> bool:
+    """True iff every SystemCallFilter token the lint must reason about is a PLAIN
+    syscall name, after reset semantics. Returns False for a syscall GROUP ('@ipc',
+    which CONTAINS memfd_create), a per-syscall action ('memfd_create:EPERM'), or a
+    '\\'-escaped token -- constructs this module does NOT model (modeling them means
+    reimplementing systemd's group expansion and quote processing). A caller that
+    reasons about a SPECIFIC syscall's presence/absence (effective_allowset
+    membership) must FAIL CLOSED when this is False rather than trust an incomplete
+    literal token set. Reset-aware: a construct discarded by a later empty
+    'SystemCallFilter=' does not count (systemd already dropped it).
+
+    NOTE scope: this covers the ALLOWLIST membership path. The DENYLIST path
+    (memfd_denial) already models a '~memfd_create' denial, its ':action'
+    per-syscall errno, and a positive '@group' re-allow, so it does not need this.
+    A '\\'-escaped token crafted to EVADE the group check is an adversarial forge,
+    out of scope -- no Kicksecure/Whonix unit uses one."""
+    effective: list = []
     for value in syscall_filter_values(text):
-        for token in value.strip().lstrip('~').split():
-            if token.startswith('@'):
-                return True
-    return False
+        stripped = value.strip()
+        if stripped == '':
+            effective = []
+        else:
+            effective.append(stripped)
+    for value in effective:
+        body = value[1:] if value.startswith('~') else value
+        for token in body.split():
+            if not _PLAIN_SYSCALL_RE.match(token):
+                return False
+    return True

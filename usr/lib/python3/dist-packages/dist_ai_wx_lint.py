@@ -40,8 +40,8 @@ if HERE not in sys.path:
 
 # pylint: disable=wrong-import-position
 from dist_ai_seccomp import (  # noqa: E402
-    effective_allowset, has_syscall_group, is_allowlist, memfd_denial,
-    service_lines, service_values, syscall_filter_values)
+    effective_allowset, is_allowlist, memfd_denial, service_lines,
+    service_values, syscall_filter_simple, syscall_filter_values)
 
 ## systemd treats true/yes/on/1 as enabled, so accept any of them, not only the
 ## literal 'true' (units in this rollout mix '=yes' and '=true').
@@ -136,12 +136,15 @@ def allowlist_findings(text: str, *, noexecpaths: str, required_syscalls,
     out = _base_findings(text, noexecpaths, nnp)
     out.append(('SystemCallFilter is an allowlist (no "~" denylist)',
                 is_allowlist(text), 'values=%r' % syscall_filter_values(text)))
-    ## FAIL CLOSED on a syscall GROUP: '@ipc' / '@system-service' CONTAIN
-    ## memfd_create, and this lint does not expand groups, so the "memfd_create
-    ## absent" check below cannot be trusted when one is present. onion-grater
-    ## lists syscalls explicitly, so this does not fire for it.
-    out.append(('allowlist names no @syscall-group the lint cannot expand',
-                not has_syscall_group(text),
+    ## FAIL CLOSED unless the filter uses only PLAIN syscall tokens: a '@group'
+    ## ('@ipc'/'@system-service' CONTAIN memfd_create), a per-syscall action
+    ## ('read:EPERM' does not actually grant read), or a '\\'-escape all break the
+    ## "memfd absent" / "required present" membership checks below, which the lint
+    ## does not model. onion-grater lists syscalls explicitly, so this does not
+    ## fire for it.
+    out.append(('allowlist uses only plain syscall tokens (no @group / '
+                'per-syscall action / escape the lint cannot model)',
+                syscall_filter_simple(text),
                 'values=%r' % syscall_filter_values(text)))
     allow = effective_allowset(text)
     out.append(('memfd_create absent from the allowlist (SIGSYS-killed)',
@@ -335,6 +338,25 @@ def self_check() -> None:
                            'SystemCallFilter=read write execve openat @ipc'),
                        noexecpaths='/run /tmp /var/tmp /dev/shm',
                        required_syscalls={'read'}))))
+    ## A per-syscall action ('read:EPERM' does not actually grant read) also fails
+    ## CLOSED -- the lint does not model it.
+    checks.append(('a per-syscall :action in an allowlist fails',
+                   not _all_ok(allowlist_findings(
+                       _GOOD_ALLOWLIST.replace(
+                           'SystemCallFilter=read write execve openat',
+                           'SystemCallFilter=read:EPERM write execve openat'),
+                       noexecpaths='/run /tmp /var/tmp /dev/shm',
+                       required_syscalls={'write'}))))
+    ## Reset-aware: a @group DISCARDED by a later empty reset must NOT false-fail
+    ## (systemd already dropped it), so a clean allowlist after the reset passes.
+    checks.append(('a @group discarded by an empty reset does not false-fail',
+                   _all_ok(allowlist_findings(
+                       _GOOD_ALLOWLIST.replace(
+                           'SystemCallFilter=read write execve openat',
+                           'SystemCallFilter=@ipc\nSystemCallFilter=\n'
+                           'SystemCallFilter=read write execve openat'),
+                       noexecpaths='/run /tmp /var/tmp /dev/shm',
+                       required_syscalls={'read', 'execve'}))))
     ## A positive @group re-allowing memfd_create after '~memfd_create' fails the
     ## denylist (memfd_denial must report it as no longer denied).
     checks.append(('a positive @group re-allowing memfd fails the denylist',

@@ -40,7 +40,8 @@ if os.path.isdir(_LIB) and _LIB not in sys.path:
 
 # pylint: disable=wrong-import-position
 from dist_ai_seccomp import (  # noqa: E402
-    effective_allowset, is_allowlist, syscall_filter_values)
+    effective_allowset, is_allowlist, syscall_filter_simple,
+    syscall_filter_values)
 
 ## A conservative core that must always be present; not the whole set, so adding
 ## a syscall does not need a test edit, but dropping one of these fails.
@@ -82,6 +83,16 @@ class SeccompFilterTest(unittest.TestCase):
             is_allowlist(self.text),
             'a SystemCallFilter directive is a DENYLIST (a "~" value) in %s -- '
             'that permits every unnamed syscall and removes the sandbox' % self.path)
+
+    def test_filter_is_simple_enough_to_reason_about(self) -> None:
+        ## The allowlist / required-syscalls reasoning is sound only over PLAIN
+        ## syscall tokens; a @group ('@system-service' CONTAINS the core calls) or
+        ## a per-syscall action would hide or neuter a required syscall. Fail
+        ## closed if sdwdate.service ever used one.
+        self.assertTrue(
+            syscall_filter_simple(self.text),
+            '%s uses a @group / per-syscall action / escape the lint cannot '
+            'model -- list syscalls explicitly or extend the lint' % self.path)
 
     def test_required_syscalls_present(self) -> None:
         missing = REQUIRED_SYSCALLS - effective_allowset(self.text)

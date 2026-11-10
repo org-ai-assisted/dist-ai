@@ -79,7 +79,12 @@ def main() -> int:
 
     ## Lint the generator SOURCE too: the shipped autogen units are regenerated at
     ## runtime with the real gateway IP, so the generator is the true source of
-    ## truth for the block -- assert it still emits every directive.
+    ## truth for the block -- assert it still emits every directive. SCOPE: this is
+    ## a SECONDARY "the directive is still emitted at all" guard; the AUTHORITATIVE
+    ## semantic lint is on the emitted autogen .service files above (denylist_findings
+    ## fail-closes on a weakened block). So trailing content after a matched directive
+    ## on the generator line does not weaken the gate -- a real regression reaches the
+    ## emitted files and is caught there.
     gen_path, gen_repo_set = resolve_unit(
         'ANON_WS_DISABLE_STACKED_TOR_REPO',
         'usr/libexec/anon-ws-disable-stacked-tor/systemd-unit-files-generator')
