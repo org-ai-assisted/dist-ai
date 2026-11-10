@@ -149,9 +149,14 @@ assert "pair card names the Gateway VM" \
 
 ## Regression: a FAILED Gateway showvminfo (VM-not-found / lock contention) must NOT truncate the
 ## card -- under errexit+pipefail+inherit_errexit the old code's command-substitution subshell
-## aborted mid-build and silently dropped the Workstation section. Stub VBoxManage to FAIL for the
-## Gateway; the Workstation line must still be present. Canary: on the pre-fix code (no `|| true`)
-## the card ends at the Gateway line and this assertion is RED.
+## aborted mid-build and silently dropped the Workstation section.
+## story_pair_defined MUST be called the way production does: a BARE statement under errexit, NEVER
+## on the LHS of `||` (a function on the LHS of `||`/`&&` runs with errexit SUPPRESSED, so the
+## pre-fix subshell never aborts and the truncation this test targets cannot occur -- masking the
+## bug). Remove the prior success card first so a stale copy cannot satisfy the assertion. Canary:
+## on the pre-fix code (no `|| true`) the bare call's $(...) aborts at the failing GW pipeline
+## BEFORE the Workstation printf, leaving a Gateway-only card -> this assertion is RED.
+safe-rm --force -- "${shot_dir}/10-pair-defined.card.txt"
 vbfail="${work}/VBoxManage-gwfail"
 cat > "${vbfail}" <<'EOF'
 #!/bin/bash
@@ -163,10 +168,8 @@ esac
 EOF
 chmod 0755 -- "${vbfail}"
 VBOXMANAGE="${vbfail}"
-pd_rc=0
-story_pair_defined || pd_rc=$?
+story_pair_defined
 VBOXMANAGE="${vbstub}"
-assert "story_pair_defined survives a failed Gateway showvminfo (no errexit abort)" test "${pd_rc}" -eq 0
 assert "pair card keeps the Workstation section after a GW showvminfo failure" \
    grep --quiet --fixed-strings 'Workstation VM: Whonix-Workstation-CLI' "${shot_dir}/10-pair-defined.card.txt"
 
