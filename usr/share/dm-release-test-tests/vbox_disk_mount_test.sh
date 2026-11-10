@@ -116,5 +116,60 @@ true > "${argv_log}"
 check 'vmdk VM: format resolved to vmdk' \
    "$(cat -- "${argv_log}")" "run --disk /home/eph/VirtualBox VMs/ws/ws.vmdk --format vmdk -- touch marker"
 
+## --- vbox_manage(): resolve the VM as the INVOKING user under sudo, directly otherwise --------
+## VBoxManage reads the PER-USER registry, so a sudo run (euid 0, HOME=/root) must runuser to
+## SUDO_USER or it reads root's registry and misses the caller's VM. Exercise the REAL function's
+## branch selection with PATH-shadowed stubs: 'id -u' reports a forced euid (FAKE_UID), 'runuser'
+## and 'VBoxManage' each record which path fired. Everything else on PATH stays real.
+stubdir="${work}/pathstub"
+mkdir --parents -- "${stubdir}"
+vm_call="${work}/vm.call"
+cat > "${stubdir}/id" <<STUB
+#!/bin/bash
+if [ "\$1" = '-u' ]; then printf '%s\n' "\${FAKE_UID:-1000}"; exit 0; fi
+exec /usr/bin/id "\$@"
+STUB
+cat > "${stubdir}/runuser" <<STUB
+#!/bin/bash
+printf 'RUNUSER:%s\n' "\$*" > "${vm_call}"
+STUB
+cat > "${stubdir}/VBoxManage" <<STUB
+#!/bin/bash
+printf 'DIRECT:%s\n' "\$*" > "${vm_call}"
+STUB
+chmod +x "${stubdir}/id" "${stubdir}/runuser" "${stubdir}/VBoxManage"
+
+## Run the REAL vbox_manage once with a forced euid (FAKE_UID, read by the id stub) + SUDO_USER.
+## A function with `local -x` scopes PATH/FAKE_UID/SUDO_USER to the call and restores them on
+## return -- no subshell, so nothing leaks between cases. SUDO_USER='' is the "no SUDO_USER" case
+## (the function tests `-n "${SUDO_USER:-}"`, so empty and unset select the same direct branch).
+vm_manage_case() {
+   local -x PATH="${stubdir}:${PATH}"
+   local -x FAKE_UID="$1"
+   local -x SUDO_USER="$2"
+   true > "${vm_call}"
+   vbox_manage showvminfo testvm --machinereadable
+}
+
+## euid 0 + SUDO_USER (non-root) -> runuser to that user, VBoxManage args threaded after '--'.
+vm_manage_case 0 alice
+check 'vbox_manage: sudo (euid 0, SUDO_USER=alice) runs VBoxManage as the invoking user' \
+   "$(cat -- "${vm_call}")" 'RUNUSER:-u alice -- VBoxManage showvminfo testvm --machinereadable'
+
+## euid 0 but no SUDO_USER (a direct root shell) -> call VBoxManage directly, no runuser.
+vm_manage_case 0 ''
+check 'vbox_manage: root with no SUDO_USER calls VBoxManage directly' \
+   "$(cat -- "${vm_call}")" 'DIRECT:showvminfo testvm --machinereadable'
+
+## euid 0 + SUDO_USER=root (sudo -u root) -> no user switch, call VBoxManage directly.
+vm_manage_case 0 root
+check 'vbox_manage: SUDO_USER=root calls VBoxManage directly (no self-runuser)' \
+   "$(cat -- "${vm_call}")" 'DIRECT:showvminfo testvm --machinereadable'
+
+## non-root direct run (even with SUDO_USER set) -> call VBoxManage directly as the caller.
+vm_manage_case 1000 alice
+check 'vbox_manage: non-root run calls VBoxManage directly' \
+   "$(cat -- "${vm_call}")" 'DIRECT:showvminfo testvm --machinereadable'
+
 printf '%s\n' "" "${pass} pass, ${fail} fail"
 [ "${fail}" -eq 0 ] || exit 1

@@ -49,6 +49,14 @@ installed_disk_path() {
 ## Map a disk path to its qemu-nbd format by extension, so a lane that resolves the disk from
 ## the VM (installed_disk_path) passes the RIGHT format and the mount is never forced to a wrong
 ## format on a .vmdk/.qcow2 image. Unknown/.vdi -> vdi.
+##
+## Pinned by EXTENSION, not VBox's registered medium format (showmediuminfo), BY DESIGN: every
+## dm-built and OVA image names the file to match its format, so the extension IS the format. A
+## hand-crafted mismatch the controlled image set never produces (e.g. a VDI named *.img) fails
+## LOUD at qemu-nbd ("no mountable filesystem") -- diagnosable, never silent corruption. Reading
+## the registered format would add a per-call VBoxManage round-trip for that non-case; byte-format
+## probing is deliberately NOT an option (a crafted image could redirect writes), so the format is
+## always STATED (image-mount's --format is mandatory).
 disk_format_for() {
    case "${1,,}" in
       *.vmdk)
