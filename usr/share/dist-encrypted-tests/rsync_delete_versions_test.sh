@@ -216,6 +216,17 @@ run_main "${base3}" --force
 check "main leaves developer-meta-files untouched (rc 0)" "${run_rc}" "0"
 check "main leaves developer-meta-files untouched (image kept)" "$(test -f "${base3}/developer-meta-files/18.5.0.0/Whonix.iso" && printf '%s' yes || printf '%s' no)" "yes"
 
+## A TRAILING-SLASH base_dir must still skip libvirt/test-ssh and prune normally
+## (base_dir is canonicalized) -- not abort treating 'test-ssh' as a bad version.
+base6="${test_dir}/base6"
+make_version "${base6}/ova/9.9.9"
+mkdir --parents -- "${base6}/libvirt/test-ssh"
+printf '%s\n' 'x' > "${base6}/libvirt/test-ssh/keep"
+run_main "${base6}/" --force
+check "main with trailing-slash base prunes (rc 0)" "${run_rc}" "0"
+check "main skips libvirt/test-ssh (file kept)" "$(test -f "${base6}/libvirt/test-ssh/keep" && printf '%s' yes || printf '%s' no)" "yes"
+check "main with trailing-slash base removes the image" "$(test -e "${base6}/ova/9.9.9/Whonix.iso" && printf '%s' yes || printf '%s' no)" "no"
+
 ## A version directory whose name is not digits-and-dots is rejected (rc 1).
 base4="${test_dir}/base4"
 mkdir --parents -- "${base4}/iso/not-a-version"
