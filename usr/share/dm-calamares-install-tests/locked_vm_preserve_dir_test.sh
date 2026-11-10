@@ -68,8 +68,13 @@ case "$1" in
       fi
       ;;
    showvminfo)
-      ## This scenario: testvm is STILL REGISTERED.
-      exit 0
+      ## testvm is STILL REGISTERED, but showvminfo --machinereadable takes a SHARED machine lock
+      ## and fails in the async post-poweroff unlock window -- a lock-based registration probe is
+      ## fooled into reading this as "not registered". (Load-bearing: the fix must NOT probe with
+      ## showvminfo; a build_vm that does deletes this live VM's dir.)
+      printf '%s\n' "VBoxManage: error: The machine 'testvm' is already locked for a session (or being unlocked)" >&2
+      printf '%s\n' "VBoxManage: error: Details: code VBOX_E_INVALID_OBJECT_STATE (0x80bb0007), component MachineWrap, interface IMachine" >&2
+      exit 1
       ;;
    unregistervm)
       ## Session-locked: VBox refuses to unregister. Message carries the lock markers

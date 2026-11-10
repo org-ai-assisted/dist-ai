@@ -62,10 +62,11 @@ if [ "$1" = list ] && [ "$2" = systemproperties ]; then
    printf '%s\n' "Default machine folder:          ${MACHINE_FOLDER}"
    exit 0
 fi
-if [ "$1" = showvminfo ]; then
-   ## This scenario is crash residue: the dir exists but the VM is NOT registered, so build_vm's
-   ## registration probe must fail (exit non-zero) and skip unregister -> go straight to the
-   ## stale-dir removal.
+if [ "$1" = unregistervm ]; then
+   ## This scenario is crash residue: the dir exists but the VM is NOT registered. unregistervm
+   ## reports exactly that, so build_vm classifies it as unregistered and proceeds to the stale-dir
+   ## removal below (rather than failing loud).
+   printf '%s\n' "VBoxManage: error: Could not find a registered machine named 'testvm'" >&2
    exit 1
 fi
 if [ "$1" = createvm ]; then
