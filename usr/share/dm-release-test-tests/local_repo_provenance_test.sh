@@ -263,45 +263,97 @@ check "1565: dm-whonix-pair NOT invoked on a failed repo-path lookup" \
 # shellcheck disable=SC2034
 DM_SHARED_APT_REPO="${shared_stub}"
 
-## --- finding 6: an UNEXPECTED provenance-build failure on a --local-repo run must publish
+## --- finding 6: an UNEXPECTED provenance TOOL failure on a --local-repo run must publish
 ## INCONCLUSIVE (SETUP_RC), NEVER a published-repo masquerade -- a local-repo run recorded with NO
-## localRepo block is indistinguishable from one that tested the published repos. Distinct from the
-## benign generation-change omit above (which stays rc 0): a provenance TOOL failure is an
-## environment bug, not a benign race. Test BOTH jq error codes, especially exit 2 -- jq's (and
-## awk's) usage/system-error status: an earlier design reused exit 2 as the "generation omit"
-## sentinel, so a real jq/awk error (also exit 2) masqueraded as the benign omit. The generation
-## here is UNCHANGED (non-mutating pair) and the gen capture uses sha256sum/awk, not jq, so the lane
-## reaches the provenance build and fails only there. ---
-stubbin="${work}/stubbin"
-mkdir --parents -- "${stubbin}"
+## localRepo block (or a block with a silently-empty packages list) is indistinguishable from one
+## that tested the published repos. Distinct from the benign generation-change omit above (which
+## stays rc 0): a provenance tool failure is an environment bug, not a benign race. The caller runs
+## the builder on the LHS of `||`, which DISABLES errexit inside it, so each tool step needs an
+## explicit `|| return 1` / status capture -- these cases canary every such path. Each uses its OWN
+## clean stub dir on PATH; the generation is UNCHANGED (non-mutating pair). ---
+real_awk="$(command -v awk)"
+real_sha="$(command -v sha256sum)"
+
+## build jq failure, BOTH error codes -- exit 2 especially (an earlier design reused 2 as the
+## "generation omit" sentinel, so a real jq error, which also exits 2, masqueraded as the benign omit).
 for jq_rc in 1 2; do
+   sdir="${work}/stub-jq-${jq_rc}"
+   mkdir --parents -- "${sdir}"
+   printf '%s\n' '#!/bin/sh' "exit ${jq_rc}" > "${sdir}/jq"
+   chmod +x -- "${sdir}/jq"
    true > "${pair_argv}"
    true > "${prov_file}"
-   printf '%s\n' '#!/bin/sh' "exit ${jq_rc}" > "${stubbin}/jq"
-   chmod +x -- "${stubbin}/jq"
    # shellcheck disable=SC2034  ## read as a global by the sourced rt_lane_whonix_inst
    local_repo='whonix'
-   jqfail_rc=0
-   ( export PATH="${stubbin}:${PATH}"; rt_lane_whonix_inst persist-inst-whonix 18.2.3.5 ) >/dev/null 2>&1 || jqfail_rc=$?
-   check "finding 6 (jq exit ${jq_rc}): dm-whonix-pair WAS invoked (lane reached the provenance build)" \
+   tf_rc=0
+   ( export PATH="${sdir}:${PATH}"; rt_lane_whonix_inst persist-inst-whonix 18.2.3.5 ) >/dev/null 2>&1 || tf_rc=$?
+   check "finding 6 (build jq exit ${jq_rc}): dm-whonix-pair WAS invoked (lane reached the provenance build)" \
       "$(grep --quiet -- '--local-repo whonix' "${pair_argv}" && printf '%s' true || printf '%s' false)"
-   check "finding 6 (jq exit ${jq_rc}): a failed provenance build publishes INCONCLUSIVE (SETUP_RC 2), not a published-repo masquerade" \
-      "$([ "${jqfail_rc}" = '2' ] && printf '%s' true || printf '%s' false)" "${jqfail_rc}"
+   check "finding 6 (build jq exit ${jq_rc}): publishes INCONCLUSIVE (SETUP_RC 2), not a published-repo masquerade" \
+      "$([ "${tf_rc}" = '2' ] && printf '%s' true || printf '%s' false)" "${tf_rc}"
 done
 
-## --- finding 6 (variant): computing the generation id itself (sha256sum | awk) failing must ALSO
-## publish INCONCLUSIVE, not be swallowed as the benign unverifiable-generation omit. An awk that
-## exits non-zero makes rt_local_repo_gen_id fail; the caller must treat that as a tool/env error. ---
+## build AWK failure: awk fails ONLY for the package-extraction program (the gen-id awk still works,
+## so the generation verifies and the lane reaches the build). An uncaught awk error would yield a
+## block with a silently-EMPTY packages list and rc 0 -- the explicit `|| return 1` must make it
+## INCONCLUSIVE. jq is left real so the failure is unambiguously the awk step.
+sdir="${work}/stub-build-awk"
+mkdir --parents -- "${sdir}"
+cat > "${sdir}/awk" <<EOF
+#!/bin/sh
+case "\$*" in
+  *Package*) exit 2 ;;
+  *) exec ${real_awk} "\$@" ;;
+esac
+EOF
+chmod +x -- "${sdir}/awk"
 true > "${pair_argv}"
 true > "${prov_file}"
-printf '%s\n' '#!/bin/sh' 'exit 2' > "${stubbin}/awk"
-chmod +x -- "${stubbin}/awk"
-# shellcheck disable=SC2034  ## read as a global by the sourced rt_lane_whonix_inst
+# shellcheck disable=SC2034
 local_repo='whonix'
-awkfail_rc=0
-( export PATH="${stubbin}:${PATH}"; rt_lane_whonix_inst persist-inst-whonix 18.2.3.5 ) >/dev/null 2>&1 || awkfail_rc=$?
-check "finding 6 (gen-id awk failure): a failed generation-id computation publishes INCONCLUSIVE (SETUP_RC 2), not a published-repo masquerade" \
-   "$([ "${awkfail_rc}" = '2' ] && printf '%s' true || printf '%s' false)" "${awkfail_rc}"
+tf_rc=0
+( export PATH="${sdir}:${PATH}"; rt_lane_whonix_inst persist-inst-whonix 18.2.3.5 ) >/dev/null 2>&1 || tf_rc=$?
+check "finding 6 (build awk failure): INCONCLUSIVE, not a block with a silently-empty packages list" \
+   "$([ "${tf_rc}" = '2' ] && printf '%s' true || printf '%s' false)" "${tf_rc}"
+
+## gen-id tool failure: a failing sha256sum makes rt_local_repo_gen_id fail -> INCONCLUSIVE, not the
+## benign unverifiable-generation omit (which is only for an UNREADABLE index, a 0-with-empty return).
+sdir="${work}/stub-gen-sha"
+mkdir --parents -- "${sdir}"
+printf '%s\n' '#!/bin/sh' 'exit 1' > "${sdir}/sha256sum"
+chmod +x -- "${sdir}/sha256sum"
+true > "${pair_argv}"
+true > "${prov_file}"
+# shellcheck disable=SC2034
+local_repo='whonix'
+tf_rc=0
+( export PATH="${sdir}:${PATH}"; rt_lane_whonix_inst persist-inst-whonix 18.2.3.5 ) >/dev/null 2>&1 || tf_rc=$?
+check "finding 6 (gen-id sha256sum failure): INCONCLUSIVE, not the benign omit" \
+   "$([ "${tf_rc}" = '2' ] && printf '%s' true || printf '%s' false)" "${tf_rc}"
+
+## PRE-upgrade gen-id failure, POST succeeds: the pre-upgrade capture's exit status must be checked
+## (not discarded by the `&&` form), else a pre-upgrade tool failure collapses to an empty gen and is
+## swallowed as the benign omit. Stateful stub: sha256sum fails only its FIRST (pre-upgrade) call.
+sdir="${work}/stub-pre-sha"
+mkdir --parents -- "${sdir}"
+sha_count="${work}/sha-count"
+cat > "${sdir}/sha256sum" <<EOF
+#!/bin/sh
+c="${sha_count}"
+n="\$(cat "\$c" 2>/dev/null || echo 0)"
+echo "\$((n + 1))" > "\$c"
+[ "\$n" = 0 ] && exit 1
+exec ${real_sha} "\$@"
+EOF
+chmod +x -- "${sdir}/sha256sum"
+true > "${pair_argv}"
+true > "${prov_file}"
+# shellcheck disable=SC2034
+local_repo='whonix'
+tf_rc=0
+( export PATH="${sdir}:${PATH}"; rt_lane_whonix_inst persist-inst-whonix 18.2.3.5 ) >/dev/null 2>&1 || tf_rc=$?
+check "finding 6 (pre-upgrade gen-id failure, post OK): INCONCLUSIVE, pre-upgrade status not discarded" \
+   "$([ "${tf_rc}" = '2' ] && printf '%s' true || printf '%s' false)" "${tf_rc}"
 
 printf '%s\n' "" "$(basename -- "$0"): ${pass} pass, ${fail} fail, 0 skip"
 [ "${fail}" -eq 0 ] || exit 1

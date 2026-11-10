@@ -1520,21 +1520,26 @@ rt_local_repo_gen_id() {
 ## Build the localRepo provenance JSON (host-side; no guest round-trip) for a --local-repo run:
 ## {derivative, repoPath, sourceSha, packages:[name=version,...]}. repoPath + the Packages index come
 ## from dm-shared-apt-repo repo-path (single source of the repo path -- never re-derive repo_parent
-## here). Emits the JSON on stdout; a Packages read gap degrades to an EMPTY packages list.
+## here). Emits the JSON on stdout; an UNREADABLE Packages index degrades to an EMPTY packages list.
 ## The "generation unverifiable" decision is DELIBERATELY the caller's (an explicit gen_before vs
 ## gen_now compare), NOT signalled through this function's exit code: jq AND awk both exit 2 on an
-## ordinary error (jq usage error, awk read error), so any sentinel exit code would be
-## indistinguishable from a real tool failure and a tool failure would masquerade as the benign omit.
-## So here EVERY non-zero exit means a genuine build failure (jq/awk error under errexit); the caller
-## publishes INCONCLUSIVE for it, never a published-repo masquerade.
+## ordinary error, so any sentinel exit code would be indistinguishable from a real tool failure and a
+## tool failure would then masquerade as the benign omit. Here EVERY non-zero exit means a genuine
+## build failure; the caller publishes INCONCLUSIVE for it, never a published-repo masquerade.
+## NOTE: the caller runs this on the LHS of `||` (`x="$(...)" || rc=$?`), which DISABLES errexit
+## throughout this function body -- so an uncaught awk/jq failure would otherwise be swallowed
+## (yielding a block with a silently-empty packages list and a 0 return). Every tool step is therefore
+## guarded with an explicit `|| return 1`; do NOT rely on errexit here.
 rt_build_local_repo_provenance() {
-   local deriv="$1" repo_path pkgs_file sha pkgs_json
+   local deriv="$1" repo_path pkgs_file sha pkgs_json awk_out
    repo_path="$("${DM_SHARED_APT_REPO}" repo-path "${deriv}" 2>/dev/null || true)"
    pkgs_file="${repo_path}/dists/local/main/binary-amd64/Packages"
    sha="$(rt_local_repo_source_sha)"
    if [ -n "${repo_path}" ] && [ -r "${pkgs_file}" ]; then
-      pkgs_json="$(awk '/^Package: /{p=$2} /^Version: /{if(p!=""){print p"="$2; p=""}}' "${pkgs_file}" \
-         | jq -R -s -c 'split("\n") | map(select(length>0))')"
+      awk_out="$(awk '/^Package: /{p=$2} /^Version: /{if(p!=""){print p"="$2; p=""}}' "${pkgs_file}")" \
+         || return 1
+      pkgs_json="$(printf '%s' "${awk_out}" | jq -R -s -c 'split("\n") | map(select(length>0))')" \
+         || return 1
    else
       pkgs_json='[]'
    fi
@@ -1543,7 +1548,8 @@ rt_build_local_repo_provenance() {
       --arg repo "${repo_path}" \
       --arg sha "${sha}" \
       --argjson pkgs "${pkgs_json}" \
-      '{derivative:$deriv, repoPath:$repo, sourceSha:$sha, packages:$pkgs}'
+      '{derivative:$deriv, repoPath:$repo, sourceSha:$sha, packages:$pkgs}' \
+      || return 1
 }
 
 ## inst lane: the functional release-check battery (>= the kicksecure coverage) run on the
@@ -1601,8 +1607,14 @@ rt_lane_whonix_inst() {
    ## Capture the local repo's generation id BEFORE the guest upgrade, so the provenance read below
    ## binds to the generation the guest actually upgraded from -- a concurrent rebuild landing in the
    ## test window otherwise swaps the published package versions under an unchanged verdict.
-   local rt_local_repo_gen=""
-   [ -n "${local_repo}" ] && rt_local_repo_gen="$(rt_local_repo_gen_id "${local_repo}")"
+   ## Capture BOTH the value AND the exit status: rt_local_repo_gen_id returns 0 + empty for an
+   ## unreadable index (a benign "generation unverifiable") but non-zero if its sha256sum/awk fails
+   ## (a tool error). A bare `&& x="$(...)" ` would discard that status, so a pre-upgrade tool failure
+   ## would collapse to an empty gen and be swallowed as the benign omit below.
+   local rt_local_repo_gen="" rt_local_repo_gen_rc=0
+   if [ -n "${local_repo}" ]; then
+      rt_local_repo_gen="$(rt_local_repo_gen_id "${local_repo}")" || rt_local_repo_gen_rc=$?
+   fi
    sudo -u "${account}" -- "${rt_session_env[@]}" "${DM_WHONIX_PAIR}" --mode functional --interface "${wp_interface}" --check-log "${check_log}" "${lr_args[@]}" --gw "${gw}" --ws "${ws}" || rc=$?
    ## Thread a non-empty check-log into the published step's stderr tail (empty = a pass or a
    ## pre-check failure -> no tail). Consumed once by rt_publish_result.
@@ -1619,18 +1631,19 @@ rt_lane_whonix_inst() {
       ## exit and would masquerade as the benign omit. Two outcomes feed the block:
       ##  * gen id UNREADABLE or CHANGED (rc 0, empty/mismatched) -- a benign race (a concurrent
       ##    rebuild landed in the test window): publish the verdict WITHOUT the block.
-      ##  * gen id computation FAILS (sha256sum/awk error) OR the generation matches but the build
-      ##    FAILS (jq/awk error, read race) -- a real tool/env bug: publish INCONCLUSIVE, never a
-      ##    published-repo masquerade. A missing/empty localRepo block otherwise reads as a published
-      ##    run, so a tool failure must NOT be swallowed as the benign omit.
-      local rt_local_repo_gen_now="" gen_rc=0 prov_rc=0
-      rt_local_repo_gen_now="$(rt_local_repo_gen_id "${local_repo}")" || gen_rc=$?
-      if [ "${gen_rc}" -eq 0 ] && [ -n "${rt_local_repo_gen}" ] && [ -n "${rt_local_repo_gen_now}" ] \
+      ##  * the PRE- or POST-upgrade gen id computation FAILS (sha256sum/awk error), OR the generation
+      ##    matches but the build FAILS (jq/awk error, read race) -- a real tool/env bug: publish
+      ##    INCONCLUSIVE, never a published-repo masquerade. A missing/empty localRepo block otherwise
+      ##    reads as a published run, so a tool failure must NOT be swallowed as the benign omit.
+      local rt_local_repo_gen_now="" gen_now_rc=0 prov_rc=0
+      rt_local_repo_gen_now="$(rt_local_repo_gen_id "${local_repo}")" || gen_now_rc=$?
+      if [ "${rt_local_repo_gen_rc}" -eq 0 ] && [ "${gen_now_rc}" -eq 0 ] \
+         && [ -n "${rt_local_repo_gen}" ] && [ -n "${rt_local_repo_gen_now}" ] \
          && [ "${rt_local_repo_gen}" = "${rt_local_repo_gen_now}" ]; then
          rt_local_repo_json="$(rt_build_local_repo_provenance "${local_repo}")" || prov_rc=$?
       fi
-      if [ "${gen_rc}" -ne 0 ] || [ "${prov_rc}" -ne 0 ]; then
-         log error "localRepo provenance for ${local_repo} failed (gen_rc ${gen_rc}, build_rc ${prov_rc}) -- refusing to publish a local-repo run as a published-repo run"
+      if [ "${rt_local_repo_gen_rc}" -ne 0 ] || [ "${gen_now_rc}" -ne 0 ] || [ "${prov_rc}" -ne 0 ]; then
+         log error "localRepo provenance for ${local_repo} failed (gen_before_rc ${rt_local_repo_gen_rc}, gen_now_rc ${gen_now_rc}, build_rc ${prov_rc}) -- refusing to publish a local-repo run as a published-repo run"
          rt_publish_result whonix "${version}" "${account}" whonix-func "${SETUP_RC}" "" release-checks
          sudo -u "${account}" -- safe-rm --force -- "${check_log}" 2>/dev/null || true
          return "${SETUP_RC}"
