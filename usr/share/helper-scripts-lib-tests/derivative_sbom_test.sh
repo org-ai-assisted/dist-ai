@@ -204,10 +204,21 @@ chmod +x -- "${jsonbin}/debsbom"
 
 merge_base='{"bomFormat":"CycloneDX","specVersion":"1.6","components":[{"type":"library","name":"bash","purl":"pkg:deb/debian/bash@5.2"}]}'
 
-## Count top-level components whose purl equals $2, in file $1.
-purl_count() { jq --arg p "$2" '[.components[]?|select(.purl==$p)]|length' "$1"; }
-## Count top-level components whose bom-ref equals $2, in file $1.
-ref_count() { jq --arg r "$2" '[.components[]?|select(.["bom-ref"]==$r)]|length' "$1"; }
+## Count top-level components whose purl equals $2, in file $1. Captures jq's
+## output only on success, so an invalid merged document (jq parse error) reads
+## as JQERR -- never a count that could coincidentally match. 'components' MUST
+## be an array: an object (schema-invalid) reads as NOT-ARRAY. Both make the
+## enclosing check FAIL rather than pass.
+purl_count() {
+   local out
+   if out="$(jq --arg p "$2" \
+      '.components | if type=="array" then [.[]|select(.purl==$p)]|length else "NOT-ARRAY" end' \
+      "$1" 2>/dev/null)"; then
+      printf '%s' "${out}"
+   else
+      printf '%s' 'JQERR'
+   fi
+}
 ## Exit code of a merge of base JSON $1 over fragments dir $2 (errexit-safe).
 merge_rc() {
    local rc=0
@@ -364,6 +375,11 @@ printf '%s\n' '{"type":"application","name":"S","purl":"pkg:generic/secret@1"}' 
 ln --symbolic -- "${test_dir}/outside.json" "${link_frag}/link.cdx.json"
 check "merge-tool: symlink fragment refused (fails closed)" \
    "$(merge_rc "${merge_base}" "${link_frag}")" "1"
+## Not merely exit 1: the symlinked content must never reach stdout (which
+## production redirects into the SBOM), so refusal must precede any read.
+link_stdout="$(printf '%s' "${merge_base}" | "${merge_tool}" "${link_frag}" 2>/dev/null || true)"
+check "merge-tool: symlink fragment leaks no content" \
+   "$(if [[ "${link_stdout}" == *'pkg:generic/secret@1'* ]]; then printf '%s' leak; else printf '%s' clean; fi)" "clean"
 
 ## Malformed fragment JSON is a HARD error (never a silently-incomplete SBOM).
 bad_frag="${test_dir}/bad-fragments.d"
