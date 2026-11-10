@@ -46,6 +46,17 @@ from types import FrameType
 HERE: str = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
+## The [Service] directive parser is the single source dist_ai_seccomp, shared with the W^X static
+## lints (service_hardening_test.py / test_wx_seccomp_filter.py) -- insert its dist-packages dir
+## relative to this file (the dm_test_results idiom) so this backend does not re-implement a third
+## copy that drifts (e.g. missing '\\'-continuation joining).
+_LIB: str = os.path.join(
+    os.path.dirname(os.path.dirname(HERE)), 'lib', 'python3', 'dist-packages')
+if os.path.isdir(_LIB) and _LIB not in sys.path:
+    sys.path.insert(0, _LIB)
+
+# pylint: disable=wrong-import-position
+from dist_ai_seccomp import service_lines, service_values  # noqa: E402
 
 INSIDE_ENV: str = 'PRIVLEAP_E2E_SYSTEMD'
 CONF_DIR: str = '/etc/privleap/conf.d'
@@ -288,27 +299,15 @@ def _checkout_unit_directive(repo: str, key: str) -> str:
     hardening is tested against the installed unit and the change is never
     exercised. '' when absent/unreadable (the check then fails, not a false pass)."""
     path = os.path.join(repo, 'usr/lib/systemd/system/privleapd.service')
-    value = ''
-    in_service = False
     try:
         with open(path, encoding='utf-8') as handle:
-            for raw in handle:
-                stripped = raw.strip()
-                if stripped.startswith('[') and stripped.endswith(']'):
-                    ## systemd section names are case-sensitive: a '[service]'
-                    ## header is NOT the [Service] section, so its directives are
-                    ## inert and must not be credited as hardening.
-                    in_service = stripped == '[Service]'
-                    continue
-                ## systemd ignores lines starting with '#' OR ';' (comments).
-                if (not in_service or stripped.startswith('#')
-                        or stripped.startswith(';') or '=' not in stripped):
-                    continue
-                name, _, val = stripped.partition('=')
-                if name.strip() == key:
-                    value = val.strip()
+            text = handle.read()
     except OSError:
         return ''
+    ## Shared single-source [Service] parser (service_lines joins '\\'-continuations, which the
+    ## old hand-rolled loop here did NOT); take the LAST assignment -- systemd's effective value.
+    values = service_values(service_lines(text), key)
+    value = values[-1] if values else ''
     low = value.lower()
     if low in ('yes', 'true', 'on', '1'):
         return 'yes'
