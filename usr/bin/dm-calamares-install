@@ -1850,27 +1850,28 @@ build_vm() {
    fi
    ## Deregister the VM (with --delete) BEFORE removing any on-disk settings dir, and delete that
    ## dir ONLY once the VM is confirmed gone from the registry -- never on dir existence alone.
-   ## unregistervm is BOTH the probe and the action here: unlike `showvminfo --machinereadable` it
-   ## takes NO shared machine lock, so it is not fooled by the ASYNC post-poweroff unlock window
+   ## unregistervm is BOTH the probe and the action: unlike `showvminfo --machinereadable` it takes
+   ## NO shared machine lock, so it is not fooled by the ASYNC post-poweroff unlock window
    ## (`controlvm poweroff` above releases the session asynchronously; the fixed `sleep 2` is not
-   ## enough). A lock-based probe fails VBOX_E_INVALID_OBJECT_STATE in that window, and an
-   ## inaccessible-but-registered VM fails E_ACCESSDENIED -- either would be misread as "not
-   ## registered" and delete a LIVE VM's settings. Classify the unregister outcome instead:
-   ##   - success: the VM was registered and --delete removed it.
-   ##   - "Could not find a registered machine": genuinely unregistered -> crash residue, so the
-   ##     stale-dir removal below is the intended cleanup.
+   ## enough). A lock-based probe fails VBOX_E_INVALID_OBJECT_STATE there and would be misread as
+   ## "not registered", deleting a LIVE VM's settings. Classify the unregister outcome instead:
+   ##   - success (rc 0): the VM was registered and --delete removed it.
+   ##   - "Could not find a registered machine named ...": genuinely unregistered -> crash residue,
+   ##     so the stale-dir removal below is the intended cleanup. Anchored on `named ` so a locked
+   ##     VM whose NAME happens to contain the phrase (its lock error quotes the name without
+   ##     `named `) is NOT misclassified.
    ##   - transient post-poweroff lock: vbox_config_retry rides it out (~30s bounded).
-   ##   - stuck lock or any other VBox error: fail LOUD rather than delete a live VM (which would
-   ##     also still fail createvm, the name being taken). Unrecognised errors fall here too, so a
-   ##     message-text change errs toward refusing to delete, never toward data loss.
-   ## OK iff the VM is now gone from the registry: rc 0 (registered -> --delete removed it) OR a
-   ## "Could not find a registered machine" failure (genuinely unregistered crash residue). Any
-   ## OTHER failure -- a stuck post-poweroff lock, or an unrecognised VBox error -- fails LOUD
-   ## rather than delete a live VM's settings (createvm would also still fail, the name taken).
+   ##   - stuck lock or any other VBox error: fail LOUD rather than delete a live VM (createvm would
+   ##     also still fail, the name being taken). Unrecognised errors fall here too, so a message
+   ##     wording change errs toward refusing to delete, never toward data loss.
+   ## BOUNDARY: a machine inaccessible under THIS name (corrupt .vbox) also name-lookup-fails with
+   ## "Could not find a registered machine named", so its crash-residue dir is removed as well --
+   ## the auto-remove feature's inherent limitation (prior revisions deleted on `[ -e ]` alone),
+   ## with no VBox primitive to tell it apart from a genuine absence without over-blocking.
    local unreg_out unreg_rc=0
    unreg_out="$(vbox_config_retry unregistervm "${vm}" --delete 2>&1)" || unreg_rc=$?
    if [ "${unreg_rc}" -ne 0 ] \
-      && [ "${unreg_out#*Could not find a registered machine}" = "${unreg_out}" ]; then
+      && [ "${unreg_out#*Could not find a registered machine named }" = "${unreg_out}" ]; then
       printf '%s\n' "${unreg_out}" >&2
       die "${FAIL_RC}" "could not unregister VM '${vm}' (locked session or VBox error); refusing to delete its settings dir -- power it off and re-run"
    fi
