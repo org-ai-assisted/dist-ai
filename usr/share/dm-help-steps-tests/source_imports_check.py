@@ -46,7 +46,14 @@ COMMON_EXTERNAL = {
     "sync", "yad", "notify-send", "kdialog", "install", "sleep", "mount",
     "ping", "true", "false", "test", "time",
 }
-EXCLUDE_SUBSTR = ("/grml-debootstrap", "grml-debootstraptest")
+# Foreign trees with their own conventions / externally-provided runtime env:
+# grml-debootstrap is vendored upstream; the qubes-template-* trees are
+# Qubes-builder plugins whose error()/TEMPLATE_* come from the builder
+# environment, not from a derivative-maker source. Applying the direct-import
+# policy to them is wrong.
+EXCLUDE_SUBSTR = (
+    "/grml-debootstrap", "grml-debootstraptest", "/qubes-template-",
+)
 
 
 def is_generated(path):

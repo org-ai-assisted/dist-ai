@@ -1,42 +1,9 @@
 ## Allowlist for source_imports_check.py: TOP-LEVEL runtime breaks that are known
 ## and not yet fixed. Format: <relpath><TAB><function>  # reason + planned fix.
 ## The gate FAILS on a break NOT listed here, and on a listed entry that no
-## longer breaks (stale -> remove it when you land the fix). These are REAL
-## latent breaks (the function is reachable via no source path); the listed
-## paths are error/validation branches, so they already fail ungracefully today.
+## longer breaks (stale -> remove it when you land the fix).
 ##
-## Fix convention (operator decision): mirror each file's neighbors --
-## usr/bin + libexec tools -> source log_run_die.sh and use die(); a `has` caller
-## -> source has.bsh. (The dm-parent + developer-meta-files breaks are already
-## fixed and removed from this list.)
-##
-## Why the entries below are still here: the one-line import fix is correct and
-## parses, but these are upstream-derived package files and the dist-ai-style
-## gate scans the WHOLE file, so a touch surfaces PRE-EXISTING debt (incomplete
-## R-010 strict block, SC2250 bracing). Landing needs either a restyle (which
-## conflicts with upstream remaster -- discouraged) or ALLOW_STYLE_COMMIT (a
-## commit-hook bypass requiring written operator approval). HELD for that call.
-
-## msgcollector daemons: `error` is undefined (not a helper-scripts function).
-## Fix: source log_run_die.sh (get_colors already sourced), error -> die 1.
-packages/kicksecure/msgcollector/usr/libexec/msgcollector/msgcollector	error
-packages/kicksecure/msgcollector/usr/libexec/msgcollector/msgprogress	error
-packages/kicksecure/msgcollector/usr/libexec/msgcollector/msgprogressbar	error
-
-## initializer-dist chroot-scripts-post.d: run via run-parts in the chroot; `error`
-## does not exist there. Fix: source log_run_die.sh, error -> die 1.
-packages/kicksecure/initializer-dist/usr/libexec/initializer-dist/chroot-scripts-post.d/20_sanity_checks	error
-
-## Whonix anon-gw: calls `has qubesdb-read` without sourcing has.bsh. Fix: source
-## has.bsh. (anon-verify also carries pre-existing SC2250 bracing debt.)
-packages/whonix/anon-gw-anonymizer-config/usr/bin/anon-verify	has
-
-## Qubes template builder: `error` with no definer sourced. Also on branch master
-## (not ai), so needs branch handling too. Fix per package convention.
-qubes/qubes-template-whonix/whonix-gateway/04_install_qubes_post.sh	error
-
-## Whonix-Starter: `die 1 "Do not source this script!"` but only check_runtime.bsh
-## is sourced, not log_run_die.sh. Fix: source log_run_die.sh. (Files also have an
-## incomplete R-010 strict block.)
-windows/Whonix-Starter/build_on_linux_for_linux	die
-windows/Whonix-Starter/build_on_linux_for_win64	die
+## Currently EMPTY: every real break has been fixed (error -> die + source
+## log_run_die.sh; anon-verify sources has.bsh), and the Qubes-builder template
+## trees (foreign runtime env) are excluded in source_imports_check.py rather
+## than listed here.
