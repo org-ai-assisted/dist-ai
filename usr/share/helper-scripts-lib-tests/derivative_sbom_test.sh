@@ -110,15 +110,32 @@ SBOM_ETC_DIR="${etc}" derivative_sbom_identity
 check "identity: fallback name from os-release ID" "${distro_id}" "debian"
 check "identity: fallback version from os-release VERSION_ID" "${distro_version}" "13"
 
-## ===== derivative_sbom_serial: deterministic, identity-dependent =====
-s1="$(derivative_sbom_serial Kicksecure 18 amd64)"
-s2="$(derivative_sbom_serial Kicksecure 18 amd64)"
-s3="$(derivative_sbom_serial Whonix 17 amd64)"
-check "serial: deterministic for same identity" "${s1}" "${s2}"
+## A field os-release does NOT set (e.g. VERSION_ID on Debian sid) must read as
+## empty, NEVER inherited from the ambient environment.
+printf '%s\n' 'ID=debian' > "${etc}/os-release"
+distro_id=""; distro_version=""
+VERSION_ID="ambient-must-not-leak" SBOM_ETC_DIR="${etc}" derivative_sbom_identity
+check "identity: unset VERSION_ID does not inherit ambient env" "${distro_version}" ""
+printf '%s\n' 'ID=debian' 'VERSION_ID=13' > "${etc}/os-release"
+
+## ===== derivative_sbom_serial: deterministic, identity- AND timestamp-dependent =====
+ts1="2024-01-01T00:00:00+00:00"
+ts2="2025-06-15T12:00:00+00:00"
+s1="$(derivative_sbom_serial Kicksecure 18 amd64 "${ts1}")"
+s2="$(derivative_sbom_serial Kicksecure 18 amd64 "${ts1}")"
+s3="$(derivative_sbom_serial Whonix 17 amd64 "${ts1}")"
+s4="$(derivative_sbom_serial Kicksecure 18 amd64 "${ts2}")"
+check "serial: deterministic for same identity+timestamp" "${s1}" "${s2}"
 check "serial: differs for a different identity" "$(if [ "${s1}" != "${s3}" ]; then printf '%s' diff; else printf '%s' same; fi)" "diff"
+## A later regeneration (different timestamp, possibly different package set) must
+## get a DISTINCT serial so two differing documents are not conflated under one id.
+check "serial: differs for a different timestamp" "$(if [ "${s1}" != "${s4}" ]; then printf '%s' diff; else printf '%s' same; fi)" "diff"
 check "serial: UUID shape" "$(printf '%s' "${s1}" | grep -cE '^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$')" "1"
 
 ## ===== derivative_sbom_generate: the debsbom invocation (debsbom stubbed) =====
+## debsbom's own --out appends '.cdx.json', so the wrapper always calls it with
+## '--out -' and redirects stdout to the exact target. The stub emits a marker on
+## stdout so the test can assert the wrapper placed it at EXACTLY ${out}.
 rec="${test_dir}/debsbom.argv"
 mockbin="${test_dir}/bin"
 mkdir --parents -- "${mockbin}"
@@ -126,25 +143,31 @@ cat > "${mockbin}/debsbom" <<EOF
 #!/bin/bash
 printf '%q ' "\$@" >> "${rec}"
 printf '\n' >> "${rec}"
+printf '%s\n' 'STUB-SBOM-ON-STDOUT'
 exit 0
 EOF
 chmod +x -- "${mockbin}/debsbom"
 
 printf '%s\n' '18' > "${etc}/kicksecure_version"
 want_arch="$(dpkg --print-architecture)"
-want_serial="$(derivative_sbom_serial Kicksecure 18 "${want_arch}")"
+want_ts="2024-04-05T19:34:38+00:00"
+want_serial="$(derivative_sbom_serial Kicksecure 18 "${want_arch}" "${want_ts}")"
+gen_out="${test_dir}/gen-out.cdx.json"
 PATH="${mockbin}:${PATH}" SBOM_ETC_DIR="${etc}" \
-   derivative_sbom_generate "/some/out.cdx.json" "2024-04-05T19:34:38+00:00"
+   derivative_sbom_generate "${gen_out}" "${want_ts}"
 dbg() {
    [ -f "${rec}" ] && grep --quiet --fixed-strings -- "$(printf '%q ' "$@")" "${rec}"
 }
 yn() { if "$@"; then printf '%s' yes; else printf '%s' no; fi; }
 check "generate: CycloneDX only"          "$(yn dbg --sbom-type cdx)"                 "yes"
 check "generate: schema 1.6"              "$(yn dbg --cdx-schema-version 1.6)"         "yes"
-check "generate: deterministic serial"    "$(yn dbg --cdx-serialnumber "${want_serial}")" "yes"
-check "generate: timestamp passed through" "$(yn dbg --timestamp 2024-04-05T19:34:38+00:00)" "yes"
+check "generate: serial = identity+timestamp" "$(yn dbg --cdx-serialnumber "${want_serial}")" "yes"
+check "generate: timestamp passed through" "$(yn dbg --timestamp "${want_ts}")"       "yes"
 check "generate: root named Kicksecure"   "$(yn dbg --distro-name Kicksecure)"        "yes"
-check "generate: out path passed"         "$(yn dbg --out /some/out.cdx.json)"        "yes"
+check "generate: debsbom emits to stdout (--out -)" "$(yn dbg --out -)"               "yes"
+check "generate: wrapper wrote EXACTLY --out (no .cdx.json suffix)" "$(yn test -f "${gen_out}")" "yes"
+check "generate: no suffixed stray file" "$(yn test -e "${gen_out}.cdx.json")"        "no"
+check "generate: output is the SBOM, redirected" "$(cat -- "${gen_out}" 2>/dev/null)" "STUB-SBOM-ON-STDOUT"
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
