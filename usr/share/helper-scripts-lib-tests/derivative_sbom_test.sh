@@ -145,24 +145,35 @@ check "serial: UUID shape" "$(printf '%s' "${s1}" | grep -cE '^[0-9a-f]{8}-[0-9a
 ## Regression: the serial must need NO uuidgen. uuid-runtime is not a dependency
 ## of helper-scripts and is absent from the CI runner, so a uuidgen-based serial
 ## aborts the subject (#derivative-sbom uuidgen: command not found). Point PATH at
-## a uuidgen shim that fails like an absent binary; the REAL function must still
-## return the correct uuid5 (computed in Python), proving it never shells out to
-## uuidgen. The pinned value equals 'uuidgen --sha1 --namespace @url --name <name>'
-## for these inputs, so output is unchanged from the old uuidgen implementation.
+## a uuidgen shim that RECORDS any invocation and fails like an absent binary; the
+## REAL function must return the correct uuid5 (computed in Python), exit 0, and
+## never touch the shim -- so the contract "never shells out to uuidgen" is
+## asserted directly, not merely inferred from the output. The pinned value equals
+## 'uuidgen --sha1 --namespace @url --name <name>' for these inputs, so output is
+## unchanged from the old uuidgen implementation.
 nouuid="${test_dir}/nouuidbin"
 mkdir --parents -- "${nouuid}"
-cat > "${nouuid}/uuidgen" <<'EOF'
+uuidgen_marker="${test_dir}/uuidgen-invoked"
+## Unquoted heredoc so the shim bakes in the absolute marker path.
+cat > "${nouuid}/uuidgen" <<EOF
 #!/bin/bash
+touch -- "${uuidgen_marker}"
 printf '%s\n' "uuidgen: simulated absent (regression canary)" >&2
 exit 127
 EOF
 chmod +x -- "${nouuid}/uuidgen"
 ## Prefix-env PATH (not an exported PATH in a subshell) scopes the shim to this
 ## one call without a subshell modification that shellcheck would flag (SC2030).
+serial_no_uuidgen_rc=0
 serial_no_uuidgen="$(PATH="${nouuid}:${PATH}" \
-   derivative_sbom_serial Kicksecure 18 amd64 "2024-04-05T19:34:38+00:00")" || true
+   derivative_sbom_serial Kicksecure 18 amd64 "2024-04-05T19:34:38+00:00")" \
+   || serial_no_uuidgen_rc=$?
 check "serial: computed without uuidgen (uuid5 in python, not uuid-runtime)" \
    "${serial_no_uuidgen}" "17db1f7c-c9f0-5969-b4cf-6f1b45e3b909"
+check "serial: the no-uuidgen call succeeds (exit 0)" \
+   "${serial_no_uuidgen_rc}" "0"
+check "serial: uuidgen never invoked (shim marker absent)" \
+   "$(if [ -e "${uuidgen_marker}" ]; then printf '%s' present; else printf '%s' absent; fi)" "absent"
 
 ## ===== derivative_sbom_generate: the debsbom invocation (debsbom stubbed) =====
 ## debsbom's own --out appends '.cdx.json', so the wrapper always calls it with
