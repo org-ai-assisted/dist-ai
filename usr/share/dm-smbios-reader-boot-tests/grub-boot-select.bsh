@@ -57,8 +57,10 @@ select_installed_mode_offline() {
    mkdir --parents --mode=0700 -- "${req_dir}"
    ## Clear any stale passphrase first: the action treats its PRESENCE as meaningful (passphrase
    ## present -> LUKS unlock), so a leftover from a prior request would wrongly apply to this one.
-   ## format is always rewritten below (required), so no stale-format concern.
-   safe-rm --force -- "${req_dir}/passphrase" 2>/dev/null || true
+   ## Remove disk/mode/format too before the writes below: a '>' redirect FOLLOWS a pre-existing
+   ## symlink, so a stale (or planted) symlink at one of these request-dir paths would be followed
+   ## and its target overwritten + chmodded. rm'ing first makes each '>' create a fresh regular file.
+   safe-rm --force -- "${req_dir}/passphrase" "${req_dir}/disk" "${req_dir}/mode" "${req_dir}/format" 2>/dev/null || true
    printf '%s' "${disk}" > "${req_dir}/disk"
    printf '%s' "${mode}" > "${req_dir}/mode"
    printf '%s' "${format}" > "${req_dir}/format"
