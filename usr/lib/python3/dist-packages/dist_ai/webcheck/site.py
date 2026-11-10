@@ -3223,7 +3223,10 @@ def audited_pages(root, policy, curated_file=None):
 _COMPOSITABLE_ANIM_PROPS = frozenset({
     'transform', 'opacity', 'translate', 'rotate', 'scale',
 })
-_KEYFRAMES_OPEN_RE = re.compile(r'@(?:-[a-z]+-)?keyframes\s+([\w-]+)\s*\{', re.IGNORECASE)
+# The keyframes NAME is an identifier OR a <string> (the only valid spelling for a reserved
+# word like "none"/"initial"), so accept both -- else a quoted-name rule is silently unscanned.
+_KEYFRAMES_OPEN_RE = re.compile(
+    r"""@(?:-[a-z]+-)?keyframes\s+(?:"([^"]*)"|'([^']*)'|([\w-]+))\s*\{""", re.IGNORECASE)
 # A deliberate non-composited keyframe is waived by a `/* composited-ok: <name> */` comment in
 # ANY of the site's CSS: the name is searched across sheets, so a waiver in the readable source
 # also clears its minified twin (whose comments the minifier strips).
@@ -3236,6 +3239,7 @@ _CSS_DECL_PROP_RE = re.compile(r'(?:[{;])\s*([a-zA-Z-]+)\s*:')
 def _keyframe_blocks(text):
     """Yield (name, body) for each @keyframes rule, brace-matched so the body is exact."""
     for match in _KEYFRAMES_OPEN_RE.finditer(text):
+        name = next((g for g in match.groups() if g is not None), '')
         start = match.end()
         depth = 1
         i = start
@@ -3246,7 +3250,7 @@ def _keyframe_blocks(text):
             elif char == '}':
                 depth -= 1
             i += 1
-        yield match.group(1), text[start:i - 1]
+        yield name, text[start:i - 1]
 
 
 def check_css_animations(root, failures):
@@ -3268,8 +3272,10 @@ def check_css_animations(root, failures):
         for name, body in _keyframe_blocks(_strip_css_comments(text)):
             if name in waived:
                 continue
-            bad = sorted({p.lower() for p in _CSS_DECL_PROP_RE.findall(body)}
-                         - _COMPOSITABLE_ANIM_PROPS)
+            # `animation-*` inside a keyframe is a per-segment descriptor (timing-function
+            # is honored; the rest are ignored) -- NOT an animated property, so never flag it.
+            bad = sorted(p for p in {q.lower() for q in _CSS_DECL_PROP_RE.findall(body)}
+                         if p not in _COMPOSITABLE_ANIM_PROPS and not p.startswith('animation'))
             if bad:
                 failures.append(
                     "%s: @keyframes %s animates non-composited %s %s "

@@ -1066,6 +1066,19 @@ def run():
         _write(root, 'style.css', '@keyframes pulse{from{background:red}to{background:blue}}')
         check('non-composited keyframe without a waiver is flagged',
               any('pulse' in f for f in _anim_failures(root)), repr(_anim_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        # animation-timing-function (and other animation-* descriptors) inside a keyframe is
+        # per-segment easing, NOT an animated property -- a transform-only keyframe stays clean.
+        _write(root, 'style.css', '@keyframes bounce{0%{animation-timing-function:ease-in;'
+                                  'transform:translateY(0)}100%{transform:translateY(-10px)}}')
+        check('animation-timing-function in a transform keyframe not flagged',
+              _anim_failures(root) == [], repr(_anim_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        # A quoted keyframe NAME is valid (the only spelling for a reserved word); the visibility
+        # bug must still be caught, not silently skipped.
+        _write(root, 'style.css', '@keyframes "reveal"{from{visibility:hidden}to{visibility:visible}}')
+        check('quoted-name keyframe is still scanned (not evaded)',
+              any('visibility' in f for f in _anim_failures(root)), repr(_anim_failures(root)))
     check('check_css_animations invoked from main()',
           'check_css_animations(root' in main_body)
 
