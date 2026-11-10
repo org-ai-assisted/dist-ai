@@ -74,15 +74,20 @@ stub_bin="${test_dir}/bin"
 mkdir --parents -- "${stub_bin}"
 cat > "${stub_bin}/safe-rm" <<'STUB'
 #!/bin/bash
+## Canonicalize both the confine root and each argument so a '..' component or a
+## symlink cannot escape the tree via a plain prefix match; delete only the
+## resolved real path, and only when it is at or under the real confine root.
+confine="$(realpath --canonicalize-missing -- "${RDV_TEST_CONFINE}")"
 for arg in "$@"; do
    case "${arg}" in
       --*) continue ;;
    esac
-   case "${arg}" in
-      "${RDV_TEST_CONFINE}"|"${RDV_TEST_CONFINE}"/*)
-         rm --force --recursive -- "${arg}" ;;
+   real="$(realpath --canonicalize-missing -- "${arg}")"
+   case "${real}" in
+      "${confine}"|"${confine}"/*)
+         rm --force --recursive -- "${real}" ;;
       *)
-         printf '%s\n' "stub safe-rm: REFUSING path outside test tree: ${arg}" >&2
+         printf '%s\n' "stub safe-rm: REFUSING path outside test tree: ${arg} -> ${real}" >&2
          exit 1 ;;
    esac
 done
@@ -240,6 +245,7 @@ base5="${test_dir}/base5"
 mkdir --parents -- "${base5}/iso/18.5.0.0"
 touch -- "${base5}/iso/18.5.0.0/Whonix.sha512sums"
 run_main "${base5}" --force
+check "main no-deletion case rc 0" "${run_rc}" "0"
 check "main reports no deletions when only sidecars exist" \
    "$(printf '%s' "${run_out}" | grep -c 'No files were deleted')" "1"
 check "main keeps the sidecar in the no-deletion case" \
