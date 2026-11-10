@@ -284,6 +284,20 @@ check "merge-tool: whole-doc fragment component merged" \
 check "merge-tool: base component survives whole-doc merge" \
    "$(purl_count "${whole_out}" 'pkg:deb/debian/bash@5.2')" "1"
 
+## A valid CycloneDX document with zero top-level components (metadata only) is
+## "nothing to add", NOT malformed -- it must not abort the merge/build.
+metaonly_frag="${test_dir}/metaonly-fragments.d"
+mkdir --parents -- "${metaonly_frag}"
+cat > "${metaonly_frag}/m.cdx.json" <<'EOF'
+{"bomFormat":"CycloneDX","specVersion":"1.6","metadata":{"component":{"type":"operating-system","name":"Kicksecure"}}}
+EOF
+metaonly_out="${test_dir}/metaonly.cdx.json"
+metaonly_rc=0
+printf '%s' "${merge_base}" | "${merge_tool}" "${metaonly_frag}" > "${metaonly_out}" 2>/dev/null || metaonly_rc=$?
+check "merge-tool: metadata-only doc is a no-op (exit 0)" "${metaonly_rc}" "0"
+check "merge-tool: metadata-only doc leaves base intact" \
+   "$(purl_count "${metaonly_out}" 'pkg:deb/debian/bash@5.2')" "1"
+
 ## A bare component that itself carries nested sub-'components' must be kept as
 ## the parent, NOT mistaken for a document (which would drop the parent).
 nested_frag="${test_dir}/nested-fragments.d"
