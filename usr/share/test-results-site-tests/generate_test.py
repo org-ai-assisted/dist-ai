@@ -1055,8 +1055,8 @@ check("steplog_pre: real content emits a scrollable <pre>",
 
 
 class _EvView:
-    shots = []
-    cards = []
+    shots: list[dict] = []
+    cards: list[dict] = []
 
 
 _empty_step = {"name": "whonix-func", "status": "passed", "exit": 0,
