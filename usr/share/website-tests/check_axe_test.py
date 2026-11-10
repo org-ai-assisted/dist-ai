@@ -468,6 +468,25 @@ def run() -> int:
     ck("identical-links-same-purpose" in ax._AXE_RUN_JS and "enabled: true" in ax._AXE_RUN_JS,
        "identical-links-same-purpose rule is explicitly enabled in _AXE_RUN_JS")
 
+    # Enabling the rule is necessary but NOT sufficient: axe-core reports it as INCOMPLETE
+    # (needs-review), never a violation, so a violations-only run gates nothing (a false green).
+    # The run MUST collect 'incomplete' AND promote this rule's entries into the returned set.
+    # Guard every link in that chain so a revert to violations-only fails loudly.
+    ck("identical-links-same-purpose" in ax._PROMOTE_INCOMPLETE_RULES,
+       "identical-links-same-purpose is in the promote-incomplete set")
+    ck("'incomplete'" in ax._AXE_RUN_JS,
+       "the run collects 'incomplete' results (not violations-only)")
+    ck("r.incomplete" in ax._AXE_RUN_JS and ".concat(" in ax._AXE_RUN_JS,
+       "promoted incompletes are merged into the returned result set")
+    # The promoted entries flow through result_keys exactly like a violation (same {id, nodes:
+    # [{target}]} shape), so a same-name/different-dest incomplete becomes a gated key per node.
+    _promoted = [{"id": "identical-links-same-purpose",
+                  "nodes": [{"target": ["a[href='/x']"]}, {"target": ["a[href='/y']"]}]}]
+    ck(set(ax.result_keys("/wiki/About", _promoted)) ==
+       {("/wiki/About", "identical-links-same-purpose", "a[href='/x']"),
+        ("/wiki/About", "identical-links-same-purpose", "a[href='/y']")},
+       "a promoted identical-links incomplete yields one gated key per node")
+
     # target-size (WCAG 2.5.8 AA) is ALSO OFF by default in axe-core; without the explicit enable
     # the gate silently never checks touch-target size/spacing (undersized footnote markers, inline
     # icon links). Guard the enable against an accidental revert.

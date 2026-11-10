@@ -203,8 +203,7 @@ def resolve_axe_source() -> Optional[str]:
     return None
 
 
-# axe.run over the LIVE document, violations only (passes/incomplete/inapplicable are not gated).
-# An async arrow so page.evaluate awaits the axe promise.
+# axe.run over the LIVE document. An async arrow so page.evaluate awaits the axe promise.
 # Two WCAG rules that axe-core ships DISABLED by default are enabled here; without this the gate
 # silently never checks them:
 #   - identical-links-same-purpose (WCAG 2.4.9 AAA): two links with the same accessible name
@@ -212,12 +211,25 @@ def resolve_axe_source() -> Optional[str]:
 #   - target-size (WCAG 2.5.8 AA, WCAG 2.2): touch targets below 24x24 CSS px without the 24px
 #     spacing exception (undersized/crowded tap targets -- footnote markers, inline icon links).
 #     The inline-in-sentence exception is honoured by axe, so prose links are not flagged.
-# All other defaults stand.
+#
+# identical-links-same-purpose reports as INCOMPLETE, not a violation: axe-core's
+# identical-links-same-purpose-after sets result=undefined for a same-accessible-name/different-
+# destination group, so it lands in `incomplete` and NEVER in `violations`. Collecting only
+# violations therefore silently never gates it -- a false green: the rule is "enabled" yet nothing
+# ever fails. So collect `incomplete` too and PROMOTE just this rule's entries (same shape as a
+# violation: {id, nodes:[{target}]}, so result_keys handles them unchanged) into the returned set.
+# Every OTHER rule's incompletes (color-contrast cantTell, etc.) stay ungated to avoid needs-review
+# noise. All other axe defaults stand.
+_PROMOTE_INCOMPLETE_RULES = ["identical-links-same-purpose"]
+_PROMOTE_JS_ARRAY = "[" + ",".join("'%s'" % _r for _r in _PROMOTE_INCOMPLETE_RULES) + "]"
 _AXE_RUN_JS = (
     "async () => { const r = await axe.run(document, "
-    "{resultTypes: ['violations'], "
+    "{resultTypes: ['violations', 'incomplete'], "
     "rules: {'identical-links-same-purpose': {enabled: true}, "
-    "'target-size': {enabled: true}}}); return r.violations; }")
+    "'target-size': {enabled: true}}}); "
+    "const promote = new Set(" + _PROMOTE_JS_ARRAY + "); "
+    "const extra = (r.incomplete || []).filter(function (v) { return promote.has(v.id); }); "
+    "return (r.violations || []).concat(extra); }")
 
 # Force every `content-visibility: auto` section to render before axe measures. That CSS defers
 # rendering (and layout/paint) of OFF-SCREEN content as a perf win, but axe-core then samples
