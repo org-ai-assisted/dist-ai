@@ -73,7 +73,7 @@ def run() -> int:
     for label, make in (
         ("a non-executable file",
          lambda d: (Path(d, "gitleaks").write_text("#!/bin/sh\n", encoding="utf-8"),
-                    os.chmod(os.path.join(d, "gitleaks"), 0o644))),
+                    os.chmod(os.path.join(d, "gitleaks"), 0o600))),
         ("a directory",
          lambda d: os.mkdir(os.path.join(d, "gitleaks"))),
     ):

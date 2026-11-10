@@ -66,6 +66,7 @@ def _path_without_qemu(tmp_path):
                 (bindir / name).symlink_to(os.path.abspath(os.path.join(entry, name)))
                 seen.add(name)
             except OSError:
+                ## A name that cannot be symlinked (already linked, or an unreadable source) is simply left out of the qemu-free shim PATH.
                 pass
     return str(bindir)
 

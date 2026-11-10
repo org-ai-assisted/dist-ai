@@ -306,7 +306,7 @@ def phase_keys(rnd, iterations, seed):
     ## Random key events (printable + control chords) plus mode churn: input
     ## handling must never crash the widget.
     term = SecureTerminal(command='/bin/cat')
-    term._write = lambda data: len(data)                 # swallow keystrokes (report full write)
+    term._write = len                                    # swallow keystrokes (report full write)
     keys = [Qt.Key.Key_A, Qt.Key.Key_C, Qt.Key.Key_D, Qt.Key.Key_U,
             Qt.Key.Key_L, Qt.Key.Key_Return, Qt.Key.Key_Backspace,
             Qt.Key.Key_Up, Qt.Key.Key_Tab, Qt.Key.Key_Escape, Qt.Key.Key_1]

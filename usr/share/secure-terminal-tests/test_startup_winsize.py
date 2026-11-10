@@ -36,6 +36,7 @@ os.environ['XDG_STATE_HOME'] = tempfile.mkdtemp(prefix='st-winsize-state-')
 try:
     signal.signal(signal.SIGCHLD, signal.SIG_IGN)
 except (OSError, ValueError, AttributeError):
+    # best-effort child auto-reap; a platform that cannot set SIGCHLD is non-fatal here
     pass
 
 try:
@@ -183,11 +184,13 @@ for _t in (test_child_born_at_widget_grid,
 try:
     signal.signal(signal.SIGHUP, signal.SIG_IGN)
 except (OSError, ValueError, AttributeError):
+    # best-effort: ignore SIGHUP so closing PTYs at teardown cannot kill this process
     pass
 for _term in _LIVE:
     try:
         _term.shutdown()
-    except Exception:
+    except Exception:  # pylint: disable=broad-except
+        # teardown cleanup: a shutdown error on an already-dead child must not abort teardown
         pass
 
 sys.stdout.write('secure-terminal-tests(startup-winsize): %d passed, %d failed\n'

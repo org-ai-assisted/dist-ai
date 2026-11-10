@@ -5097,7 +5097,7 @@ _cws = _cw._screen
 _cws.reset()
 _cws.resize(5, 100)                              # 5-row, 100-col screen
 _cwide = 'M' + 'x' * 86 + 'Q'                    # 88 chars, boundary-tagged (extent 88)
-for _ci in range(12):                            # scroll wide rows off the top into history
+for _ in range(12):                              # scroll wide rows off the top into history
     _cws.draw(_cwide)
     _cws.index()
     _cws.carriage_return()

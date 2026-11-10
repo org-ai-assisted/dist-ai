@@ -35,8 +35,8 @@ and the strict no-blank invariant in the modes a normal user runs (full / read-s
 import os
 import tempfile
 
-from test_widget_common import (          # noqa: F401  (harness hub re-exports)
-    spawn_live, key, pump, ok, eq, finish, Qt, feed_output,
+from test_widget_common import (
+    spawn_live, key, pump, ok, finish, Qt, feed_output,
 )
 
 SENTINEL = 'READY> '
@@ -143,7 +143,6 @@ def scenarios(tui, line_editing):
            '%s open: first prompt not clean: tail=%r' % (tag, lines[-3:]))
         ok(prompt_count(lines) == 1,
            '%s open: expected 1 prompt, got %d' % (tag, prompt_count(lines)))
-        base = len(lines)
 
         # --- type a command + Enter: output appears, one new prompt follows ---
         type_text(term, 'echo hi')
@@ -153,7 +152,6 @@ def scenarios(tui, line_editing):
            '%s echo: "hi" not shown exactly once: %r' % (tag, lines))
         ok(prompt_count(lines) == 2,
            '%s echo: expected 2 prompts, got %d' % (tag, prompt_count(lines)))
-        base = len(lines)
         pbase = prompt_count(lines)
 
         # --- press Enter on an EMPTY prompt 3x, at HUMAN pace: exactly 3 new prompts ---

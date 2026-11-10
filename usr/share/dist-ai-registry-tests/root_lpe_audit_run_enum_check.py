@@ -70,7 +70,7 @@ def expect_systemexit(module, stub_dir, description, checks):
         module.run_enum("unused-dm-root", stub_dir)
     except SystemExit:
         checks.append((description, True))
-    except BaseException as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         checks.append(("%s (got %s instead)" % (description, type(exc).__name__),
                        False))
     else:
@@ -81,7 +81,10 @@ def expect_systemexit(module, stub_dir, description, checks):
 def expect_return(module, stub_dir, description, checks):
     try:
         out = module.run_enum("unused-dm-root", stub_dir)
-    except BaseException as exc:  # noqa: BLE001
+    ## SystemExit is caught DELIBERATELY: these cases expect run_enum to RETURN,
+    ## so a fail-closed SystemExit must be RECORDED as a failure, not propagate.
+    ## Narrowing off bare BaseException still lets KeyboardInterrupt propagate.
+    except (SystemExit, Exception) as exc:  # noqa: BLE001
         checks.append(("%s (raised %s)" % (description, type(exc).__name__), False))
     else:
         checks.append((description, isinstance(out, dict) and out.get("ok") is True))

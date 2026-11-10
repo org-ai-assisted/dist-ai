@@ -63,6 +63,8 @@ def _loaded_profiles() -> dict:
                 if m:
                     out[m.group(1)] = m.group(2)
     except OSError:
+        ## securityfs unreadable (no AppArmor, or not mounted) -> report no
+        ## loaded profiles; the skip-guard then treats this as not-a-sdwdate-host.
         pass
     return out
 

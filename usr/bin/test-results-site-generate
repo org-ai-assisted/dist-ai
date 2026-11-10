@@ -154,7 +154,6 @@ def esc(value):
     ## escape sequences + control bytes -- control / invisible chars with no place in the HTML
     ## (they render as garbage, reorder text, or trip the ASCII-only commit guard). Strip them
     ## centrally here: every rendered field goes through esc(). Keep \t and \n.
-    import re
     s = "" if value is None else str(value)
     s = re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", s)          # ANSI CSI (colors); needs the ESC byte
     s = strip_invisible(s)                                   # C0/C1/DEL + BiDi/other invisibles
@@ -190,8 +189,6 @@ def safe_run_dir(run_id):
 
 
 def _sanitize_component(value):
-    import re
-
     cleaned = re.sub(r"[^A-Za-z0-9._-]", "-", value or "")
     return cleaned or "run"
 
@@ -434,7 +431,6 @@ def _milestone_order(step_name, path):
     screenshot run). Strip an optional '<step>-' prefix, then read the leading digits; no NN -> 0 (a
     lone/unprefixed shot keeps a stable position). Ordered by NN -- NOT by milestone name, which is
     alphabetical and NOT capture order."""
-    import re
     base = path
     prefix = step_name + "-"
     if base.startswith(prefix):
@@ -894,8 +890,6 @@ def _extract_region(tag, path):
     ## a non-portable `#anchor`, or the wrong region) fails closed at deploy: check_links flags
     ## the broken results-page anchors and check_results_footer_matches_home rejects a footer
     ## that no longer matches index.html's.
-    import re
-
     with open(path, "r", encoding="utf-8") as handle:
         text = handle.read()
     region = re.search(r"<%s\b.*?</%s>" % (tag, tag), text, re.DOTALL)

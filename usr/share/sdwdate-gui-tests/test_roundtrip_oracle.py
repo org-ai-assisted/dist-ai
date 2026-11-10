@@ -33,6 +33,8 @@ except ModuleNotFoundError as exc:  # pragma: no cover
 
     subject_guard.skip_if_subject_absent(exc)
 
+## Module-level ref keeps the QApplication alive for the test process; Qt
+## destroys its QObjects if the sole QApplication is garbage-collected.
 _APP = QApplication.instance() or QApplication(["roundtrip-oracle"])
 
 ## The alphabet the encode/decode pair supports: printable ASCII plus newline.

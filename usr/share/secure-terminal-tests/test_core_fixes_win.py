@@ -46,8 +46,11 @@ try:
                             '--file', _dst])
 finally:
     _main.ipc.send_request = _saved_send
-ok(_rc2 == 0 and _os.path.isfile(_dst)
-   and open(_dst, encoding='utf-8').read() == 'STATE-DATA',
+_dump_text = None
+if _os.path.isfile(_dst):
+    with open(_dst, encoding='utf-8') as _fh:
+        _dump_text = _fh.read()
+ok(_rc2 == 0 and _dump_text == 'STATE-DATA',
    '#10: a writable --file path still writes the dump and returns 0 (sanity)')
 
 finish('core-fixes-win')

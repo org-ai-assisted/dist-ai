@@ -1500,7 +1500,7 @@ test("sitenotice: a banner with an empty id still wires dismissal", () => {
 
 test("fly-in toast (non-test): December uses the shorter wait; a fresh visitor is scheduled", () => {
   const waits = [];
-  const w = load('<div id="fly-in-notification-panel" hidden><button class="close-panel">x</button></div>', {
+  load('<div id="fly-in-notification-panel" hidden><button class="close-panel">x</button></div>', {
     preEval: (win) => {
       const R = win.Date;
       win.Date = class extends R { getMonth() { return 11; } };   // December

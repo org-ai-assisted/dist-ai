@@ -791,6 +791,7 @@ def start_qemu_backend(args, log):
         try:
             child.close(force=True)
         except Exception:
+            ## Best-effort kill in cleanup -- child may already be dead/closed; nothing to recover.
             pass
         drop_workdir()
 
@@ -843,6 +844,7 @@ def _release_lock(fh):
         fcntl.flock(fh, fcntl.LOCK_UN)
         fh.close()
     except OSError:
+        ## Releasing/closing a held lock on teardown -- a gone fd or failed unlock is harmless.
         pass
 
 
@@ -937,6 +939,7 @@ def start_vbox_backend(args, log):
             try:
                 child.close()
             except Exception:
+                ## Best-effort teardown while already aborting on a setup failure.
                 pass
             sk.close()
             _serial_down(vbox, vm, sock, log)
@@ -948,15 +951,18 @@ def start_vbox_backend(args, log):
         try:
             child.close()
         except Exception:
+            ## Best-effort teardown -- pexpect child may already be closed/dead.
             pass
         try:
             sk.close()
         except Exception:
+            ## Socket may already be closed by an earlier error path.
             pass
         if log_fh is not None:
             try:
                 log_fh.close()
             except Exception:
+                ## Flushing/closing the serial log on exit -- a closed handle is harmless.
                 pass
         _serial_down(vbox, vm, sock, log)
         _release_lock(lock_fh)

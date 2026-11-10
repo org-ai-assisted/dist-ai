@@ -248,6 +248,8 @@ async def check(base: str, paths: list[str], settle_ms: int, hard_timeout: int =
                     try:
                         await asyncio.wait_for(browser.close(), timeout=5)
                     except Exception:
+                        # Best-effort close of an already-wedged browser; it is
+                        # discarded and relaunched regardless of close failure.
                         pass
                     browser = await p.chromium.launch()
                     outcome = {"wedged": True}
@@ -311,6 +313,8 @@ async def check(base: str, paths: list[str], settle_ms: int, hard_timeout: int =
         try:
             await asyncio.wait_for(browser.close(), timeout=5)
         except Exception:
+            # Best-effort teardown after all pages checked; a close failure on
+            # an exiting browser has no bearing on the already-collected result.
             pass
 
     print(f"\n{len(paths)} page(s) checked; {len(hits)} console/pageerror/CSP hit(s), "

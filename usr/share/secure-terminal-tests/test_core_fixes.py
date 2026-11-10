@@ -319,7 +319,7 @@ _cl3._write = lambda data: 0                       # wedged child: nothing accep
 key(_cl3, Qt.Key.Key_Return)
 ok(_cl3._line_buffer == 'secret command' and _cl3._line_pending(),
    'Cl3: a dropped Enter CR keeps the line pending (mirror NOT cleared)')
-_cl3._write = lambda data: len(data)              # child now accepts the write
+_cl3._write = len                                 # child now accepts the write (returns bytes written)
 key(_cl3, Qt.Key.Key_Return)
 ok(_cl3._line_buffer == '' and not _cl3._line_dirty,
    'Cl3: a fully-delivered Enter CR clears the line-pending mirror')

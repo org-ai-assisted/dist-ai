@@ -31,7 +31,7 @@ import subprocess  # nosec B404 -- invokes the fixed gitleaks binary, no shell, 
 import sys
 import tempfile
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import List, Optional, Set, Tuple
 
 # gitleaks finding fields we keep (RuleID + location); Secret/Match are intentionally dropped --
 # never echo a secret value, even redacted upstream. (gitleaks' own Fingerprint is intentionally

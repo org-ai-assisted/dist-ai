@@ -51,6 +51,8 @@ except ModuleNotFoundError as exc:  # pragma: no cover
 
     subject_guard.skip_if_subject_absent(exc)
 
+## Module-level ref keeps the QApplication alive for the test process; Qt
+## destroys its QObjects if the sole QApplication is garbage-collected.
 _APP = QApplication.instance() or QApplication(["conformance"])
 
 ## --- Event alphabet --------------------------------------------------------
@@ -199,7 +201,7 @@ def _drive(header: str, events: list[str], concat_first: bool = False):
     ## real post-header client is Connected. The succeeding write() lets the
     ## Qubes kick path's suppress-reconnect RPC complete cleanly.
     client.client_socket.state = lambda: QLocalSocket.ConnectedState
-    client.client_socket.write = lambda data: len(data)
+    client.client_socket.write = len
     kicked: list[bool] = []
     client.clientDisconnected.connect(lambda: kicked.append(True))
 

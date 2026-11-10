@@ -245,7 +245,8 @@ def make_inlined_host(tmp, lockfile_sh):
     mis-read as a wrap-mode lock key once inlined. The host echoes ARG1=$1 AFTER
     the inlined body so the test can prove $1 survived it unchanged (neither
     consumed nor shifted by a body that mis-fired wrap mode)."""
-    body = open(lockfile_sh, encoding='ascii').read().splitlines()
+    with open(lockfile_sh, encoding='ascii') as fh:
+        body = fh.read().splitlines()
     if body and body[0].startswith('#!'):
         body = body[1:]
     path = os.path.join(tmp, 'inlined_host.sh')

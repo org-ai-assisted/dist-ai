@@ -74,14 +74,15 @@ def _load_fixture(path):
     stages = {}
     cur = None
     buf: list[str] = []
-    for line in open(path, encoding="ascii"):
-        if line.startswith("@@@STAGE:"):
-            if cur is not None:
-                stages[cur] = "".join(buf)
-            cur = line[len("@@@STAGE:"):].strip()
-            buf = []
-        else:
-            buf.append(line)
+    with open(path, encoding="ascii") as fh:
+        for line in fh:
+            if line.startswith("@@@STAGE:"):
+                if cur is not None:
+                    stages[cur] = "".join(buf)
+                cur = line[len("@@@STAGE:"):].strip()
+                buf = []
+            else:
+                buf.append(line)
     if cur is not None:
         stages[cur] = "".join(buf)
     return stages

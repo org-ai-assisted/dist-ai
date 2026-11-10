@@ -51,7 +51,9 @@ class TestBwrapSplitPolicy(unittest.TestCase):
             handle.write('#!/bin/sh\n'
                          'echo "bwrap: No permissions to create new namespace" >&2\n'
                          'exit 1\n')
-        os.chmod(stub, 0o755)  # nosec B103
+        ## Executable PATH stub, run by a same-user subprocess -- owner-only
+        ## perms suffice; no group/other bits needed.
+        os.chmod(stub, 0o700)
 
     @classmethod
     def tearDownClass(cls) -> None:

@@ -166,6 +166,8 @@ def main():
             try:
                 child.terminate(force=True)
             except Exception:
+                ## best-effort teardown of the qemu child; a terminate failure
+                ## must not mask the navigation verdict (rc) being returned.
                 pass
         shutil.rmtree(nav_tmp, ignore_errors=True)
 

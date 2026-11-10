@@ -390,6 +390,8 @@ def _run_main_loop(
     try:
         pld.main_loop()
     except _MainLoopStop:
+        ## scripted loop-end sentinel -- expected, so swallow it. A real
+        ## SystemExit (the lost-socket check) is NOT caught here; it propagates.
         pass
     finally:
         pld.select.epoll = saved_epoll

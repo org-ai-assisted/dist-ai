@@ -256,6 +256,7 @@ class _MockQmpServer:
                 for reply in replies:
                     conn.sendall((json.dumps(reply) + "\n").encode("utf-8"))
         except (OSError, ValueError):
+            ## Client disconnect (OSError) or a malformed QMP line (ValueError) just ends this mock server thread; conn is closed in finally.
             pass
         finally:
             conn.close()
@@ -264,6 +265,7 @@ class _MockQmpServer:
         try:
             self.srv.close()
         except OSError:
+            ## Best-effort close of the mock server socket -- already-closed is fine.
             pass
 
 
@@ -1054,10 +1056,12 @@ def test_fdspawn_over_unix_socket_drives_run_checks():
         try:
             child.close()
         except Exception:
+            ## fdspawn.close() already closed the fd; a double-close/already-dead child is fine.
             pass
         try:
             driver.close()
         except OSError:
+            ## driver.close() double-closes the fd fdspawn owns (EBADF) -- tolerated, as production cleanup() does.
             pass
         thread.join(timeout=5)
     assert rc == m.PASS, logs

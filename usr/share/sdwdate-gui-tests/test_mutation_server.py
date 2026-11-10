@@ -21,7 +21,6 @@ platform plugin; no X server or qrexec is required.
 # pylint: disable=invalid-name
 
 import contextlib
-import logging
 import os
 import signal
 import types
