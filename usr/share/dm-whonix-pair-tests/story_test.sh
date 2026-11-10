@@ -140,13 +140,38 @@ EOF
 chmod 0755 -- "${vbstub}"
 # shellcheck disable=SC2034  ## consumed by the sourced story_pair_defined (dynamic scope)
 VBOXMANAGE="${vbstub}"
+# shellcheck disable=SC2034  ## gw/ws consumed by the sourced story_pair_defined (dynamic scope)
 gw='Whonix-Gateway-CLI'; ws='Whonix-Workstation-CLI'
 story_pair_defined
 assert "story_pair_defined wrote 10-pair-defined.card.txt" test -s "${shot_dir}/10-pair-defined.card.txt"
 assert "pair card names the Gateway VM" \
    grep --quiet --fixed-strings 'Gateway VM: Whonix-Gateway-CLI' "${shot_dir}/10-pair-defined.card.txt"
 
+## Regression: a FAILED Gateway showvminfo (VM-not-found / lock contention) must NOT truncate the
+## card -- under errexit+pipefail+inherit_errexit the old code's command-substitution subshell
+## aborted mid-build and silently dropped the Workstation section. Stub VBoxManage to FAIL for the
+## Gateway; the Workstation line must still be present. Canary: on the pre-fix code (no `|| true`)
+## the card ends at the Gateway line and this assertion is RED.
+vbfail="${work}/VBoxManage-gwfail"
+cat > "${vbfail}" <<'EOF'
+#!/bin/bash
+## showvminfo <vm> ...: FAIL (empty) for the Gateway, succeed for the Workstation.
+case "$2" in
+   *Gateway*) exit 1 ;;
+   *) printf '%s\n' 'VMState="poweroff"' 'memory=2048' ;;
+esac
+EOF
+chmod 0755 -- "${vbfail}"
+VBOXMANAGE="${vbfail}"
+pd_rc=0
+story_pair_defined || pd_rc=$?
+VBOXMANAGE="${vbstub}"
+assert "story_pair_defined survives a failed Gateway showvminfo (no errexit abort)" test "${pd_rc}" -eq 0
+assert "pair card keeps the Workstation section after a GW showvminfo failure" \
+   grep --quiet --fixed-strings 'Workstation VM: Whonix-Workstation-CLI' "${shot_dir}/10-pair-defined.card.txt"
+
 ## wp_story_check RESULT NUM cards one numbered check, NN from the counter (execution order).
+# shellcheck disable=SC2034  ## STORY_CHECK_NN consumed by the sourced wp_story_check (dynamic scope)
 STORY_CHECK_NN=60
 wp_story_check pass 1
 wp_story_check routed 6
@@ -154,6 +179,11 @@ assert "wp_story_check pass wrote 61-check1-user-session-boot.card.txt" \
    test -s "${shot_dir}/61-check1-user-session-boot.card.txt"
 assert "per-check pass card says PASS" \
    grep --quiet --fixed-strings 'PASS' "${shot_dir}/61-check1-user-session-boot.card.txt"
+## The pass card must NOT assert a verbatim in-guest command -- a check's command can be lane-
+## substituted (check 3 under --local-repo runs apt-get, not upgrade-nonroot), so naming it here
+## would misattribute the run. The real command lives in the published step stdout.
+assert "per-check pass card does NOT hardcode an in-guest command" \
+   test -z "$(grep -F 'in-guest command' "${shot_dir}/61-check1-user-session-boot.card.txt" || true)"
 assert "wp_story_check routed wrote 62-check6-GUI-login.card.txt" \
    test -s "${shot_dir}/62-check6-GUI-login.card.txt"
 assert "per-check routed card says ROUTED" \

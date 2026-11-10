@@ -292,7 +292,11 @@ wp_story_check() {
          body="ROUTED -- not run over this gate's transport: ${RELEASE_CHECK_SKIP_REASON[${num}]:-(routed elsewhere)}"
          ;;
       pass)
-         body="PASS -- in-guest command: ${RELEASE_CHECK_CMD[${num}]:-}"
+         ## Do NOT assert a verbatim command: a check's in-guest command can be lane-substituted
+         ## (check 3 under --local-repo runs apt-get full-upgrade, not upgrade-nonroot), so naming
+         ## RELEASE_CHECK_CMD here would misattribute it. The published step stdout carries the
+         ## real command; the card title carries the check description.
+         body="PASS"
          ;;
       fail)
          body="FAILED -- see the verdict/failure card for the reason"
@@ -308,13 +312,17 @@ wp_story_check() {
 ## Pre-boot story card (NN 10): the exact pair under test as VBoxManage facts (not a photo).
 ## Shared by every mode (leak + functional gui/cli) so the story opens identically.
 story_pair_defined() {
+   ## `|| true` on each showvminfo|grep pipeline: a failed showvminfo (VM-not-found / lock
+   ## contention) or a no-match grep exits non-zero, which under errexit + pipefail +
+   ## inherit_errexit would abort the command-substitution subshell MID-BUILD and silently drop
+   ## the Workstation section from the card. Best-effort facts never truncate the pair card.
    story_card 10 pair-defined "Whonix pair under test (pre-boot)" "$(
       printf '%s\n' "Gateway VM: ${gw}"
       "${VBOXMANAGE}" showvminfo "${gw}" --machinereadable 2>/dev/null \
-         | grep -iE '^(VMState|firmware|memory|vram|nic1|"SATA|"IDE)=' | head -10
+         | grep -iE '^(VMState|firmware|memory|vram|nic1|"SATA|"IDE)=' | head -10 || true
       printf '%s\n' "" "Workstation VM: ${ws}"
       "${VBOXMANAGE}" showvminfo "${ws}" --machinereadable 2>/dev/null \
-         | grep -iE '^(VMState|firmware|memory|vram|nic1|"SATA|"IDE)=' | head -10
+         | grep -iE '^(VMState|firmware|memory|vram|nic1|"SATA|"IDE)=' | head -10 || true
    )"
 }
 
@@ -531,7 +539,10 @@ on_exit() {
    ## Story: final teardown milestone -- the pair reached poweroff. Only when a VM was actually
    ## started (a pre-boot SETUP abort has nothing to show). Best-effort; no-op without --shot-dir.
    if [ "${ws_started}" = 'true' ] || [ "${gw_started}" = 'true' ]; then
-      story_card 96 pair-poweroff "Pair powered off (teardown)" "$(
+      ## Honest title: only the Gateway poweroff is polled above; the Workstation poweroff is
+      ## async and not awaited, so the card reports each VM's ACTUAL final state rather than
+      ## asserting the pair is off (the body is the authoritative record).
+      story_card 96 pair-poweroff "Pair teardown (final VM states below)" "$(
          printf '%s\n' "Gateway ${gw}: $(vm_state "${gw}")" "Workstation ${ws}: $(vm_state "${ws}")"
       )"
    fi
