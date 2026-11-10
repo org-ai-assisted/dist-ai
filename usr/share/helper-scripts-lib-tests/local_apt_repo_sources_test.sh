@@ -123,47 +123,72 @@ fi
 ## InRelease OFFERS but whose index is ABSENT on disk MUST still be excluded (an offered-but-absent
 ## component makes apt-get update hard-fail exit 100); the genuine signed Release means NO
 ## 'Trusted: yes'; an uncompressed 'Packages' InRelease entry anchors the per-component enumeration.
-if [ "$(type -t local_apt_repo_base_stanza)" = 'function' ] && [ "$(type -t local_apt_repo_pin)" = 'function' ]; then
+if [ "$(type -t local_apt_repo_base_stanza)" = 'function' ]; then
    base_fix="$(mktemp --directory)"
    mkdir --parents -- \
       "${base_fix}/debian/dists/trixie/main/binary-amd64" \
-      "${base_fix}/debian/dists/trixie/non-free/binary-amd64/by-hash/SHA256"
+      "${base_fix}/debian/dists/trixie/main/debian-installer/binary-amd64" \
+      "${base_fix}/debian/dists/trixie/non-free/binary-amd64/by-hash/SHA256" \
+      "${base_fix}/debian/dists/trixie/non-free-firmware/binary-amd64"
    main_hash="$(printf '%s' mainidx | sha256sum | cut -d' ' -f1)"
+   di_hash="$(printf '%s' diidx | sha256sum | cut -d' ' -f1)"
    contrib_hash="$(printf '%s' contribidx | sha256sum | cut -d' ' -f1)"
    nf_hash="$(printf '%s' nfidx | sha256sum | cut -d' ' -f1)"
+   nff_hash="$(printf '%s' nffidx | sha256sum | cut -d' ' -f1)"
    ## main resident via COMPRESSED index ONLY (no uncompressed Packages, no by-hash) -- the F1
    ## canary: the old uncompressed-hash probe wrongly found this empty. non-free resident via a
-   ## by-hash tree. contrib OFFERED by InRelease but ABSENT on disk (the partial-mirror gap).
-   touch -- \
-      "${base_fix}/debian/dists/trixie/main/binary-amd64/Packages.gz" \
-      "${base_fix}/debian/dists/trixie/main/binary-amd64/Packages.xz" \
-      "${base_fix}/debian/dists/trixie/non-free/binary-amd64/by-hash/SHA256/${nf_hash}"
+   ## by-hash tree. contrib OFFERED but ABSENT on disk (the partial-mirror gap). non-free-firmware
+   ## has a 0-BYTE index (truncated sync) -- must be excluded (-s). main/debian-installer is a udeb
+   ## SUB-index with a real index on disk -- must be excluded (not a component).
+   printf '%s' idx > "${base_fix}/debian/dists/trixie/main/binary-amd64/Packages.gz"
+   printf '%s' idx > "${base_fix}/debian/dists/trixie/main/binary-amd64/Packages.xz"
+   printf '%s' idx > "${base_fix}/debian/dists/trixie/main/debian-installer/binary-amd64/Packages.gz"
+   printf '%s' idx > "${base_fix}/debian/dists/trixie/non-free/binary-amd64/by-hash/SHA256/${nf_hash}"
+   touch -- "${base_fix}/debian/dists/trixie/non-free-firmware/binary-amd64/Packages.gz"
    printf '%s\n' "SHA256:" \
       " ${main_hash} 12345 main/binary-amd64/Packages" \
+      " ${di_hash} 333 main/debian-installer/binary-amd64/Packages" \
       " ${contrib_hash} 6789 contrib/binary-amd64/Packages" \
       " ${nf_hash} 222 non-free/binary-amd64/Packages" \
+      " ${nff_hash} 44 non-free-firmware/binary-amd64/Packages" \
       > "${base_fix}/debian/dists/trixie/InRelease"
 
    base_expected="Types: deb
 URIs: file:${base_fix}/debian
 Suites: trixie
 Components: main non-free
+Architectures: amd64
 Enabled: yes"
    base_actual="$(local_apt_repo_base_stanza "${base_fix}" debian trixie amd64)"
-   check_eq "base stanza: resident via compressed index + by-hash, offered-but-absent excluded" \
+   check_eq "base stanza: compressed/by-hash resident; absent, 0-byte, and udeb sub-index excluded" \
       "${base_expected}" "${base_actual}"
 
-   ## CANARY: a component resident ONLY via the compressed index MUST be included (the F1 fix), the
-   ## stanza must NOT carry 'Trusted: yes' (genuine signed Release), and an offered-but-absent
-   ## component MUST be excluded.
+   ## CANARY: a component resident ONLY via the compressed index MUST be included (the F1 fix); the
+   ## stanza must NOT carry 'Trusted: yes' (genuine signed Release); it MUST carry 'Architectures:
+   ## amd64' (else a multi-arch guest hard-fails); and the absent/0-byte/udeb entries MUST be out.
    if [[ "${nl}${base_actual}${nl}" == *"${nl}Components: main non-free${nl}"* ]] \
+      && [[ "${nl}${base_actual}${nl}" == *"${nl}Architectures: amd64${nl}"* ]] \
       && [[ "${nl}${base_actual}${nl}" != *"${nl}Trusted: yes${nl}"* ]] \
-      && [[ "${base_actual}" != *contrib* ]]; then
+      && [[ "${base_actual}" != *contrib* ]] \
+      && [[ "${base_actual}" != *non-free-firmware* ]] \
+      && [[ "${base_actual}" != *debian-installer* ]]; then
       pass_count=$(( pass_count + 1 ))
-      printf '%s\n' "PASS: canary: compressed-only component included, signed (no Trusted:yes), absent contrib excluded"
+      printf '%s\n' "PASS: canary: compressed-only included, arch-restricted, signed; absent/0-byte/udeb excluded"
    else
       fail_count=$(( fail_count + 1 ))
-      printf '%s\n' "FAIL: canary: compressed-only component missed, Trusted:yes present, or absent component included"
+      printf '%s\n' "FAIL: canary: wrong component set, missing Architectures, Trusted:yes, or a bad component slipped in"
+   fi
+
+   ## uri_root override: READ residency from the host cache_root, but EMIT a different file: path
+   ## (the guest mount). A host-side caller needs this -- it reads /srv/... but the guest sees /mnt.
+   uri_actual="$(local_apt_repo_base_stanza "${base_fix}" debian trixie amd64 /mnt/shared/aptcache)"
+   if [[ "${nl}${uri_actual}${nl}" == *"${nl}URIs: file:/mnt/shared/aptcache/debian${nl}"* ]] \
+      && [[ "${nl}${uri_actual}${nl}" == *"${nl}Components: main non-free${nl}"* ]]; then
+      pass_count=$(( pass_count + 1 ))
+      printf '%s\n' "PASS: uri_root override emits the guest path while reading residency from cache_root"
+   else
+      fail_count=$(( fail_count + 1 ))
+      printf '%s\n' "FAIL: uri_root override wrong -- got: ${uri_actual}"
    fi
 
    ## A suite with no InRelease -> rc 1, no stanza (caller skips it -> remote/Tor fallback).
@@ -175,17 +200,20 @@ Enabled: yes"
    rc=0; local_apt_repo_base_stanza "${base_fix}" debian trixie >/dev/null 2>&1 || rc=$?
    check_eq "base stanza: missing arch returns 2" "2" "${rc}"
 
-   ## pin stanza: prefers the file: local sources above the Tor remotes, at priority 990 (NOT
-   ## >=1000, which would 'install even if a DOWNGRADE' and let a lagging mirror force a downgrade).
-   pin_expected='Package: *
-Pin: origin ""
-Pin-Priority: 990'
-   check_eq "pin stanza: empty-origin priority 990 (no forced downgrade)" "${pin_expected}" "$(local_apt_repo_pin)"
+   ## No pin generator: the caller points the upgrade at the local sources ONLY, so there is no
+   ## remote to out-prefer. Assert the function is GONE so a reintroduced pin is caught.
+   if [ "$(type -t local_apt_repo_pin)" = 'function' ]; then
+      fail_count=$(( fail_count + 1 ))
+      printf '%s\n' "FAIL: local_apt_repo_pin reintroduced -- the design points apt at local sources only, no pin"
+   else
+      pass_count=$(( pass_count + 1 ))
+      printf '%s\n' "PASS: no pin generator (local-sources-only upgrade needs none)"
+   fi
 
    rm --recursive --force -- "${base_fix}"
 else
    fail_count=$(( fail_count + 1 ))
-   printf '%s\n' "FAIL: local_apt_repo_base_stanza / local_apt_repo_pin not defined (Debian-base cache generator missing)"
+   printf '%s\n' "FAIL: local_apt_repo_base_stanza not defined (Debian-base mirror generator missing)"
 fi
 
 printf '%s\n' ""

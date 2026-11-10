@@ -97,21 +97,19 @@ else
    bad "ran apt-get (not its task): $(cat -- "${tmp}/apt/log")"
 fi
 
-## The pin preferences file is written unconditionally -- it forces the file: local sources above
-## the Tor remotes (covering this derivative repo and the Debian-base cache sources).
-pin_file="${tmp}/prefs/local-apt-repo.pref"
-if [ -f "${pin_file}" ] && [ "$(cat -- "${pin_file}")" = "$(local_apt_repo_pin)" ]; then
-   ok "wrote the local-sources pin matching the shared generator"
+## NO pin preferences file: the caller points the upgrade at the local sources only, so there is
+## nothing to pin. Assert the prefs dir stays empty (a reintroduced pin is a regression).
+if [ -z "$(ls -A -- "${tmp}/prefs" 2>/dev/null)" ]; then
+   ok "wrote no apt preferences pin (local-sources-only upgrade needs none)"
 else
-   bad "did not write the expected pin to ${pin_file}"
+   bad "wrote an unexpected pin to ${tmp}/prefs: $(ls -- "${tmp}/prefs")"
 fi
 
-## --- mnt location + Debian-base mirror: resident-component base sources + pin --------------------
+## --- mnt location + Debian-base mirror: resident-component base sources (no pin) -----------------
 ## Drive the mnt path via the REPO_ADD_LOCAL_GUEST_MOUNT seam (fixture, no real mountpoint): a
 ## derivative 'local' repo PLUS an aptcache whose 'debian' nick offers main (RESIDENT, via the
 ## COMPRESSED index a real mirror stores -- the F1 path) + contrib (OFFERED but ABSENT on disk)
-## for the host codename. Expect base sources with ONLY the resident component, not Trusted:yes,
-## plus the pin.
+## for the host codename. Expect base sources with ONLY the resident component, not Trusted:yes.
 mnt_cn="$( . /etc/os-release 2>/dev/null || true; printf '%s' "${VERSION_CODENAME:-trixie}" )"
 mnt_arch="$(dpkg --print-architecture 2>/dev/null || printf '%s' amd64)"
 mnt_dists="${tmp}/mnt/aptcache/debian/dists/${mnt_cn}"
@@ -121,11 +119,11 @@ mkdir --parents -- \
    "${tmp}/mnt-sources" "${tmp}/mnt-prefs"
 mnt_mh="$(printf '%s' mainidx | sha256sum | cut -d' ' -f1)"
 mnt_ch="$(printf '%s' contribidx | sha256sum | cut -d' ' -f1)"
-## main resident via the compressed index ONLY (no uncompressed Packages, no by-hash -- the real
-## mirror form); contrib is offered by InRelease but has no index on disk, so it must be excluded.
-touch -- \
-   "${mnt_dists}/main/binary-${mnt_arch}/Packages.gz" \
-   "${mnt_dists}/main/binary-${mnt_arch}/Packages.xz"
+## main resident via the NON-EMPTY compressed index ONLY (no uncompressed Packages, no by-hash --
+## the real mirror form); contrib is offered by InRelease but has no index on disk, so it must be
+## excluded.
+printf '%s' idx > "${mnt_dists}/main/binary-${mnt_arch}/Packages.gz"
+printf '%s' idx > "${mnt_dists}/main/binary-${mnt_arch}/Packages.xz"
 printf '%s\n' "SHA256:" \
    " ${mnt_mh} 12345 main/binary-${mnt_arch}/Packages" \
    " ${mnt_ch} 6789 contrib/binary-${mnt_arch}/Packages" \
@@ -148,8 +146,9 @@ base_sources="${tmp}/mnt-sources/local-apt-repo-base-mnt.sources"
 if [ -f "${base_sources}" ] \
    && grep --quiet --fixed-strings "URIs: file:${tmp}/mnt/aptcache/debian" -- "${base_sources}" \
    && grep --quiet "^Suites: ${mnt_cn}$" -- "${base_sources}" \
-   && grep --quiet '^Components: main$' -- "${base_sources}"; then
-   ok "mnt: wrote Debian-base sources for the cache-resident component (main)"
+   && grep --quiet '^Components: main$' -- "${base_sources}" \
+   && grep --quiet "^Architectures: ${mnt_arch}$" -- "${base_sources}"; then
+   ok "mnt: wrote Debian-base sources for the cache-resident component (main), arch-restricted"
 else
    bad "mnt: base sources missing or wrong$( [ -f "${base_sources}" ] && printf '%s' " -- $(cat -- "${base_sources}")" )"
 fi
@@ -159,10 +158,10 @@ if [ -f "${base_sources}" ] && ! grep --quiet 'contrib' -- "${base_sources}" && 
 else
    bad "mnt canary: base source included an uncached component or Trusted:yes"
 fi
-if [ -f "${tmp}/mnt-prefs/local-apt-repo.pref" ]; then
-   ok "mnt: wrote the local-sources pin"
+if [ -z "$(ls -A -- "${tmp}/mnt-prefs" 2>/dev/null)" ]; then
+   ok "mnt: wrote no apt preferences pin"
 else
-   bad "mnt: did not write the pin"
+   bad "mnt: wrote an unexpected pin: $(ls -- "${tmp}/mnt-prefs")"
 fi
 
 ## --- canary: a repo WITHOUT dists/local is refused -----------------------------

@@ -77,9 +77,11 @@ die() {
 usage() {
    printf '%s\n' "usage: ${me} prepare <kicksecure|whonix>
        ${me} attach <vm> [--transient]
+       ${me} expose
        ${me} status [vm]
        ${me} repo-path <kicksecure|whonix>
        ${me} cache-path
+       ${me} guest-cache-path
 
 Populate the repo first with: derivative-maker --skip-published-packages ...
 Share host path: ${repo_parent}   (shared read-only as '${share_name}' -> ${guest_mount})
@@ -105,14 +107,18 @@ expose_cache() {
       printf '%s\n' "${me}: no Debian mirror at ${mirror_dir}; Debian base stays on its configured sources (ok)"
       return 0
    fi
-   if mountpoint --quiet -- "${cache_mount}" 2>/dev/null; then
-      printf '%s\n' "${me}: Debian mirror already exposed at ${cache_mount}"
-      return 0
+   if ! mountpoint --quiet -- "${cache_mount}" 2>/dev/null; then
+      mkdir --parents -- "${cache_mount}"
+      sudo mount --bind -- "${mirror_dir}" "${cache_mount}"
    fi
-   mkdir --parents -- "${cache_mount}"
-   sudo mount --bind -- "${mirror_dir}" "${cache_mount}"
-   sudo mount -o remount,ro,bind -- "${cache_mount}"
-   printf '%s\n' "${me}: exposed Debian mirror ${mirror_dir} -> ${cache_mount} (guest: ${guest_mount}/aptcache)"
+   ## ALWAYS (re)assert ro + nosymfollow, even when already a mountpoint: a plain '--bind' is
+   ## read-write, and an earlier run interrupted between the bind and this remount could have left
+   ## it rw -- the mountpoint check alone would then pass over an rw mount. 'nosymfollow' stops the
+   ## guest's vboxsf from following a symlink inside the mirror tree out to an arbitrary host file
+   ## (the guest sources name the suites directly, so a blocked suite-alias symlink is harmless).
+   ## Idempotent.
+   sudo mount -o remount,ro,nosymfollow,bind -- "${cache_mount}"
+   printf '%s\n' "${me}: exposed Debian mirror ${mirror_dir} -> ${cache_mount} ro,nosymfollow (guest: ${guest_mount}/aptcache)"
 }
 
 do_prepare() {
@@ -208,6 +214,11 @@ case "${cmd}" in
       [ "${1:-}" = "--transient" ] && transient="true"
       do_attach "${vm}" "${transient}"
       ;;
+   expose)
+      ## Bind-mount the local Debian mirror under the shared tree (root context). Standalone so the
+      ## root orchestrator can expose the base BEFORE the account-run lane attaches + boots.
+      expose_cache
+      ;;
    status)
       do_status "${1:-}"
       ;;
@@ -218,9 +229,13 @@ case "${cmd}" in
       printf '%s\n' "$(repo_dir_for "${1}")"
       ;;
    cache-path)
-      ## Single source of the exposed apt-cache mount path (the Debian-base file: tree the
-      ## guest sees at ${guest_mount}/aptcache); for a caller recording provenance.
+      ## Single source of the exposed apt-cache mount path ON THE HOST (the bind-mount a caller
+      ## READS residency from); for provenance + host-side source generation.
       printf '%s\n' "${cache_mount}"
+      ;;
+   guest-cache-path)
+      ## The path the GUEST sees the same tree at (file: URI root for the emitted base sources).
+      printf '%s\n' "${guest_mount}/aptcache"
       ;;
    -h|--help|help)
       usage
