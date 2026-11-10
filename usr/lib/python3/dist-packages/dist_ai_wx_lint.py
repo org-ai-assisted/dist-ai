@@ -85,15 +85,30 @@ def _base_findings(text: str, noexecpaths: str, nnp: bool) -> list:
     return out
 
 
-def denylist_findings(text: str, *, noexecpaths: str, nnp: bool = True) -> list:
-    """Findings for a `~memfd_create` BLOCKLIST leaf unit: the common base plus
-    memfd_create denied via SIGSYS (the default, NOT a soft EPERM -- see module
-    docstring)."""
+def denylist_findings(text: str, *, noexecpaths: str, nnp: bool = True,
+                      memfd: str = 'kill') -> list:
+    """Findings for a `~memfd_create` BLOCKLIST unit: the common base plus
+    memfd_create denied in the expected MODE.
+
+    memfd='kill' (default): denied via SIGSYS (the systemd default, no
+      SystemCallErrorNumber). Correct for a LEAF daemon that never calls
+      memfd_create itself.
+    memfd='soft': denied via EPERM (SystemCallErrorNumber=EPERM). Correct for a
+      GUI/Wayland daemon whose OWN (or inherited Qt/libwayland) code calls
+      memfd_create for shm draw buffers -- EPERM keeps the W^X bypass closed
+      (still denied) while letting it fall back to shm_open and render, where the
+      default SIGSYS would hard-kill it on first surface map (see module docstring)."""
     out = _base_findings(text, noexecpaths, nnp)
     denial = memfd_denial(text)
-    out.append(("memfd_create denied via SIGSYS (default; EPERM is reserved for "
-                "escalators, not leaf daemons)", denial == 'kill',
-                'memfd_denial=%r' % denial))
+    if memfd == 'soft':
+        name = ("memfd_create denied via EPERM (soft): this daemon's own "
+                "Qt/Wayland code hits memfd_create, so EPERM lets it fall back to "
+                "shm_open and render while keeping the W^X bypass closed")
+    else:
+        name = ("memfd_create denied via SIGSYS (default; EPERM is reserved for "
+                "escalators and GUI/Wayland daemons whose own code hits "
+                "memfd_create)")
+    out.append((name, denial == memfd, 'memfd_denial=%r, want %r' % (denial, memfd)))
     return out
 
 
@@ -240,10 +255,18 @@ def self_check() -> None:
                    not _all_ok(denylist_findings(
                        _GOOD_DENYLIST.replace('MemoryDenyWriteExecute=yes\n', ''),
                        noexecpaths=_DENYLIST_OK))))
-    checks.append(('soft EPERM on a leaf daemon fails (SIGSYS required)',
+    checks.append(('soft EPERM on a kill-asserted unit fails (SIGSYS expected)',
                    not _all_ok(denylist_findings(
                        _GOOD_DENYLIST + 'SystemCallErrorNumber=EPERM\n',
                        noexecpaths=_DENYLIST_OK))))
+    ## memfd='soft' (GUI/Wayland daemons): an EPERM unit passes, a SIGSYS one fails.
+    checks.append(('EPERM unit passes when soft is asserted',
+                   _all_ok(denylist_findings(
+                       _GOOD_DENYLIST + 'SystemCallErrorNumber=EPERM\n',
+                       noexecpaths=_DENYLIST_OK, memfd='soft'))))
+    checks.append(('SIGSYS unit fails when soft is asserted (missing EPERM)',
+                   not _all_ok(denylist_findings(
+                       _GOOD_DENYLIST, noexecpaths=_DENYLIST_OK, memfd='soft'))))
     checks.append(('wrong NoExecPaths fails',
                    not _all_ok(denylist_findings(
                        _GOOD_DENYLIST, noexecpaths='/tmp /var/tmp /dev/shm'))))
