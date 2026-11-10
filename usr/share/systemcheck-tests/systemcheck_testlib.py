@@ -445,24 +445,34 @@ def _parse_scenario_output(proc) -> ScenarioResult:
 
 
 def run_check_scenario(check_file: str, call: str, env_setup: str = '',
-                       stubs: str = '') -> ScenarioResult:
+                       stubs: str = '', no_new_privs: bool = False
+                       ) -> ScenarioResult:
     """Run one check function in isolation and capture what it emits.
 
-    check_file : absolute path of the check_*.bsh fragment.
-    call       : the function invocation, e.g. "check_dpkg".
-    env_setup  : bash setting the globals that steer the branch under test.
-    stubs      : bash defining stub commands (leaprun, dpkg, hostname, ...) that
-                 the check calls as bare names.
+    check_file   : absolute path of the check_*.bsh fragment.
+    call         : the function invocation, e.g. "check_dpkg".
+    env_setup    : bash setting the globals that steer the branch under test.
+    stubs        : bash defining stub commands (leaprun, dpkg, hostname, ...) that
+                   the check calls as bare names.
+    no_new_privs : run the whole scenario under PR_SET_NO_NEW_PRIVS=1 (via
+                   `setpriv --no-new-privs`), so /proc/self/status genuinely
+                   reports 'NoNewPrivs: 1'. This exercises a detector that reads
+                   that field (no_new_privs_active) against the REAL kernel bit,
+                   not a /proc mock -- the field cannot be faked per-process any
+                   other way. setpriv is util-linux (a hard dependency; an
+                   unprivileged PR_SET_NO_NEW_PRIVS needs no root).
 
     Absolute-path guards (e.g. `[ -f /usr/share/qubes/marker-vm ]`) and binaries
     called by absolute path cannot be steered this way; use
     run_check_scenario_isolated for those.
     """
     script = _assemble_scenario_script(check_file, call, env_setup, stubs)
+    argv = ['bash', '-c', script]
+    if no_new_privs:
+        argv = ['setpriv', '--no-new-privs', *argv]
     ## timeout so a check that blocks on a missing stub (or a bad parse) fails
     ## the test loudly instead of wedging the whole suite/CI run.
-    proc = subprocess.run(['bash', '-c', script], capture_output=True, text=True,
-                          timeout=30)
+    proc = subprocess.run(argv, capture_output=True, text=True, timeout=30)
     return _parse_scenario_output(proc)
 
 

@@ -189,6 +189,7 @@ core_suites=(
    webcheck-lint-tidy-honesty-test
    website-tests
    website-tests-delegation-test
+   whonix-firewall-tests
 )
 fuzz_suites=(
    check-ref-commits-for-unicode-tests-fuzz
@@ -578,6 +579,11 @@ wire() {
          ;;
       qubes-whonix)
          wire_env=( "QUBES_WHONIX_REPO=$( pkg_dir qubes-whonix )" )
+         ;;
+      whonix-firewall)
+         ## Core static lane (W^X/NNP service-hardening lint). DISTINCT from the
+         ## whonix-firewall-leaktest netns suite below (same component, same repo).
+         wire_env=( "WHONIX_FIREWALL_REPO=$( pkg_dir whonix-firewall )" )
          ;;
       whonix-firewall-leaktest)
          ## netns leak suite loads the generated whonix-firewall ruleset and drives the
@@ -1281,6 +1287,9 @@ suite_component() {
          ;;
       kloak)
          printf '%s' 'kloak'
+         ;;
+      whonix-firewall)
+         printf '%s' 'whonix-firewall'
          ;;
       whonix-firewall-leaktest)
          printf '%s' 'whonix-firewall'

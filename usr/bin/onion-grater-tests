@@ -30,4 +30,12 @@ fi
 rc=0
 ## style-ok: allow-python-interpreter -- run through PATH python3 for venv/user-site test deps
 python3 -- "${tests_dir}/onion_grater_profile_test.py" "$@" || rc=$?
+
+## W^X/NNP directive-lint lane (static, no root/tor). A hard failure fails the
+## suite; a 77 (unit genuinely absent, no ONION_GRATER_REPO) does not.
+hardening_rc=0
+"${tests_dir}/service_hardening_lint.py" "$@" || hardening_rc=$?
+if [ "${hardening_rc}" -ne 0 ] && [ "${hardening_rc}" -ne 77 ]; then
+   rc=1
+fi
 exit "${rc}"

@@ -6,11 +6,13 @@
 """
 Shared systemd W^X seccomp-filter policy model for the dist-ai test suites.
 
-SINGLE source of the `.service` memfd_create denial classifier used by BOTH
-privleap-tests/service_hardening_test.py and
-systemcheck-tests/test_wx_seccomp_filter.py. Each suite imports it via a
-`__file__`-relative sys.path.insert of this dist-packages dir (the dm_test_results
-idiom), so there is ONE implementation -- no hand-sync, no drift.
+SINGLE source of the `.service` SystemCallFilter model used by the W^X hardening
+lints: the memfd_create DENYLIST classifier (privleap-tests/service_hardening_test.py,
+systemcheck-tests/test_wx_seccomp_filter.py, and the per-daemon lints via
+dist_ai_wx_lint) AND the ALLOWLIST model (sdwdate-tests/test_seccomp_filter.py,
+onion-grater via dist_ai_wx_lint). Each suite imports it via a `__file__`-relative
+sys.path.insert of this dist-packages dir (the dm_test_results idiom), so there is
+ONE implementation -- no hand-sync, no drift.
 
 Models systemd's effective-policy semantics: [Service]-section only, SystemCallFilter=
 empty-reset, a per-syscall ':' action that overrides the global SystemCallErrorNumber,
@@ -129,3 +131,34 @@ def memfd_denial(text: str) -> str:
     if errnos and errno_is_soft(errnos[-1]):
         return 'soft'
     return 'kill'
+
+
+def syscall_filter_values(text: str) -> list:
+    """Every SystemCallFilter= value under [Service], in order, '\\'-continuations
+    joined. systemd accumulates multiple assignments; an empty one resets."""
+    return service_values(service_lines(text), 'SystemCallFilter')
+
+
+def is_allowlist(text: str) -> bool:
+    """True iff there is at least one SystemCallFilter= and NONE is a '~' denylist.
+    An allowlist permits ONLY the named syscalls (default-deny: everything else is
+    SIGSYS-killed). A single '~' directive flips it to a denylist that permits every
+    UNNAMED syscall and removes the sandbox, so a stray '~' must fail the allowlist
+    assertion."""
+    values = syscall_filter_values(text)
+    return bool(values) and all(not v.strip().startswith('~') for v in values)
+
+
+def effective_allowset(text: str) -> set:
+    """The effective allowed-syscall set after systemd reset semantics: an empty
+    value OR a '~' value clears the set; otherwise tokens accumulate. Meaningful
+    for an allowlist (is_allowlist); when a '~' is present the sandbox is a
+    denylist and the returned set is only what follows the last reset."""
+    effective: set = set()
+    for value in syscall_filter_values(text):
+        stripped = value.strip()
+        if stripped == '' or stripped.startswith('~'):
+            effective = set()
+        else:
+            effective |= set(stripped.split())
+    return effective
