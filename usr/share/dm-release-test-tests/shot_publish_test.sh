@@ -110,6 +110,30 @@ else
 fi
 safe-rm --force -- "${clog}"
 
+## A non-empty rt_stdout_log (the step's FULL successful output) threads as --step-stdout-file,
+## so a PASS carries EVIDENCE (the per-check lines + proof the battery ran) -- not a black box.
+slog="$(mktemp --tmpdir dm-release-test-slog.XXXXXX)"
+printf '%s\n' "check 8 PASS" "check 3 PASS (apt-get full-upgrade from local repo)" > "${slog}"
+# shellcheck disable=SC2034  ## read by the sourced rt_publish_result (dynamic scope)
+rt_stdout_log="${slog}"
+rt_publish_result whonix 18.2.3.5 acct whonix-func 0 '' release-checks >/dev/null
+if grep --quiet -- "--step-stdout-file ${slog}" "${argv_file}"; then
+   printf '%s\n' "ok: rt_publish_result threads rt_stdout_log as --step-stdout-file (PASS evidence)"
+else
+   printf '%s\n' "FAIL: --step-stdout-file not forwarded: $(cat -- "${argv_file}")" >&2
+   failures=$((failures + 1))
+fi
+
+## Canary: rt_stdout_log is consumed ONCE -- the next publish must NOT re-forward the stale path.
+rt_publish_result whonix 18.2.3.5 acct whonix-func 0 '' release-checks >/dev/null
+if grep --quiet -- '--step-stdout-file' "${argv_file}"; then
+   printf '%s\n' "FAIL: rt_stdout_log leaked to the next publish" >&2
+   failures=$((failures + 1))
+else
+   printf '%s\n' "ok: rt_stdout_log consumed once (reset after use)"
+fi
+safe-rm --force -- "${slog}"
+
 ## Firmware is part of the Calamares-install lane identity: bios and efi installs produce
 ## DIFFERENT screenshots (firmware menu, boot chrome), so they must land in separate
 ## subtrees / sids / goldens and separate overview rows -- never collide. Assert the

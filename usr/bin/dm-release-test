@@ -136,6 +136,9 @@ RESULTS_OWNER="${IMAGE_TEST_RESULTS_OWNER:-www-data}"
 ## A lane sets this to a FAILED release check's output file; rt_publish_result
 ## publishes it as the step's stderr tail, then resets it. Empty = nothing to add.
 rt_check_log=""
+## A lane sets this to the step's FULL captured output file; rt_publish_result publishes its tail
+## as the step's stdout tail (so a PASS carries evidence, not a black box), then resets it.
+rt_stdout_log=""
 ## A lane sets this to its lane key (inst|leak); rt_publish_result folds it into the
 ## results subtree + --lane so the two whonix lanes (inst vs leak) never collide on one
 ## cell, then resets it. Empty = no lane component (the kicksecure install lane).
@@ -1121,6 +1124,7 @@ rt_publish_result() {
    local guest_name version account mode rc shot outdir verdict tok lane_fw
    local -a pub_expect=()
    local -a pub_stderr=()
+   local -a pub_stdout=()
    guest_name="$1"
    version="$2"
    account="$3"
@@ -1145,6 +1149,13 @@ rt_publish_result() {
       pub_stderr=( --step-stderr-file "${rt_check_log}" )
    fi
    rt_check_log=""
+   ## A lane may hand us the step's FULL successful output (rt_stdout_log) to publish as the
+   ## step's stdout tail, so a PASS carries EVIDENCE (the per-check lines + proof) instead of a
+   ## black box. Consumed once, like rt_check_log.
+   if [ -n "${rt_stdout_log:-}" ] && [ -s "${rt_stdout_log}" ]; then
+      pub_stdout=( --step-stdout-file "${rt_stdout_log}" )
+   fi
+   rt_stdout_log=""
    ## The ISO sha256 (set by the lane via rt_artifact_sha256) identifies the EXACT artifact
    ## under test -- without it a downloaded run's result.json digest is null and the exact ISO
    ## is unidentifiable. Consumed once, like rt_check_log; empty on a pre-ISO failure.
@@ -1204,7 +1215,7 @@ rt_publish_result() {
       "${rc}" "${shot}" \
       --lane "${guest_name}-${interface}${lane_sfx}${lane_fw}" --version "${version}" \
       --builder dm-release-test --origin "${rt_origin}" \
-      "${pub_expect[@]}" "${pub_stderr[@]}" "${pub_sha[@]}" "${pub_fw[@]}" "${pub_local_repo[@]}")" \
+      "${pub_expect[@]}" "${pub_stderr[@]}" "${pub_stdout[@]}" "${pub_sha[@]}" "${pub_fw[@]}" "${pub_local_repo[@]}")" \
       || { log warn "results publish failed for ${guest_name} ${interface} ${version} (verdict ${verdict} preserved)"; outdir='(publish-failed)'; }
    printf '%s\n' \
       "${me}: ${guest_name} ${interface} ${version} -- ${verdict} (rc=${rc}) -> ${outdir}"
@@ -1555,7 +1566,7 @@ rt_build_local_repo_provenance() {
 ## inst lane: the functional release-check battery (>= the kicksecure coverage) run on the
 ## Workstation of a persist-inst- pair, after the Gateway's Tor bootstrap gate.
 rt_lane_whonix_inst() {
-   local account version gw ws rc check_log
+   local account version gw ws rc check_log func_log=""
    account="$1"
    version="$2"
    gw="Whonix-Gateway-${desktop}"
@@ -1622,11 +1633,24 @@ rt_lane_whonix_inst() {
       LOCAL_APT_REPOSITORY_BASE="${lr_base}" "${DM_SHARED_APT_REPO}" expose \
          || log warn "dm-shared-apt-repo expose failed; the WS base-local upgrade may be INCONCLUSIVE"
    fi
-   sudo -u "${account}" -- "${rt_session_env[@]}" "${DM_WHONIX_PAIR}" --mode functional --interface "${wp_interface}" --check-log "${check_log}" "${lr_args[@]}" --gw "${gw}" --ws "${ws}" || rc=$?
+   ## Capture the lane's FULL output (per-check PASS lines + check 3's file:// upgrade proof) while
+   ## STILL streaming it live: tee passes through to the console AND a root-owned file, so a PASS
+   ## publishes real EVIDENCE (the step's stdout tail) instead of a black box. Best-effort -- a
+   ## failed mktemp just omits the tail, never aborts the lane. pipefail keeps dm-whonix-pair's rc
+   ## authoritative (tee rc 0 cannot mask a lane failure). The emitter reads it no-follow.
+   func_log="$(mktemp --tmpdir "dm-release-test-whonix-funclog.XXXXXX" 2>/dev/null || true)"
+   if [ -n "${func_log}" ]; then
+      sudo -u "${account}" -- "${rt_session_env[@]}" "${DM_WHONIX_PAIR}" --mode functional --interface "${wp_interface}" --check-log "${check_log}" "${lr_args[@]}" --gw "${gw}" --ws "${ws}" 2>&1 | tee -- "${func_log}" || rc=$?
+   else
+      sudo -u "${account}" -- "${rt_session_env[@]}" "${DM_WHONIX_PAIR}" --mode functional --interface "${wp_interface}" --check-log "${check_log}" "${lr_args[@]}" --gw "${gw}" --ws "${ws}" || rc=$?
+   fi
    ## Thread a non-empty check-log into the published step's stderr tail (empty = a pass or a
    ## pre-check failure -> no tail). Consumed once by rt_publish_result.
    rt_check_log=""
    [ -s "${check_log}" ] && rt_check_log="${check_log}"
+   ## Publish the captured lane output as the step's stdout tail -- evidence on a PASS too.
+   rt_stdout_log=""
+   [ -s "${func_log}" ] && rt_stdout_log="${func_log}"
    ## HONEST provenance: on a --local-repo run record WHAT was delivered (derivative, host repoPath,
    ## build sourceSha, the Packages name=version list) as the result.json localRepo block, so the
    ## site shows the exact local build the verdict applies to. Host-side read (no guest round-trip).
@@ -1653,6 +1677,7 @@ rt_lane_whonix_inst() {
          log error "localRepo provenance for ${local_repo} failed (gen_before_rc ${rt_local_repo_gen_rc}, gen_now_rc ${gen_now_rc}, build_rc ${prov_rc}) -- refusing to publish a local-repo run as a published-repo run"
          rt_publish_result whonix "${version}" "${account}" whonix-func "${SETUP_RC}" "" release-checks
          sudo -u "${account}" -- safe-rm --force -- "${check_log}" 2>/dev/null || true
+         if [ -n "${func_log}" ]; then safe-rm --force -- "${func_log}" 2>/dev/null || true; fi
          return "${SETUP_RC}"
       fi
       [ -n "${rt_local_repo_json}" ] \
@@ -1660,6 +1685,7 @@ rt_lane_whonix_inst() {
    fi
    rt_publish_result whonix "${version}" "${account}" whonix-func "${rc}" "" release-checks
    sudo -u "${account}" -- safe-rm --force -- "${check_log}" 2>/dev/null || true
+   if [ -n "${func_log}" ]; then safe-rm --force -- "${func_log}" 2>/dev/null || true; fi
    return "${rc}"
 }
 

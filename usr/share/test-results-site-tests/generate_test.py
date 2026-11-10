@@ -85,13 +85,13 @@ def write_png(path, color):
 
 
 def write_result(run_dir, run_id, lane, version, rc, stop_unix, step_name, shot_name,
-                 artifact_sha256=None):
+                 artifact_sha256=None, stdout_tail=""):
     atts = []
     if shot_name:
         atts = [model.make_attachment("screenshot", "image/png", shot_name)]
     step = model.make_step(
         name=step_name, status=model.step_status_from_rc(rc), exit_code=rc,
-        attachments=atts,
+        stdout_tail=stdout_tail, attachments=atts,
     )
     provenance = {"artifact_sha256": artifact_sha256} if artifact_sha256 else None
     result = model.build_result(
@@ -129,8 +129,12 @@ def build_plane(root):
     now = EPOCH
     a_dir = os.path.join(root, "kicksecure-lxqt-18-2-3-5", "20261006T000000Z")
     write_png(os.path.join(a_dir, "calamares-install.png"), (10, 120, 10))
+    ## A's step carries a real stdout tail (a PASS SHOULD publish its evidence), so the page has a
+    ## genuine scrollable step-log <pre> for the a11y focusable-region check below -- not the empty
+    ## placeholder box the generator used to emit for a tail-less step.
     write_result(a_dir, "kicksecure-lxqt-18-2-3-5-1", "kicksecure-lxqt", "18.2.3.5",
-                 0, now, "calamares-install", "calamares-install.png")
+                 0, now, "calamares-install", "calamares-install.png",
+                 stdout_tail="calamares: install complete\nLUKS unlock OK\nR4 installed boot OK\n")
 
     ## B: a second PASS lane with a shot -> also green (publishes its shot, no approval).
     b_dir = os.path.join(root, "kicksecure-cli-18-2-3-5", "20261006T000000Z")
@@ -1038,6 +1042,46 @@ check("a run page carries the lifted site footer too", _site_footer in run_lifte
 check("the lifted footer matches on the overview and a run page",
       (overview_lifted.split("<footer>", 1)[-1].rsplit("</footer>", 1)[0]
        == run_lifted.split("<footer>", 1)[-1].rsplit("</footer>", 1)[0]))
+
+## Empty step-log boxes are a BROKEN placeholder: an empty <pre class="steplog"> renders as a
+## blank outlined box -- the obviously-broken artifact a reader spots at a glance. steplog_pre omits
+## an empty tail, render_step surfaces a no-evidence step HONESTLY (never a silent clean pass), and
+## _assert_no_broken_placeholder fails the build on any residual empty box. Canary: the pre-fix
+## render_step emitted two empty boxes and had no marker/guard, so every assertion below failed then.
+check("steplog_pre: empty tail emits NO <pre> box", _gen.steplog_pre("") == "")
+check("steplog_pre: whitespace-only tail emits NO <pre> box", _gen.steplog_pre("  \n\t ") == "")
+check("steplog_pre: real content emits a scrollable <pre>",
+      'class="steplog"' in _gen.steplog_pre("hello") and "hello" in _gen.steplog_pre("hello"))
+
+
+class _EvView:
+    shots = []
+    cards = []
+
+
+_empty_step = {"name": "whonix-func", "status": "passed", "exit": 0,
+               "stdout_tail": "", "stderr_tail": ""}
+_rendered_empty = _gen.render_step(_EvView(), _empty_step)
+check('render_step: a no-output step renders NO empty <pre class="steplog"> box',
+      not _gen._EMPTY_STEPLOG_RE.search(_rendered_empty))
+check("render_step: a no-evidence step is marked honestly, not a silent clean pass",
+      "(no captured output)" in _rendered_empty)
+
+_with_out = dict(_empty_step, stdout_tail="CHECK3_FILE_URI_NEEDLE")
+_rendered_out = _gen.render_step(_EvView(), _with_out)
+check("render_step: a step WITH output renders it and drops the no-evidence marker",
+      "CHECK3_FILE_URI_NEEDLE" in _rendered_out and "(no captured output)" not in _rendered_out)
+
+_raised = False
+try:
+    _gen._assert_no_broken_placeholder(
+        '<main><pre class="steplog" tabindex="0"></pre></main>', "r1")
+except RuntimeError:
+    _raised = True
+check("_assert_no_broken_placeholder: an empty steplog box raises (fail-closed)", _raised)
+check("_assert_no_broken_placeholder: a page with real log content passes",
+      _gen._assert_no_broken_placeholder(
+          '<pre class="steplog" tabindex="0">real log</pre>', "r2") is None)
 
 shutil.rmtree(work, ignore_errors=True)
 

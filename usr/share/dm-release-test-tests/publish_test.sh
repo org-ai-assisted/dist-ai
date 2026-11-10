@@ -272,6 +272,19 @@ check "oversized stderr: honest truncation marker present" "$(grep --quiet 'earl
 check "oversized stderr: tail kept (END)" "$(grep --quiet 'HUGEEND_NEEDLE' -- "${huge_json}" && printf '%s' "true" || printf '%s' "false")"
 check "oversized stderr: head dropped at the ceiling (START absent)" "$(grep --quiet 'HUGESTART_NEEDLE' -- "${huge_json}" && printf '%s' "false" || printf '%s' "true")"
 
+## A PASS step's stdout tail flows through to result.json (the step EVIDENCE a passing run must
+## carry -- the per-check lines + proof the battery ran, not a black box). Canary: before the fix
+## the publisher dropped --step-stdout-file, so a PASS published an empty stdout_tail.
+sout_log="${work}/stdoutlog.txt"
+printf '%s\n' 'STDOUTEVIDENCE_NEEDLE' 'check 3 PASS (apt-get full-upgrade from local repo)' > "${sout_log}"
+sout_out="$(image_test_results_publish "${results_root}" "${owner}" \
+   "whonix-cli-stdout-18-2-3-5" "eph-inst-sout" "whonix-func" \
+   0 "" \
+   --lane whonix-cli --version 18.2.3.5 --builder dm-release-test \
+   --origin downloaded --expect release-checks --step-stdout-file "${sout_log}")"
+sout_json="${sout_out}/result.json"
+check "PASS step publishes its stdout tail as evidence (not a black box)" "$(grep --quiet 'STDOUTEVIDENCE_NEEDLE' -- "${sout_json}" && printf '%s' "true" || printf '%s' "false")"
+
 ## Firmware-lane evidence flows through to result.json's environment block (the booted-lane
 ## proof the detail page renders). Canary: the pre-#17 publisher dropped these flags.
 fw_out="$(image_test_results_publish "${results_root}" "${owner}" \

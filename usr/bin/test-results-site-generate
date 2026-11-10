@@ -39,6 +39,7 @@ import hashlib
 import html
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -1018,7 +1019,7 @@ def _firmware_block(f):
         chip, note = status_chip(site.STATUS_FAIL), "MISMATCH: the guest did not boot the declared lane"
     else:
         chip, note = status_chip(site.STATUS_UNKNOWN), "unverified"
-    pre = ('<pre class="steplog" tabindex="0">%s</pre>' % esc_log(f["fw_evidence"])) if f["fw_evidence"] else ""
+    pre = steplog_pre(f["fw_evidence"])
     return (
         '<div class="issue"><h3>Firmware lane %s</h3>'
         "<p>declared <code>%s</code> &middot; detected <code>%s</code> &middot; %s</p>%s</div>"
@@ -1038,9 +1039,7 @@ def _local_repo_block(f):
     sha = lr.get("sourceSha", "") or ""
     pkgs = lr.get("packages") or []
     sha_html = ('<code class="runid">%s</code>' % esc(sha)) if sha else "<em>unverified</em>"
-    pkg_html = (
-        '<pre class="steplog" tabindex="0">%s</pre>' % esc_log("\n".join(pkgs))
-    ) if pkgs else "<p>no package versions recorded</p>"
+    pkg_html = steplog_pre("\n".join(pkgs)) or "<p>no package versions recorded</p>"
     return (
         '<div class="issue"><h3>Local apt repo build</h3>'
         "<p>derivative <code>%s</code> &middot; source %s</p>"
@@ -1130,8 +1129,16 @@ def _card_html(card):
         if stage:
             parts.append(' <span class="stage">(%s)</span>' % esc(stage))
     parts.append("</p>")
-    parts.append('<pre class="steplog" tabindex="0">%s</pre>' % esc_log(card.get("text", "")))
+    parts.append(steplog_pre(card.get("text", "")))
     return "".join(parts)
+
+
+def steplog_pre(tail):
+    ## A steplog <pre> ONLY when it has real content. An empty tail must emit NOTHING: an empty
+    ## <pre class="steplog"> renders as a blank outlined box -- an obviously-broken placeholder a
+    ## reader spots at a glance (and the no-empty-box self-check below fails the build on one).
+    body = esc_log(tail or "")
+    return ('<pre class="steplog" tabindex="0">%s</pre>' % body) if body.strip() else ""
 
 
 def render_step(view, step):
@@ -1143,16 +1150,17 @@ def render_step(view, step):
     ## a re-cut here only hid real output (a full systemcheck run exceeds the old 1200-char cut
     ## and showed as "...emcheck#" mid-word). The <pre> blocks scroll (style.css) so a long log
     ## never blows out the page.
+    logs = steplog_pre(step.get("stdout_tail", "")) + steplog_pre(step.get("stderr_tail", ""))
     caption = (
-        "<h3>%s %s</h3>"
-        "<p>exit %s</p>"
-        "<pre class=\"steplog\" tabindex=\"0\">%s</pre><pre class=\"steplog\" tabindex=\"0\">%s</pre>"
-    ) % (
-        esc(step["name"]), status_chip(status_cls), esc(step.get("exit")),
-        esc_log(step.get("stdout_tail", "") or ""), esc_log(step.get("stderr_tail", "") or ""),
-    )
+        "<h3>%s %s</h3><p>exit %s</p>%s"
+    ) % (esc(step["name"]), status_chip(status_cls), esc(step.get("exit")), logs)
     if not shots and not cards:
-        ## Text-only step: NO image slot, never a broken-image blank.
+        ## Text-only step: NO image slot, never a broken-image blank. A step with NO evidence at
+        ## all (no log tails, no shots, no cards) is a BLACK BOX -- say so honestly, so an
+        ## evidence-less 'pass' never reads as a clean one (the publisher should attach the real
+        ## run output; a persistently empty step is a capture bug to fix, not to hide).
+        if not logs:
+            caption += '<p class="sub">(no captured output)</p>'
         return '<div class="issue">%s</div>' % caption
 
     ## Render the milestone sequence in CAPTURE order. Shots and cards INTERLEAVE (a card like
@@ -1352,6 +1360,7 @@ def main(argv):
 
     for view in shown:
         html_text = render_run(view, header, footer, generated_utc)
+        _assert_no_broken_placeholder(html_text, view.run_id)
         _write(os.path.join(out_root, view.run_id, "index.html"), html_text)
 
     _write(os.path.join(out_root, "index.html"),
@@ -1359,6 +1368,20 @@ def main(argv):
 
     prune(out_root, keep)
     return 0
+
+
+_EMPTY_STEPLOG_RE = re.compile(r'<pre class="steplog"[^>]*>\s*</pre>')
+
+
+def _assert_no_broken_placeholder(html, run_id):
+    ## Fail-closed drift guard: a published run page must NEVER carry an empty <pre class="steplog">
+    ## (a blank outlined box -- an obviously-broken placeholder that reads as a defect at a glance).
+    ## steplog_pre() omits an empty tail, so a hit here is a regression; refuse to emit the page
+    ## rather than publish a broken artifact that a human then has to notice.
+    if _EMPTY_STEPLOG_RE.search(html):
+        raise RuntimeError(
+            "run %s renders an EMPTY <pre class=\"steplog\"> (broken placeholder box) -- "
+            "refusing to publish; fix the step-log emission" % run_id)
 
 
 def _write(path, text):

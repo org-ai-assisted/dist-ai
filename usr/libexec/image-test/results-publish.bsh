@@ -95,7 +95,7 @@ image_test_results_publish() {
    shot_src="$7"
    shift 7
 
-   local lane version builder origin step_name start_unix stop_unix step_stderr_file
+   local lane version builder origin step_name start_unix stop_unix step_stderr_file step_stdout_file
    local provenance_artifact_sha256 provenance_local_repo
    local env_firmware_declared env_firmware_detected env_firmware_evidence env_firmware_match
    local -a expect=()
@@ -107,6 +107,7 @@ image_test_results_publish() {
    start_unix=""
    stop_unix=""
    step_stderr_file=""
+   step_stdout_file=""
    provenance_artifact_sha256=""
    provenance_local_repo=""
    env_firmware_declared=""
@@ -149,6 +150,10 @@ image_test_results_publish() {
             ;;
          --step-stderr-file)
             step_stderr_file="$2"
+            shift 2
+            ;;
+         --step-stdout-file)
+            step_stdout_file="$2"
             shift 2
             ;;
          --provenance-artifact-sha256)
@@ -307,6 +312,12 @@ image_test_results_publish() {
    ## as-is; an absent file tails to empty.
    if [ -n "${step_stderr_file}" ]; then
       emit_args+=( --step-stderr-file "${step_stderr_file}" )
+   fi
+   ## Successful step output -> the step's stdout tail, so a PASS carries EVIDENCE (the per-check
+   ## lines + proof the battery ran) rather than a black box. Same no-follow account-owned path
+   ## handling as stderr; an absent file tails to empty.
+   if [ -n "${step_stdout_file}" ]; then
+      emit_args+=( --step-stdout-file "${step_stdout_file}" )
    fi
    ## The ISO sha256 identifies the EXACT artifact under test (a NULL digest leaves a
    ## downloaded run unidentifiable). It is written into result.json AS ROOT, so validate the
