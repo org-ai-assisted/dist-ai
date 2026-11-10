@@ -121,7 +121,7 @@ trap cleanup EXIT
 cat > "${shared_stub}" <<STUB
 #!/bin/bash
 case "\$1" in
-  cache-path) printf '%s\n' '${host_cache_fixture}' ;;
+  cache-path) printf 'cachepath-base=%s\n' "\${LOCAL_APT_REPOSITORY_BASE:-}" >> "\${REC_ATTACH}"; printf '%s\n' '${host_cache_fixture}' ;;
   guest-cache-path) printf '%s\n' '/mnt/shared/aptcache' ;;
   *) printf 'base=%s args=%s\n' "\${LOCAL_APT_REPOSITORY_BASE:-}" "\$*" >> "\${REC_ATTACH}" ;;
 esac
@@ -180,6 +180,8 @@ assert "enable runs it as the boot user role" \
    grep -q -- '--role user' "${rec_exec}"
 assert "enable policy-checks the derivative local repo is live" \
    grep -q 'aptrepo_local/whonix' "${rec_exec}"
+assert "enable resolves the host cache under the orchestrator-pinned base (slot-threaded, not slot-less)" \
+   grep -q 'cachepath-base=/srv/derivative-maker/SLOT' "${rec_attach}"
 
 ## with --local-repo UNSET, boot_workstation_user must NOT attach (byte-unchanged path).
 true > "${rec_attach}"

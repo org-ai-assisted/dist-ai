@@ -1370,7 +1370,11 @@ ws_func_enable_local_repo() {
    if [ "$(type -t local_apt_repo_base_stanza)" != 'function' ] || [ "$(type -t local_apt_repo_sources_stanza)" != 'function' ]; then
       die "${SETUP_RC}" "${ws}: helper-scripts local-apt-repo-sources.bsh not loaded (set HELPER_SCRIPTS_PATH / install helper-scripts) -- cannot generate the local apt sources (INCONCLUSIVE)"
    fi
-   host_cache="$("${DM_SHARED_APT_REPO}" cache-path)"
+   ## Resolve the HOST mirror path under the SAME base the orchestrator exposed + the attach used:
+   ## this runs as the account (no dist_build_slot in env), so without the pinned --local-repo-base
+   ## cache-path would re-derive the slot-less /srv/derivative-maker/aptcache and miss a slotted
+   ## expose. The guest path (/mnt/shared/aptcache) is slot-independent, so it needs no base.
+   host_cache="$(LOCAL_APT_REPOSITORY_BASE="${local_repo_base}" "${DM_SHARED_APT_REPO}" cache-path)"
    guest_cache="$("${DM_SHARED_APT_REPO}" guest-cache-path)"
    guest_repo="${GUEST_SHARE_MOUNT}/aptrepo_local/${local_repo}"
    [ -d "${host_cache}" ] \
