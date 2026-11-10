@@ -58,9 +58,14 @@ class TestRedactCredentials(unittest.TestCase):
         self.assertNotIn('[REDACTED]', conf_repr)
 
     def test_redaction_is_display_only(self):
-        ## The stored field keeps the real value; only the repr is masked.
+        ## Rendering must have NO side effect on the credential: a redaction
+        ## that mutated the field would still write a torrc with the real
+        ## password lost. Render first, THEN assert the field survived.
         conf = _conf_with_password(SECRET)
+        repr(conf)
+        str(conf)
         self.assertEqual(conf.proxy_password, SECRET)
+        self.assertEqual(conf.proxy_username, 'alice')
 
     def test_non_credential_fields_still_shown(self):
         conf_repr = repr(_conf_with_password(SECRET))
