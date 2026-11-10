@@ -15,6 +15,13 @@ Vocabulary = functions defined in a file that is sourced somewhere (an
 importable library), minus names installed as executables on PATH (bin/sbin) --
 those are external commands, not imports.
 
+Source matching is by BASENAME (deliberate: a source path is often built from a
+variable, e.g. "${HELPER_SCRIPTS_PATH:-}"/.../has.bsh, so the full path cannot be
+resolved statically). Trade-off: if two different files share a basename, a
+consumer that sources one is credited for a function defined in the other. In
+this tree library basenames are unique, so this does not occur; resolving full
+paths would reintroduce the dynamic-path problem the basename approach avoids.
+
 The gate FAILS (exit 1) on a GENUINE RUNTIME BREAK in a top-level script: a call
 reachable via no source path, direct or transitive -- it actually fails at
 runtime. Known-but-unfixed breaks live in an allowlist file (file<TAB>func, one
@@ -94,16 +101,6 @@ def parse_ast(path):
         return None
 
 
-def walk(node, visit):
-    if isinstance(node, dict):
-        visit(node)
-        for v in node.values():
-            walk(v, visit)
-    elif isinstance(node, list):
-        for v in node:
-            walk(v, visit)
-
-
 def word_literalish(word):
     out = []
     for part in (word or {}).get("Parts", []):
@@ -138,29 +135,50 @@ def source_basename(call):
 
 
 def extract(ast):
-    defs, calls, sources, unresolved = set(), [], set(), False
+    """Return (defs, calls, sources, unresolved) where calls is a list of
+    (name, line, top_level) and sources is a list of (basename, line).
+    top_level is False when the call is lexically inside a function body: such a
+    call runs when the function is invoked (after top-level sourcing), so source
+    order does not constrain it; a top_level call must be preceded by its
+    source."""
+    defs: set = set()
+    calls: list = []
+    sources: list = []
+    unresolved = False
 
-    def visit(n):
+    def rec(node, in_func):
         nonlocal unresolved
-        t = n.get("Type")
-        if t == "FuncDecl":
-            name = (n.get("Name") or {}).get("Value")
-            if name:
-                defs.add(name)
-        elif t == "CallExpr":
-            name = call_name(n)
-            if name is None:
+        if isinstance(node, dict):
+            t = node.get("Type")
+            if t == "FuncDecl":
+                name = (node.get("Name") or {}).get("Value")
+                if name:
+                    defs.add(name)
+                for v in node.values():
+                    rec(v, True)
                 return
-            if name in (".", "source"):
-                base = source_basename(n)
-                if base is None:
-                    unresolved = True
-                else:
-                    sources.add(base)
-            else:
-                calls.append((name, n["Pos"]["Line"]))
+            if t == "CallExpr":
+                name = call_name(node)
+                if name is not None:
+                    line = node["Pos"]["Line"]
+                    if name in (".", "source"):
+                        base = source_basename(node)
+                        if base is None:
+                            unresolved = True
+                        else:
+                            sources.append((base, line))
+                    else:
+                        calls.append((name, line, not in_func))
+                for v in node.values():
+                    rec(v, in_func)
+                return
+            for v in node.values():
+                rec(v, in_func)
+        elif isinstance(node, list):
+            for v in node:
+                rec(v, in_func)
 
-    walk(ast, visit)
+    rec(ast, False)
     return defs, calls, sources, unresolved
 
 
@@ -208,7 +226,8 @@ def main():
     defs_by_name: dict = {}
     sources_of: dict = {}
     file_defs, file_calls = {}, {}
-    file_direct, file_unresolved = {}, {}
+    file_direct, file_src_min, file_unresolved = {}, {}, {}
+    scanned_rel: set = set()
     unparsed = []
     for p in files:
         ast = parse_ast(p)
@@ -217,11 +236,18 @@ def main():
             continue
         defs, calls, srcs, unresolved = extract(ast)
         base = os.path.basename(p)
+        scanned_rel.add(os.path.relpath(p, root))
+        src_bases = {b for b, _ in srcs}
+        src_min: dict = {}
+        for b, ln in srcs:
+            if b not in src_min or ln < src_min[b]:
+                src_min[b] = ln
         file_defs[p], file_calls[p] = defs, calls
-        file_direct[p], file_unresolved[p] = srcs, unresolved
+        file_direct[p], file_src_min[p] = src_bases, src_min
+        file_unresolved[p] = unresolved
         for d in defs:
             defs_by_name.setdefault(d, set()).add(base)
-        sources_of.setdefault(base, set()).update(srcs)
+        sources_of.setdefault(base, set()).update(src_bases)
 
     library_basenames = set()
     for s in sources_of.values():
@@ -237,11 +263,21 @@ def main():
         is_frag = os.path.basename(p) in library_basenames
         trans = transitive(os.path.basename(p), sources_of)
         rel = os.path.relpath(p, root)
-        for name, line in file_calls[p]:
+        for name, line, top_level in file_calls[p]:
             if name not in vocab or name in local:
                 continue
             db = defs_by_name[name]
             if db & direct:
+                # directly sources a definer. An in-function call is fine (runs
+                # after top-level sourcing); a TOP-LEVEL call must be preceded by
+                # the source, else it runs before the definer loads.
+                if not top_level:
+                    continue
+                earliest = min((file_src_min[p][b] for b in db
+                                if b in file_src_min[p]), default=line + 1)
+                if earliest < line:
+                    continue
+                brk_top.append((rel, line, name))   # sourced after the call
                 continue
             rec = (rel, line, name)
             if name in COMMON_EXTERNAL:
@@ -269,7 +305,14 @@ def main():
     allow = read_allowlist(allow_path)
     active = {(rel, name) for rel, _, name in brk_top}
     unexpected = sorted(active - set(allow))
-    stale = sorted(set(allow) - active)
+    ## An allowlist entry is stale only when its file was actually scanned yet no
+    ## longer breaks -- NOT when the file is absent (e.g. an uninitialized
+    ## submodule), which would otherwise fail the gate for a missing subtree.
+    stale = sorted(e for e in (set(allow) - active) if e[0] in scanned_rel)
+    absent = sorted(e for e in (set(allow) - active) if e[0] not in scanned_rel)
+    for rel, name in absent:
+        print(f"INFO: allowlist entry's file not present (kept): {rel} '{name}'",
+              file=sys.stderr)
 
     for rel, name in unexpected:
         print(f"FAIL: top-level break not allowlisted: {rel} calls '{name}' "
