@@ -222,11 +222,14 @@ mkdir --parents -- "${root_fifo}/boot/grub"
 mkfifo -- "${root_fifo}/boot/grub/grub.cfg"
 rc_f=0
 MOUNTPOINT="${root_fifo}" timeout --kill-after=10 10 "${helper}" persistent-sysmaint >/dev/null 2>&1 || rc_f=$?
-if [ "${rc_f}" -ne 0 ] && [ "${rc_f}" -ne 124 ]; then
-   printf '%s\n' "PASS: FIFO grub.cfg refused promptly (rc=${rc_f}), no hang"
+## Require the helper's OWN refusal status (1), not merely "not 124": a bare not-124 check would
+## also pass a timeout exec failure (126/127) or a SIGKILL after --kill-after (137), none of which
+## is the clean up-front refusal this canary asserts.
+if [ "${rc_f}" -eq 1 ]; then
+   printf '%s\n' "PASS: FIFO grub.cfg refused promptly (rc=1), no hang"
    pass=$(( pass + 1 ))
 else
-   printf '%s\n' "FAIL: FIFO grub.cfg not refused cleanly (rc=${rc_f}; 124 = hung until timeout)"
+   printf '%s\n' "FAIL: FIFO grub.cfg not refused with rc=1 (rc=${rc_f}; 124=hang, 126/127=exec fail, 137=killed)"
    fail=$(( fail + 1 ))
 fi
 
@@ -238,11 +241,11 @@ make_root "${root_fifo_env}" "gnulinux-persistent-sysmaint-${dev}"
 mkfifo -- "${root_fifo_env}/boot/grub/grubenv"
 rc_fe=0
 MOUNTPOINT="${root_fifo_env}" timeout --kill-after=10 10 "${helper}" persistent-sysmaint >/dev/null 2>&1 || rc_fe=$?
-if [ "${rc_fe}" -ne 0 ] && [ "${rc_fe}" -ne 124 ]; then
-   printf '%s\n' "PASS: FIFO grubenv refused promptly (rc=${rc_fe}), no hang"
+if [ "${rc_fe}" -eq 1 ]; then
+   printf '%s\n' "PASS: FIFO grubenv refused promptly (rc=1), no hang"
    pass=$(( pass + 1 ))
 else
-   printf '%s\n' "FAIL: FIFO grubenv not refused cleanly (rc=${rc_fe}; 124 = hung until timeout)"
+   printf '%s\n' "FAIL: FIFO grubenv not refused with rc=1 (rc=${rc_fe}; 124=hang, 126/127=exec fail, 137=killed)"
    fail=$(( fail + 1 ))
 fi
 
