@@ -2355,6 +2355,26 @@ class _TocAudit(html.parser.HTMLParser):
             self._toc -= 1
 
 
+_VIDEO_RE = re.compile(r"<video\b[^>]*>(.*?)</video>", re.IGNORECASE | re.DOTALL)
+_CAPTIONS_TRACK_RE = re.compile(r'<track\b[^>]*\bkind="captions"', re.IGNORECASE)
+
+
+def check_video_captions(root, failures, pages=None):
+    """Every <video> must carry a <track kind="captions"> (WCAG 1.2.2 / axe video-caption): a
+    silent instructional video ships a descriptive-caption track, so a captionless <video> is a
+    real a11y gap, flagged here. <video> does not nest, so a non-greedy match to the first
+    </video> is exact; a <video> element SELF-closed or left open (no </video>) renders no media
+    and is not matched."""
+    for page in (html_files(root) if pages is None else pages):
+        rel = os.path.relpath(page, root)
+        with open(page, encoding="utf-8") as handle:
+            text = handle.read()
+        for match in _VIDEO_RE.finditer(text):
+            if not _CAPTIONS_TRACK_RE.search(match.group(1)):
+                failures.append(
+                    '%s: <video> without a <track kind="captions"> (WCAG 1.2.2)' % rel)
+
+
 def check_toc_complete(root, failures, pages=None):
     # A page's "On this page" TOC (<nav class="toc">) must list EVERY top-level content
     # section (<section class="cat" id=...>), so a newly added section cannot silently
@@ -3406,6 +3426,7 @@ def main():
         check_duplicate_ids(root, failures, pages)
         check_contrast(root, failures, pages)
         check_toc_complete(root, failures, pages)
+        check_video_captions(root, failures, pages)
         check_seo_current(root, failures, policy)
         # Hand-authored family/CSR chrome -- NOT the MediaWiki-generated wiki trees,
         # whose chrome is mw-* classes with a different footer/nav + its own class

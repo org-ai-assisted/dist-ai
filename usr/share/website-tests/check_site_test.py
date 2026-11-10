@@ -2739,6 +2739,24 @@ def run():
         _fails = []
         check_site.check_duplicate_ids(root, _fails)
         check('check_duplicate_ids passes unique ids', not _fails, _fails)
+
+    # check_video_captions: a <video> must carry a <track kind="captions"> (WCAG 1.2.2).
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               '<!doctype html><html><body><video src="/media/x.mp4" controls>'
+               '</video></body></html>')
+        _fails = []
+        check_site.check_video_captions(root, _fails)
+        check('check_video_captions flags a captionless <video>',
+              any('track kind="captions"' in f for f in _fails), _fails)
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               '<!doctype html><html><body><video src="/media/x.mp4" controls>'
+               '<track kind="captions" srclang="en" src="/media/x.en.vtt" default>'
+               '</video></body></html>')
+        _fails = []
+        check_site.check_video_captions(root, _fails)
+        check('check_video_captions passes a <video> with a captions track', not _fails, _fails)
     # canaries: an id inside <textarea>/<title> (RCDATA = literal text in a browser) or a
     # <template> (separate DocumentFragment tree) is NOT a document duplicate.
     for _scope in ('textarea', 'title', 'template'):
