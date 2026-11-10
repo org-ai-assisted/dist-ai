@@ -103,20 +103,35 @@ class RemountSecureCheckAuditTest(unittest.TestCase):
         return self._run_with_findmnt_stub("%sexit %d\n" % (body, findmnt_rc))
 
     def _run_check_covering(self, covering_row):
-        """Drive the audit with a stub findmnt that models the target-vs-exact
-        split for a dir that is NOT its own mountpoint: `findmnt --target <dir>`
-        resolves to the COVERING mount (prints `covering_row`, rc 0), while a
-        positional/exact-match query finds nothing (rc 1). Only an audit that
-        uses --target sees `covering_row`; the pre-fix exact-match lookup got the
-        empty rc-1 result and skipped the dir as N/A."""
+        """Drive the audit with a stub findmnt that models findmnt's --target
+        resolution for a dir that is NOT its own mountpoint. A WELL-FORMED target
+        query -- a --target / -T / --target=<path> flag and no end-of-options
+        '--' -- resolves to the COVERING mount: prints `covering_row`, exit 0.
+        Anything else exits 1 (empty). That is faithful to real findmnt in the
+        two ways that matter here, so a regression is CAUGHT rather than masked
+        as a covering read:
+        - a positional/exact-match query (the pre-fix lookup, no --target) finds
+          nothing, exit 1 -> N/A;
+        - real findmnt REFUSES --target combined with a '--' positional
+          (`findmnt --target -- <path>`), exit 1 -> N/A -- so that form would
+          silently N/A every dir (a global false green), and must not read as a
+          successful covering lookup.
+        The stub matches the flag, not the path, so it does not emulate findmnt's
+        full grammar beyond these forms."""
         printf_row = "printf '%%s\\n' \"%s\"" % covering_row
         stub_body = (
+            'has_target=0\n'
+            'has_ddash=0\n'
             'for arg in "$@"; do\n'
-            '   if [ "$arg" = "--target" ]; then\n'
-            "      %s\n"
-            '      exit 0\n'
-            '   fi\n'
+            '   case "$arg" in\n'
+            '      --target|-T|--target=*) has_target=1 ;;\n'
+            '      --) has_ddash=1 ;;\n'
+            '   esac\n'
             'done\n'
+            'if [ "$has_target" = 1 ] && [ "$has_ddash" = 0 ]; then\n'
+            "   %s\n"
+            '   exit 0\n'
+            'fi\n'
             'exit 1\n'
         ) % printf_row
         return self._run_with_findmnt_stub(stub_body)
