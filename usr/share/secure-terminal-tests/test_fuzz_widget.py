@@ -85,6 +85,23 @@ except AssertionError:
 else:
     _fail('_assert did not raise on a false condition')
 
+# _bounded's budget-exhaustion early return: in a live run it fires only when a phase
+# overruns _PHASE_BUDGET_S, so its coverage is timing-dependent (and absent entirely
+# when the budget is disabled). Drive it deterministically with a fake monotonic clock
+# so this branch is always exercised, not left to CI runner speed.
+try:
+    _ticks = iter([0.0, 5.0, 100.0])                 # start, below-budget, over-budget
+    _orig_monotonic = F.time.monotonic
+    F.time.monotonic = lambda: next(_ticks)
+    try:
+        _capped = list(F._bounded(10, 10.0))
+    finally:
+        F.time.monotonic = _orig_monotonic
+    if _capped != [0]:
+        _fail('_bounded budget cap yielded {0}, expected [0]'.format(_capped))
+except Exception as exc:                           # pylint: disable=broad-except
+    _fail('_bounded budget-cap path: {0}'.format(exc))
+
 sys.stdout.write('secure-terminal-tests(fuzz-widget): {0} phases driven, {1} failed\n'
                  .format(len(F.PHASES), FAIL))
 sys.exit(0 if FAIL == 0 else 1)
