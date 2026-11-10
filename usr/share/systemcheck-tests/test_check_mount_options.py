@@ -123,6 +123,12 @@ class CheckMountOptionsScenarios(ScenarioTestBase):
         emitted = r.joined()
         self.assertNotIn('<font color=green>OK</font>', emitted)
         self.assertNotIn('</p><font', emitted)
+        ## The deviation must SURVIVE sanitization (markup stripped to plain
+        ## text), not be dropped: a lost DEVIATION line would fall back to a
+        ## bare "Indeterminate" and silently hide the hardening failure. The
+        ## injected mountpoint strips to '/mnt/OK'.
+        self.assertIn('Not hardened', emitted)
+        self.assertIn("/mnt/OK", emitted)
 
     def test_newroot_is_cleared(self) -> None:
         ## An inherited NEWROOT must not redirect the audit to a fake root and
@@ -133,6 +139,9 @@ class CheckMountOptionsScenarios(ScenarioTestBase):
             env_setup='verbose=0\nNEWROOT=/definitely-not-a-real-root',
             stubs=DEVIATION_STUB)
         self.assertTrue(r.has_severity('warning'))
+        ## The failing audit must reach callers via EXIT_CODE too, not only in
+        ## the message -- a warn-but-exit-0 regression would hide the failure.
+        self.assertEqual(r.exit_code, '1')
         self.assertIn('/boot', r.joined())
         self.assertIn('Not hardened', r.joined())
 

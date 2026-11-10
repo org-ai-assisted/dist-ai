@@ -25,6 +25,8 @@ DEVIATION line). Covered so a weakened audit cannot pass:
 - NO / PARTIAL compliance -> deviation (the matcher needs ALL options, not any).
 - STACKED mounts -> the EFFECTIVE (topmost) mount is findmnt's LAST row; a secure
   shadowed lower row must NOT mask an insecure effective mount.
+- NON-mountpoint dir -> audited via its COVERING mount (findmnt --target), never
+  skipped as N/A, so a permissive parent cannot pass a covered dir silently.
 - findmnt "no mount" (exit 1) -> N/A, never a deviation.
 - findmnt unreadable (exit >= 2) -> fail CLOSED (deviation), never a silent pass.
 """
@@ -48,6 +50,9 @@ COMPLIANT = "rw,nosuid,nodev,noexec,relatime"
 NONCOMPLIANT = "rw,relatime"
 ## Some (nodev) but not all -> /boot (wants nosuid,nodev,noexec) must deviate.
 PARTIAL = "rw,nodev,relatime"
+## A COVERING mount (what findmnt --target resolves to for a dir that is not its
+## own mountpoint) lacking noexec -> the covered policy dir must still deviate.
+COVERING_MISSING_NOEXEC = "rw,nosuid,nodev,relatime"
 
 
 def _resolve_remount_secure():
@@ -71,22 +76,50 @@ class RemountSecureCheckAuditTest(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.remount_secure = _resolve_remount_secure()
 
-    def _run_check(self, rows, findmnt_rc: int = 0):
-        """Run `remount-secure --check 3` against a stub findmnt that, for every
-        --target query, prints each option string in `rows` (one line per stacked
-        mount, topmost LAST) and exits findmnt_rc."""
+    def _run_with_findmnt_stub(self, stub_body):
+        """Run `remount-secure --check 3` with `stub_body` installed as the
+        findmnt on PATH. NEWROOT is cleared from the environment: remount-secure
+        uses it as a path prefix, so a runner-inherited NEWROOT would turn the
+        audited '/boot' into '${NEWROOT}/boot' and break the per-mountpoint
+        assertions."""
         with tempfile.TemporaryDirectory() as stub_dir:
             stub = os.path.join(stub_dir, "findmnt")
-            body = "".join("printf '%%s\\n' \"%s\"\n" % r for r in rows)
             with open(stub, "w", encoding="utf-8") as handle:
-                handle.write("#!/bin/bash\n%sexit %d\n" % (body, findmnt_rc))
+                handle.write("#!/bin/bash\n%s" % stub_body)
             ## 0o700 (not 0o755): owner-executable only keeps the Bandit B103 gate quiet.
             os.chmod(stub, 0o700)
             env = dict(os.environ)
+            env.pop("NEWROOT", None)
             env["PATH"] = stub_dir + os.pathsep + env.get("PATH", "")
             return subprocess.run(
                 [self.remount_secure, "--check", "3"],
                 capture_output=True, text=True, env=env, timeout=30, check=False)
+
+    def _run_check(self, rows, findmnt_rc: int = 0):
+        """Drive the audit with a stub findmnt that ignores its arguments and,
+        for every query, prints each option string in `rows` (one line per
+        stacked mount, topmost LAST) then exits findmnt_rc."""
+        body = "".join("printf '%%s\\n' \"%s\"\n" % r for r in rows)
+        return self._run_with_findmnt_stub("%sexit %d\n" % (body, findmnt_rc))
+
+    def _run_check_covering(self, covering_row):
+        """Drive the audit with a stub findmnt that models the target-vs-exact
+        split for a dir that is NOT its own mountpoint: `findmnt --target <dir>`
+        resolves to the COVERING mount (prints `covering_row`, rc 0), while a
+        positional/exact-match query finds nothing (rc 1). Only an audit that
+        uses --target sees `covering_row`; the pre-fix exact-match lookup got the
+        empty rc-1 result and skipped the dir as N/A."""
+        printf_row = "printf '%%s\\n' \"%s\"" % covering_row
+        stub_body = (
+            'for arg in "$@"; do\n'
+            '   if [ "$arg" = "--target" ]; then\n'
+            "      %s\n"
+            '      exit 0\n'
+            '   fi\n'
+            'done\n'
+            'exit 1\n'
+        ) % printf_row
+        return self._run_with_findmnt_stub(stub_body)
 
     def _deviation_lines(self, stdout):
         return [ln for ln in stdout.splitlines() if ln.startswith("DEVIATION:")]
@@ -127,6 +160,28 @@ class RemountSecureCheckAuditTest(unittest.TestCase):
             any("have: '%s'" % NONCOMPLIANT in ln
                 for ln in self._deviation_lines(result.stdout)),
             "deviation must report the effective row's options:\n%s" % result.stdout)
+
+    def test_covered_nonmountpoint_dir_audits_covering_mount(self) -> None:
+        ## A policy dir that is not its own mountpoint must be audited via its
+        ## COVERING mount, never skipped as N/A -- else a permissive parent
+        ## (here missing noexec) passes silently. Regression guard against the
+        ## pre-fix positional/exact-match lookup.
+        result = self._run_check_covering(COVERING_MISSING_NOEXEC)
+        self.assertEqual(
+            result.returncode, 1,
+            "a covering mount missing noexec must deviate, not pass as N/A:\n%s%s"
+            % (result.stdout, result.stderr))
+        ## Pin a SPECIFIC covered policy dir ('/var/log', wants noexec): its
+        ## deviation must report the COVERING mount's options in 'have:', proving
+        ## --target resolved the dir to its covering mount and audited THAT. A
+        ## loose "any deviation mentions noexec" check would still pass if this
+        ## dir were skipped as N/A while some other mountpoint deviated.
+        self.assertTrue(
+            any("'/var/log'" in ln
+                and "have: '%s'" % COVERING_MISSING_NOEXEC in ln
+                for ln in self._deviation_lines(result.stdout)),
+            "covered dir '/var/log' must deviate against its covering mount:\n%s"
+            % result.stdout)
 
     def test_absent_mount_reported_na_not_deviation(self) -> None:
         ## findmnt exit 1 = no mount for this path -> N/A, never a deviation.
