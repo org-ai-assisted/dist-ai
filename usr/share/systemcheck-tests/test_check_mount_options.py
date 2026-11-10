@@ -41,6 +41,10 @@ _REQUIRE_CHECK = (
     "         return 2\n"
     "         ;;\n"
     "   esac\n"
+    "   if [ -n \"${NEWROOT:-}\" ]; then\n"
+    "      printf '%s\\n' \"STUB-ERROR: NEWROOT not cleared: ${NEWROOT}\" >&2\n"
+    "      return 2\n"
+    "   fi\n"
 )
 
 CLEAN_STUB = _REQUIRE_CHECK + (
@@ -59,6 +63,14 @@ DEVIATION_STUB = _REQUIRE_CHECK + (
 ## remount-secure that rejects --check), still receiving --check.
 INDETERMINATE_STUB = _REQUIRE_CHECK + (
     "   printf '%s\\n' \"ERROR: --check unsupported\" >&2\n"
+    "   return 1\n"
+    "}"
+)
+
+## A DEVIATION line carrying HTML metacharacters: must not break out of the
+## warning paragraph and inject a fake green OK into the GUI message.
+HTML_INJECTION_STUB = _REQUIRE_CHECK + (
+    "   printf '%s\\n' \"DEVIATION: '/mnt/</p><font color=green>OK</font>' missing 'noexec'\"\n"
     "   return 1\n"
     "}"
 )
@@ -101,6 +113,28 @@ class CheckMountOptionsScenarios(ScenarioTestBase):
         self.assertEqual(r.exit_code, '1')
         self.assertIn('Indeterminate', r.joined())
         self.assertNotIn('Not hardened', r.joined())
+
+    def test_deviation_html_metachars_are_sanitized(self) -> None:
+        ## A hardening FAILURE must never be renderable as a green OK: the
+        ## injected markup must be stripped before it reaches the HTML message.
+        r = run_check_scenario(self.check(self.FILE), 'check_mount_options',
+                               env_setup='verbose=0', stubs=HTML_INJECTION_STUB)
+        self.assertTrue(r.has_severity('warning'))
+        emitted = r.joined()
+        self.assertNotIn('<font color=green>OK</font>', emitted)
+        self.assertNotIn('</p><font', emitted)
+
+    def test_newroot_is_cleared(self) -> None:
+        ## An inherited NEWROOT must not redirect the audit to a fake root and
+        ## fabricate a hardened pass: the check clears it, so the stub (which
+        ## errors on a non-empty NEWROOT) runs normally and still flags /boot.
+        r = run_check_scenario(
+            self.check(self.FILE), 'check_mount_options',
+            env_setup='verbose=0\nNEWROOT=/definitely-not-a-real-root',
+            stubs=DEVIATION_STUB)
+        self.assertTrue(r.has_severity('warning'))
+        self.assertIn('/boot', r.joined())
+        self.assertIn('Not hardened', r.joined())
 
 
 if __name__ == '__main__':
