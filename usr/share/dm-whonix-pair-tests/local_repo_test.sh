@@ -175,7 +175,9 @@ ws_func_enable_local_repo >/dev/null 2>&1
 assert "enable writes the generated local sources into the dedicated guest dir" \
    grep -q 'sources.list.d.localtest/local-apt-repo.sources' "${rec_exec}"
 assert "enable updates apt pointed at the local sources ONLY (sourceparts + sourcelist=/dev/null)" \
-   grep -q -- '-o Dir::Etc::sourceparts=/etc/apt/sources.list.d.localtest -o Dir::Etc::sourcelist=/dev/null --quiet update' "${rec_exec}"
+   grep -q -- '-o Dir::Etc::sourceparts=/etc/apt/sources.list.d.localtest -o Dir::Etc::sourcelist=/dev/null' "${rec_exec}"
+assert "enable reads the vboxsf mirror as root (APT::Sandbox::User=root, _apt cannot read it)" \
+   grep -q -- '-o APT::Sandbox::User=root' "${rec_exec}"
 assert "enable runs it as the boot user role" \
    grep -q -- '--role user' "${rec_exec}"
 assert "enable policy-checks the derivative local repo is live" \

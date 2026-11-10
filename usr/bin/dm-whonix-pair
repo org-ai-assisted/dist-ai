@@ -138,7 +138,12 @@ GUEST_SHARE_MOUNT='/mnt/shared'
 ## local file: sources (offline, no Tor) with NO apt pin and WITHOUT touching the guest's own apt
 ## config (so the other checks are unaffected).
 LOCAL_TEST_SOURCES_DIR='/etc/apt/sources.list.d.localtest'
-LOCAL_TEST_APT_OPTS="-o Dir::Etc::sourceparts=${LOCAL_TEST_SOURCES_DIR} -o Dir::Etc::sourcelist=/dev/null"
+## APT::Sandbox::User=root: the local sources are a vboxsf mount the unprivileged _apt sandbox user
+## cannot read (vboxsf perms come from the mount umask 0007, not the inode), so a sandboxed fetch
+## hits 'Permission denied' on the compressed index -- and the mirror keeps NO uncompressed Packages
+## / by-hash to fall back to, so apt fails outright. Reading as root (which CAN read the mount)
+## resolves it; safe here -- a disposable test VM pulling a local, signed/trusted file: tree.
+LOCAL_TEST_APT_OPTS="-o Dir::Etc::sourceparts=${LOCAL_TEST_SOURCES_DIR} -o Dir::Etc::sourcelist=/dev/null -o APT::Sandbox::User=root"
 ## The mirror (private-ai-config debian-mirror-sync) is binary-only amd64; the base sources emit
 ## 'Architectures: amd64' so a multi-arch guest never asks for an absent foreign-arch index.
 LOCAL_MIRROR_ARCH='amd64'
