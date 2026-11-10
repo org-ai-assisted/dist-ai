@@ -237,5 +237,26 @@ else
    fail "nothing staged: returned non-zero (should be a clean no-op)"
 fi
 
+## --- 5. an UNRELATED staged path is EXCLUDED from the scoped commit ----------
+## The property that stops a regen commit sweeping a sibling's staged change:
+## git_commit_pathspecs commits ONLY the requested pathspecs ('git commit --
+## <paths>'), so a path staged alongside but NOT requested stays OUT of the
+## commit and remains staged. A regression to a bare / '-a' commit sweeps it.
+repo5="$(make_repo man unrelated)"
+before5="$(head_of "${repo5}")"
+run_commit "${repo5}" man auto-generated-man-pages
+after5="$(head_of "${repo5}")"
+if [ "${before5}" = "${after5}" ]; then
+   fail "unrelated staged: no commit created for the man/ change"
+elif [ "$(head_man_page "${repo5}")" != "changed" ]; then
+   fail "unrelated staged: committed HEAD lacks the man/ change"
+elif [ "$(git -C "${repo5}" show 'HEAD:unrelated/page')" = "changed" ]; then
+   fail "unrelated staged: the unrelated path was swept into the commit"
+elif git -C "${repo5}" diff --cached --quiet -- unrelated; then
+   fail "unrelated staged: the unrelated change is no longer staged (consumed)"
+else
+   pass "unrelated staged: unrelated path excluded from the commit and left staged"
+fi
+
 printf '%s\n' "${pass_count} pass, ${test_failures} fail, 0 skip"
 [ "${test_failures}" -eq 0 ]
