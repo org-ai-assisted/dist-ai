@@ -99,6 +99,7 @@ core_suites=(
    clusterfuzzlite-lib-tests
    developer-meta-files-tests
    dist-base-files-tests
+   dist-encrypted-tests
    grub-live-tests
    live-config-dist-tests
    libvirt-dist-tests
@@ -332,7 +333,7 @@ pkg_dir() {
       ## a fabricated monorepo path) makes their suites exit 77 SKIP in
       ## --repo-root mode instead of failing to find a directory that was never
       ## going to exist; --component-root above is their real entry point.
-      dist-ai|private-ai-config|anon-leak-test)
+      dist-ai|private-ai-config|anon-leak-test|dist-encrypted)
          ;;
       *)
          printf '%s' "${repo_root}/packages/kicksecure/${name}"
@@ -758,6 +759,18 @@ wire() {
             wire_env+=( "HELPER_SCRIPTS_PATH=${hs}" )
          fi
          ;;
+      dist-encrypted)
+         ## rsync_delete_versions_test.sh sources the REAL rsync-delete-versions
+         ## script (DIST_ENCRYPTED_REPO) to unit-test its pure prune function and
+         ## drive the whole script against a temp tree (RSYNC_DELETE_BASE_DIR,
+         ## dry-run / stubbed safe-rm -- never real /var/rsync). The script
+         ## sources check_runtime.bsh (provides was_executed) from helper-scripts
+         ## at source time, so HELPER_SCRIPTS_PATH must point at the checkout.
+         wire_env=( "DIST_ENCRYPTED_REPO=$( pkg_dir dist-encrypted )" )
+         if [ -n "${hs}" ]; then
+            wire_env+=( "HELPER_SCRIPTS_PATH=${hs}" )
+         fi
+         ;;
       msgcollector)
          ## The suite extracts / sources msgcollector's CLI-rendering bash and
          ## runs it. cli_links_to_footnotes is pure bash, but
@@ -1163,16 +1176,11 @@ wire() {
          ## derivative-maker packages/ subpath; point the suite at it via
          ## SECURE_TERMINAL_REPO resolved from the component root.
          wire_env=( "SECURE_TERMINAL_REPO=$( pkg_dir secure-terminal )" )
-         ## The live-widget fuzzer's cost is dominated by PER-PHASE headless-Qt
-         ## re-render, not iteration count: on the slow shared GitHub runner a run
-         ## clears ~5 phases in ~600s whether iterations is 1200 or 400, so it
-         ## TIMEOUTs the 600s per-suite cap regardless. Reducing iterations does
-         ## NOT fit the budget (measured: 400 iters still died at 602s mid-run).
-         ## FIXME: the nightly dist-ai-fuzz lane needs a structural fix -- cap
-         ## per-phase wall-time in the harness (reset retained output so re-render
-         ## cost stops climbing) or raise BOTH timeout_fuzz and the workflow's
-         ## 20-min job budget. 1200 is the maintainer's chosen depth; keep it, and
-         ## run deep by hand: secure-terminal-tests-fuzz-gui --iterations N.
+         ## The live-widget fuzzer caps EACH phase at _PHASE_BUDGET_S wall-seconds
+         ## (fuzz_widget _bounded), so the suite runs ~ phases * budget regardless of
+         ## iteration count -- iterations only sets the depth a phase reaches before the
+         ## cap. 1200 is the maintainer's chosen depth; run deeper by hand:
+         ## secure-terminal-tests-fuzz-gui --iterations N.
          if [ "${suite}" = 'secure-terminal-tests-fuzz-gui' ]; then
             wire_args=( '--iterations' '1200' )
          fi
@@ -1245,6 +1253,9 @@ suite_component() {
          ;;
       private-ai-config)
          printf '%s' 'private-ai-config'
+         ;;
+      dist-encrypted)
+         printf '%s' 'dist-encrypted'
          ;;
       clusterfuzzlite-lib|dist-ai-registry|github-api|image-optimize|iso-download|dm-release-test|dm-build-account|dm-calamares-install|dm-image-build|test-results-site|vbox-image-test|dm-vm-lock|dm-firmware-identity|dm-ci-job-watch|dm-gitlink-upstream-check|dm-gitlink-bump|iso-boot|tirdad-isn-nat)
          printf '%s' 'dist-ai'
