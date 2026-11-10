@@ -31,10 +31,15 @@ reported for visibility but do not gate.
 """
 import json
 import os
+import re
 import subprocess
 import sys
 
 SHELL_EXT = (".sh", ".bsh")
+# a shebang interpreter we treat as bash-compatible for shfmt. Excludes zsh,
+# csh, fish, etc. -- shfmt cannot parse those, so they are not shell files here.
+_SHEBANG_RE = re.compile(rb"^#!\s*(\S+)(?:\s+(\S+))?")
+_SHELL_INTERP = {b"sh", b"bash", b"dash"}
 _PH = "\x00"   # placeholder for a ${var}/$(...)/$var in a path
 
 COMMON_EXTERNAL = {
@@ -64,7 +69,13 @@ def is_shell_file(path):
             first = fh.readline()
     except OSError:
         return False
-    return first.startswith(b"#!") and (b"bash" in first or b"sh" in first)
+    m = _SHEBANG_RE.match(first)
+    if not m:
+        return False
+    interp = m.group(1).rsplit(b"/", 1)[-1]
+    if interp == b"env" and m.group(2):
+        interp = m.group(2).rsplit(b"/", 1)[-1]
+    return interp in _SHELL_INTERP
 
 
 def collect(root):
@@ -232,7 +243,7 @@ def main():
     for p in files:
         ast = parse_ast(p)
         if ast is None:
-            unparsed.append(p)
+            unparsed.append(os.path.relpath(p, root))
             continue
         defs, calls, srcs, unresolved = extract(ast)
         base = os.path.basename(p)
@@ -314,6 +325,16 @@ def main():
         print(f"INFO: allowlist entry's file not present (kept): {rel} '{name}'",
               file=sys.stderr)
 
+    ## A file shfmt cannot parse is dropped from analysis, so a break inside it
+    ## is invisible. List each one LOUDLY (not just a count) so the coverage gap
+    ## is visible for review rather than silently passing. Not a hard fail:
+    ## shfmt's parser has real limits and a red-for-no-reason gate is its own
+    ## fabricated signal; an allowlisted-but-unparsed file is handled above
+    ## (kept, not stale).
+    for rel in sorted(unparsed):
+        print(f"WARN: shfmt could not parse (NOT checked for breaks): {rel}",
+              file=sys.stderr)
+
     for rel, name in unexpected:
         print(f"FAIL: top-level break not allowlisted: {rel} calls '{name}' "
               f"with no source providing it", file=sys.stderr)
@@ -323,7 +344,8 @@ def main():
     if unexpected or stale:
         sys.exit(1)
     print(f"OK: {len(active)} top-level break(s), all allowlisted; "
-          f"{len(unparsed)} file(s) unparsed", file=sys.stderr)
+          f"{len(unparsed)} file(s) unparsed (listed above if any)",
+          file=sys.stderr)
     sys.exit(0)
 
 
