@@ -67,7 +67,6 @@ TB_LINK = (
 
 def _base_env(cache_dir, tarball=None):
     env = {
-        "tb_postinst": "true",
         "tb_cache_folder": str(cache_dir),
         "tbb_version_stripped": TB_VERSION,
         "ARCH_DOWNLOAD": TB_ARCH,
@@ -75,13 +74,22 @@ def _base_env(cache_dir, tarball=None):
         "tb_title": "Tor Browser",
         "TBB_PACKAGE_LINK": TB_LINK,
         "TBB_PACKAGE_FULL_PATH": str(tarball) if tarball is not None else "",
+        ## Force the producer's own defaults, independent of the caller's
+        ## environment (an inherited tb_sbom_supplier would make the test
+        ## environment-dependent).
+        "tb_sbom_supplier": "",
+        "tb_sbom_supplier_url": "",
     }
     return env
 
 
-def _drive(cache_dir, env):
+def _drive(cache_dir, env, who_ami="tb-updater"):
+    ## who_ami is assigned at source time (whoami), so it cannot be driven via
+    ## the environment; set it in the post-source setup instead. The producer
+    ## writes a fragment only on the system install path (who_ami == tb-updater).
+    setup = f'{STUBS}who_ami={who_ami!r}\n'
     proc = T.drive_sourced_function(
-        UPDATER, FUNC, setup=STUBS, require=REQUIRE, env=env)
+        UPDATER, FUNC, setup=setup, require=REQUIRE, env=env)
     assert proc.returncode != T.DRIVE_UNUSABLE, proc.stderr
     assert proc.returncode == 0, f"stderr: {proc.stderr}\nstdout: {proc.stdout}"
     return proc
@@ -93,7 +101,7 @@ def _fragment(cache_dir):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def test_postinst_writes_fragment_with_hash(tmp_path):
+def test_system_install_writes_fragment_with_hash(tmp_path):
     cache = tmp_path / "cache"
     cache.mkdir()
     tarball = tmp_path / "tor-browser.tar.xz"
@@ -101,7 +109,7 @@ def test_postinst_writes_fragment_with_hash(tmp_path):
     tarball.write_bytes(payload)
     want_hash = hashlib.sha256(payload).hexdigest()
 
-    _drive(cache, _base_env(cache, tarball))
+    _drive(cache, _base_env(cache, tarball), who_ami="tb-updater")
     frag = _fragment(cache)
 
     assert frag["type"] == "application"
@@ -122,16 +130,15 @@ def test_postinst_writes_fragment_with_hash(tmp_path):
     assert dist == [TB_LINK]
 
 
-def test_non_postinst_writes_nothing(tmp_path):
+def test_per_user_run_writes_nothing(tmp_path):
     cache = tmp_path / "cache"
     cache.mkdir()
     tarball = tmp_path / "tor-browser.tar.xz"
     tarball.write_bytes(b"x")
 
-    env = _base_env(cache, tarball)
-    env["tb_postinst"] = "false"
-    _drive(cache, env)
-    ## A per-user (non --postinst) install is not part of the system SBOM.
+    ## A direct per-user run (who_ami is the invoking user, not 'tb-updater')
+    ## installs a private browser that is not part of the system SBOM.
+    _drive(cache, _base_env(cache, tarball), who_ami="user")
     assert not (cache / "sbom-fragment.json").is_file()
 
 
@@ -140,13 +147,17 @@ def test_missing_tarball_degrades_to_hashless_fragment(tmp_path):
     cache.mkdir()
     ## TBB_PACKAGE_FULL_PATH points at a nonexistent file.
     env = _base_env(cache, tmp_path / "absent.tar.xz")
-    _drive(cache, env)
+    _drive(cache, env, who_ami="tb-updater")
     frag = _fragment(cache)
 
+    ## A hashless fragment is still a VALID CycloneDX component: the required
+    ## type/name/version are present.
+    assert frag["type"] == "application"
+    assert frag["name"] == "Tor Browser"
+    assert frag["version"] == TB_VERSION
     assert "hashes" not in frag
     ## Without a hash the purl carries no checksum qualifier, but stays valid.
     assert frag["purl"] == f"pkg:generic/tor-browser@{TB_VERSION}?arch={TB_ARCH}"
-    assert frag["version"] == TB_VERSION
 
 
 if __name__ == "__main__":
