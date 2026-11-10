@@ -60,12 +60,21 @@ fail() { fail_count=$(( fail_count + 1 )); printf '%s\n' "FAIL: $*" >&2; }
 ## style-ok: allow-embedded-script -- fresh isolation shell must inherit
 ## errexit ONLY from the sourced subject; a strict-mode preamble or an extracted
 ## script would pre-set it and defeat the test.
+## The ${...} tokens inside the single-quoted bash -c body below are meant to
+## expand in the CHILD shell, not here -- intentional, so SC2016 does not apply.
+# shellcheck disable=SC2016
 report="$(
-   MSGCOLLECTOR_SUBJECT="${subject}" BASH_ENV=/dev/null bash -c '
-      ## Clear inherited sourceability state BEFORE the source: an exported main/
-      ## collector function would make declare -F pass without the subject defining
-      ## them, and an exported msgcollector_run_dir would fake MAIN_RAN. BASH_ENV
-      ## above stops a planted startup file from running first.
+   env -i PATH="${PATH}" LC_ALL=C BASH_ENV=/dev/null \
+      MSGCOLLECTOR_SUBJECT="${subject}" bash -c '
+      ## env -i hands the child an EMPTY environment, so NO exported function
+      ## (BASH_FUNC_source%%, BASH_FUNC_unset%%, ...) is imported to shadow the
+      ## "source"/"unset"/"declare" builtins this test relies on. Without it an
+      ## exported "source" would make the subject never load yet still report all
+      ## PASS, and an exported "unset" would neuter a name-by-name unset fix -- so
+      ## clearing the whole env is the only robust isolation. We pass only PATH
+      ## (basename + source resolution), LC_ALL=C, BASH_ENV=/dev/null (no startup
+      ## file), and the subject path. Then clear any inherited main/collector/
+      ## msgcollector_run_dir so declare -F / MAIN_RAN reflect the subject alone.
       unset -f main collector 2>/dev/null
       unset msgcollector_run_dir 2>/dev/null
       ## The file sets "set -e" at the top; capture the source rc via "|| rc" so
