@@ -27,7 +27,10 @@ set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
-[ -v TMP ] || TMP=/tmp
+## '-n "${TMP:-}"', not the sibling '[ -v TMP ]': a SET-but-EMPTY TMP passes -v, which
+## would drop the sentinel at '/' -- where a non-writable root could mask a real
+## isolation regression (the fake 'source' touch fails -> sentinel absent -> false OK).
+[ -n "${TMP:-}" ] || TMP=/tmp
 
 here="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 subject_test="${here}/sourceable_test.sh"
