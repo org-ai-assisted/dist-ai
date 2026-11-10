@@ -88,11 +88,16 @@ def pump(ms):
     loop.exec()
 
 
-def wait_for(predicate, timeout_ms=2000, step_ms=10):
+def wait_for(predicate, timeout_ms=5000, step_ms=10):
     """Pump the event loop until predicate() is true, or timeout; return its final value.
     For an assert reading state that a QUEUED setter changes -- set_tui / set_osc apply
     asynchronously (signal/event), so a synchronous read on the very next line races the
-    apply under load and flakes. `ok(wait_for(lambda: ...))` settles it deterministically."""
+    apply under load and flakes. `ok(wait_for(lambda: ...))` settles it deterministically.
+    The ceiling is generous (not a target): a passing predicate returns the instant it is
+    true, so green costs nothing, while the 2GB sandbox's OOM-thrash render/signal stalls
+    (which blew a 2s ceiling intermittently) now have headroom. No test depends on a
+    timeout -- there is no `not wait_for` caller -- so a genuinely stuck predicate still
+    fails, only later; nothing is masked."""
     import time as _time
     deadline = _time.monotonic() + timeout_ms / 1000.0
     while not predicate():
