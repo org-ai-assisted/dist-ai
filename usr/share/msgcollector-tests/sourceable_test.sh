@@ -61,7 +61,13 @@ fail() { fail_count=$(( fail_count + 1 )); printf '%s\n' "FAIL: $*" >&2; }
 ## errexit ONLY from the sourced subject; a strict-mode preamble or an extracted
 ## script would pre-set it and defeat the test.
 report="$(
-   MSGCOLLECTOR_SUBJECT="${subject}" bash -c '
+   MSGCOLLECTOR_SUBJECT="${subject}" BASH_ENV=/dev/null bash -c '
+      ## Clear inherited sourceability state BEFORE the source: an exported main/
+      ## collector function would make declare -F pass without the subject defining
+      ## them, and an exported msgcollector_run_dir would fake MAIN_RAN. BASH_ENV
+      ## above stops a planted startup file from running first.
+      unset -f main collector 2>/dev/null
+      unset msgcollector_run_dir 2>/dev/null
       ## The file sets "set -e" at the top; capture the source rc via "|| rc" so
       ## it cannot abort us, and use if-conditions below (errexit-exempt) so a
       ## failed "declare -F" for an absent function does not abort either.

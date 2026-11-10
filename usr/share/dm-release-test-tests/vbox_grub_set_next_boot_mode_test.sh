@@ -36,8 +36,6 @@ else
 fi
 [ -x "${subject}" ] || { printf '%s\n' "FATAL: wrapper not found at ${subject}" >&2; exit 1; }
 
-work="$(mktemp --directory --tmpdir vbox-grub-next-test.XXXXXX)"
-
 ## The wrapper derives the request dir from the CALLER's passwd home (unspoofable
 ## PRIVLEAP_CALLER_UID), not an env var, so the request MUST live under the real home.
 ## Shared slot: refuse an occupied/symlinked one before any write (same discipline as the
@@ -49,6 +47,8 @@ req="${home}/.cache/vbox-grub-set-next-boot-mode"
 req_preexisted='true'
 [ -d "${req}" ] || req_preexisted='false'
 created='false'
+## mktemp'd only AFTER the trap is armed (below); empty until then, so cleanup guards it.
+work=''
 
 cleanup() {
    if [ "${created}" = 'true' ]; then
@@ -57,9 +57,14 @@ cleanup() {
          rmdir -- "${req}" 2>/dev/null || true
       fi
    fi
-   safe-rm --recursive --force -- "${work}"
+   [ -n "${work}" ] && safe-rm --recursive --force -- "${work}"
+   return 0
 }
 trap cleanup EXIT
+
+## Scratch dir created only AFTER home is validated and the cleanup trap is armed, so a
+## failed/empty getent home exits above before any tmpdir is made -- nothing to leak.
+work="$(mktemp --directory --tmpdir vbox-grub-next-test.XXXXXX)"
 
 failures=0
 check() {
@@ -72,7 +77,7 @@ check() {
 }
 
 [ -L "${req}" ] && { printf '%s\n' "FATAL: ${req} is a symlink; refusing" >&2; exit 1; }
-for leaf in disk passphrase mode format fakedisk ok.vmdk bad.vmdk multi.vmdk bad.qcow2; do
+for leaf in disk passphrase mode format fakedisk other_owned ok.vmdk bad.vmdk multi.vmdk bad.qcow2; do
    if [ -e "${req}/${leaf}" ] || [ -L "${req}/${leaf}" ]; then
       printf '%s\n' "FATAL: ${req}/${leaf} exists; refusing to clobber a concurrent request" >&2
       exit 1

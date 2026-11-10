@@ -25,35 +25,34 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
-if [ -n "${DERIVATIVE_MAKER_DIR:-}" ]; then
-   dm_checkout="${DERIVATIVE_MAKER_DIR}"
-else
-   dm_checkout="${HOME}/derivative-maker"
-fi
-
 frag_rel='help-steps/determine-build-user.bsh'
 frag=""
-candidates=()
-[ -z "${DERIVATIVE_MAKER_DIR:-}" ] || candidates+=( "${DERIVATIVE_MAKER_DIR}/${frag_rel}" )
-candidates+=( "${dm_checkout}/${frag_rel}" )
-candidates+=( "/${frag_rel}" )
-for candidate in "${candidates[@]}"; do
-   if [ -r "${candidate}" ]; then
-      frag="${candidate}"
-      break
-   fi
-done
-if [ -z "${frag}" ]; then
-   if [ -n "${DERIVATIVE_MAKER_DIR:-}" ]; then
-      ## A full derivative-maker checkout was given, so the fragment is REQUIRED there -- its
-      ## absence is a broken subject, not an optional target. FAIL (no vacuous skip that could let
-      ## the suite pass while this test never ran its assertions).
+if [ -n "${DERIVATIVE_MAKER_DIR:-}" ]; then
+   ## A full derivative-maker checkout was CONFIGURED, so the fragment is REQUIRED THERE.
+   ## Check that checkout's own fragment DIRECTLY -- never fall through to another checkout
+   ## or the absolute '/' path, which would silently test a fragment OUTSIDE the configured
+   ## checkout. Its absence is a broken subject (FAIL), not a vacuous skip that could let the
+   ## suite pass while this test never ran its assertions.
+   frag="${DERIVATIVE_MAKER_DIR}/${frag_rel}"
+   if [ ! -r "${frag}" ]; then
       printf '%s\n' "FAIL: ${frag_rel} missing under DERIVATIVE_MAKER_DIR='${DERIVATIVE_MAKER_DIR}' -- required in a full checkout." >&2
       exit 1
    fi
-   printf '%s\n' "SKIP: ${frag_rel} not found (set DERIVATIVE_MAKER_DIR); it is a derivative-maker superproject fragment, absent in a standalone dmf component checkout." >&2
-   ## style-ok: allow-skip: help-steps/determine-build-user.bsh lives in the derivative-maker superproject, absent only in a standalone dmf component checkout (DERIVATIVE_MAKER_DIR unset)
-   exit 77
+else
+   ## Standalone dmf component checkout (no configured superproject): try the default
+   ## superproject location, then the installed absolute path. If neither exists the fragment
+   ## is genuinely absent (it lives in the derivative-maker superproject) -> SKIP.
+   for candidate in "${HOME}/derivative-maker/${frag_rel}" "/${frag_rel}"; do
+      if [ -r "${candidate}" ]; then
+         frag="${candidate}"
+         break
+      fi
+   done
+   if [ -z "${frag}" ]; then
+      printf '%s\n' "SKIP: ${frag_rel} not found (set DERIVATIVE_MAKER_DIR); it is a derivative-maker superproject fragment, absent in a standalone dmf component checkout." >&2
+      ## style-ok: allow-skip: help-steps/determine-build-user.bsh lives in the derivative-maker superproject, absent only in a standalone dmf component checkout (DERIVATIVE_MAKER_DIR unset)
+      exit 77
+   fi
 fi
 
 mock_dir=""

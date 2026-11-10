@@ -164,7 +164,9 @@ check "happy: output mtime pinned to SOURCE_DATE_EPOCH" "$(stat -c %Y -- "${sbom
 ## ===================== Case 2: SOURCE_DATE_EPOCH unset -> graceful skip =====================
 reset_state
 rc=0
-run_hook || rc=$?
+## Unset in a subshell: a CI that exports SOURCE_DATE_EPOCH would otherwise leak it into
+## run_hook and make this case generate an SBOM instead of exercising the missing-epoch path.
+( unset SOURCE_DATE_EPOCH; run_hook ) || rc=$?
 check "no-epoch: hook exits 0 (graceful)" "${rc}" "0"
 check "no-epoch: debsbom NOT invoked" "$(yn test -f "${rec}/debsbom.argv")" "no"
 check "no-epoch: no SBOM written" "$(yn test -f "${sbom_out}")" "no"

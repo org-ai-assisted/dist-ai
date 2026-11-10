@@ -295,10 +295,14 @@ def _checkout_unit_directive(repo: str, key: str) -> str:
             for raw in handle:
                 stripped = raw.strip()
                 if stripped.startswith('[') and stripped.endswith(']'):
-                    in_service = stripped.lower() == '[service]'
+                    ## systemd section names are case-sensitive: a '[service]'
+                    ## header is NOT the [Service] section, so its directives are
+                    ## inert and must not be credited as hardening.
+                    in_service = stripped == '[Service]'
                     continue
+                ## systemd ignores lines starting with '#' OR ';' (comments).
                 if (not in_service or stripped.startswith('#')
-                        or '=' not in stripped):
+                        or stripped.startswith(';') or '=' not in stripped):
                     continue
                 name, _, val = stripped.partition('=')
                 if name.strip() == key:
