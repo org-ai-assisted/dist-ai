@@ -397,12 +397,14 @@ def word_literal_letters(word):
 
 
 def word_ends_literal(word):
-    """True if WORD's FINAL character is statically known -- its last Part is a
-    literal (Lit / single-quoted / a double-quote whose last sub-part is literal),
-    not an expansion. A value-taking option letter that is the last LITERAL char
-    of word_literal_letters is the last char of the WHOLE word only when this holds
-    -- then it takes the NEXT word as its value; otherwise a trailing expansion
-    ('-u"$x"') is an inline value, not a next-word consume."""
+    """True if WORD does NOT end in an expansion -- its last Part is a literal
+    (Lit / single-quoted / a double-quote whose last sub-part is literal, or an
+    EMPTY double-quote '""', which adds no char and no expansion). A value-taking
+    option letter that is the last LITERAL char of word_literal_letters is the
+    last char of the WHOLE word only when this holds -- then it takes the NEXT
+    word as its value; a trailing EXPANSION ('-u"$x"') is instead an inline value.
+    An empty quote ('-u""' -> '-u') must read True, else the value-taker wrongly
+    looks inline and the following word is misclassified."""
     parts = (word or {}).get("Parts") or []
     if not parts:
         return False
@@ -412,7 +414,8 @@ def word_ends_literal(word):
         return True
     if kind == "DblQuoted":
         subs = last.get("Parts") or []
-        return bool(subs) and subs[-1].get("Type") == "Lit"
+        ## empty '""' adds no expansion -> ends literal; else the last sub decides.
+        return (not subs) or subs[-1].get("Type") == "Lit"
     return False
 
 

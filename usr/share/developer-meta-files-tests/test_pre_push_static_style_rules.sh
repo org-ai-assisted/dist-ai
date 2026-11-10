@@ -1032,6 +1032,11 @@ expect_rule "R-200" "timeout${sp}-v${dq}${dollar}x${dq}k${sp}5${sp}10${sp}cmd" "
 expect_rule "use --mode not -m" "${mkd}${sp}-p${dq}${dollar}x${dq}m${sp}750${sp}--${sp}${dq}${tv}${dq}" "present"
 ## grep '-v"$x"q' is quiet ('-vq') -> R-161 fires.
 expect_rule "R-161" "grep${sp}-v${dq}${dollar}x${dq}q${sp}foo${sp}${dir173}" "present"
+## An EMPTY quote ('-u""' -> '-u') must NOT read as an inline value: the wrapper's
+## value-taking '-u' still consumes the NEXT word, so 'env -u"" PATH rm' runs rm
+## (PATH is -u's value) and the rm sink is flagged (R-120). Guards word_ends_literal
+## against treating a trailing empty quote as a trailing expansion.
+expect_rule "R-120" "env${sp}-u${dq}${dq}${sp}PATH${sp}${del}${sp}-rf${sp}/x" "present"
 
 ## R-010: seven COPIES of one directive must NOT satisfy the block (DISTINCT
 ## directives are counted); the seven distinct directives pass.
