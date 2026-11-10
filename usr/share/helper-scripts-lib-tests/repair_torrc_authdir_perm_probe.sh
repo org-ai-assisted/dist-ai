@@ -16,10 +16,11 @@
 ##                       INHERITED umask (the real consumer path: errexit +
 ##                       inherit_errexit, exactly as repair-torrc's main() calls it)
 ##
-## Exit: 0 ok; 1 sourcing enabled errexit (strict leak); 3 the function is
-## undefined. In 'source' mode the sentinel 'PROBE_SOURCE_END' is printed ONLY
-## if control falls through to the end: a subject that auto-ran its main and
-## hit 'exit' never emits it, so the test fails loud instead of passing vacuously.
+## Exit: 0 ok; non-zero sourcing leaked strict-mode -- errexit OR nounset; 3 the
+## function is undefined. In 'source' mode the sentinel 'PROBE_SOURCE_END' is
+## printed ONLY if control falls through to the end: a subject that auto-ran its
+## main and hit 'exit' never emits it, so the test fails loud instead of passing
+## vacuously.
 
 # shellcheck disable=SC1090,SC1091,SC2154  # SUBJECT: the repair-torrc path, from the env
 source "${SUBJECT}"
@@ -38,9 +39,13 @@ if [ "${1:-}" = "create" ]; then
    exit 0
 fi
 
-## 'source' mode: if sourcing enabled errexit, this 'false' aborts the probe
-## (non-zero exit, no sentinel); if sourcing auto-ran main, its 'exit' never
-## reaches the sentinel either. Reaching the sentinel at exit 0 proves sourcing
-## neither leaked strict-mode nor auto-ran. The sentinel is the ONLY stdout.
+## 'source' mode: detect a strict-mode LEAK before the sentinel. If sourcing
+## enabled errexit, the 'false' aborts the probe (non-zero exit, no sentinel);
+## if it enabled nounset, expanding the unset canary aborts the probe; if
+## sourcing auto-ran main, its 'exit' never reaches the sentinel either.
+## Reaching the sentinel at exit 0 proves sourcing leaked NEITHER errexit NOR
+## nounset and did not auto-run. The sentinel is the ONLY stdout.
 false
+# shellcheck disable=SC2154  # deliberately-unset canary: a nounset leak aborts here
+: "${__repair_torrc_probe_nounset_canary__}"
 printf '%s\n' PROBE_SOURCE_END
