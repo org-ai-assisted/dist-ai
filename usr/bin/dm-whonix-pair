@@ -276,6 +276,48 @@ story_battery_cards() {
    done <<< "${records}"
 }
 
+## Per-check story card callback for run_release_check_battery (story_fn RESULT NUM): ONE card
+## per numbered release check, emitted from the SHARED battery loop so the gui and cli functional
+## editions record an identical per-check story (unify cli vs gui). RESULT = routed|pass|fail. NN
+## runs from a counter so the cards sort in execution order under the publisher's NN-prefix sort.
+## Best-effort via story_card (no-op without --shot-dir); never changes a check verdict.
+STORY_CHECK_NN=60
+wp_story_check() {
+   local result="$1" num="$2" nn desc body safe_name
+   STORY_CHECK_NN=$(( STORY_CHECK_NN + 1 ))
+   nn="${STORY_CHECK_NN}"
+   desc="${RELEASE_CHECK_DESC[${num}]:-check ${num}}"
+   case "${result}" in
+      routed)
+         body="ROUTED -- not run over this gate's transport: ${RELEASE_CHECK_SKIP_REASON[${num}]:-(routed elsewhere)}"
+         ;;
+      pass)
+         body="PASS -- in-guest command: ${RELEASE_CHECK_CMD[${num}]:-}"
+         ;;
+      fail)
+         body="FAILED -- see the verdict/failure card for the reason"
+         ;;
+      *)
+         body="${result}"
+         ;;
+   esac
+   safe_name="$(printf '%s' "${desc}" | tr ' ' '-')"
+   story_card "${nn}" "check${num}-${safe_name}" "Release check ${num}: ${desc} (${result})" "${body}"
+}
+
+## Pre-boot story card (NN 10): the exact pair under test as VBoxManage facts (not a photo).
+## Shared by every mode (leak + functional gui/cli) so the story opens identically.
+story_pair_defined() {
+   story_card 10 pair-defined "Whonix pair under test (pre-boot)" "$(
+      printf '%s\n' "Gateway VM: ${gw}"
+      "${VBOXMANAGE}" showvminfo "${gw}" --machinereadable 2>/dev/null \
+         | grep -iE '^(VMState|firmware|memory|vram|nic1|"SATA|"IDE)=' | head -10
+      printf '%s\n' "" "Workstation VM: ${ws}"
+      "${VBOXMANAGE}" showvminfo "${ws}" --machinereadable 2>/dev/null \
+         | grep -iE '^(VMState|firmware|memory|vram|nic1|"SATA|"IDE)=' | head -10
+   )"
+}
+
 ## Current VBox run-state of a VM ('running', 'poweroff', 'aborted', ...); empty if
 ## showvminfo failed. Single source for the VMState parse used across the harness.
 vm_state() {
@@ -485,6 +527,13 @@ on_exit() {
          case "$(vm_state "${gw}")" in poweroff|aborted|'') break ;; esac
          sleep 1
       done
+   fi
+   ## Story: final teardown milestone -- the pair reached poweroff. Only when a VM was actually
+   ## started (a pre-boot SETUP abort has nothing to show). Best-effort; no-op without --shot-dir.
+   if [ "${ws_started}" = 'true' ] || [ "${gw_started}" = 'true' ]; then
+      story_card 96 pair-poweroff "Pair powered off (teardown)" "$(
+         printf '%s\n' "Gateway ${gw}: $(vm_state "${gw}")" "Workstation ${ws}: $(vm_state "${ws}")"
+      )"
    fi
    ## Drop the consensus-relay cache (transient classifier input; the pcap is the evidence).
    if [ -n "${gw_relay_cache}" ]; then
@@ -994,6 +1043,9 @@ boot_gateway_functional() {
    gw_started='true'
    wait_guestcontrol_ready user 300 \
       || die "${SETUP_RC}" "${gw}: guestcontrol not ready -- a provisioning failure, not a release FAIL"
+   ## Story: the Gateway booted (guestcontrol confirmed). A CLI edition grabs the text console,
+   ## a desktop edition the compositor -- same framebuffer primitive either way.
+   story_snap 20 gateway-booted "${gw}"
 }
 
 ## Boot the Workstation fresh into its DEFAULT (user) session -- the battery's first checks
@@ -1027,6 +1079,8 @@ boot_workstation_user() {
    ws_started='true'
    wait_guestcontrol_ready user 300 \
       || die "${SETUP_RC}" "${ws}: guestcontrol not ready as user -- a provisioning failure, not a release FAIL"
+   ## Story: the Workstation booted into the user session (guestcontrol confirmed).
+   story_snap 25 workstation-booted "${ws}"
 }
 
 ## Gate on the Gateway's Tor bootstrap from the WS USER session (functional mode boots the
@@ -1044,7 +1098,13 @@ ws_func_tor_gate() {
          "${VBOX_EXEC_LOCAL}" "${ws}" --role user --timeout 300 \
             --cmd "systemcheck --cli --leak-tests --function ${port}" || ok='false'
       done
-      [ "${ok}" = 'true' ] && return 0
+      if [ "${ok}" = 'true' ]; then
+         ## Story: Tor bootstrap gate passed. The Gateway state is TEXTUAL (systemcheck positive
+         ## control) so card it; the Workstation that just proved egress is the visual frame.
+         story_card 30 gateway-tor-bootstrap "Gateway Tor bootstrapped" "Workstation systemcheck confirmed the Gateway's Tor SocksPort + TransPort are up (positive control). The egress path Workstation -> Gateway -> Tor is live; the battery runs only now."
+         story_snap 50 workstation-tor-confirmed "${ws}"
+         return 0
+      fi
       printf '%s\n' "${me}: Tor not confirmed yet (attempt ${attempt}); retrying"
       sleep 20
    done
@@ -1097,6 +1157,8 @@ ws_func_reboot_sysmaint() {
 ## incl. the full systemcheck via a real user session) and tear down.
 main_functional() {
    trap on_exit EXIT
+   ## Story: open with the pre-boot pair facts (shared with the leak + cli lanes).
+   story_pair_defined
    printf '%s\n' "${me}: [functional] boot Gateway (${gw})"
    boot_gateway_functional
    printf '%s\n' "${me}: [functional] boot Workstation (${ws}) into the user session"
@@ -1106,6 +1168,9 @@ main_functional() {
    printf '%s\n' "${me}: [functional] reach an input-ready terminal in the WS user session"
    wait_ready 300
    open_terminal
+   ## Story: the WS desktop with an input-ready terminal, just before the battery runs (the
+   ## gui parallel of the cli console-login frame at the same NN slot).
+   story_snap 58 workstation-terminal "${ws}"
    ## check_log (ocr-session's run_check_report_failure sink for a failed check's in-guest
    ## output) is CALLER-provided via --check-log; the caller creates, reads + reclaims it
    ## (like the kicksecure lane). Empty on a standalone run -> that sink's
@@ -1116,10 +1181,15 @@ main_functional() {
    ## `if !` both reports WHICH check failed (the battery records the number + reason) and
    ## disarms errexit, so a failure surfaces the reason + FAIL_RC instead of a bare rc=1 abort
    ## (matches dm-upgrade-regression / dm-calamares-install).
-   if ! run_release_check_battery ws_func_exec ws_func_reboot_sysmaint ''; then
+   ## wp_story_check (the optional per-check story_fn) cards EACH numbered check pass/fail/routed
+   ## from the shared battery loop -- the SAME hook the cli edition passes, so the per-check story
+   ## is identical across editions.
+   if ! run_release_check_battery ws_func_exec ws_func_reboot_sysmaint '' wp_story_check; then
       die "${FAIL_RC}" "release check ${RELEASE_CHECK_FAILED_NUM:-?} (${RELEASE_CHECK_FAILED_REASON:-unknown}) FAILED"
    fi
    printf '%s\n' "${me}: [functional] PASS -- Workstation passed the full release-check battery"
+   story_card 90 functional-verdict "PASS -- full release-check battery" "The Workstation passed the full numbered release-check battery (user + sysmaint sessions) over the Gateway's Tor. Per-check cards above carry each result."
+   story_snap 95 workstation-final "${ws}"
    return "${PASS_RC}"
 }
 
@@ -1291,6 +1361,10 @@ ws_cli_console_systemcheck() {
       printf '%s' "whoami > ${who_file}; systemcheck --cli --ci > ${log_file} 2>&1; echo \$? > ${rc_file}" \
          | "${GUESTCTL}" "${ws}" type-stdin >/dev/null 2>&1 || true
       "${GUESTCTL}" "${ws}" chord enter >/dev/null 2>&1 || true
+      ## Story: the WS text console showing the real logind login + systemcheck running (the
+      ## evidence that check 8 ran in a genuine user session, not over guestcontrol). Last
+      ## attempt's frame wins on overwrite -- best-effort, never changes the verdict.
+      story_snap 58 console-login "${ws}"
       ## Poll (over guestcontrol -- a file read needs no user session) for the rc file; read it.
       deadline=$(( SECONDS + 420 ))
       sc_rc=""
@@ -1327,6 +1401,7 @@ ws_cli_console_systemcheck() {
       fi
       if [ "${sc_rc}" = '0' ]; then
          printf '%s\n' "${me}: check 8 PASS (systemcheck --cli --ci via real console login as ${acct})"
+         story_card 59 check8-systemcheck "Release check 8: systemcheck (pass)" "PASS -- systemcheck --cli --ci ran in a real getty logind session as '${acct}' and exited 0 (a CLI edition has no logind user manager over guestcontrol, so it is driven via a genuine console login, not the headless battery)."
          return 0
       fi
       ## A genuine non-zero result: retry across the just-booted transient window, else FAIL.
@@ -1423,6 +1498,7 @@ ws_func_enable_local_repo() {
    ## guest's own apt config.
    gc_run user "dsudo install -d -m 0755 ${LOCAL_TEST_SOURCES_DIR} && printf %s '${b64}' | base64 --decode | dsudo tee ${LOCAL_TEST_SOURCES_DIR}/local-apt-repo.sources >/dev/null && dsudo apt-get ${LOCAL_TEST_APT_OPTS} --quiet update && apt-cache ${LOCAL_TEST_APT_OPTS} policy | grep --quiet --fixed-strings 'aptrepo_local/${local_repo}'" 600 \
       || die "${SETUP_RC}" "${ws}: could not enable the local apt sources in the WS (generate/write/update/policy failed) -- INCONCLUSIVE, not a release FAIL"
+   story_card 55 local-repo-enabled "Local apt repo enabled in the Workstation" "The derivative 'local' apt source plus the Debian base suites (${emitted_suites# }) are live -- apt-cache policy shows aptrepo_local/${local_repo}. Check 3 upgrades offline from these file: sources, no Tor."
 }
 
 ## Verify the local build payloads were ACTUALLY installed, not merely AVAILABLE. apt-cache policy
@@ -1464,12 +1540,15 @@ done
 GUEST
    gc_run user "${verify_cmd}" 600 \
       || die "${SETUP_RC}" "${ws}: local payload verification failed -- the locally-built packages were not actually installed (INCONCLUSIVE, not a release FAIL)"
+   story_card 56 local-build-installed "Local build payloads installed" "Every locally-built package already installed was reinstalled from the local repo and its installed version matches the local build, so check 3's verdict applies to THIS build, not the image's same-version payload."
 }
 
 ## Everything else runs faithfully headless: user/sysmaint boot-role (checks 1, 2), CLI login
 ## (5, whoami), networking over the Gateway's Tor (4), and upgrade-nonroot (3).
 main_functional_cli() {
    trap on_exit EXIT
+   ## Story: open with the pre-boot pair facts (shared with the leak + gui lanes).
+   story_pair_defined
    printf '%s\n' "${me}: [functional-cli] boot Gateway (${gw})"
    boot_gateway_functional
    printf '%s\n' "${me}: [functional-cli] boot Workstation (${ws}) into the user session"
@@ -1498,10 +1577,16 @@ main_functional_cli() {
    printf '%s\n' "${me}: [functional-cli] run the release-check battery over guestcontrol (no OCR)"
    ## No verify_fn ('' skips the OCR render pre-check -- there is no desktop to cross-check); the
    ## authoritative signal is each check's in-guest exit code over guestcontrol.
-   if ! run_release_check_battery ws_func_cli_exec cli_no_sysmaint_reboot ''; then
+   ## wp_story_check (the optional per-check story_fn) cards EACH numbered check pass/fail/routed
+   ## from the shared battery loop -- the SAME hook the gui edition passes (unify cli vs gui). The
+   ## routed checks (2/6/8) card their skip reason here; check 8's real run is carded by
+   ## ws_cli_console_systemcheck (NN 58/59) above.
+   if ! run_release_check_battery ws_func_cli_exec cli_no_sysmaint_reboot '' wp_story_check; then
       die "${FAIL_RC}" "release check ${RELEASE_CHECK_FAILED_NUM:-?} (${RELEASE_CHECK_FAILED_REASON:-unknown}) FAILED"
    fi
    printf '%s\n' "${me}: [functional-cli] PASS -- Workstation passed the CLI release-check battery + console-login systemcheck"
+   story_card 90 functional-verdict "PASS -- CLI release-check battery + console systemcheck" "The Workstation passed the CLI numbered release-check battery over the Gateway's Tor, plus systemcheck via a real console login (check 8). Per-check cards above carry each result."
+   story_snap 95 workstation-final "${ws}"
    return "${PASS_RC}"
 }
 
@@ -1579,14 +1664,7 @@ main() {
    fi
 
    ## Story: pre-boot evidence of the exact pair under test (VBoxManage facts, not a photo).
-   story_card 10 pair-defined "Whonix pair under test (pre-boot)" "$(
-      printf '%s\n' "Gateway VM: ${gw}"
-      "${VBOXMANAGE}" showvminfo "${gw}" --machinereadable 2>/dev/null \
-         | grep -iE '^(VMState|firmware|memory|vram|nic1|"SATA|"IDE)=' | head -10
-      printf '%s\n' "" "Workstation VM: ${ws}"
-      "${VBOXMANAGE}" showvminfo "${ws}" --machinereadable 2>/dev/null \
-         | grep -iE '^(VMState|firmware|memory|vram|nic1|"SATA|"IDE)=' | head -10
-   )"
+   story_pair_defined
 
    printf '%s\n' "${me}: boot Gateway (${gw}) with external-NIC trace"
    boot_gateway

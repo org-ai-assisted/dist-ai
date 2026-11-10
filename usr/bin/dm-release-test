@@ -1577,7 +1577,7 @@ rt_build_local_repo_provenance() {
 ## inst lane: the functional release-check battery (>= the kicksecure coverage) run on the
 ## Workstation of a persist-inst- pair, after the Gateway's Tor bootstrap gate.
 rt_lane_whonix_inst() {
-   local account version gw ws rc check_log
+   local account version gw ws rc check_log shot_dir
    account="$1"
    version="$2"
    gw="Whonix-Gateway-${desktop}"
@@ -1593,6 +1593,20 @@ rt_lane_whonix_inst() {
    if ! check_log="$(sudo -u "${account}" -- mktemp --tmpdir "dm-release-test-whonix-checklog.XXXXXX")"; then
       log error "cannot allocate the whonix functional-lane check-log sink"
       rt_publish_result whonix "${version}" "${account}" whonix-func "${SETUP_RC}" "" release-checks
+      return "${SETUP_RC}"
+   fi
+   ## Account-owned shot DIR: dm-whonix-pair drops the functional run's milestone story here
+   ## (NN-<milestone>.png shots + NN-<milestone>.card.txt text cards -- boot -> Tor -> battery
+   ## -> per-check -> verdict -> shutdown), the SAME mechanism as the leak + Calamares lanes, so
+   ## the inst run publishes a comprehensive "full story" instead of a lone step. Account-owned so
+   ## the unprivileged dm-whonix-pair can write it and root forwards each path no-follow to the
+   ## emitter. errexit is OFF here (`... || rc=$?`), so a failed mktemp would silently run with
+   ## `--shot-dir ""` (a storyless run) -- check explicitly and abort INCONCLUSIVE (SETUP_RC),
+   ## mirroring the leak lane's shot-dir guard and this lane's check-log guard above.
+   if ! shot_dir="$(sudo -u "${account}" -- mktemp --directory --tmpdir "dm-release-test-whonix-func-shots.XXXXXX")"; then
+      log error "cannot allocate the whonix functional-lane milestone-shot directory"
+      rt_publish_result whonix "${version}" "${account}" whonix-func "${SETUP_RC}" "" release-checks
+      sudo -u "${account}" -- safe-rm --force -- "${check_log}" 2>/dev/null || true
       return "${SETUP_RC}"
    fi
    rc=0
@@ -1620,8 +1634,8 @@ rt_lane_whonix_inst() {
       ## before the guest rather than attach a mismatched repo.
       if [ -z "${lr_dir}" ] || [ "${lr_base}" = "${lr_dir}" ]; then
          log error "repo-path lookup for ${local_repo} failed or had an unexpected shape ('${lr_dir}')"
-         rt_publish_result whonix "${version}" "${account}" whonix-func "${SETUP_RC}" "" release-checks
-         sudo -u "${account}" -- safe-rm --force -- "${check_log}" 2>/dev/null || true
+         rt_publish_result whonix "${version}" "${account}" whonix-func "${SETUP_RC}" "${shot_dir}" release-checks
+         sudo -u "${account}" -- safe-rm --recursive --force -- "${check_log}" "${shot_dir}" 2>/dev/null || true
          return "${SETUP_RC}"
       fi
       lr_args=( --local-repo "${local_repo}" --local-repo-base "${lr_base}" )
@@ -1658,13 +1672,13 @@ rt_lane_whonix_inst() {
    rt_func_log="$(mktemp --tmpdir "dm-release-test-whonix-funclog.XXXXXX" 2>/dev/null || true)"
    if [ -n "${rt_func_log}" ]; then
       local -a rt_pipe_status=()
-      sudo -u "${account}" -- "${rt_session_env[@]}" "${DM_WHONIX_PAIR}" --mode functional --interface "${wp_interface}" --check-log "${check_log}" "${lr_args[@]}" --gw "${gw}" --ws "${ws}" 2>&1 \
+      sudo -u "${account}" -- "${rt_session_env[@]}" "${DM_WHONIX_PAIR}" --mode functional --interface "${wp_interface}" --check-log "${check_log}" --shot-dir "${shot_dir}" "${lr_args[@]}" --gw "${gw}" --ws "${ws}" 2>&1 \
          | tee /dev/stderr \
          | tail -c "${rt_funclog_max}" > "${rt_func_log}" \
          && rt_pipe_status=( "${PIPESTATUS[@]}" ) || rt_pipe_status=( "${PIPESTATUS[@]}" )
       rc="${rt_pipe_status[0]}"
    else
-      sudo -u "${account}" -- "${rt_session_env[@]}" "${DM_WHONIX_PAIR}" --mode functional --interface "${wp_interface}" --check-log "${check_log}" "${lr_args[@]}" --gw "${gw}" --ws "${ws}" || rc=$?
+      sudo -u "${account}" -- "${rt_session_env[@]}" "${DM_WHONIX_PAIR}" --mode functional --interface "${wp_interface}" --check-log "${check_log}" --shot-dir "${shot_dir}" "${lr_args[@]}" --gw "${gw}" --ws "${ws}" || rc=$?
    fi
    ## Thread a non-empty check-log into the published step's stderr tail (empty = a pass or a
    ## pre-check failure -> no tail). Consumed once by rt_publish_result.
@@ -1697,16 +1711,16 @@ rt_lane_whonix_inst() {
       fi
       if [ "${rt_local_repo_gen_rc}" -ne 0 ] || [ "${gen_now_rc}" -ne 0 ] || [ "${prov_rc}" -ne 0 ]; then
          log error "localRepo provenance for ${local_repo} failed (gen_before_rc ${rt_local_repo_gen_rc}, gen_now_rc ${gen_now_rc}, build_rc ${prov_rc}) -- refusing to publish a local-repo run as a published-repo run"
-         rt_publish_result whonix "${version}" "${account}" whonix-func "${SETUP_RC}" "" release-checks
-         sudo -u "${account}" -- safe-rm --force -- "${check_log}" 2>/dev/null || true
+         rt_publish_result whonix "${version}" "${account}" whonix-func "${SETUP_RC}" "${shot_dir}" release-checks
+         sudo -u "${account}" -- safe-rm --recursive --force -- "${check_log}" "${shot_dir}" 2>/dev/null || true
          if [ -n "${rt_func_log}" ]; then safe-rm --force -- "${rt_func_log}" 2>/dev/null || true; rt_func_log=""; fi
          return "${SETUP_RC}"
       fi
       [ -n "${rt_local_repo_json}" ] \
          || log warn "local repo generation for ${local_repo} changed or is unreadable mid-test -- publishing without localRepo provenance"
    fi
-   rt_publish_result whonix "${version}" "${account}" whonix-func "${rc}" "" release-checks
-   sudo -u "${account}" -- safe-rm --force -- "${check_log}" 2>/dev/null || true
+   rt_publish_result whonix "${version}" "${account}" whonix-func "${rc}" "${shot_dir}" release-checks
+   sudo -u "${account}" -- safe-rm --recursive --force -- "${check_log}" "${shot_dir}" 2>/dev/null || true
    if [ -n "${rt_func_log}" ]; then safe-rm --force -- "${rt_func_log}" 2>/dev/null || true; rt_func_log=""; fi
    return "${rc}"
 }

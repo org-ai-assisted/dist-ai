@@ -46,10 +46,10 @@ assert_eq() {
 
 ## --- configurable stubs -----------------------------------------------------
 EXEC_LOG=''; EXEC_FAIL_NUM=''; EXEC_FLAKY_NUM=''; EXEC_FLAKY_FAILS=0; EXEC_FLAKY_SEEN=0
-REBOOT_COUNT=0; REBOOT_AT=''; REBOOT_RC=0; VERIFY_FAIL_NUM=''
+REBOOT_COUNT=0; REBOOT_AT=''; REBOOT_RC=0; VERIFY_FAIL_NUM=''; STORY_LOG=''
 reset() {
    EXEC_LOG=''; EXEC_FAIL_NUM=''; EXEC_FLAKY_NUM=''; EXEC_FLAKY_FAILS=0; EXEC_FLAKY_SEEN=0
-   REBOOT_COUNT=0; REBOOT_AT=''; REBOOT_RC=0; VERIFY_FAIL_NUM=''
+   REBOOT_COUNT=0; REBOOT_AT=''; REBOOT_RC=0; VERIFY_FAIL_NUM=''; STORY_LOG=''
    ## Per-consumer check-skip map is a battery input; clear it so each test is isolated.
    RELEASE_CHECK_SKIP_REASON=()
 }
@@ -76,6 +76,10 @@ stub_verify() {
       return 1
    fi
    return 0
+}
+# shellcheck disable=SC2317  ## passed by name to run_release_check_battery
+stub_story() {   ## RESULT NUM
+   STORY_LOG="${STORY_LOG}${STORY_LOG:+ }$1:$2"
 }
 count_tok() { tr ' ' '\n' <<< "$1" | grep -c "^$2\$" || true; }
 
@@ -154,6 +158,34 @@ rc=0; run_release_check_battery stub_exec stub_reboot stub_verify >/dev/null || 
 assert_eq 'T6b check 8 actually skipped'          "$(count_tok "${EXEC_LOG}" '8:user')" '0'
 assert_eq 'T6b still fails at 2 (after the skip)' "${RELEASE_CHECK_FAILED_NUM}" '2'
 assert_eq 'T6b battery rc'                        "${rc}" '1'
+
+## T7: the optional per-check story_fn (4th arg) is invoked once per check with its result --
+## pass for each run check, in execution order. Canary: on code without story_fn support the 4th
+## arg is ignored and STORY_LOG stays empty -> T7 fails.
+reset
+rc=0; run_release_check_battery stub_exec stub_reboot stub_verify stub_story >/dev/null || rc=$?
+assert_eq 'T7 battery rc'                        "${rc}"          '0'
+assert_eq 'T7 one story card per check, in order' "${STORY_LOG}" \
+   'pass:1 pass:5 pass:6 pass:4 pass:8 pass:2 pass:3'
+
+## T7b: a routed (skipped) check emits a routed story card, never a pass card.
+reset; RELEASE_CHECK_SKIP_REASON[8]='routed to GUI-OCR gate'
+rc=0; run_release_check_battery stub_exec stub_reboot stub_verify stub_story >/dev/null || rc=$?
+assert_eq 'T7b routed card for the skipped check'  "$(count_tok "${STORY_LOG}" 'routed:8')" '1'
+assert_eq 'T7b no pass card for the skipped check' "$(count_tok "${STORY_LOG}" 'pass:8')"   '0'
+
+## T7c: a failing check emits a fail story card and the story stops there (fail-fast).
+reset; EXEC_FAIL_NUM=4
+rc=0; run_release_check_battery stub_exec stub_reboot stub_verify stub_story >/dev/null || rc=$?
+assert_eq 'T7c fail card for the failing check' "$(count_tok "${STORY_LOG}" 'fail:4')" '1'
+assert_eq 'T7c story stops at the failure'      "${STORY_LOG}" 'pass:1 pass:5 pass:6 fail:4'
+
+## T7d: omitting story_fn (3-arg call) stays a no-op -- the Calamares / upgrade-regression
+## gates pass no story_fn and must be byte-for-byte unchanged (no stub invoked, no error).
+reset
+rc=0; run_release_check_battery stub_exec stub_reboot stub_verify >/dev/null || rc=$?
+assert_eq 'T7d 3-arg call still passes' "${rc}"        '0'
+assert_eq 'T7d 3-arg call emits no story' "${STORY_LOG}" ''
 
 printf '%s\n' "" "$(basename -- "$0"): ${pass} pass, ${fail} fail"
 [ "${fail}" -eq 0 ] || exit 1

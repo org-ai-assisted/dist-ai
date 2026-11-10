@@ -116,9 +116,15 @@ RELEASE_CHECK_FAILED_REASON=''
 ##   verify_fn NUM DESKTOP -> rc (0 visual ok); '' to skip. DESKTOP='true' means a
 ##             full graphical desktop is expected at this check.
 ##   exec_fn   NUM SESSION CMD TIMEOUT -> rc (0 pass); emits "check N PASS" on pass.
+##   story_fn  RESULT NUM (RESULT=pass|fail) -> emits a per-check story card; '' to skip.
+##             OPTIONAL so a gate that publishes a milestone "story" (dm-whonix-pair's
+##             functional lanes) records one card per numbered check from a SINGLE place,
+##             shared by its gui and cli editions -- while the Calamares / upgrade-regression
+##             gates pass '' and stay byte-for-byte unchanged. Best-effort: a card write never
+##             changes the check verdict.
 ## Returns 0 PASS / 1 FAIL (reason in RELEASE_CHECK_FAILED_*).
 release_check_one() {
-   local exec_fn="$1" verify_fn="$2" num="$3"
+   local exec_fn="$1" verify_fn="$2" num="$3" story_fn="${4:-}"
    local session="${RELEASE_CHECK_SESSION[${num}]}"
    local cmd; cmd="$(release_check_cmd "${num}")"
    local timeout="${RELEASE_CHECK_TIMEOUT[${num}]}"
@@ -131,6 +137,7 @@ release_check_one() {
       if ! "${verify_fn}" "${num}" "${desktop}"; then
          RELEASE_CHECK_FAILED_NUM="${num}"
          RELEASE_CHECK_FAILED_REASON="${desc} (visual cross-check: the screen did not render as expected)"
+         if [ -n "${story_fn}" ]; then "${story_fn}" fail "${num}" || true; fi
          return 1
       fi
    fi
@@ -149,8 +156,10 @@ release_check_one() {
    if [ "${rc}" -ne 0 ]; then
       RELEASE_CHECK_FAILED_NUM="${num}"
       RELEASE_CHECK_FAILED_REASON="${desc} (functional, rc=${rc})"
+      if [ -n "${story_fn}" ]; then "${story_fn}" fail "${num}" || true; fi
       return 1
    fi
+   if [ -n "${story_fn}" ]; then "${story_fn}" pass "${num}" || true; fi
    return 0
 }
 
@@ -161,8 +170,10 @@ release_check_one() {
 ##   exec_fn           NUM SESSION CMD TIMEOUT -> rc (emits "check N PASS" on pass)
 ##   reboot_sysmaint_fn                         -> reach a ready sysmaint session
 ##   verify_fn         NUM DESKTOP             -> rc; '' to skip the visual cross-check
+##   story_fn          RESULT NUM              -> per-check story card; '' to skip (optional,
+##                     default no-op). RESULT is routed (gate-skipped) | pass | fail.
 run_release_check_battery() {
-   local exec_fn="$1" reboot_sysmaint_fn="$2" verify_fn="${3:-}"
+   local exec_fn="$1" reboot_sysmaint_fn="$2" verify_fn="${3:-}" story_fn="${4:-}"
    local num cur_session='user' session
    RELEASE_CHECK_FAILED_NUM=''
    RELEASE_CHECK_FAILED_REASON=''
@@ -173,6 +184,7 @@ run_release_check_battery() {
       local skip_reason="${RELEASE_CHECK_SKIP_REASON[${num}]:-}"
       if [ -n "${skip_reason}" ]; then
          printf '%s\n' "${me}: check ${num} (${RELEASE_CHECK_DESC[${num}]}) SKIPPED in this gate -- ${skip_reason}"
+         if [ -n "${story_fn}" ]; then "${story_fn}" routed "${num}" || true; fi
          continue
       fi
       session="${RELEASE_CHECK_SESSION[${num}]}"
@@ -194,7 +206,7 @@ run_release_check_battery() {
             return 1
          fi
       fi
-      release_check_one "${exec_fn}" "${verify_fn}" "${num}" || return 1
+      release_check_one "${exec_fn}" "${verify_fn}" "${num}" "${story_fn}" || return 1
    done
    return 0
 }

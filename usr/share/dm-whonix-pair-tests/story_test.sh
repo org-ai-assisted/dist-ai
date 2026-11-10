@@ -125,5 +125,60 @@ for name in pair-defined gateway-desktop gateway-tor-bootstrap ws-firewall-flush
    assert "milestone name '${name}' is publishable" label_ok "${name}"
 done
 
+## --- functional-lane story: shared helpers + per-check hook --------------------------------
+## The inst (functional) lanes -- gui AND cli -- must publish the SAME comprehensive story as
+## the leak lane. Pin the shared helpers' behavior and that both mains wire them, so a lane that
+## silently stops emitting the story fails HERE (the published-page gap this closes).
+
+## VBoxManage stub for story_pair_defined's showvminfo facts.
+vbstub="${work}/VBoxManage"
+cat > "${vbstub}" <<'EOF'
+#!/bin/bash
+## showvminfo <vm> --machinereadable
+printf '%s\n' 'VMState="poweroff"' 'firmware="BIOS"' 'memory=2048'
+EOF
+chmod 0755 -- "${vbstub}"
+# shellcheck disable=SC2034  ## consumed by the sourced story_pair_defined (dynamic scope)
+VBOXMANAGE="${vbstub}"
+gw='Whonix-Gateway-CLI'; ws='Whonix-Workstation-CLI'
+story_pair_defined
+assert "story_pair_defined wrote 10-pair-defined.card.txt" test -s "${shot_dir}/10-pair-defined.card.txt"
+assert "pair card names the Gateway VM" \
+   grep --quiet --fixed-strings 'Gateway VM: Whonix-Gateway-CLI' "${shot_dir}/10-pair-defined.card.txt"
+
+## wp_story_check RESULT NUM cards one numbered check, NN from the counter (execution order).
+STORY_CHECK_NN=60
+wp_story_check pass 1
+wp_story_check routed 6
+assert "wp_story_check pass wrote 61-check1-user-session-boot.card.txt" \
+   test -s "${shot_dir}/61-check1-user-session-boot.card.txt"
+assert "per-check pass card says PASS" \
+   grep --quiet --fixed-strings 'PASS' "${shot_dir}/61-check1-user-session-boot.card.txt"
+assert "wp_story_check routed wrote 62-check6-GUI-login.card.txt" \
+   test -s "${shot_dir}/62-check6-GUI-login.card.txt"
+assert "per-check routed card says ROUTED" \
+   grep --quiet --fixed-strings 'ROUTED' "${shot_dir}/62-check6-GUI-login.card.txt"
+
+## Both functional mains must OPEN with the shared pair card and PASS the per-check story hook
+## to the shared battery -- the single wiring that makes the gui+cli inst story comprehensive.
+fn_has() { local body; body="$(declare -f "$1")"; grep --quiet -- "$2" <<< "${body}"; }
+assert "main_functional opens with the shared pair card"       fn_has main_functional 'story_pair_defined'
+assert "main_functional_cli opens with the shared pair card"   fn_has main_functional_cli 'story_pair_defined'
+assert "main_functional passes the per-check story hook"       fn_has main_functional 'run_release_check_battery ws_func_exec ws_func_reboot_sysmaint .* wp_story_check'
+assert "main_functional_cli passes the per-check story hook"   fn_has main_functional_cli 'run_release_check_battery ws_func_cli_exec cli_no_sysmaint_reboot .* wp_story_check'
+assert "boot_gateway_functional snaps the booted Gateway"      fn_has boot_gateway_functional 'story_snap 20 gateway-booted'
+assert "boot_workstation_user snaps the booted Workstation"    fn_has boot_workstation_user 'story_snap 25 workstation-booted'
+assert "ws_func_tor_gate cards the Tor bootstrap"              fn_has ws_func_tor_gate 'story_card 30 gateway-tor-bootstrap'
+assert "ws_cli_console_systemcheck snaps the console login"    fn_has ws_cli_console_systemcheck 'story_snap 58 console-login'
+assert "main_functional_cli cards the functional verdict"      fn_has main_functional_cli 'story_card 90 functional-verdict'
+assert "on_exit cards the clean poweroff"                      fn_has on_exit 'story_card 96 pair-poweroff'
+
+## Every NEW functional milestone name must also pass the publisher's safe-label filter.
+for name in gateway-booted workstation-booted workstation-terminal console-login \
+   check8-systemcheck local-repo-enabled local-build-installed functional-verdict \
+   workstation-final pair-poweroff check1-user-session-boot check6-GUI-login; do
+   assert "functional milestone name '${name}' is publishable" label_ok "${name}"
+done
+
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 [ "${fail}" -eq 0 ] || exit 1

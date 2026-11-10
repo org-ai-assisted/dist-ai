@@ -246,6 +246,12 @@ check "inst match: passed --mode functional" \
    "$(grep --quiet -- '--mode functional' "${PAIR_ARGV}" && printf '%s' "true" || printf '%s' "false")"
 check "inst match: did NOT pass --mode leak" \
    "$(grep --quiet -- '--mode leak' "${PAIR_ARGV}" && printf '%s' "false" || printf '%s' "true")"
+## inst lane must ALSO hand dm-whonix-pair a --shot-dir (the account-owned functional "story"
+## sink), so the inst run publishes the SAME comprehensive milestone sequence as the leak lane --
+## the published-page gap this closes. A revert to the old storyless inst call (no --shot-dir)
+## fails this.
+check "inst match: passed --shot-dir" \
+   "$(grep --quiet -- '--shot-dir ' "${PAIR_ARGV}" && printf '%s' "true" || printf '%s' "false")"
 
 ## #1 (codex + claude, CONFIRMED): the evidence CAPTURE must NEVER change the verdict. A tee/tail
 ## write failure on the capture pipe (ENOSPC, SIGXFSZ, EPIPE) during a PASSING battery must still
@@ -437,6 +443,28 @@ rc_g="$(run_lane rt_lane_whonix_leak persist-leak-whonix)"
 check "mktemp-fail (leak): lane aborts SETUP_RC(2)" "$([ "${rc_g}" = '2' ] && printf '%s' "true" || printf '%s' "false")"
 check "mktemp-fail (leak): dm-whonix-pair NOT invoked" "$([ ! -s "${PAIR_ARGV}" ] && printf '%s' "true" || printf '%s' "false")"
 safe-rm --force -- "${stubbin}/mktemp"
+
+## Case F2 (inst lane): the check-log mktemp SUCCEEDS but the shot-dir mktemp FAILS -> the lane
+## must still abort SETUP_RC BEFORE dm-whonix-pair (the shot-dir guard, parallel to the check-log
+## guard). Canary: without the explicit shot_dir guard the lane runs with `--shot-dir ""` (a
+## storyless run that hides a provisioning gap) -> PAIR_ARGV non-empty.
+printf '%s\n' 'Value: 18.2.3.5' > "${MARKER_RESPONSE_FILE}"
+printf '%s' "" > "${PAIR_ARGV}"
+export MKTEMP_COUNT_FILE="${work}/mktemp.count"
+printf '%s' 0 > "${MKTEMP_COUNT_FILE}"
+cat > "${stubbin}/mktemp" <<'EOF'
+#!/bin/bash
+## Succeed on the first call (the check-log sink), fail on the second (the shot-dir sink).
+n="$(cat -- "${MKTEMP_COUNT_FILE}" 2>/dev/null || printf '%s' 0)"
+n=$(( n + 1 )); printf '%s' "${n}" > "${MKTEMP_COUNT_FILE}"
+[ "${n}" -ge 2 ] && exit 1
+exec /usr/bin/mktemp "$@"
+EOF
+chmod 0770 -- "${stubbin}/mktemp"
+rc_f2="$(run_lane rt_lane_whonix_inst persist-inst-whonix)"
+safe-rm --force -- "${stubbin}/mktemp"
+check "shot-dir mktemp-fail (inst): lane aborts SETUP_RC(2)" "$([ "${rc_f2}" = '2' ] && printf '%s' "true" || printf '%s' "false")"
+check "shot-dir mktemp-fail (inst): dm-whonix-pair NOT invoked" "$([ ! -s "${PAIR_ARGV}" ] && printf '%s' "true" || printf '%s' "false")"
 
 if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "" "${failures} whonix-lane assertion(s) failed" >&2
