@@ -354,6 +354,56 @@ check "merge-tool: bom-ref collision (metadata root) fails closed" \
    "$(merge_rc "${meta_base}" "${col_frag}")" "1"
 safe-rm --recursive --force -- "${col_frag}"
 
+## bom-ref uniqueness is enforced against NESTED components on both sides: a
+## fragment's nested child colliding with a base top-level ref, and a base's
+## nested child colliding with a fragment's top-level ref, both fail closed.
+nest_col_frag="${test_dir}/nestcol-fragments.d"
+mkdir --parents -- "${nest_col_frag}"
+cat > "${nest_col_frag}/n.cdx.json" <<'EOF'
+{"type":"application","name":"Parent","bom-ref":"parent","components":[{"type":"library","name":"child","bom-ref":"shared"}]}
+EOF
+base_topref='{"bomFormat":"CycloneDX","components":[{"type":"library","name":"base","bom-ref":"shared"}]}'
+check "merge-tool: fragment nested bom-ref collision fails closed" \
+   "$(merge_rc "${base_topref}" "${nest_col_frag}")" "1"
+cat > "${nest_col_frag}/n.cdx.json" <<'EOF'
+{"type":"application","name":"New","bom-ref":"shared"}
+EOF
+base_nestref='{"bomFormat":"CycloneDX","components":[{"type":"application","name":"parent","bom-ref":"parent","components":[{"type":"library","name":"old","bom-ref":"shared"}]}]}'
+check "merge-tool: base nested bom-ref collision fails closed" \
+   "$(merge_rc "${base_nestref}" "${nest_col_frag}")" "1"
+safe-rm --recursive --force -- "${nest_col_frag}"
+
+## An identical component sharing only a bom-ref (no purl) must dedup on a
+## re-merge, not be mistaken for a conflict (idempotency).
+idem_frag="${test_dir}/idem-fragments.d"
+mkdir --parents -- "${idem_frag}"
+cat > "${idem_frag}/i.cdx.json" <<'EOF'
+{"type":"application","name":"tool","bom-ref":"tool@1"}
+EOF
+idem_base='{"bomFormat":"CycloneDX","components":[{"type":"application","name":"tool","bom-ref":"tool@1"}]}'
+idem_out="${test_dir}/idem.cdx.json"
+idem_rc=0
+printf '%s' "${idem_base}" | "${merge_tool}" "${idem_frag}" > "${idem_out}" 2>/dev/null || idem_rc=$?
+check "merge-tool: identical bom-ref-only component dedups (exit 0)" "${idem_rc}" "0"
+check "merge-tool: identical bom-ref-only component not doubled" \
+   "$(jq '[.components[]|select(.["bom-ref"]=="tool@1")]|length' "${idem_out}" 2>/dev/null)" "1"
+
+## A schema-valid empty name is accepted (CycloneDX requires name present+string,
+## no minimum length).
+emptyname_frag="${test_dir}/emptyname-fragments.d"
+mkdir --parents -- "${emptyname_frag}"
+printf '%s\n' '{"type":"application","name":"","purl":"pkg:generic/en@1"}' > "${emptyname_frag}/e.cdx.json"
+check "merge-tool: empty-string name accepted" \
+   "$(merge_rc "${merge_base}" "${emptyname_frag}")" "0"
+
+## A non-UTF-8 fragment fails closed CLEANLY (no traceback).
+utf_frag="${test_dir}/utf-fragments.d"
+mkdir --parents -- "${utf_frag}"
+nonutf8_byte=$'\377'
+printf '%s' "{${nonutf8_byte}}" > "${utf_frag}/u.cdx.json"
+check "merge-tool: non-UTF-8 fragment fails closed" \
+   "$(merge_rc "${merge_base}" "${utf_frag}")" "1"
+
 ## A document component missing the required type/name fails closed.
 notype_frag="${test_dir}/notype-fragments.d"
 mkdir --parents -- "${notype_frag}"

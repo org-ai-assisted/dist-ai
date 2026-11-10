@@ -160,5 +160,18 @@ def test_missing_tarball_degrades_to_hashless_fragment(tmp_path):
     assert frag["purl"] == f"pkg:generic/tor-browser@{TB_VERSION}?arch={TB_ARCH}"
 
 
+def test_purl_unsafe_version_refused(tmp_path):
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    tarball = tmp_path / "tor-browser.tar.xz"
+    tarball.write_bytes(b"x")
+    ## A version carrying a purl-significant character ('?') must be refused,
+    ## not spliced raw into the Package URL (where it would inject a qualifier).
+    env = _base_env(cache, tarball)
+    env["tbb_version_stripped"] = "14.5.3?injected=1"
+    _drive(cache, env, who_ami="tb-updater")
+    assert not (cache / "sbom-fragment.json").is_file()
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
