@@ -29,6 +29,10 @@ source "${tool}"
 
 pass=0
 fail=0
+## negation helper: succeeds only when the pattern is ABSENT from the file (a bare
+## `grep --invert-match` would pass whenever ANY line lacks it, not what we want).
+absent() { ! grep --quiet --fixed-strings -- "$1" "$2"; }
+
 assert() {
    local label="$1"
    shift
@@ -105,12 +109,17 @@ staged_rc='0'
 check_log=''
 local_repo='whonix'
 rc=0
-ws_func_cli_exec 3 user 'upgrade-nonroot --yes' 1800 > /dev/null 2>&1 || rc=$?
+ws_func_cli_exec 3 user 'upgrade-nonroot --yes' 1800 > "${work}/local.out" 2>&1 || rc=$?
 local_repo=''
 assert "check 3 --local-repo launches apt-get full-upgrade DIRECTLY (not upgrade-nonroot)" \
    grep --quiet --fixed-strings 'apt-get' <<< "${launch_seen}"
 assert "check 3 --local-repo passes the offline local-sources options to apt-get" \
    grep --quiet --fixed-strings 'Dir::Etc::sourceparts' <<< "${launch_seen}"
+## Honest PASS label: the local-repo path must NOT claim upgrade-nonroot (it runs apt-get direct).
+assert "check 3 --local-repo PASS line names apt-get full-upgrade from local repo" \
+   grep --quiet --fixed-strings 'check 3 PASS (apt-get full-upgrade from local repo' "${work}/local.out"
+assert "check 3 --local-repo PASS line does NOT claim upgrade-nonroot" \
+   absent 'upgrade-nonroot' "${work}/local.out"
 
 printf '%s\n' "cli_upgrade_detached_test: ${pass} pass, ${fail} fail, 0 skip"
 [ "${fail}" -eq 0 ]

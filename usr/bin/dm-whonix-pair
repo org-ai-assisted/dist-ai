@@ -1210,7 +1210,11 @@ ws_func_cli_upgrade_detached() {
       esac
    done
    if [ "${rc_val}" = 0 ]; then
-      printf '%s\n' "${me}: check 3 PASS (upgrade-nonroot, detached over guestcontrol)"
+      ## Label the mechanism honestly: the local-repo path runs apt-get DIRECTLY (upgrade-nonroot
+      ## cannot forward the local-sources options), the default path runs upgrade-nonroot.
+      local how='upgrade-nonroot'
+      [ -n "${local_repo}" ] && how='apt-get full-upgrade from local repo'
+      printf '%s\n' "${me}: check 3 PASS (${how}, detached over guestcontrol)"
       return 0
    fi
    local tail_out
