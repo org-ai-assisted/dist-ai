@@ -978,6 +978,47 @@ expect_rule "install -d -m MODE -- DIR" "${mkd}${sp}-${dollar}opt${sp}--${sp}${d
 ## carry the parents flag (the 'p' is a literal flag letter), so it gets 'install -d -m'.
 expect_rule "install -d -m MODE -- DIR" "${mkd}${sp}-p${dq}${dollar}suffix${dq}${sp}--${sp}${dq}${dir173}${dq}${nlreal}${chm}${sp}0700${sp}--${sp}${dq}${dir173}${dq}" "present"
 expect_rule "install -d -m MODE -- DIR" "${mkd}${sp}-pm${dq}${dollar}mode${dq}${sp}--${sp}${dq}${dir173}${dq}${nlreal}${chm}${sp}0700${sp}--${sp}${dq}${dir173}${dq}" "present"
+## R-173 CLUSTER recursive flag: the chmod '-R' classifier (_chmod_is_recursive)
+## scans the option word's LITERAL prefix, never raw source. A real recursive
+## cluster ('-vR'/'-Rv', or a literal '-R' before an expanded value '-R"$x"') is
+## NOT the 'install -d -m' shape (install -d modes only the dir itself), so the
+## pair is NOT matched -- R-173 absent.
+expect_rule "R-173" "${mkd}${sp}${dir173}${nlreal}${chm}${sp}-vR${sp}700${sp}${dir173}"              "absent"
+expect_rule "R-173" "${mkd}${sp}${dir173}${nlreal}${chm}${sp}-Rv${sp}700${sp}${dir173}"              "absent"
+expect_rule "R-173" "${mkd}${sp}${dir173}${nlreal}${chm}${sp}-R${dq}${dollar}x${dq}${sp}700${sp}${dir173}" "absent"
+## ...but an 'R' living INSIDE an expansion NAME ('-$Ropt', the 'R' is in the var
+## name, the runtime flag unknown) must NOT read as recursive -- the scan sees
+## only the literal prefix ('-'), so the pair is still DETECTED (R-173 present).
+## Canary: a raw '"R" in text[1:]' scan would misread it and DROP the finding.
+expect_rule "R-173" "${mkd}${sp}${dir173}${nlreal}${chm}${sp}-${dollar}Ropt${sp}0700${sp}--${sp}${dir173}" "present"
+## R-172 short '-m' cluster: the scan reads the option word's LITERAL prefix. An
+## 'm' inside an expansion NAME ('-$mopt') is NOT the -m mode flag, so the 'use
+## --mode not -m' message must NOT fire (the temp mkdir still lacks a mode, so the
+## generic missing--mode TOCTOU finding stands). Canary: a raw '"m" in text[1:]'
+## scan would misread the var name and emit the wrong '-m' message.
+expect_rule "use --mode not -m" "${mkd}${sp}-${dollar}mopt${sp}--${sp}${dq}${tv}${dq}" "absent"
+expect_rule "R-172 mkdir temp dir missing --mode" "${mkd}${sp}-${dollar}mopt${sp}--${sp}${dq}${tv}${dq}" "present"
+## R-161 grep short '-q': the short-quiet scan reads the option word's LITERAL
+## prefix. A 'q' inside an expansion NAME ('-$qopt') is NOT the -q flag, so R-161
+## (grep short quiet flag) must NOT fire. Canary: a raw 'text[1:]' scan misreads it.
+expect_rule "R-161" "grep${sp}-${dollar}qopt${sp}foo${sp}${dir173}" "absent"
+## R-120 'command -v/-V' describe detection (lpe_sinks) reads the option word's
+## LITERAL prefix. A 'v' inside an expansion NAME ('command -$vopt rm') is NOT the
+## describe flag, so the command still RUNS rm and MUST flag R-120. Canary: a raw
+## 'set(text[1:]) & set("vV")' scan would read the var name and wrongly spare it.
+expect_rule "R-120" "command${sp}-${dollar}vopt${sp}${del}${sp}-rf${sp}/x" "present"
+## R-200 timeout '-k' (--kill-after) detection reads the option word's LITERAL
+## prefix. A 'k' inside an expansion NAME ('timeout -$kopt 5 cmd') is NOT -k, so
+## the bare timeout still lacks a kill-after and MUST flag R-200. Canary: a raw
+## cluster scan reads the var name's 'k' and wrongly suppresses the finding.
+expect_rule "R-200" "timeout${sp}-${dollar}kopt${sp}5${sp}cmd" "present"
+## R-193 python '-c'/-m mode detection (_helpers) reads the option word's LITERAL
+## prefix. A 'c' inside an expansion NAME ('python -$copts script.py') is NOT -c,
+## so the call runs a SCRIPT, not embedded code: the '-c' message must be ABSENT
+## and the script message PRESENT. Canary: a raw 'text[1:]' scan reads the var
+## name's 'c' and emits the wrong '-c' guidance.
+expect_rule "embedded python program (-c)" "python3${sp}-${dollar}copts${sp}s.py" "absent"
+expect_rule "run the +x script directly"  "python3${sp}-${dollar}copts${sp}s.py" "present"
 
 ## R-010: seven COPIES of one directive must NOT satisfy the block (DISTINCT
 ## directives are counted); the seven distinct directives pass.

@@ -224,7 +224,7 @@ def _grep_quiet(call, source):
     value-taker's value."""
     is_quiet = False
     is_short = False
-    for kind, _word, text in bash_ast.command_tokens(
+    for kind, word, text in bash_ast.command_tokens(
             call, source, GREP_VALUE_SHORT, GREP_VALUE_LONG):
         if kind != "opt":
             continue
@@ -233,7 +233,10 @@ def _grep_quiet(call, source):
             if bash_ast.resolve_long(name, GREP_QUIET) is not None:
                 is_quiet = True
         elif text.startswith("-") and not text.startswith("--"):
-            cluster = text[1:]
+            ## Scan the LITERAL flag letters (word_literal_prefix), never raw
+            ## source -- else a 'q' inside an expansion NAME ('-"$opts"') reads
+            ## as the short -q flag. See _mkdir_parents_flag for the idiom.
+            cluster = bash_ast.word_literal_prefix(word)[1:]
             flags = cluster
             for position, letter in enumerate(cluster):
                 if letter in GREP_VALUE_SHORT:
@@ -401,7 +404,7 @@ class MkdirTmpMode(Rule):
                 continue
             has_long = False
             has_short_m = False
-            for kind, _word, text in bash_ast.command_tokens(
+            for kind, word, text in bash_ast.command_tokens(
                     call, ctx.source, frozenset("m"), frozenset({"mode"})):
                 if kind != "opt":
                     continue
@@ -410,7 +413,7 @@ class MkdirTmpMode(Rule):
                     if bash_ast.resolve_long(name, MKDIR_LONG) == "mode":
                         has_long = True
                 elif text.startswith("-") and not text.startswith("--") \
-                        and "m" in text[1:]:
+                        and "m" in bash_ast.word_literal_prefix(word)[1:]:
                     has_short_m = True
             if has_long:
                 continue
@@ -699,14 +702,18 @@ def _chmod_is_recursive(call, source):
     """True if the chmod CALL is recursive ('-R'/'--recursive'): 'install -d -m'
     modes only the directory itself, so a recursive chmod is NOT equivalent and
     the pair is not matched at all."""
-    for kind, _word, text in bash_ast.command_tokens(call, source):
+    for kind, word, text in bash_ast.command_tokens(call, source):
         if kind != "opt":
             continue
         name = _long_name(text)
         if name is not None:
             if bash_ast.resolve_long(name, CHMOD_LONG) == "recursive":
                 return True
-        elif not text.startswith("--") and "R" in text[1:]:
+        ## Scan the LITERAL flag letters (word_literal_prefix), never raw source
+        ## -- else an 'R' inside an expansion NAME ('-"$Ropt"') reads as the
+        ## short -R recursive flag. See _mkdir_parents_flag for the idiom.
+        elif not text.startswith("--") \
+                and "R" in bash_ast.word_literal_prefix(word)[1:]:
             return True
     return False
 
@@ -1038,7 +1045,7 @@ class TimeoutKillAfter(Rule):
                     elif resolved in ("help", "version"):
                         informational = True
                 elif text.startswith("-") and _timeout_cluster_has_kill(
-                        text[1:]):
+                        bash_ast.word_literal_prefix(word)[1:]):
                     has_kill = True
             if has_kill or informational:
                 continue
@@ -1094,7 +1101,7 @@ class TimeoutKillAfter(Rule):
                     elif resolved in ("help", "version"):
                         informational = True
                 elif text.startswith("-") and _timeout_cluster_has_kill(
-                        text[1:]):
+                        bash_ast.word_literal_prefix(word)[1:]):
                     has_kill = True
             if has_kill or informational or duration_word is None:
                 continue

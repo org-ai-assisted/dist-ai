@@ -102,8 +102,12 @@ def effective_command(call, source):
                 ## Decline (the safe direction) rather than surface NAME as a run. A
                 ## short cluster ('-pv') describes if it carries v/V anywhere; '--' and
                 ## long options are never command's describe flags.
+                ## Scan the LITERAL flag letters, never raw source -- else a
+                ## v/V inside an expansion NAME ('command -"$opts" NAME') is
+                ## misread as the describe flag.
+                lit = bash_ast.word_literal_prefix(word)
                 if wrapper == "command" and not text.startswith("--") \
-                        and ("v" in text[1:] or "V" in text[1:]):
+                        and ("v" in lit[1:] or "V" in lit[1:]):
                     return None
                 continue
             if kind != "operand":
@@ -169,8 +173,12 @@ def effective_call(call, source):
                 bash_ast.command_tokens(
                     call, source, value_short, value_long), start=1):
             if kind == "opt":
+                ## Scan the LITERAL flag letters, never raw source -- else a
+                ## v/V inside an expansion NAME ('command -"$opts" NAME') is
+                ## misread as the describe flag.
+                lit = bash_ast.word_literal_prefix(word)
                 if wrapper == "command" and not text.startswith("--") \
-                        and ("v" in text[1:] or "V" in text[1:]):
+                        and ("v" in lit[1:] or "V" in lit[1:]):
                     return None
                 continue
             if kind != "operand":
@@ -835,29 +843,35 @@ SHELL_C_WRAPPERS = frozenset({
     "setsid", "stdbuf", "setpriv"})
 
 
-def _c_opt_program(text):
-    """Classify the '-c' in a short-option cluster word (TEXT is the word's
-    word_string, else its raw source -- both carry the literal '-<cluster>'
-    prefix). Returns ("separate", None) when '-c' is the cluster's LAST char
+def _c_opt_program(word):
+    """Classify the '-c' in a short-option cluster WORD. Reads the LITERAL
+    flag-letter prefix (word_literal_prefix), never raw source, so a 'c' inside an
+    expansion NAME ('-"$config"') is NOT misread as the -c flag. Returns
+    ("separate", None) when '-c' is the LAST literal char of a FULLY literal word
     ('-c'/'-lc'/'-ec'), so the program is the NEXT word; ("attached", CI) when a
-    program is glued into this word ('-c"prog"'), CI being 'c's index in the
-    cluster so the caller slices the program at <value>[CI + 2:] (+1 re-adds the
-    leading '-', +1 skips the 'c'); or None when TEXT is not a '-c' short cluster.
-    SCOPE: real bash/sh/dash reject a glued '-c<cmd>' -- the chars after 'c' parse
-    as more option letters and the command is the NEXT word -- so a trailing-letter
-    cluster like '-ce' is classed 'attached' here though bash reads it 'separate'.
-    Telling a flag cluster from a glued-command attempt needs a bash option-letter
-    model we do not reinvent; the realistic forms (the valid separate '-c <prog>'
-    and the common bad-style glued '-c'prog'') are both served, and a mis-split
-    '-ce <prog>' only UNDER-reports its next-word payload (safe direction)."""
-    if text is None or not text.startswith("-") or text.startswith("--") \
-            or len(text) < 2:
+    program is glued into this word -- either a literal '-c"prog"' (CI = 'c's
+    index) or a '-c' whose trailing value EXPANDS ('-c"$x"', 'c' last-literal but
+    the word is not fully literal); the caller slices the program at
+    <value>[CI + 2:] (+1 re-adds the leading '-', +1 skips the 'c'). None when the
+    LITERAL prefix is not a '-c' short cluster. SCOPE: real bash/sh/dash reject a
+    glued '-c<cmd>' -- the chars after 'c' parse as more option letters and the
+    command is the NEXT word -- so a trailing-letter cluster like '-ce' is classed
+    'attached' here though bash reads it 'separate'. Telling a flag cluster from a
+    glued-command attempt needs a bash option-letter model we do not reinvent; the
+    realistic forms (the valid separate '-c <prog>' and the common bad-style glued
+    '-c'prog'') are both served, and a mis-split '-ce <prog>' only UNDER-reports
+    its next-word payload (safe direction)."""
+    lit = bash_ast.word_literal_prefix(word)
+    if not lit.startswith("-") or lit.startswith("--") or len(lit) < 2:
         return None
-    cluster = text[1:]
+    cluster = lit[1:]
     if "c" not in cluster:
         return None
     ci = cluster.index("c")
-    if ci == len(cluster) - 1:
+    ## 'c' is the LAST literal char: the program is the next word only when the
+    ## word is fully literal; a trailing expansion ('-c"$x"') is a glued value.
+    if ci == len(cluster) - 1 \
+            and bash_ast.word_string(word) is not None:
         return "separate", None
     return "attached", ci
 
@@ -890,10 +904,10 @@ def _c_in_command(call, source):
     handled in the wrapper scans; it is a rare command-position spelling here.)"""
     tokens = list(bash_ast.command_tokens(
         call, source, frozenset("coO"), frozenset(("rcfile", "init-file"))))
-    for index, (kind, word, text) in enumerate(tokens):
+    for index, (kind, word, _text) in enumerate(tokens):
         if kind != "opt":
             continue
-        classified = _c_opt_program(text)
+        classified = _c_opt_program(word)
         if classified is None:
             continue
         form, ci = classified
@@ -910,13 +924,13 @@ def _c_in_command(call, source):
         return
 
 
-def _is_separate_c_opt(text):
-    """True if TEXT (a word's word_string) is a short-option cluster whose '-c'
-    takes the NEXT word as its program ('-c'/'-lc'/'-ec'); False for an attached
-    '-c"prog"', a long option, an operand, or an expansion-bearing word (None).
-    The separate-only consumer (R-101's shell_c_program_words) keys on this;
-    _c_opt_program is the single source of truth."""
-    return _c_opt_program(text) == ("separate", None)
+def _is_separate_c_opt(word):
+    """True if WORD is a short-option cluster whose '-c' takes the NEXT word as
+    its program ('-c'/'-lc'/'-ec'); False for an attached '-c"prog"', a long
+    option, an operand, or an expansion-bearing word. The separate-only consumer
+    (R-101's shell_c_program_words) keys on this; _c_opt_program is the single
+    source of truth."""
+    return _c_opt_program(word) == ("separate", None)
 
 
 ## Bash invocation options that consume the NEXT word as their argument, other than
@@ -975,7 +989,7 @@ def _c_behind_wrapper(call, words, start, source):
         if text is None:
             index += 1
             continue
-        classified = _c_opt_program(text)
+        classified = _c_opt_program(words[index])
         if classified is not None:
             form, ci = classified
             if form == "separate":
@@ -1080,7 +1094,7 @@ def shell_c_program_words(tree):
             if text is None:
                 j += 1
                 continue
-            if _is_separate_c_opt(text):
+            if _is_separate_c_opt(words[j]):
                 if j + 1 < len(words):
                     yield (call, words[j + 1])
                 break
@@ -1246,7 +1260,7 @@ def _python_call_mode(call, source):
     '-W ARG'/'-X ARG' take a separate value, so none is misread as a script."""
     tokens = list(bash_ast.command_tokens(
         call, source, frozenset("cmWX"), frozenset()))
-    for index, (kind, _word, text) in enumerate(tokens):
+    for index, (kind, word, text) in enumerate(tokens):
         if kind == "value":
             continue
         if kind == "opt":
@@ -1254,7 +1268,10 @@ def _python_call_mode(call, source):
                 return _python_operand_mode(tokens[index + 1:])
             if text.startswith("--"):
                 continue  ## a long info flag ('--version'); no script yet
-            mode = _python_cluster_mode(text[1:])
+            ## Scan the LITERAL flag letters (word_literal_prefix), never raw
+            ## source -- else a c/m inside an expansion NAME ('python -"$opts"')
+            ## is misread as the -c/-m interpreter mode.
+            mode = _python_cluster_mode(bash_ast.word_literal_prefix(word)[1:])
             if mode is not None:
                 return mode
             continue  ## an ordinary short flag ('-Bsu', '-E', '-I')

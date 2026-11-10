@@ -298,11 +298,15 @@ def _peel_wrappers(call, source):
                 index += 1
                 break
             if text.startswith("-") and text != "-":
+                ## Scan the LITERAL flag letters (word_literal_prefix), never raw
+                ## source -- else a v/V/value-taker inside an expansion NAME
+                ## ('-"$opts"') is misread as a clustered flag.
+                lit = bash_ast.word_literal_prefix(words[index])
                 ## A query/lookup option runs no command ('command -v/-V NAME',
                 ## 'ionice -p PID'): nothing after it is a sink.
-                if base == "command" and set(text[1:]) & set("vV"):
+                if base == "command" and set(lit[1:]) & set("vV"):
                     return None, None
-                if not text.startswith("--") and set(text[1:]) & noexec_short:
+                if not text.startswith("--") and set(lit[1:]) & noexec_short:
                     return None, None
                 if text.startswith("--"):
                     lname = text[2:].split("=", 1)[0]
@@ -313,10 +317,14 @@ def _peel_wrappers(call, source):
                     ## consumes the REST of the cluster as its value; only when
                     ## it is the LAST char does it take the next WORD. So
                     ## '-uPASS' (u not last) does NOT eat the following command.
-                    cluster = text[1:]
+                    ## A value-taker takes the NEXT word only when it is the last
+                    ## LITERAL char AND the word is fully literal -- a trailing
+                    ## expansion ('-u"$x"') is an inline value, not a next word.
+                    cluster = lit[1:]
+                    literal = bash_ast.word_string(words[index]) is not None
                     for position, letter in enumerate(cluster):
                         if letter in vshort:
-                            if position == len(cluster) - 1:
+                            if position == len(cluster) - 1 and literal:
                                 index += 1
                             break
                 index += 1
@@ -365,11 +373,16 @@ def _sink_operands(call, source, cmd):
     for kind, word, text in bash_ast.command_tokens(
             call, source, value_short=value_short, value_long=value_long):
         if kind == "opt":
-            opts.append(text)
-            last_opt = text
+            ## Store the LITERAL flag spelling (word_literal_prefix), never raw
+            ## source, so the cluster-letter scans in _has_short / _opt_is_path /
+            ## _has_long never read letters out of an expansion NAME ('-"$opts"').
+            opt_text = bash_ast.word_literal_prefix(word)
+            opts.append(opt_text)
+            last_opt = opt_text
             ## An inline path value ('--target-directory=DIR', '-tDIR') is
-            ## carried in the option WORD itself; its raw text holds the path.
-            if _opt_has_inline_path(text, path_short, path_long):
+            ## carried in the option WORD itself; read it from the word so an
+            ## expansion-valued inline path ('-t"$DIR"') is still recognised.
+            if _opt_has_inline_path(word, path_short, path_long):
                 opt_paths.append(word)
         elif kind == "operand":
             positionals.append(word)
@@ -393,17 +406,24 @@ def _opt_is_path(opt_text, path_short, path_long):
     return bool(opt_text[1:]) and opt_text[-1] in path_short
 
 
-def _opt_has_inline_path(opt_text, path_short, path_long):
+def _opt_has_inline_path(word, path_short, path_long):
     """This option carries its path value inline ('--target-directory=DIR',
-    '-tDIR'), not as a separate word."""
+    '-tDIR'), not as a separate word. Reads the LITERAL flag spelling
+    (word_literal_prefix) so a path-short letter inside an expansion NAME is not
+    misread; an expansion-VALUED inline path ('-t"$DIR"') is still recognised --
+    a path-short letter is inline when more literal chars follow it OR it is the
+    last literal char but the word is not fully literal (a value expands after)."""
+    opt_text = bash_ast.word_literal_prefix(word)
     if opt_text.startswith("--"):
         if "=" not in opt_text:
             return False
         name = opt_text[2:].split("=", 1)[0]
         return bash_ast.resolve_long(name, path_long) is not None
+    literal = bash_ast.word_string(word) is not None
     cluster = opt_text[1:]
     for position, letter in enumerate(cluster):
-        if letter in path_short and position < len(cluster) - 1:
+        if letter in path_short \
+                and (position < len(cluster) - 1 or not literal):
             return True
     return False
 
@@ -593,7 +613,11 @@ def _shell_script_operand(call, source, cmd):
             value_long=SHELL_VALUE_LONG):
         if kind == "opt":
             expect = text
-            if not text.startswith("--") and "i" in text[1:]:
+            ## Scan the LITERAL flag letters (word_literal_prefix), never raw
+            ## source -- else an 'i' inside an expansion NAME ('-"$opts"') reads
+            ## as the interactive -i flag.
+            if not text.startswith("--") \
+                    and "i" in bash_ast.word_literal_prefix(word)[1:]:
                 interactive = True
             if text.startswith("--") and "=" in text \
                     and bash_ast.resolve_long(text[2:].split("=", 1)[0], RC_LONG):
