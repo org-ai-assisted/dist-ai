@@ -102,15 +102,29 @@ rec_attach="$(mktemp)"
 rec_exec="$(mktemp)"
 shared_stub="$(mktemp)"
 exec_stub="$(mktemp)"
+## Fixture mirror the stub's cache-path points at: one resident Debian base suite so the host-side
+## base generation in ws_func_enable_local_repo emits a stanza (its 'Architectures:' line is the
+## fail-closed signal the enable checks).
+host_cache_fixture="$(mktemp --directory)"
+mkdir --parents -- "${host_cache_fixture}/debian/dists/trixie/main/binary-amd64"
+printf '%s' idx > "${host_cache_fixture}/debian/dists/trixie/main/binary-amd64/Packages.gz"
+hc_mh="$(printf '%s' mainidx | sha256sum | cut -d' ' -f1)"
+printf '%s\n' "SHA256:" " ${hc_mh} 123 main/binary-amd64/Packages" \
+   > "${host_cache_fixture}/debian/dists/trixie/InRelease"
 # shellcheck disable=SC2317  ## runs via the EXIT trap
-cleanup() { safe-rm --force -- "${rec_attach}" "${rec_exec}" "${shared_stub}" "${exec_stub}"; }
+cleanup() { safe-rm --recursive --force -- "${rec_attach}" "${rec_exec}" "${shared_stub}" "${exec_stub}" "${host_cache_fixture}"; }
 trap cleanup EXIT
 
-cat > "${shared_stub}" <<'STUB'
+## Stub dm-shared-apt-repo: print the host-read mirror path (cache-path) and the guest URI root
+## (guest-cache-path) on stdout so the host-side source generation resolves; record everything else
+## (attach ...) with its orchestrator-pinned LOCAL_APT_REPOSITORY_BASE so the slot pin is asserted.
+cat > "${shared_stub}" <<STUB
 #!/bin/bash
-## Record the LOCAL_APT_REPOSITORY_BASE env (the orchestrator-pinned share path) ALONGSIDE argv:
-## the account-run attach must receive the base so it never re-derives a slot-less (wrong) path.
-printf 'base=%s args=%s\n' "${LOCAL_APT_REPOSITORY_BASE:-}" "$*" >> "${REC_ATTACH}"
+case "\$1" in
+  cache-path) printf '%s\n' '${host_cache_fixture}' ;;
+  guest-cache-path) printf '%s\n' '/mnt/shared/aptcache' ;;
+  *) printf 'base=%s args=%s\n' "\${LOCAL_APT_REPOSITORY_BASE:-}" "\$*" >> "\${REC_ATTACH}" ;;
+esac
 exit 0
 STUB
 cat > "${exec_stub}" <<'STUB'
@@ -158,12 +172,14 @@ assert "no base -> attach runs with an empty LOCAL_APT_REPOSITORY_BASE (env-deri
 local_repo_base='/srv/derivative-maker/SLOT'
 
 ws_func_enable_local_repo >/dev/null 2>&1
-assert "ws_func_enable_local_repo runs repo-add-local for the derivative in-guest" \
-   grep -q 'repo-add-local whonix' "${rec_exec}"
-assert "ws_func_enable_local_repo runs it as the boot user role" \
+assert "enable writes the generated local sources into the dedicated guest dir" \
+   grep -q 'sources.list.d.localtest/local-apt-repo.sources' "${rec_exec}"
+assert "enable updates apt pointed at the local sources ONLY (sourceparts + sourcelist=/dev/null)" \
+   grep -q -- '-o Dir::Etc::sourceparts=/etc/apt/sources.list.d.localtest -o Dir::Etc::sourcelist=/dev/null --quiet update' "${rec_exec}"
+assert "enable runs it as the boot user role" \
    grep -q -- '--role user' "${rec_exec}"
-assert "ws_func_enable_local_repo refreshes apt after enabling the repo" \
-   grep -q 'apt-get --quiet update' "${rec_exec}"
+assert "enable policy-checks the derivative local repo is live" \
+   grep -q 'aptrepo_local/whonix' "${rec_exec}"
 
 ## with --local-repo UNSET, boot_workstation_user must NOT attach (byte-unchanged path).
 true > "${rec_attach}"

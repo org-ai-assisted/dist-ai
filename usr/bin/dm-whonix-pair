@@ -102,7 +102,8 @@ check_log=""
 shot_dir=""
 ## functional CLI/inst lane only (--local-repo kicksecure|whonix): deliver the fast LOCAL apt repo
 ## over the 'shared' vboxsf and enable it in the WS, so check 3 (upgrade-nonroot) upgrades the
-## derivative packages from it (Debian base still over Tor). Empty => disabled (byte-unchanged;
+## derivative packages from it, AND the Debian base from the local mirror exposed under the share
+## (check 3 reads the dedicated local sources only -- fully offline, no Tor). Empty => disabled (byte-unchanged;
 ## the lane upgrades from the published repos). Rejected in main outside --mode functional
 ## --interface cli: repo-add-local needs root, which only the split-free CLI edition's `user` has.
 local_repo=""
@@ -129,6 +130,18 @@ ANON_LEAK_TEST_REPO="${ANON_LEAK_TEST_REPO:-/var/lib/image-tests/anon-leak-test}
 ## Where the guest auto-mounts the 'shared' folder that carries the battery (fixed by the
 ## guest's mnt-shared-vbox.service). The host staging dir is made in main.
 GUEST_SHARE_MOUNT='/mnt/shared'
+
+## Dedicated apt sources dir in the WS for the --local-repo lane: holds the derivative 'local' repo
+## + the Debian base mirror sources, GENERATED HOST-SIDE (the released image's repo-add-local lacks
+## the base block). check 3 -- and the enable/verify apt ops -- read ONLY this dir
+## (Dir::Etc::sourceparts + sourcelist=/dev/null), so the full upgrade resolves entirely from the
+## local file: sources (offline, no Tor) with NO apt pin and WITHOUT touching the guest's own apt
+## config (so the other checks are unaffected).
+LOCAL_TEST_SOURCES_DIR='/etc/apt/sources.list.d.localtest'
+LOCAL_TEST_APT_OPTS="-o Dir::Etc::sourceparts=${LOCAL_TEST_SOURCES_DIR} -o Dir::Etc::sourcelist=/dev/null"
+## The mirror (private-ai-config debian-mirror-sync) is binary-only amd64; the base sources emit
+## 'Architectures: amd64' so a multi-arch guest never asks for an absent foreign-arch index.
+LOCAL_MIRROR_ARCH='amd64'
 share_dir=''
 ## World-readable guest-local stage for the browser probe. /mnt/shared is a root-only, read-only
 ## vboxsf mount, so the NON-root browser probe (Tor Browser refuses root) cannot read its CLI +
@@ -316,6 +329,12 @@ source "${lib_base}/vbox-session.bsh"
 source "${lib_base}/release-checks.bsh"
 # shellcheck source=./usr/share/dm-smbios-reader-boot-tests/ocr-session.bsh
 source "${lib_base}/ocr-session.bsh"
+## helper-scripts: the single generator of the local apt sources deb822 stanzas (derivative 'local'
+## repo + Debian base mirror). Sourced host-side ONLY for the --local-repo lane; define-only. Made
+## non-fatal so a missing/old lib fails ONLY that lane (enable guards on the functions), never the
+## leak or non-local-repo lanes that do not use it.
+# shellcheck disable=SC1090,SC1091
+source "${HELPER_SCRIPTS_PATH:-}/usr/libexec/helper-scripts/local-apt-repo-sources.bsh" 2>/dev/null || true
 
 usage() {
    printf '%s\n' "usage: ${me} [--gw NAME] [--ws NAME] [--mode leak|functional] [--interface gui|cli] [--local-repo kicksecure|whonix]
@@ -334,8 +353,9 @@ usage() {
        it is run SEPARATELY via a real console login and IS REQUIRED for a pass -- not skipped.
 --local-repo (--mode functional --interface cli ONLY) kicksecure|whonix: attach + enable the fast
        LOCAL apt repo (delivered over the 'shared' vboxsf, codename 'local') in the Workstation so
-       check 3 (upgrade-nonroot) upgrades the derivative packages from it (Debian base over Tor).
-       Rejected in any other mode/interface (repo-add-local needs root, which only the split-free
+       check 3 (upgrade-nonroot) upgrades the derivative packages AND the Debian base from local
+       file: sources only (the mirror exposed under the share) -- fully offline, no Tor.
+       Rejected in any other mode/interface (the apt ops need root, which only the split-free
        CLI edition's user has). Populate the repo first: derivative-maker --skip-published-packages.
 
 Exit 0 = PASS."
@@ -1111,7 +1131,12 @@ ws_func_cli_exec() {
    ## session running the command (VERR_TIMEOUT). Run it DETACHED and poll its result over fresh
    ## sessions that reconnect once VBoxService returns.
    if [ "$1" = 3 ]; then
-      ws_func_cli_upgrade_detached "$2" "$3" "$4"
+      local cli_upgrade_cmd="$3"
+      ## --local-repo: point the upgrade at the local sources ONLY -- upgrade-nonroot forwards "$@"
+      ## to apt-get, so sourceparts + sourcelist=/dev/null make the full upgrade resolve offline from
+      ## the local file: mirror + derivative repo (no Tor, no pin). local_repo is enum-validated.
+      [ -n "${local_repo}" ] && cli_upgrade_cmd="$3 ${LOCAL_TEST_APT_OPTS}"
+      ws_func_cli_upgrade_detached "$2" "${cli_upgrade_cmd}" "$4"
       return "$?"
    fi
    local tmp rc=0
@@ -1328,17 +1353,53 @@ ws_cli_console_systemcheck() {
 ## 'shared' vboxsf was host-attached in boot_workstation_user and auto-mounts at /mnt/shared;
 ## here the in-guest helper writes its [trusted=yes] 'Suites: local' source and refreshes apt, so
 ## the EXISTING check 3 (upgrade-nonroot = apt-get --update full-upgrade) pulls the derivative
-## packages from the fast local source (Debian base over Tor). Runs as the boot `user`: the CLI
-## edition has NO user/sysmaint split, so `user` has sudo and dsudo submits the empty password.
+## packages AND the Debian base from the local file: sources only (dedicated dir, sourceparts
+## override) -- fully offline, no Tor. Runs as the boot `user`: the CLI edition has NO user/sysmaint
+## split, so `user` has sudo and dsudo submits the empty password.
 ## apt-cache policy confirms the local source is actually live (not silently dropped) so the
 ## fail-closed check is meaningful. ANY failure -> SETUP_RC (INCONCLUSIVE, not a release FAIL):
 ## the lane must never claim a local-repo upgrade it did not enable.
 ws_func_enable_local_repo() {
    vm="${ws}"
-   ## local_repo is enum-validated (kicksecure|whonix) in parse_args, so it is safe to interpolate
-   ## into the guest shell snippet (no untrusted data).
-   gc_run user "dsudo repo-add-local ${local_repo} && dsudo apt-get --quiet update && apt-cache policy | grep --quiet --fixed-strings 'aptrepo_local/${local_repo}'" 600 \
-      || die "${SETUP_RC}" "${ws}: could not enable the local apt repo (${local_repo}) in the WS -- repo-add-local / apt-get update / policy check failed (INCONCLUSIVE, not a release FAIL)"
+   ## Generate the local apt sources HOST-SIDE (a released image's repo-add-local has no base block):
+   ## the derivative 'local' repo + each Debian base suite, carrying the GUEST file: URIs. Residency
+   ## is READ from the host-side mirror bind-mount; the emitted URI is the guest mount path. All
+   ## inputs are trusted (local_repo is enum-validated, the paths come from dm-shared-apt-repo), and
+   ## the stanzas reach the guest base64-encoded, so nothing untrusted hits the guest shell.
+   local host_cache guest_cache guest_repo src b64 nick suite spec base_stanza
+   if [ "$(type -t local_apt_repo_base_stanza)" != 'function' ] || [ "$(type -t local_apt_repo_sources_stanza)" != 'function' ]; then
+      die "${SETUP_RC}" "${ws}: helper-scripts local-apt-repo-sources.bsh not loaded (set HELPER_SCRIPTS_PATH / install helper-scripts) -- cannot generate the local apt sources (INCONCLUSIVE)"
+   fi
+   host_cache="$("${DM_SHARED_APT_REPO}" cache-path)"
+   guest_cache="$("${DM_SHARED_APT_REPO}" guest-cache-path)"
+   guest_repo="${GUEST_SHARE_MOUNT}/aptrepo_local/${local_repo}"
+   [ -d "${host_cache}" ] \
+      || die "${SETUP_RC}" "${ws}: Debian mirror not exposed at ${host_cache} (host: run 'dm-shared-apt-repo expose' before the lane) -- cannot source the base locally (INCONCLUSIVE)"
+   src="$(mktemp)"
+   {
+      local_apt_repo_sources_stanza "file:${guest_repo}" local
+      for spec in debian:trixie debian:trixie-updates debian-security:trixie-security; do
+         nick="${spec%%:*}"
+         suite="${spec#*:}"
+         if base_stanza="$(local_apt_repo_base_stanza "${host_cache}" "${nick}" "${suite}" "${LOCAL_MIRROR_ARCH}" "${guest_cache}")"; then
+            ## deb822 separates stanzas by a blank line.
+            printf '%s\n' "" "${base_stanza}"
+         fi
+      done
+   } > "${src}"
+   ## The base MUST resolve (check 3 upgrades from local-ONLY sources): an Architectures line only
+   ## appears on a base stanza, so its absence means no base suite was resident. Fail closed.
+   if ! grep --quiet '^Architectures:' -- "${src}"; then
+      safe-rm --force -- "${src}"
+      die "${SETUP_RC}" "${ws}: no Debian base suite resolved from the mirror at ${host_cache} (INCONCLUSIVE)"
+   fi
+   b64="$(base64 --wrap=0 -- "${src}")"
+   safe-rm --force -- "${src}"
+   ## Write the sources into the DEDICATED guest dir, then update + policy-check reading ONLY that
+   ## dir -- so check 3 upgrades offline from the local file: sources with no pin and no edit to the
+   ## guest's own apt config.
+   gc_run user "dsudo install -d -m 0755 ${LOCAL_TEST_SOURCES_DIR} && printf %s '${b64}' | base64 --decode | dsudo tee ${LOCAL_TEST_SOURCES_DIR}/local-apt-repo.sources >/dev/null && dsudo apt-get ${LOCAL_TEST_APT_OPTS} --quiet update && apt-cache ${LOCAL_TEST_APT_OPTS} policy | grep --quiet --fixed-strings 'aptrepo_local/${local_repo}'" 600 \
+      || die "${SETUP_RC}" "${ws}: could not enable the local apt sources in the WS (generate/write/update/policy failed) -- INCONCLUSIVE, not a release FAIL"
 }
 
 ## Verify the local build payloads were ACTUALLY installed, not merely AVAILABLE. apt-cache policy
@@ -1371,7 +1432,7 @@ for s in \$specs; do
   fi
 done
 [ -n "\$installed" ] || { echo 'no local-repo package is installed in the guest -- this build was not exercised' >&2; exit 1; }
-dsudo apt-get install --reinstall --yes --allow-downgrades -t local \$installed
+dsudo apt-get ${LOCAL_TEST_APT_OPTS} install --reinstall --yes --allow-downgrades -t local \$installed
 for s in \$installed; do
   n=\${s%%=*}; v=\${s#*=}
   got=\$(dpkg-query -W -f='\${Version}' "\$n")

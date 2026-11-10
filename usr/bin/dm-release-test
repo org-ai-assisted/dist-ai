@@ -1614,6 +1614,13 @@ rt_lane_whonix_inst() {
    local rt_local_repo_gen="" rt_local_repo_gen_rc=0
    if [ -n "${local_repo}" ]; then
       rt_local_repo_gen="$(rt_local_repo_gen_id "${local_repo}")" || rt_local_repo_gen_rc=$?
+      ## Expose the local Debian mirror under this repo's share tree (ROOT bind-mount, ro+nosymfollow)
+      ## BEFORE the account-run lane attaches + boots, so the WS can source the Debian base locally
+      ## for check 3's full upgrade. Keyed to the SAME base the lane attaches (--local-repo-base).
+      ## Absent-safe: a host without the mirror skips, and dm-whonix-pair's enable step then fails
+      ## closed (INCONCLUSIVE) rather than silently upgrading the base over Tor.
+      LOCAL_APT_REPOSITORY_BASE="${lr_base}" "${DM_SHARED_APT_REPO}" expose \
+         || log warning "dm-shared-apt-repo expose failed; the WS base-local upgrade may be INCONCLUSIVE"
    fi
    sudo -u "${account}" -- "${rt_session_env[@]}" "${DM_WHONIX_PAIR}" --mode functional --interface "${wp_interface}" --check-log "${check_log}" "${lr_args[@]}" --gw "${gw}" --ws "${ws}" || rc=$?
    ## Thread a non-empty check-log into the published step's stderr tail (empty = a pass or a
