@@ -1057,6 +1057,21 @@ expect_rule "${shopt_fail}" $'if was_executed "${BASH_SOURCE[0]}"; then\n   main
 ## sub-check too (onion-time-pre-script's deliberate minimal-strict shape).
 expect_rule "${shopt_fail}" $'## style-ok: no-strict\nif was_executed "${BASH_SOURCE[0]}"; then\n   set -o errexit\n   set -o pipefail\nfi' "absent"
 
+## R-010 sourceable shebang: a strict-in-main source-able script (strict block
+## inside main(), so top-level errexit is OFF) with an UNGUARDED top-level
+## 'source' must carry '#!/bin/bash -e' -- else a failed top-level source falls
+## through to main() and runs its side effects (the repair-torrc authdir bug).
+## Bare '#!/bin/bash' FAILS; '#!/bin/bash -e' PASSES. A script whose ONLY
+## top-level source is the '|| true'-guarded check_runtime is NOT required to
+## carry -e (no false positive -- that source cannot fall through).
+sheb_fail='R-010 sourceable shebang'
+src_unguarded=$'source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/check_runtime.bsh || true\nif ! declare -F was_executed >/dev/null; then\n   exit 1\nfi\nsource "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/strings.bsh\nmain() {\n   set -o errexit\n   set -o nounset\n   set -o pipefail\n   set -o errtrace\n   shopt -s inherit_errexit\n   shopt -s shift_verbose\n   export LC_ALL=C\n   true\n}\nif was_executed "${BASH_SOURCE[0]}"; then\n   main "$@"\nfi'
+expect_rule "${sheb_fail}" "${src_unguarded}" "present" "#!/bin/bash"
+expect_rule "${sheb_fail}" "${src_unguarded}" "absent"  "#!/bin/bash -e"
+## No false positive: only the guarded check_runtime at top level -> -e not required.
+src_guarded_only=$'source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/check_runtime.bsh || true\nif ! declare -F was_executed >/dev/null; then\n   exit 1\nfi\nmain() {\n   set -o errexit\n   set -o nounset\n   set -o pipefail\n   set -o errtrace\n   shopt -s inherit_errexit\n   shopt -s shift_verbose\n   export LC_ALL=C\n   true\n}\nif was_executed "${BASH_SOURCE[0]}"; then\n   main "$@"\nfi'
+expect_rule "${sheb_fail}" "${src_guarded_only}" "absent" "#!/bin/bash"
+
 ## R-080: a 'shellcheck source=' path must be relative, anchored with ./ or
 ## ../ (start with '.'). An absolute path OR a bare name (no ./) is FLAGGED.
 expect_rule "R-080" "# shellcheck source=get_colors.sh"          "present"
@@ -2755,4 +2770,4 @@ if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "test_pre_push_static_style_rules: ${failures} assertion(s) FAILED." >&2
    exit 1
 fi
-printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-070 per-rule id override, R-074, R-026, R-030 format string (injection + fixed format + exemptions), R-030/R-031, R-030/R-031 printf-format waiver, R-030/R-031 composite id override, AST-aware waiver (heredoc-body / trailing-inline / Python-string not honored), R-034, R-034 per-rule id override, R-011, R-051, R-090, R-102, R-103, R-120, R-170, R-180, R-190, R-191, R-192, R-193 (shell forms + systemd/workflow config hosts), R-194, R-195, R-100, R-010, R-212, R-220, R-001 .gitattributes-binary allowlist, R-001 commit-message, trailing-whitespace, CRLF-shebang, untracked-shell-file reporting, double-quote-string-fixer-disabled and imported-package-module exemption enforced as expected."
+printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-070 per-rule id override, R-074, R-026, R-030 format string (injection + fixed format + exemptions), R-030/R-031, R-030/R-031 printf-format waiver, R-030/R-031 composite id override, AST-aware waiver (heredoc-body / trailing-inline / Python-string not honored), R-034, R-034 per-rule id override, R-011, R-051, R-090, R-102, R-103, R-120, R-170, R-180, R-190, R-191, R-192, R-193 (shell forms + systemd/workflow config hosts), R-194, R-195, R-100, R-010, R-010 sourceable shebang, R-212, R-220, R-001 .gitattributes-binary allowlist, R-001 commit-message, trailing-whitespace, CRLF-shebang, untracked-shell-file reporting, double-quote-string-fixer-disabled and imported-package-module exemption enforced as expected."

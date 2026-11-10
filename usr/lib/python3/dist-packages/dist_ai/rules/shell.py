@@ -2346,6 +2346,65 @@ _INHERIT_ERREXIT = re.compile(r'^[ \t]*shopt -s inherit_errexit[ \t]*$',
 _SHIFT_VERBOSE = re.compile(r'^[ \t]*shopt -s shift_verbose[ \t]*$',
                             re.MULTILINE)
 _INDENTED_LC_ALL = re.compile(r'^[ \t]+export LC_ALL=C[ \t]*$', re.MULTILINE)
+## A source-able guarded script keeps its strict block inside main() (so sourcing
+## does not leak it); top-level errexit must then come from the '#!/bin/bash -e'
+## shebang -- the sourceable skill's canonical skeleton. '-e' is matched in the
+## shebang; '|| true' is the check_runtime guard idiom whose failure cannot fall
+## through, so a top-level source carrying it is NOT the bug signal.
+_GUARDED_SOURCE_TAIL = re.compile(r'\|\|[ \t]*true[ \t]*$')
+_SHEBANG_ERREXIT = re.compile(r'bash[ \t]+-[a-zA-Z]*e')
+
+
+def _func_body_spans(tree):
+    """(start, end) byte offsets of every function body in TREE, for an
+    AST-scope 'is this at the true top level' test. Needed because a legacy port
+    wraps the body in main() WITHOUT re-indenting -- so column 0 no longer means
+    top level; only the AST does."""
+    spans = []
+    for decl in bash_ast.func_decls(tree):
+        pos = decl.get("Pos") or {}
+        end = decl.get("End") or {}
+        if "Offset" in pos and "Offset" in end:
+            spans.append((pos["Offset"], end["Offset"]))
+    return spans
+
+
+def _toplevel_calls(tree, names):
+    """Yield (call, line) for every CallExpr whose command name is in NAMES and
+    whose position is OUTSIDE every function body (the true top level). A name
+    appearing only inside a quoted string or here-document is not a CallExpr, so
+    it is never yielded (no text-scan false positives)."""
+    spans = _func_body_spans(tree)
+    for call in bash_ast.call_exprs(tree):
+        if bash_ast.command_name(call) not in names:
+            continue
+        pos = call.get("Pos") or {}
+        offset = pos.get("Offset")
+        if offset is None or any(s <= offset < e for s, e in spans):
+            continue
+        yield call, pos.get("Line")
+
+
+def _set_enables_errexit(call):
+    """True if a 'set' CallExpr turns errexit ON -- 'set -o errexit' or a
+    short-flag bundle carrying 'e' (-e, -eu, -euo ...). Scans up to a bare '--'
+    (end-of-options makes the rest positional)."""
+    toks = [bash_ast.word_lit(word) for word in bash_ast.args(call)][1:]
+    index = 0
+    while index < len(toks):
+        tok = toks[index]
+        if tok is None:
+            index += 1
+            continue
+        if tok == "--":
+            break
+        if tok == "-o":
+            if index + 1 < len(toks) and toks[index + 1] == "errexit":
+                return True
+        elif tok.startswith("-") and not tok.startswith("--") and "e" in tok[1:]:
+            return True
+        index += 1
+    return False
 
 
 class StrictModeBlock(Rule):
@@ -2384,6 +2443,36 @@ class StrictModeBlock(Rule):
         guarded = any(
             bash_ast.command_name(call) in ("was_executed", "was_sourced")
             for call in bash_ast.call_exprs(ctx.tree))
+        ## Source-able shebang: a guarded script runs its TRUE top level (outside
+        ## every function) with errexit OFF unless the '#!/bin/bash -e' shebang
+        ## supplies it (a top-level 'set -o errexit' would leak into a sourcing
+        ## shell, which the strict-in-main pattern exists to avoid). An UNGUARDED
+        ## top-level 'source' (no '|| true') is then a fallible command whose
+        ## failure falls through the was_executed guard into main() and runs its
+        ## side effects -- the repair-torrc authdir regression. Scope is AST, not
+        ## column: a legacy port keeps main()'s body at column 0, so its in-main
+        ## 'set -o errexit' must NOT count as top-level (it does not run on source).
+        if guarded:
+            source_lines = source.split("\n")
+            toplevel_errexit = bool(
+                _SHEBANG_ERREXIT.search(source_lines[0])) or any(
+                    _set_enables_errexit(call)
+                    for call, _line in _toplevel_calls(ctx.tree, ("set",)))
+            if not toplevel_errexit:
+                for _call, line in _toplevel_calls(ctx.tree, ("source", ".")):
+                    line_text = (source_lines[line - 1]
+                                 if line and line - 1 < len(source_lines) else "")
+                    if not _GUARDED_SOURCE_TAIL.search(line_text):
+                        yield model.fail(
+                            "R-010",
+                            "R-010 sourceable shebang: a source-able "
+                            "(was_executed) script with an unguarded top-level "
+                            "'source' must use '#!/bin/bash -e' so a failed "
+                            "top-level source aborts before the was_executed "
+                            "guard reaches main() (top-level errexit is off -- "
+                            "the strict block runs only inside main)",
+                            ctx.path, line or 1)
+                        break
         if present == 0 and guarded:
             ## Source-able guarded script: exempt from the all-seven column-zero
             ## rule (a guard CALL alone exempts -- a sourced-only lib that defines
