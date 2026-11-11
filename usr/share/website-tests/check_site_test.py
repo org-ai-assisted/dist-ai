@@ -1176,16 +1176,13 @@ def run():
     check('check_image_dims: <img> after a self-closed <title/> is inside RCDATA (not flagged)',
           not any('intitle.png' in f for f in check_site.find_imgs_missing_dims(_selfclose)),
           repr(check_site.find_imgs_missing_dims(_selfclose)))
-    # an <img> inside an <svg> (title/desc/foreignObject) is not an HTML image and is not painted
-    _svgimg = '<svg><title><img src="icon.png"></title></svg>'
-    check('check_image_dims: <img> inside <svg> is not flagged',
-          not any('icon.png' in f for f in check_site.find_imgs_missing_dims(_svgimg)),
-          repr(check_site.find_imgs_missing_dims(_svgimg)))
     # html5lib DECODES character refs, so a crafted src must not inject a control char (e.g. a
-    # newline forging a CI ::warning:: line) into the finding string -- it is escaped, single-line.
-    _inject = check_site.find_imgs_missing_dims('<img src="x&#10;::warning::y.png">')
-    check('check_image_dims: a decoded control char in src is escaped, not injected',
-          _inject and not any('\n' in f for f in _inject) and any('\\x0a' in f for f in _inject),
+    # newline forging a CI ::warning:: line, or an ANSI escape) into the finding string. The json
+    # serialization keeps it one line with no raw control byte (the newline becomes an escape).
+    _inject = check_site.find_imgs_missing_dims(
+        '<img src="x&#10;::warning::y.png" ' + chr(0x1b) + 'bad="z">')
+    check('check_image_dims: decoded control chars in src/name are escaped, not injected',
+          _inject and not any(any(ord(c) < 0x20 or ord(c) == 0x7f for c in f) for f in _inject),
           repr(_inject))
     # two <img>s with the SAME src but different other attrs are DISTINCT findings, so an
     # exact-match baseline entry for one cannot silently suppress a second (new) occurrence.

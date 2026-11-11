@@ -25,6 +25,7 @@ import calendar
 import datetime
 import hashlib
 import html.parser
+import json
 import math
 import os
 import posixpath
@@ -3384,8 +3385,8 @@ _IMG_DIMS_RASTER_EXTS = ('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp')
 
 def _is_pos_int_attr(value):
     """True iff `value` is a COMPLETE unitless positive-integer pixel count. We REQUIRE that form
-    (the web.dev/MDN CLS best practice: unitless width+height let the browser reserve the aspect-
-    ratio box) and deliberately flag 10% / 20px / 10.5 -- a browser may still reserve some box from
+    (the MDN / Lighthouse CLS best practice: unitless width+height let the browser reserve the
+    aspect-ratio box) and deliberately flag 10% / 20px / 10.5 -- a browser may still reserve box from
     those, but the generator emits unitless integers (from the image's pixel size), so a unit or
     fraction is a drift to flag. Rejects 0 and non-ASCII digits (HTML dimension attrs are ASCII)."""
     if value is None:
@@ -3412,23 +3413,18 @@ def _html_tabindex_positive(value):
     return not negative and any(c != '0' for c in s[:i])
 
 
-_CONTROL_CHARS_RE = re.compile(r'[\x00-\x1f\x7f]')
-
-
 def _img_report(img):
-    """A single-line, control-char-free rendering of `img`'s start tag for a finding message.
-    Keeps EVERY attribute (so two <img>s with the same src but a different alt/class are DISTINCT
-    findings, not collapsed onto one exact-match baseline entry that would then suppress both), and
-    escapes control characters -- html5lib DECODES character references, so a crafted wiki src like
-    `safe&#10;::warning::x.png` would otherwise inject a newline (a forged CI workflow-command line)
-    or an ANSI escape into the log."""
-    parts = ['img']
-    for key, val in img.attrs.items():
-        if isinstance(val, list):             # bs4 multi-valued attr (class, rel, ...)
-            val = ' '.join(val)
-        safe = _CONTROL_CHARS_RE.sub(lambda m: '\\x%02x' % ord(m.group()), val)
-        parts.append('%s="%s"' % (key, safe))
-    return '<%s>' % ' '.join(parts)
+    """A single-line, injection-safe, COLLISION-FREE rendering of `img`'s attributes for a finding
+    message. json.dumps escapes every control char, quote and backslash in BOTH attribute names and
+    values -- html5lib DECODES character references, so a crafted wiki src like
+    `safe&#10;::warning::x.png` must not inject a newline (a forged CI workflow-command line) or an
+    ANSI escape into the log. It is also injective, so two <img>s differing in ANY attribute (e.g.
+    alt) serialize DISTINCTLY -- an exact-match baseline entry for one cannot then silently suppress
+    a second, new occurrence. Hand-rolled `name="value"` escaping repeatedly missed a case (quotes,
+    backslashes, control chars in a name); json is the complete, standard encoder."""
+    attrs = {key: (' '.join(val) if isinstance(val, list) else val)
+             for key, val in img.attrs.items()}
+    return 'img ' + json.dumps(attrs, sort_keys=True)
 
 
 def find_imgs_missing_dims(markup):
@@ -3446,9 +3442,11 @@ def find_imgs_missing_dims(markup):
     from bs4 import BeautifulSoup
     soup = BeautifulSoup(markup, 'html5lib')
     bad = []
+    # NOTE: an <img> inside an <svg> is left in scope. A browser paints one in <foreignObject> but
+    # not one in <title>/<desc>; distinguishing them means modelling the SVG content tree, and the
+    # generator emits no inline <svg> with a nested <img> at all, so neither case occurs in audited
+    # output. Keeping them in scope errs toward flagging (loud), never toward a silent miss.
     for img in soup.find_all('img'):
-        if img.find_parent('svg') is not None:
-            continue  # inside an <svg> (title/desc/foreignObject): not an HTML image, not painted
         src = (img.get('src') or '').strip()
         if not src or src.lower().startswith(('http://', 'https://', '//')):
             continue  # no src, or external -- its intrinsic size is not ours to know/set
