@@ -1194,8 +1194,19 @@ expect_rule "${sheb_fail}" $'source lib.bsh | true || exit 1\n'"${full_main}"   
 expect_rule "${sheb_fail}" $'source lib.bsh || return 1\n'"${full_main}"             "present" "#!/bin/bash"
 expect_rule "${sheb_fail}" $'source lib.bsh || ! true\n'"${full_main}"               "present" "#!/bin/bash"
 ## '&&'-chains of simple commands DO propagate a failure to the handler, so they stay
-## spared (no false positive from the masking fix above).
-expect_rule "${sheb_fail}" $'true && source lib.bsh || exit 1\n'"${full_main}"       "absent"  "#!/bin/bash"
+## spared (no false positive from the masking fix above). A non-CallExpr test on either
+## side of the '&&' ('[[ ]]', '(( ))') is fine -- it holds no source to mask -- and a
+## '||' whose source is the LAST operand propagates (its status is the list status).
+expect_rule "${sheb_fail}" $'true && source lib.bsh || exit 1\n'"${full_main}"             "absent"  "#!/bin/bash"
+expect_rule "${sheb_fail}" $'[[ -f /e/f ]] && source lib.bsh || exit 1\n'"${full_main}"    "absent"  "#!/bin/bash"
+expect_rule "${sheb_fail}" $'(( 1 )) && source lib.bsh || exit 1\n'"${full_main}"          "absent"  "#!/bin/bash"
+expect_rule "${sheb_fail}" $'source lib.bsh && [[ -n x ]] || exit 1\n'"${full_main}"       "absent"  "#!/bin/bash"
+expect_rule "${sheb_fail}" $'false || source lib.bsh || exit 1\n'"${full_main}"            "absent"  "#!/bin/bash"
+## '! exit' still terminates the shell (the '!' cannot invert a process that exits), so a
+## negated EXIT handler stays a guard; a redirection on the handler can fail to open
+## before the handler runs, so it is NOT trusted.
+expect_rule "${sheb_fail}" $'source lib.bsh || ! exit 1\n'"${full_main}"                   "absent"  "#!/bin/bash"
+expect_rule "${sheb_fail}" $'source lib.bsh || exit 1 >&9\n'"${full_main}"                 "present" "#!/bin/bash"
 ## Shebang errexit: ONLY a combined short-flag bundle ('-e', '-eu') directly on the
 ## bash interpreter enables errexit via a Linux shebang (the kernel passes the
 ## post-interpreter tail as ONE argv word). A split '-u -e', a long '-o errexit', or
@@ -1217,6 +1228,12 @@ expect_rule "${sheb_fail}" "${src_unguarded_plain}" "present" "#!/bin/bash"
 expect_rule "${sheb_fail}" "${src_unguarded_plain}" "absent"  "#! /bin/bash -e"
 expect_rule "${sheb_fail}" "${src_unguarded_plain}" "present" "#!/bin/bash -euo pipefail"
 expect_rule "${sheb_fail}" "${src_unguarded_plain}" "present" "#!/bin/bash -e extra"
+## '-euo' (no pipefail) and '-eo' contain 'o': in a one-word shebang arg '-o' consumes the
+## absent next word, so bash aborts 'invalid option' and errexit is never set -- FLAGGED.
+expect_rule "${sheb_fail}" "${src_unguarded_plain}" "present" "#!/bin/bash -euo"
+## A CRLF shebang ('#!/bin/bash -e\r') passes '-e\r' (CR not stripped) -- bash rejects it,
+## errexit never set, so the source STAYS flagged (no false pass from a stray CR).
+expect_rule "${sheb_fail}" "${src_unguarded_plain}" "present" $'#!/bin/bash -e\r'
 
 ## R-080: a 'shellcheck source=' path must be relative, anchored with ./ or
 ## ../ (start with '.'). An absolute path OR a bare name (no ./) is FLAGGED.

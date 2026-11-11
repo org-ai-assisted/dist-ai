@@ -2355,21 +2355,31 @@ _SHIFT_VERBOSE = re.compile(r'^[ \t]*shopt -s shift_verbose[ \t]*$',
 _INDENTED_LC_ALL = re.compile(r'^[ \t]+export LC_ALL=C[ \t]*$', re.MULTILINE)
 ## A source-able guarded script keeps its strict block inside main() (so sourcing
 ## does not leak it); top-level errexit must then come from the '#!/bin/bash -e'
-## shebang -- the sourceable skill's canonical skeleton. _SHEBANG_ERREXIT matches
-## '-e' in a combined short-flag bundle (-e, -eu, -ue): the ONLY form a Linux shebang
-## honours -- the kernel passes the whole post-interpreter tail as ONE argv word, so a
-## split '-u -e', a long '-o errexit', a trailing word ('-e extra') or a broken bundle
-## ('-euo pipefail', '-o' wants a value) is a single arg bash REJECTS ("invalid
-## option", errexit never set). The bundle is ANCHORED to the end of that one word
-## ([ \t]*\r?$), so none of those match. Optional whitespace after '#!' is allowed --
-## the kernel skips it, so '#! /bin/bash -e' DOES enable errexit and matches. The match
-## is anchored to the bash INTERPRETER token (^#!<ws>?<path>bash <flag>), so
-## '#!/usr/bin/env bash -e' -- env the interpreter, 'bash -e' its single (broken)
-## argument -- does not match (the no-whitespace run before 'bash' cannot cross the
-## space after env). The top-level 'source' guard is read off the AST
-## (_guarded_source_spans), not a one-line regex a comment / continuation / CRLF
-## could fool.
-_SHEBANG_ERREXIT = re.compile(r'^#![ \t]*[^ \t]*bash[ \t]+-[a-zA-Z]*e[a-zA-Z]*[ \t]*\r?$')
+## shebang -- the sourceable skill's canonical skeleton. _SHEBANG_BASH_FLAG captures a
+## '#!...bash <bundle>' whose single post-interpreter word is a short-flag bundle: a
+## Linux shebang passes the WHOLE post-interpreter tail as ONE argv word, so only a
+## single bundle counts -- a split '-u -e', a long '-o errexit', a trailing word
+## ('-e extra') or a CRLF ('-e\r') leaves more than one word / a stray byte at end of
+## line and does not match. Optional whitespace after '#!' is allowed (the kernel skips
+## it, so '#! /bin/bash -e' counts). The match anchors to the bash INTERPRETER token,
+## so '#!/usr/bin/env bash -e' (env is the interpreter, 'bash -e' its single broken arg)
+## does not match -- the no-whitespace run before 'bash' cannot cross the space after
+## env. (An '#!/usr/bin/env -S bash -e', which env -S would split, is likewise not
+## modelled and stays flagged: no sourceable script uses it, and it is not a regression.)
+_SHEBANG_BASH_FLAG = re.compile(r'^#![ \t]*[^ \t]*bash[ \t]+-([A-Za-z]+)[ \t]*$')
+
+
+def _shebang_enables_errexit(first_line):
+    """True if FIRST_LINE is a '#!...bash' shebang whose single short-flag bundle turns
+    errexit on. The bundle must contain 'e' AND no value-taking flag ('-o'/'-c'/'-O'
+    would consume the absent next word, so bash aborts 'invalid option' and errexit is
+    never set, e.g. '#!/bin/bash -euo'). The top-level 'source' guard is read off the
+    AST (_guarded_source_spans), not a regex a comment / continuation / CRLF could fool."""
+    match = _SHEBANG_BASH_FLAG.match(first_line)
+    if match is None:
+        return False
+    bundle = match.group(1)
+    return "e" in bundle and not set("ocO") & set(bundle)
 
 
 def _toplevel_calls(tree, names, spans):
@@ -2438,45 +2448,73 @@ def _was_executed_guard_body_spans(tree):
 _SOURCE_GUARD_HANDLERS = frozenset(("true", ":", "exit"))
 
 
+def _contains_source(node):
+    """True if NODE's subtree holds a 'source'/'.' CallExpr -- used to spot a 'source'
+    masked on the LEFT operand of a '||' (its failure is swallowed when the right
+    operand succeeds)."""
+    return any(bash_ast.command_name(call) in ("source", ".")
+               for call in bash_ast.call_exprs(node))
+
+
 def _failure_propagates(stmt):
     """True if a failed 'source' inside STMT makes STMT's exit status non-zero, so an
-    outer '|| <handler>' observes the failure. Only a simple command or a PURE
-    '&&'-chain of simple commands qualifies: '&&' carries any operand's failure to the
-    chain's status, so the handler fires. A '||' sub-chain ('source || echo'), a pipe
-    ('source | cmd' -- no pipefail, the status is the last stage), a '!'-negation (flips
-    the failure to success), a brace group or a subshell can all leave a SUCCEEDING
-    neighbour as the status and MASK the source failure, so none qualify. Iterative down
-    the left spine -- a deeply nested '&&' chain must not overflow the stack (the reason
-    bash_ast.iter_nodes is iterative too)."""
+    outer '|| <handler>' observes the failure (the source cannot silently fall through
+    to main()). Models bash's status rules:
+      - '!' negation flips a failure to success -> masks.
+      - 'X && Y': a source failure in EITHER operand becomes the list status (X by
+        short-circuit, Y by being last), so both sides must propagate; a side holding no
+        source (a '[[ ]]' TestClause / '(( ))' ArithmCmd test) propagates trivially.
+      - 'X || Y': Y runs only when X failed, so a source in X is MASKED (Y may succeed);
+        only a source in Y (whose status IS the list status) propagates.
+      - a pipe ('source | cmd', no pipefail) yields the last stage's status -> masks.
+      - a brace group / subshell / other compound can end in a later command -> masks.
+    Iterative down the left spine so a deep '&&'/'||' chain cannot overflow the stack
+    (bash_ast.iter_nodes is iterative for the same reason)."""
     and_ops = bash_ast.and_op()
-    while isinstance(stmt, dict) and not stmt.get("Negated"):
+    or_ops = bash_ast.or_op()
+    while isinstance(stmt, dict):
+        if stmt.get("Negated"):
+            return False
         cmd = stmt.get("Cmd") or {}
         kind = cmd.get("Type")
-        if kind == "CallExpr":
-            return True
-        if kind == "BinaryCmd" and cmd.get("Op") in and_ops:
-            ## 'X && Y' is left-associative, so the chain's depth lives on X -- descend
-            ## it iteratively. Y is a single stmt and must itself be a plain,
-            ## non-negated simple command (a pipe / '||' / group there could mask).
-            right = cmd.get("Y") or {}
-            if right.get("Negated") or (right.get("Cmd") or {}).get(
-                    "Type") != "CallExpr":
+        op = cmd.get("Op")
+        if kind == "BinaryCmd" and op in and_ops:
+            if not _failure_propagates(cmd.get("Y")):
                 return False
             stmt = cmd.get("X")
             continue
-        return False
+        if kind == "BinaryCmd" and op in or_ops:
+            if _contains_source(cmd.get("X")):
+                return False
+            stmt = cmd.get("Y")
+            continue
+        if kind == "BinaryCmd":
+            return False          # pipe: the status is the last stage, not the source
+        if kind == "CallExpr":
+            return True
+        ## A leaf command that cannot hold a top-level 'source' (a '[[ ]]' test, a
+        ## '(( ))' arithmetic command, a declaration) propagates trivially; a compound
+        ## that CAN end in a later command (brace group, subshell, if/case/loop) masks.
+        return not _contains_source(stmt)
     return False
 
 
 def _guarded_source_spans(tree):
-    """(start, end) spans of the LEFT operand of every '|| <handler>' whose handler is
-    in _SOURCE_GUARD_HANDLERS, whose handler stmt is not itself negated, AND whose left
-    operand PROPAGATES a failed source's status to the handler (_failure_propagates) --
-    so a failed 'source' there cannot silently fall through the was_executed guard into
-    main(). A left operand that can MASK the failure ('source || echo', 'source | cmd',
-    '! source', '{ source; cmd; }', a subshell) is NOT a guard. AST-based, so a trailing
-    comment, a line-continuation, or a CRLF before the '||' cannot hide the guard (a
-    one-line '|| true$' regex missed all three)."""
+    """(start, end) spans of the LEFT operand of every '|| <handler>' that genuinely
+    aborts/marks a failed top-level 'source' -- so the failure cannot silently fall
+    through the was_executed guard into main(). A span is taken only when:
+      - the handler (right operand) names a command in _SOURCE_GUARD_HANDLERS;
+      - the handler stmt carries NO redirection (one that fails to open would run
+        BEFORE the handler, so bash never reaches it);
+      - the handler is not negated, EXCEPT '! exit' (exit terminates before '!' can
+        invert its status, so it still aborts); and
+      - the left operand PROPAGATES the source's failure status (_failure_propagates):
+        a left that MASKS it ('source || echo', 'source | cmd', '! source',
+        '{ source; cmd; }', a subshell) is NOT a guard.
+    AST-based, so a trailing comment, a line-continuation, or a CRLF before the '||'
+    cannot hide the guard. SCOPE: a synchronous foreground '|| handler' -- a backgrounded
+    ('&') guard list (the source then loads into a subshell, a self-evident bug outside
+    this accident-catching rule) is not specially modelled."""
     or_ops = bash_ast.or_op()
     spans = []
     for node in bash_ast.iter_nodes(tree):
@@ -2484,11 +2522,12 @@ def _guarded_source_spans(tree):
                 and node.get("Op") in or_ops):
             continue
         right = node.get("Y") or {}
-        ## A negated handler ('|| ! true') does not abort, so it is not a guard.
-        if right.get("Negated"):
+        if right.get("Redirs"):
             continue
         handler = bash_ast.command_name(right.get("Cmd") or {})
         if handler not in _SOURCE_GUARD_HANDLERS:
+            continue
+        if right.get("Negated") and handler != "exit":
             continue
         left = node.get("X") or {}
         if not _failure_propagates(left):
@@ -2578,8 +2617,8 @@ class StrictModeBlock(Rule):
         ##     failure, so it is NOT excluded.
         if guarded:
             source_lines = source.split("\n")
-            toplevel_errexit = bool(
-                _SHEBANG_ERREXIT.search(source_lines[0])) or any(
+            toplevel_errexit = _shebang_enables_errexit(
+                source_lines[0]) or any(
                     _set_enables_errexit(call)
                     for call, _line in _toplevel_calls(
                         ctx.tree, ("set",),
