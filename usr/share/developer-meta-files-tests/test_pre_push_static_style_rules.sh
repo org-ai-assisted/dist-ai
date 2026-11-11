@@ -1202,10 +1202,14 @@ expect_rule "${sheb_fail}" $'[[ -f /e/f ]] && source lib.bsh || exit 1\n'"${full
 expect_rule "${sheb_fail}" $'(( 1 )) && source lib.bsh || exit 1\n'"${full_main}"          "absent"  "#!/bin/bash"
 expect_rule "${sheb_fail}" $'source lib.bsh && [[ -n x ]] || exit 1\n'"${full_main}"       "absent"  "#!/bin/bash"
 expect_rule "${sheb_fail}" $'false || source lib.bsh || exit 1\n'"${full_main}"            "absent"  "#!/bin/bash"
-## '! exit' still terminates the shell (the '!' cannot invert a process that exits), so a
-## negated EXIT handler stays a guard; a redirection on the handler can fail to open
-## before the handler runs, so it is NOT trusted.
-expect_rule "${sheb_fail}" $'source lib.bsh || ! exit 1\n'"${full_main}"                   "absent"  "#!/bin/bash"
+## A NEGATED handler never counts: '! exit 1 2' hits "too many arguments" and RETURNS,
+## then '!' flips that to success (and no real guard is negated). An 'exit' with more
+## than one argument is "too many arguments" and RETURNS without terminating, so it is
+## not a guard either; a plain 'exit 1' still aborts. A redirection on the handler can
+## fail to open before the handler runs, so it is NOT trusted.
+expect_rule "${sheb_fail}" $'source lib.bsh || ! exit 1\n'"${full_main}"                   "present" "#!/bin/bash"
+expect_rule "${sheb_fail}" $'source lib.bsh || ! exit 1 2\n'"${full_main}"                 "present" "#!/bin/bash"
+expect_rule "${sheb_fail}" $'source lib.bsh || exit 1 2\n'"${full_main}"                   "present" "#!/bin/bash"
 expect_rule "${sheb_fail}" $'source lib.bsh || exit 1 >&9\n'"${full_main}"                 "present" "#!/bin/bash"
 ## A backgrounded guard list ('&') runs the source in a subshell -- 'exit' cannot abort
 ## the parent and the source never loads into it -- so it is NOT a guard, stays FLAGGED.

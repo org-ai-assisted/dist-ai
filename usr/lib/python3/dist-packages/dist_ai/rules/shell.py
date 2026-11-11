@@ -2448,15 +2448,29 @@ def _was_executed_guard_body_spans(tree):
 _SOURCE_GUARD_HANDLERS = frozenset(("true", ":", "exit"))
 
 
-def _contains_source(node):
-    """True if NODE's subtree holds a 'source'/'.' CallExpr -- used to spot a 'source'
-    masked on the LEFT operand of a '||' (its failure is swallowed when the right
-    operand succeeds)."""
-    return any(bash_ast.command_name(call) in ("source", ".")
-               for call in bash_ast.call_exprs(node))
+def _toplevel_source_offsets(tree):
+    """Byte offsets of every 'source'/'.' CallExpr in TREE, computed ONCE so the guard
+    scan can test 'does this operand hold a source' by offset range (O(1) over the few
+    sources a script has) instead of re-walking each nested subtree -- which turned a
+    long '|| '-chain into O(n^2) work (a DoS on contributor-supplied shell)."""
+    return [off
+            for call in bash_ast.call_exprs(tree)
+            if bash_ast.command_name(call) in ("source", ".")
+            for off in [(call.get("Pos") or {}).get("Offset")]
+            if off is not None]
 
 
-def _failure_propagates(stmt):
+def _stmt_has_source(stmt, src_offsets):
+    """True if a precomputed source offset falls within STMT's byte span -- equivalent
+    to 'STMT's subtree holds a source' but without walking the subtree."""
+    start = (stmt.get("Pos") or {}).get("Offset")
+    end = (stmt.get("End") or {}).get("Offset")
+    if start is None or end is None:
+        return False
+    return any(start <= off < end for off in src_offsets)
+
+
+def _failure_propagates(stmt, src_offsets):
     """True if a failed 'source' inside STMT makes STMT's exit status non-zero, so an
     outer '|| <handler>' observes the failure (the source cannot silently fall through
     to main()). Models bash's status rules:
@@ -2469,25 +2483,26 @@ def _failure_propagates(stmt):
       - a pipe ('source | cmd', no pipefail) yields the last stage's status -> masks.
       - a brace group / subshell / other compound can end in a later command -> masks.
     Iterative down the left spine so a deep '&&'/'||' chain cannot overflow the stack
-    (bash_ast.iter_nodes is iterative for the same reason)."""
+    (bash_ast.iter_nodes is iterative for the same reason). Source membership is tested
+    against SRC_OFFSETS (precomputed once) so the walk stays linear."""
     and_ops = bash_ast.and_op()
     or_ops = bash_ast.or_op()
     while isinstance(stmt, dict):
         ## '!' masks only when it negates a SOURCE (flipping that source's failure to
         ## success). A negation with no source ('! false && source') does not swallow a
         ## later source failure, so it must not disqualify the guard.
-        if stmt.get("Negated") and _contains_source(stmt):
+        if stmt.get("Negated") and _stmt_has_source(stmt, src_offsets):
             return False
         cmd = stmt.get("Cmd") or {}
         kind = cmd.get("Type")
         op = cmd.get("Op")
         if kind == "BinaryCmd" and op in and_ops:
-            if not _failure_propagates(cmd.get("Y")):
+            if not _failure_propagates(cmd.get("Y"), src_offsets):
                 return False
             stmt = cmd.get("X")
             continue
         if kind == "BinaryCmd" and op in or_ops:
-            if _contains_source(cmd.get("X")):
+            if _stmt_has_source(cmd.get("X"), src_offsets):
                 return False
             stmt = cmd.get("Y")
             continue
@@ -2498,7 +2513,7 @@ def _failure_propagates(stmt):
         ## A leaf command that cannot hold a top-level 'source' (a '[[ ]]' test, a
         ## '(( ))' arithmetic command, a declaration) propagates trivially; a compound
         ## that CAN end in a later command (brace group, subshell, if/case/loop) masks.
-        return not _contains_source(stmt)
+        return not _stmt_has_source(stmt, src_offsets)
     return False
 
 
@@ -2509,8 +2524,9 @@ def _guarded_source_spans(tree):
       - the handler (right operand) names a command in _SOURCE_GUARD_HANDLERS;
       - the handler stmt carries NO redirection (one that fails to open would run
         BEFORE the handler, so bash never reaches it);
-      - the handler is not negated, EXCEPT '! exit' (exit terminates before '!' can
-        invert its status, so it still aborts); and
+      - the handler is not negated ('! exit' terminates only with valid args, and no
+        real guard is negated) and, for 'exit', carries at most one argument ('exit 1 2'
+        is "too many arguments" and RETURNS without terminating); and
       - the left operand PROPAGATES the source's failure status (_failure_propagates):
         a left that MASKS it ('source || echo', 'source | cmd', '! source',
         '{ source; cmd; }', a subshell) is NOT a guard.
@@ -2520,6 +2536,9 @@ def _guarded_source_spans(tree):
     source runs only when cond fails, and its own failure then reaches the handler, so
     it is spared."""
     or_ops = bash_ast.or_op()
+    src_offsets = _toplevel_source_offsets(tree)
+    if not src_offsets:
+        return []        # no source anywhere -> no span can ever be consulted
     spans = []
     for node in bash_ast.iter_nodes(tree):
         if not isinstance(node, dict):
@@ -2539,15 +2558,27 @@ def _guarded_source_spans(tree):
         ## A redirection on the handler can fail to open BEFORE the handler runs.
         if right.get("Redirs"):
             continue
-        handler = bash_ast.command_name(right.get("Cmd") or {})
+        handler_cmd = right.get("Cmd") or {}
+        handler = bash_ast.command_name(handler_cmd)
         if handler not in _SOURCE_GUARD_HANDLERS:
             continue
-        ## '! exit' still terminates (the '!' cannot invert a process that exits); any
-        ## other negated handler does not abort, so it is not a guard.
-        if right.get("Negated") and handler != "exit":
+        ## A negated handler is NOT a reliable abort: '! true'/'! :' continue, and
+        ## '! exit' terminates only when exit's args are valid -- '! exit 1 2' hits
+        ## "too many arguments", RETURNS, and the '!' flips that to success. No real
+        ## guard is negated, so none count.
+        if right.get("Negated"):
+            continue
+        ## 'exit' aborts only with at most one argument: 'exit 1 2' is "too many
+        ## arguments" and RETURNS without terminating, so a multi-arg exit is not a
+        ## guard ('true'/':' mark the source optional regardless of args).
+        if handler == "exit" and len(bash_ast.args(handler_cmd)) > 2:
             continue
         left = binary.get("X") or {}
-        if not _failure_propagates(left):
+        ## No source in the left operand -> nothing to guard and the span would never be
+        ## consulted; skip it (so a long sourceless '|| '-chain is not re-walked).
+        if not _stmt_has_source(left, src_offsets):
+            continue
+        if not _failure_propagates(left, src_offsets):
             continue
         start = (left.get("Pos") or {}).get("Offset")
         end = (left.get("End") or {}).get("Offset")
