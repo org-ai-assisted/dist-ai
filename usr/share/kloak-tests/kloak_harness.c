@@ -10,14 +10,31 @@ src/kloak.c (via the KLOAK_FUZZING seam -- no kloak source change). The Wayland
 adapter's functions live in src/kloakwl.c and are tested in kloakwl_harness.c.
 
 Covers: lookup_keycode, the uint31/uint32 CLI parsers (including the signed-wrap
-rejection), the escape-key parser across both separators AND across repeated
-calls (esc_key_list is indexed by the persistent list length, not a per-call
-counter), calc_next_led_state's num/caps-lock 4-state cycle, the evdev node-name
-regex, and parse_inotify_events (the assert-free, fuzzable record walk, incl. the
+rejection), the escape-key parser across both separators, the getopt dup-option
+guard (a repeated option is rejected, not leaked to a single-use parser),
+calc_next_led_state's num/caps-lock 4-state cycle, the evdev node-name regex, and
+parse_inotify_events (the assert-free, fuzzable record walk, incl. the
 zero-length IN_Q_OVERFLOW skip and the skip of a matching node carrying neither
 IN_CREATE nor IN_DELETE).
 */
 #define KLOAK_FUZZING
+
+/* kloak.c uses _GNU_SOURCE symbols (memfd_create, environ); define it before
+ * any system header is pulled in below, otherwise the glibc feature guards
+ * latch without it and kloak.c's own _GNU_SOURCE define arrives too late. */
+#define _GNU_SOURCE
+
+#include <setjmp.h>
+#include <stdlib.h>
+
+/* Intercept kloak's fatal exit(): a rejection kloak handles by design (e.g. a
+ * duplicate CLI option), not a crash. Defined AFTER <stdlib.h> (so exit's real
+ * declaration is already parsed) and BEFORE kloak.c, whose guarded <stdlib.h>
+ * re-include is a no-op -- so only kloak.c's exit() CALLS expand. The value
+ * passed to longjmp is the exit code + 1 (longjmp cannot carry 0). */
+static jmp_buf g_reject;
+#define exit(code) longjmp(g_reject, (code) + 1)
+
 #include "kloak.c"
 
 #include <assert.h>
@@ -88,22 +105,30 @@ static void unit_parse_esc_key_str(void)
     CHECK(esc_key_list[1][1] == KEY_B);
 }
 
-/* esc_key_list_len is a global that persists across calls, so a SECOND
- * parse_esc_key_str must append (index by esc_key_list_len - 1), not overwrite
- * slot 0 with a per-call counter and leave the grown slot uninitialised. */
-static void unit_parse_esc_key_str_multi(void)
+/* kloak's option parsers assume each option is passed at most once, so the
+ * getopt dup guard (check_dup_arg_and_mark) must reject any repeat rather than
+ * let it leak through to a parser that is not safe to call twice. Drive the
+ * REAL CLI parse path with a duplicated -k and confirm it exits(1). */
+static void unit_dup_option_rejected(void)
 {
+    char *argv[] = { "kloak", "-k", "KEY_A", "-k", "KEY_B", NULL };
+    int jmp_rslt = 0;
+
     esc_key_list = NULL;
     esc_key_sublist_len = NULL;
     active_esc_key_list = NULL;
     esc_key_list_len = 0;
+    optind = 1;
 
-    parse_esc_key_str("KEY_A");
-    parse_esc_key_str("KEY_B");
-
-    CHECK(esc_key_list_len == 2);
-    CHECK(esc_key_sublist_len[0] == 1 && esc_key_list[0][0] == KEY_A);
-    CHECK(esc_key_sublist_len[1] == 1 && esc_key_list[1][0] == KEY_B);
+    jmp_rslt = setjmp(g_reject);
+    if (jmp_rslt == 0) {
+        parse_cli_args(5, argv);
+        /* parse_cli_args returned -- the duplicate -k was NOT rejected. */
+        CHECK(0);
+    } else {
+        /* exit(code) was mapped to longjmp(g_reject, code + 1). */
+        CHECK(jmp_rslt - 1 == 1);
+    }
 }
 
 /* Only canonical "event<N>" evdev nodes (what udev creates) are grabbed; the
@@ -229,7 +254,7 @@ int main(void)
     unit_parse_uint31();
     unit_parse_uint32();
     unit_parse_esc_key_str();
-    unit_parse_esc_key_str_multi();
+    unit_dup_option_rejected();
     unit_evdev_regex();
     unit_calc_next_led_state();
     unit_parse_inotify_events();

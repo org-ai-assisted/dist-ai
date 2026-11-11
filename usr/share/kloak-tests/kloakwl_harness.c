@@ -129,7 +129,6 @@ static void unit_coord_space(void)
     /* Two side-by-side 1920x1080 screens in the global compositor space. */
     struct output_geometry g0 = geom(0, 0, 1920, 1080);
     struct output_geometry g1 = geom(1920, 0, 1920, 1080);
-    struct disp_state local = { 0 };
     struct screen_local_coord sl;
     struct coord ab;
     bool ok;
@@ -152,13 +151,12 @@ static void unit_coord_space(void)
     sl = abs_coord_to_screen_local_coord(10, 10);
     CHECK(sl.valid && sl.output_idx == 0 && sl.x == 10 && sl.y == 10);
 
-    /* recalc_global_space spans both screens with no gap */
-    local.output_geometries[0] = &g0;
-    local.output_geometries[1] = &g1;
-    CHECK(recalc_global_space(&local));
-    CHECK(local.global_space_width == 3840);
-    CHECK(local.global_space_height == 1080);
-    CHECK(local.pointer_space_x == 0 && local.pointer_space_y == 0);
+    /* recalc_global_space works on the global 'state' output geometries set
+     * above and writes its result back into 'state'. */
+    CHECK(recalc_global_space());
+    CHECK(state.global_space_width == 3840);
+    CHECK(state.global_space_height == 1080);
+    CHECK(state.pointer_space_x == 0 && state.pointer_space_y == 0);
 
     for (i = 0; i < MAX_SCREEN_COUNT; ++i) {
         state.output_geometries[i] = NULL;
@@ -227,11 +225,16 @@ static enum child_outcome run_keymap_child(const char *content, size_t fd_len,
     pid = fork();
     assert(pid >= 0);
     if (pid == 0) {
-        struct disp_state st = { 0 };
-        st.old_kb_map_shm = (char *)old_map;
+        /* kb_handle_keymap reads the previously-seen map from the global
+         * 'state', not from its (unused) data arg; set it in the child so the
+         * fork isolates the mutation. */
+        state.old_kb_map_shm = (char *)old_map;
+        if (old_map != NULL) {
+            state.old_kb_map_shm_size = (int32_t)(strlen(old_map) + 1);
+        }
         /* The FATAL path writes to stderr; keep the test output clean. */
         (void)!freopen("/dev/null", "w", stderr);
-        kb_handle_keymap(&st, NULL, WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1, fd, size);
+        kb_handle_keymap(NULL, NULL, WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1, fd, size);
         _exit(0);
     }
     assert(close(fd) == 0);
@@ -262,15 +265,22 @@ static void unit_cross_overlap_and_offset_global_space(void)
     struct output_geometry cross_b = geom(420, 0, 1080, 1920);
     struct output_geometry off_a = geom(100, 0, 1920, 1080);
     struct output_geometry off_b = geom(2020, 0, 1920, 1080);
-    struct disp_state local = { 0 };
+    ssize_t i;
 
     CHECK(check_screen_touch(cross_a, cross_b));
 
-    local.output_geometries[0] = &off_a;
-    local.output_geometries[1] = &off_b;
-    CHECK(recalc_global_space(&local));
-    CHECK(local.global_space_width == 3840);
-    CHECK(local.pointer_space_x == 100);
+    for (i = 0; i < MAX_SCREEN_COUNT; ++i) {
+        state.output_geometries[i] = NULL;
+    }
+    state.output_geometries[0] = &off_a;
+    state.output_geometries[1] = &off_b;
+    CHECK(recalc_global_space());
+    CHECK(state.global_space_width == 3840);
+    CHECK(state.pointer_space_x == 100);
+
+    for (i = 0; i < MAX_SCREEN_COUNT; ++i) {
+        state.output_geometries[i] = NULL;
+    }
 }
 
 /* recalc_global_space must REJECT (return false) a layout with a gap between
@@ -279,11 +289,18 @@ static void unit_recalc_global_space_gap(void)
 {
     struct output_geometry g0 = geom(0, 0, 1920, 1080);
     struct output_geometry gapped = geom(3000, 0, 1920, 1080);
-    struct disp_state local = { 0 };
+    ssize_t i;
 
-    local.output_geometries[0] = &g0;
-    local.output_geometries[1] = &gapped;
-    CHECK(!recalc_global_space(&local));
+    for (i = 0; i < MAX_SCREEN_COUNT; ++i) {
+        state.output_geometries[i] = NULL;
+    }
+    state.output_geometries[0] = &g0;
+    state.output_geometries[1] = &gapped;
+    CHECK(!recalc_global_space());
+
+    for (i = 0; i < MAX_SCREEN_COUNT; ++i) {
+        state.output_geometries[i] = NULL;
+    }
 }
 
 /* A point covered by no screen maps to an invalid screen-local coordinate. */
