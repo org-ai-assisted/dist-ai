@@ -239,24 +239,18 @@ def run():
               any('canonical' in p for p in cs.check_seo(root)),
               repr(cs.check_seo(root)))
 
-    # check_seo: a favicon in ANY standard form (svg / png / ico) satisfies -- no specific
-    # format or size is required (generic across generators); only NO favicon is flagged.
+    # check_seo: a favicon is OPTIONAL -- site-generate emits one only when the source ships
+    # favicon.svg and returns 0 without one, so --check must NOT reject a favicon-less site
+    # (generate/check symmetry; a required-favicon rule here broke the csr --check gate). A
+    # present favicon in any form is of course also fine.
     with tempfile.TemporaryDirectory() as root:
-        _seed(root, host)  # _seed ships favicon.svg
-        check('favicon.svg alone is accepted (no favicon.png required)',
-              cs.check_seo(root) == [], repr(cs.check_seo(root)))
+        _seed(root, host)
         os.remove(os.path.join(root, 'favicon.svg'))
+        check('a site with NO favicon is not flagged (favicon optional)',
+              cs.check_seo(root) == [], repr(cs.check_seo(root)))
         _png(root, 'favicon.png', 16, 16)
-        check('favicon.png alone is accepted (any size)',
+        check('a site WITH a favicon is also accepted',
               cs.check_seo(root) == [], repr(cs.check_seo(root)))
-        os.remove(os.path.join(root, 'favicon.png'))
-        _write(root, 'favicon.ico', 'ico-bytes')
-        check('favicon.ico alone is accepted',
-              cs.check_seo(root) == [], repr(cs.check_seo(root)))
-        os.remove(os.path.join(root, 'favicon.ico'))
-        check('no favicon at all is flagged',
-              any('favicon' in p for p in cs.check_seo(root)),
-              repr(cs.check_seo(root)))
 
     # check_seo: a non-site directory is skipped
     with tempfile.TemporaryDirectory() as root:

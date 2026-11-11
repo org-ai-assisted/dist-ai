@@ -3118,10 +3118,10 @@ def check_seo(root, policy=None):
     # robots.txt: every site ships one (a crawler fetches it first).
     if not os.path.isfile(os.path.join(root, 'robots.txt')):
         problems.append('robots.txt missing')
-    # favicon: any standard form satisfies -- svg, png, or ico.
-    if not any(os.path.isfile(os.path.join(root, name))
-               for name in ('favicon.svg', 'favicon.png', 'favicon.ico')):
-        problems.append('no favicon (expected favicon.svg, favicon.png, or favicon.ico)')
+    # favicon is OPTIONAL: site-generate emits one only when the source ships favicon.svg (else
+    # none, returning 0), so REQUIRING one here would reject a site _generate accepts -- a
+    # generate/check asymmetry. A favicon-presence assertion, if wanted, belongs in a
+    # source-aware / real-pages check, not this generic gate.
     return problems
 
 
