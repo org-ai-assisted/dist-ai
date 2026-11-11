@@ -3129,16 +3129,26 @@ def check_seo(root, policy=None):
         if not os.path.isfile(sitemap_path):
             problems.append('sitemap.xml missing (an indexable site must list its pages)')
         else:
-            with open(sitemap_path, encoding='utf-8', errors='replace') as handle:
+            with open(sitemap_path, 'rb') as handle:
                 sitemap = handle.read()
-            # Compare against the actual <loc> VALUES, not a raw substring: a substring test
-            # false-passes a URL that is only a prefix of another <loc> or that appears only in
-            # a comment. Unescape so an &amp; in a <loc> matches the raw page URL.
-            locs = {html.unescape(m) for m in
-                    re.findall(r'<loc>\s*(.*?)\s*</loc>', sitemap, re.IGNORECASE | re.DOTALL)}
-            for url in seo_page_urls(root, host):
-                if url not in locs:
-                    problems.append('sitemap.xml does not list %s' % url)
+            # Parse as XML and read the real <loc> ELEMENTS, not a regex over the raw text:
+            # ElementTree reports a commented-out <loc> as a comment node (non-str .tag), so it
+            # is invisible here -- a raw scan would false-pass a page that only a disabled <loc>
+            # covers. Comparing exact element values (not a substring) also rejects a <loc> that
+            # is merely a prefix of a page URL; ET unescapes entities, so an &amp; already matches
+            # the raw page URL. defusedxml guards XXE / entity-bomb / external-DTD.
+            try:
+                sitemap_root = _safe_fromstring(sitemap)
+            except Exception:  # noqa: BLE001 -- any XML parse failure is a real SEO defect
+                problems.append('sitemap.xml is not well-formed XML')
+            else:
+                locs = {(el.text or '').strip()
+                        for el in sitemap_root.iter()
+                        if isinstance(el.tag, str)
+                        and el.tag.rsplit('}', 1)[-1].lower() == 'loc'}
+                for url in seo_page_urls(root, host):
+                    if url not in locs:
+                        problems.append('sitemap.xml does not list %s' % url)
     # robots.txt: every site ships one (a crawler fetches it first).
     if not os.path.isfile(os.path.join(root, 'robots.txt')):
         problems.append('robots.txt missing')

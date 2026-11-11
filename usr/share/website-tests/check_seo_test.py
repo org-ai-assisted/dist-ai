@@ -235,6 +235,25 @@ def run():
         check('home URL present only in a comment/prefix is flagged (not substring-matched)',
               any('does not list' in p and p.rstrip().endswith('/') for p in _probs),
               repr(_probs))
+        # a COMMENTED-OUT <loc> element does not cover its page: XML parsing sees a comment
+        # node, not a <loc>, so the page is flagged (a raw regex over the text would false-pass).
+        _seed(root, host)
+        with open(os.path.join(root, 'sitemap.xml'), 'w', encoding='utf-8') as h:
+            h.write('<?xml version="1.0"?><urlset>'
+                    '<url><loc>https://%s/sub/</loc></url>'
+                    '<!-- <url><loc>https://%s/</loc></url> -->'
+                    '</urlset>\n' % (host, host))
+        _probs = cs.check_seo(root)
+        check('a page covered only by a commented-out <loc> element is flagged',
+              any('does not list' in p and p.rstrip().endswith('/') for p in _probs),
+              repr(_probs))
+        # a malformed sitemap is a real SEO defect, reported (not silently skipped)
+        _seed(root, host)
+        with open(os.path.join(root, 'sitemap.xml'), 'w', encoding='utf-8') as h:
+            h.write('<urlset><url><loc>https://%s/</loc></url>' % host)  # unclosed urlset
+        check('a malformed sitemap.xml is flagged',
+              any('not well-formed XML' in p for p in cs.check_seo(root)),
+              repr(cs.check_seo(root)))
 
     # check_seo: missing sitemap
     with tempfile.TemporaryDirectory() as root:
