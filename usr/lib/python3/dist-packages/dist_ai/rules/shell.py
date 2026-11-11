@@ -2473,7 +2473,10 @@ def _failure_propagates(stmt):
     and_ops = bash_ast.and_op()
     or_ops = bash_ast.or_op()
     while isinstance(stmt, dict):
-        if stmt.get("Negated"):
+        ## '!' masks only when it negates a SOURCE (flipping that source's failure to
+        ## success). A negation with no source ('! false && source') does not swallow a
+        ## later source failure, so it must not disqualify the guard.
+        if stmt.get("Negated") and _contains_source(stmt):
             return False
         cmd = stmt.get("Cmd") or {}
         kind = cmd.get("Type")
@@ -2512,24 +2515,38 @@ def _guarded_source_spans(tree):
         a left that MASKS it ('source || echo', 'source | cmd', '! source',
         '{ source; cmd; }', a subshell) is NOT a guard.
     AST-based, so a trailing comment, a line-continuation, or a CRLF before the '||'
-    cannot hide the guard. SCOPE: a synchronous foreground '|| handler' -- a backgrounded
-    ('&') guard list (the source then loads into a subshell, a self-evident bug outside
-    this accident-catching rule) is not specially modelled."""
+    cannot hide the guard. A 'cond || source || <handler>' (source as the LAST operand)
+    is a deliberate conditional load ('[ -f cached ] || source regen || exit'): the
+    source runs only when cond fails, and its own failure then reaches the handler, so
+    it is spared."""
     or_ops = bash_ast.or_op()
     spans = []
     for node in bash_ast.iter_nodes(tree):
-        if not (isinstance(node, dict) and node.get("Type") == "BinaryCmd"
-                and node.get("Op") in or_ops):
+        if not isinstance(node, dict):
             continue
-        right = node.get("Y") or {}
+        ## NODE is the STATEMENT wrapping the '|| <handler>' list (its Cmd is the
+        ## BinaryCmd), read via Cmd so the statement's own modifiers are in reach.
+        binary = node.get("Cmd")
+        if not (isinstance(binary, dict) and binary.get("Type") == "BinaryCmd"
+                and binary.get("Op") in or_ops):
+            continue
+        ## A backgrounded list ('source || exit &') runs the whole AND-OR list in a
+        ## subshell: 'exit' cannot abort the parent and the source never loads into it,
+        ## so it is not a guard.
+        if node.get("Background"):
+            continue
+        right = binary.get("Y") or {}
+        ## A redirection on the handler can fail to open BEFORE the handler runs.
         if right.get("Redirs"):
             continue
         handler = bash_ast.command_name(right.get("Cmd") or {})
         if handler not in _SOURCE_GUARD_HANDLERS:
             continue
+        ## '! exit' still terminates (the '!' cannot invert a process that exits); any
+        ## other negated handler does not abort, so it is not a guard.
         if right.get("Negated") and handler != "exit":
             continue
-        left = node.get("X") or {}
+        left = binary.get("X") or {}
         if not _failure_propagates(left):
             continue
         start = (left.get("Pos") or {}).get("Offset")

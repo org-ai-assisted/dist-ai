@@ -1207,6 +1207,16 @@ expect_rule "${sheb_fail}" $'false || source lib.bsh || exit 1\n'"${full_main}" 
 ## before the handler runs, so it is NOT trusted.
 expect_rule "${sheb_fail}" $'source lib.bsh || ! exit 1\n'"${full_main}"                   "absent"  "#!/bin/bash"
 expect_rule "${sheb_fail}" $'source lib.bsh || exit 1 >&9\n'"${full_main}"                 "present" "#!/bin/bash"
+## A backgrounded guard list ('&') runs the source in a subshell -- 'exit' cannot abort
+## the parent and the source never loads into it -- so it is NOT a guard, stays FLAGGED.
+expect_rule "${sheb_fail}" $'source lib.bsh || exit 1 &\n'"${full_main}"                   "present" "#!/bin/bash"
+## A '!' masks only when it negates the SOURCE; a sourceless negation ('! false') does
+## not swallow a later source failure, so these propagating guards stay SPARED.
+expect_rule "${sheb_fail}" $'! false && source lib.bsh || exit 1\n'"${full_main}"          "absent"  "#!/bin/bash"
+expect_rule "${sheb_fail}" $'source lib.bsh && ! false || exit 1\n'"${full_main}"          "absent"  "#!/bin/bash"
+## 'cond || source || handler' is a deliberate conditional load: the source runs only
+## when cond fails, and its own failure then reaches the handler -- SPARED.
+expect_rule "${sheb_fail}" $'[ -f /e/f ] || source lib.bsh || exit 1\n'"${full_main}"      "absent"  "#!/bin/bash"
 ## Shebang errexit: ONLY a combined short-flag bundle ('-e', '-eu') directly on the
 ## bash interpreter enables errexit via a Linux shebang (the kernel passes the
 ## post-interpreter tail as ONE argv word). A split '-u -e', a long '-o errexit', or
