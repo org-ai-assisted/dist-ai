@@ -3476,7 +3476,12 @@ def main():
         # (family, csr, wiki), scoped to the audited pages. check_footer's
         # family-links assertion is gated to 'family' (the CSR + wiki trees are not
         # in FAMILY); its footer-EXISTS check still runs for all.
-        check_links(root, failures, mount, parent_roots, pages)
+        # Broken-link/anchor checking for the WIKI is owned by mw-static-generator's own verify
+        # gate (mwstatic.verify) WITH a per-site baseline for the pre-existing upstream breaks;
+        # re-running it here (baseline-less) would only re-report those. family/csr have no
+        # separate link gate, so they still run it.
+        if policy != 'wiki':
+            check_links(root, failures, mount, parent_roots, pages)
         check_wording(root, failures, pages)
         check_footer(root, failures, require_family_links=(policy == 'family'), pages=pages)
         check_csp(root, failures, pages)
@@ -3509,7 +3514,12 @@ def main():
         check_contrast(root, failures, pages)
         check_toc_complete(root, failures, pages)
         check_video_captions(root, failures, pages)
-        check_seo_current(root, failures, policy)
+        # SEO artifact checks (sitemap.xml / robots.txt / favicon.png) assert the shapes dist-ai's
+        # own site-generate emits. The MediaWiki wiki build emits its OWN noindex-stage robots
+        # (Disallow:/), its own sitemap, and svg/ico favicons -- those are generator-owned, so the
+        # site-generate shapes do not apply. family/csr (site-generate output) still run it.
+        if policy != 'wiki':
+            check_seo_current(root, failures, policy)
         # Hand-authored family/CSR chrome -- NOT the MediaWiki-generated wiki trees,
         # whose chrome is mw-* classes with a different footer/nav + its own class
         # vocabulary, so these would misfire wholesale. check_freshness / check_banner
