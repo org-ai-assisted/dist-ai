@@ -2358,11 +2358,14 @@ _INDENTED_LC_ALL = re.compile(r'^[ \t]+export LC_ALL=C[ \t]*$', re.MULTILINE)
 ## shebang -- the sourceable skill's canonical skeleton. _SHEBANG_ERREXIT matches
 ## '-e' in a combined short-flag bundle (-e, -eu, -ue): the ONLY forms a Linux
 ## shebang honours -- the kernel passes the whole post-interpreter tail as ONE argv
-## word, so a split '-u -e', a long '-o errexit', or an 'env bash -e' is a shebang
-## bash/env REJECT (errexit never set), correctly NOT matched. The top-level
-## 'source' guard is read off the AST (_guarded_source_spans), not a one-line regex
-## a trailing comment / line-continuation / CRLF could fool.
-_SHEBANG_ERREXIT = re.compile(r'bash[ \t]+-[a-zA-Z]*e')
+## word, so a split '-u -e' or a long '-o errexit' is a shebang bash REJECTS
+## (errexit never set), correctly NOT matched. The match is ANCHORED to the bash
+## INTERPRETER token (^#!<path>bash <flag>), so '#!/usr/bin/env bash -e' -- where
+## env is the interpreter and 'bash -e' its single (broken) argument -- also does
+## not match. The top-level 'source' guard is read off the AST
+## (_guarded_source_spans), not a one-line regex a comment / continuation / CRLF
+## could fool.
+_SHEBANG_ERREXIT = re.compile(r'^#![^ \t]*bash[ \t]+-[a-zA-Z]*e')
 
 
 def _toplevel_calls(tree, names, spans):
@@ -2419,10 +2422,12 @@ def _was_executed_guard_body_spans(tree):
     return spans
 
 
-## Command names whose '|| <name>' tail stops a failed top-level source from
-## SILENTLY falling through to main(): 'true'/':' mark the source explicitly
-## optional, 'exit'/'return' abort. '|| echo warn' and the like are NOT guards --
-## execution continues into main() with the source failed, the R-010 hazard.
+## Command names whose simple '|| <name>' tail keeps a failed top-level source from
+## SILENTLY reaching main(): 'true'/':' mark it optional, 'exit'/'return' abort the
+## shell. '|| echo warn' is NOT a guard (execution continues with the source failed,
+## the R-010 hazard). A COMPOUND handler ('|| { ...; }', '|| ( ... )') is
+## conservatively treated as none -- no in-tree guard uses one, and a subshell
+## '( exit )' would not abort the parent anyway.
 _SOURCE_GUARD_HANDLERS = frozenset(("true", ":", "exit", "return"))
 
 

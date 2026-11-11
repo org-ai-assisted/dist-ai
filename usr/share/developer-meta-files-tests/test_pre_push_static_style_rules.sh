@@ -1173,15 +1173,24 @@ expect_rule "${sheb_fail}" $'source lib.bsh || echo warn\n'"${full_main}"       
 ## the failure ('[ -f x ] && source x || true'), so it IS a guard -- spared.
 expect_rule "${sheb_fail}" $'{ source lib.bsh; true; } || exit 1\n'"${full_main}"      "present" "#!/bin/bash"
 expect_rule "${sheb_fail}" $'[ -f /etc/foo.conf ] && source /etc/foo.conf || true\n'"${full_main}" "absent" "#!/bin/bash"
-## Shebang errexit: ONLY a combined short-flag bundle ('-e', '-eu') enables errexit
-## via a Linux shebang (the kernel passes the post-interpreter tail as ONE argv
-## word). A split '-u -e' or a long '-o errexit' is a BROKEN shebang bash rejects,
-## so an unguarded top-level source under it is NOT safe and STAYS flagged -- this
-## locks the behavior against a mistaken "recognise split/long shebangs" change.
+## Only a SIMPLE-command handler is recognized (matches every in-tree guard). A
+## compound '|| { ...; }' is conservatively flagged; a subshell '|| ( exit )' MUST
+## be flagged -- the subshell exit does not abort the parent, so the source falls
+## through to main() anyway.
+expect_rule "${sheb_fail}" $'source lib.bsh || { exit 1; }\n'"${full_main}"           "present" "#!/bin/bash"
+expect_rule "${sheb_fail}" $'source lib.bsh || (exit 1)\n'"${full_main}"              "present" "#!/bin/bash"
+## Shebang errexit: ONLY a combined short-flag bundle ('-e', '-eu') directly on the
+## bash interpreter enables errexit via a Linux shebang (the kernel passes the
+## post-interpreter tail as ONE argv word). A split '-u -e', a long '-o errexit', or
+## '#!/usr/bin/env bash -e' (env is the interpreter, 'bash -e' its broken arg) is a
+## BROKEN shebang that does not set errexit, so an unguarded top-level source under
+## it is NOT safe and STAYS flagged -- locks against a mistaken "recognise split/
+## long/env shebangs" change and against the 'bash -e' substring false match.
 src_unguarded_plain=$'source strings.bsh\n'"${full_main}"
 expect_rule "${sheb_fail}" "${src_unguarded_plain}" "absent"  "#!/bin/bash -eu"
 expect_rule "${sheb_fail}" "${src_unguarded_plain}" "present" "#!/bin/bash -u -e"
 expect_rule "${sheb_fail}" "${src_unguarded_plain}" "present" "#!/bin/bash -o errexit"
+expect_rule "${sheb_fail}" "${src_unguarded_plain}" "present" "#!/usr/bin/env bash -e"
 expect_rule "${sheb_fail}" "${src_unguarded_plain}" "present" "#!/bin/bash"
 
 ## R-080: a 'shellcheck source=' path must be relative, anchored with ./ or
