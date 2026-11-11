@@ -2329,6 +2329,7 @@ def run():
         _write(root, 'sitemap.xml', check_site.render_sitemap(root, host))
         _write(root, 'robots.txt',
                check_site.render_robots(host, check_site._site_no_index(root)))
+        _write(root, 'favicon.svg', '<svg xmlns="http://www.w3.org/2000/svg"/>')
 
     _saved_curated = check_site.WIKI_CURATED_PATHS_FILE
     _curated_tmp = tempfile.mkdtemp()
@@ -2357,22 +2358,18 @@ def run():
             check('wiki battery emits no family-chrome FAIL (%s)' % _needle,
                   _needle not in err, repr(err))
     # The wiki policy SKIPS check_links (the generator's verify gate + baseline owns wiki
-    # links) and check_seo_current (the wiki emits its own noindex robots / sitemap / svg+ico
-    # favicons, not site-generate's shapes). A wiki fixture with a broken in-page anchor AND no
-    # SEO artifacts still PASSES -- proving both are skipped (they would flag it under family).
+    # links); check_seo runs GENERICALLY (coverage/presence, not site-generate byte-match), so
+    # it passes on the wiki fixture. A wiki fixture with a broken in-page anchor still PASSES --
+    # proving check_links is delegated (it would flag the anchor under the family policy).
     with tempfile.TemporaryDirectory() as root:
         _build_wiki(root)
         _write(root, 'wiki/ISO.html',
                _wiki_page('ISO', 'wiki/ISO').replace(
                    '</div>', '<a href="#does-not-exist">x</a></div>', 1))
-        os.remove(os.path.join(root, 'sitemap.xml'))
-        os.remove(os.path.join(root, 'robots.txt'))
         rc, _out, err = _run_main([root])
         check('wiki policy skips check_links (broken anchor not flagged)',
               'broken in-page anchor' not in err and 'targets missing' not in err, repr(err))
-        check('wiki policy skips check_seo (missing sitemap not flagged)',
-              'sitemap.xml' not in err, repr(err))
-        check('wiki fixture with broken anchor + no SEO artifacts still passes',
+        check('wiki fixture with a broken anchor still passes (links delegated to verify)',
               rc == 0, repr((rc, err)))
     # A wiki page MISSING its CSP meta FAILS (check_csp runs under the wiki policy).
     with tempfile.TemporaryDirectory() as root:

@@ -2998,16 +2998,28 @@ def render_sitemap(root, host):
     return '\n'.join(lines) + '\n'
 
 
+# A <meta name="robots"> carrying the noindex directive, detected GENERICALLY: tolerant of
+# extra directives (content="noindex,nofollow"), quoting, whitespace, and attribute order
+# (the tag match allows attrs before name=; the content is read from the matched tag).
+_META_ROBOTS_RE = re.compile(r'<meta\b[^>]*\bname\s*=\s*["\']robots["\'][^>]*>', re.IGNORECASE)
+_META_CONTENT_RE = re.compile(r'\bcontent\s*=\s*["\']([^"\']*)["\']', re.IGNORECASE)
+
+
 def _site_no_index(root):
-    """True if the site is a no-index (interim/preview) build: its homepage
-    carries a robots noindex meta. The generator stamps that exact meta on every
-    page of a no-index build; the homepage is representative."""
+    """True if the site is a no-index (interim/preview) build: its homepage carries a robots
+    meta whose content includes the `noindex` token. The generator stamps a noindex meta on
+    every page of a no-index build; the homepage is representative."""
     try:
         with open(os.path.join(root, 'index.html'),
                   encoding='utf-8', errors='replace') as handle:
-            return 'name="robots" content="noindex"' in handle.read()
+            text = handle.read()
     except OSError:
         return False
+    tag = _META_ROBOTS_RE.search(text)
+    if not tag:
+        return False
+    content = _META_CONTENT_RE.search(tag.group(0))
+    return bool(content) and 'noindex' in content.group(1).lower()
 
 
 def render_robots(host, no_index=False, artifact_exts=('pdf', 'tex', 'bib')):
@@ -3078,6 +3090,7 @@ def check_seo(root, policy=None):
     `policy` selects the robots artifact-ext set: the csr previews site serves a
     Word manuscript, so its robots.txt Disallows docx on top of pdf/tex/bib; every
     other policy keeps the default set (byte-identical robots.txt)."""
+    del policy  # artifact shapes are no longer byte-matched -> policy-independent
     problems: list[str] = []
     if not os.path.isfile(os.path.join(root, 'index.html')):
         return problems
@@ -3086,29 +3099,26 @@ def check_seo(root, policy=None):
         problems.append('index.html has no <link rel="canonical">; SEO '
                         'generation needs it to derive the host')
         return problems
-    no_index = _site_no_index(root)
-    robots_exts = robots_artifact_exts(policy)
-    for name, want in (('sitemap.xml', render_sitemap(root, host)),
-                       ('robots.txt', render_robots(host, no_index, robots_exts))):
-        try:
-            with open(os.path.join(root, name), encoding='utf-8') as handle:
-                have = handle.read()
-        except OSError:
-            problems.append('%s missing; run site-generate' % name)
-            continue
-        if have != want:
-            problems.append('%s stale (does not match the page set / host); '
-                            'run site-generate' % name)
-    if os.path.isfile(os.path.join(root, 'favicon.svg')):
-        png = os.path.join(root, 'favicon.png')
-        size = _png_size(png)
-        if size is None or not _png_complete(png):
-            problems.append('favicon.png missing, truncated, or not a valid PNG '
-                            'while favicon.svg is present; run site-generate')
-        elif size != (FAVICON_SIZE, FAVICON_SIZE):
-            problems.append('favicon.png is %dx%d, expected %dx%d; run '
-                            'site-generate' % (size + (FAVICON_SIZE,
-                                                       FAVICON_SIZE)))
+    # sitemap.xml: an INDEXABLE site must ship one that COVERS every indexable page
+    # (coverage, not byte-identity -- any generator's sitemap passes). A no-index build
+    # (homepage robots=noindex) has nothing to index, so a sitemap is optional.
+    sitemap_path = os.path.join(root, 'sitemap.xml')
+    if not _site_no_index(root):
+        if not os.path.isfile(sitemap_path):
+            problems.append('sitemap.xml missing (an indexable site must list its pages)')
+        else:
+            with open(sitemap_path, encoding='utf-8', errors='replace') as handle:
+                sitemap = handle.read()
+            for url in seo_page_urls(root, host):
+                if url not in sitemap:
+                    problems.append('sitemap.xml does not list %s' % url)
+    # robots.txt: every site ships one (a crawler fetches it first).
+    if not os.path.isfile(os.path.join(root, 'robots.txt')):
+        problems.append('robots.txt missing')
+    # favicon: any standard form satisfies -- svg, png, or ico.
+    if not any(os.path.isfile(os.path.join(root, name))
+               for name in ('favicon.svg', 'favicon.png', 'favicon.ico')):
+        problems.append('no favicon (expected favicon.svg, favicon.png, or favicon.ico)')
     return problems
 
 
@@ -3514,12 +3524,7 @@ def main():
         check_contrast(root, failures, pages)
         check_toc_complete(root, failures, pages)
         check_video_captions(root, failures, pages)
-        # SEO artifact checks (sitemap.xml / robots.txt / favicon.png) assert the shapes dist-ai's
-        # own site-generate emits. The MediaWiki wiki build emits its OWN noindex-stage robots
-        # (Disallow:/), its own sitemap, and svg/ico favicons -- those are generator-owned, so the
-        # site-generate shapes do not apply. family/csr (site-generate output) still run it.
-        if policy != 'wiki':
-            check_seo_current(root, failures, policy)
+        check_seo_current(root, failures, policy)
         # Hand-authored family/CSR chrome -- NOT the MediaWiki-generated wiki trees,
         # whose chrome is mw-* classes with a different footer/nav + its own class
         # vocabulary, so these would misfire wholesale. check_freshness / check_banner

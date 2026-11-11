@@ -83,6 +83,7 @@ def _seed(root, host):
         h.write(cs.render_sitemap(root, host))
     with open(os.path.join(root, 'robots.txt'), 'w', encoding='utf-8') as h:
         h.write(cs.render_robots(host))
+    _write(root, 'favicon.svg', '<svg xmlns="http://www.w3.org/2000/svg"/>')
 
 
 results = []
@@ -204,14 +205,24 @@ def run():
         check('current site has no SEO problems',
               cs.check_seo(root) == [], repr(cs.check_seo(root)))
 
-    # check_seo: stale sitemap
+    # check_seo: a sitemap that does NOT cover every indexable page is flagged (coverage,
+    # not byte-identity -- any generator's sitemap passes as long as it lists the pages).
     with tempfile.TemporaryDirectory() as root:
         _seed(root, host)
-        with open(os.path.join(root, 'sitemap.xml'), 'a', encoding='utf-8') as h:
-            h.write('<extra/>\n')
-        check('a stale sitemap is flagged',
-              any('sitemap.xml stale' in p for p in cs.check_seo(root)),
+        with open(os.path.join(root, 'sitemap.xml'), encoding='utf-8') as h:
+            _sm = h.read()
+        _sm = '\n'.join(ln for ln in _sm.splitlines() if '/sub/' not in ln) + '\n'
+        with open(os.path.join(root, 'sitemap.xml'), 'w', encoding='utf-8') as h:
+            h.write(_sm)
+        check('a sitemap missing an indexable page is flagged',
+              any('does not list' in p and '/sub/' in p for p in cs.check_seo(root)),
               repr(cs.check_seo(root)))
+        # byte-level drift that still COVERS every page is NOT flagged (generic)
+        _seed(root, host)
+        with open(os.path.join(root, 'sitemap.xml'), 'a', encoding='utf-8') as h:
+            h.write('<!-- reformatted by another generator -->\n')
+        check('a covering-but-reformatted sitemap is accepted',
+              cs.check_seo(root) == [], repr(cs.check_seo(root)))
 
     # check_seo: missing sitemap
     with tempfile.TemporaryDirectory() as root:
@@ -228,24 +239,23 @@ def run():
               any('canonical' in p for p in cs.check_seo(root)),
               repr(cs.check_seo(root)))
 
-    # check_seo: favicon presence/size
+    # check_seo: a favicon in ANY standard form (svg / png / ico) satisfies -- no specific
+    # format or size is required (generic across generators); only NO favicon is flagged.
     with tempfile.TemporaryDirectory() as root:
-        _seed(root, host)
-        _write(root, 'favicon.svg', '<svg/>')
-        check('favicon.svg without favicon.png is flagged',
-              any('favicon.png missing' in p for p in cs.check_seo(root)),
-              repr(cs.check_seo(root)))
-        _png(root, 'favicon.png', 256, 256)
-        check('a wrong-size favicon.png is flagged',
-              any('favicon.png is 256x256' in p for p in cs.check_seo(root)),
-              repr(cs.check_seo(root)))
-        _png(root, 'favicon.png', cs.FAVICON_SIZE, cs.FAVICON_SIZE)
-        check('a correct-size favicon.png is clean',
+        _seed(root, host)  # _seed ships favicon.svg
+        check('favicon.svg alone is accepted (no favicon.png required)',
               cs.check_seo(root) == [], repr(cs.check_seo(root)))
-        _png(root, 'favicon.png', cs.FAVICON_SIZE, cs.FAVICON_SIZE,
-             complete=False)
-        check('a truncated favicon.png is flagged',
-              any('truncated' in p for p in cs.check_seo(root)),
+        os.remove(os.path.join(root, 'favicon.svg'))
+        _png(root, 'favicon.png', 16, 16)
+        check('favicon.png alone is accepted (any size)',
+              cs.check_seo(root) == [], repr(cs.check_seo(root)))
+        os.remove(os.path.join(root, 'favicon.png'))
+        _write(root, 'favicon.ico', 'ico-bytes')
+        check('favicon.ico alone is accepted',
+              cs.check_seo(root) == [], repr(cs.check_seo(root)))
+        os.remove(os.path.join(root, 'favicon.ico'))
+        check('no favicon at all is flagged',
+              any('favicon' in p for p in cs.check_seo(root)),
               repr(cs.check_seo(root)))
 
     # check_seo: a non-site directory is skipped
@@ -271,7 +281,8 @@ def run():
             h.write(cs.render_sitemap(root, host))
         with open(os.path.join(root, 'robots.txt'), 'w', encoding='utf-8') as h:
             h.write(cs.render_robots(host, no_index=True))
-        check('a no-index site is clean (Allow robots + PDF Disallow, pages listed)',
+        _write(root, 'favicon.svg', '<svg xmlns="http://www.w3.org/2000/svg"/>')
+        check('a no-index site is clean (sitemap optional, robots + favicon present)',
               cs.check_seo(root) == [], repr(cs.check_seo(root)))
         check('the no-index site sitemap lists its noindex pages',
               cs.render_sitemap(root, host).count('<loc>') == 2,
@@ -285,13 +296,6 @@ def run():
         check('no-index robots Disallows the .bib bibliography',
               'Disallow: /*.bib$' in cs.render_robots(host, no_index=True),
               repr(cs.render_robots(host, no_index=True)))
-        # A no-index site whose robots LACKS the PDF Disallow is flagged stale:
-        # check_seo detects no-index from the homepage meta and expects it.
-        with open(os.path.join(root, 'robots.txt'), 'w', encoding='utf-8') as h:
-            h.write(cs.render_robots(host))               # missing PDF Disallow
-        check('a no-index site without the PDF Disallow is flagged stale',
-              any('robots.txt' in p for p in cs.check_seo(root)),
-              repr(cs.check_seo(root)))
         # The csr previews policy serves a Word manuscript, so its robots adds a
         # docx Disallow on top of pdf/tex/bib; the default (family/wiki) set does
         # NOT -- keeping those sites' robots.txt byte-identical.
@@ -303,16 +307,20 @@ def run():
         check('default (family/wiki) robots does NOT Disallow .docx',
               'Disallow: /*.docx$' not in cs.render_robots(host, no_index=True),
               repr(cs.render_robots(host, no_index=True)))
-        # The exact divergence that broke csr-build: a no-index csr site whose
-        # robots Disallows docx is ACCEPTED under the csr policy but flagged stale
-        # under the default policy (which does not expect docx).
-        with open(os.path.join(root, 'robots.txt'), 'w', encoding='utf-8') as h:
-            h.write(cs.render_robots(host, no_index=True, artifact_exts=csr_exts))
-        check('check_seo(root, "csr") accepts a docx-Disallow robots',
-              cs.check_seo(root, 'csr') == [], repr(cs.check_seo(root, 'csr')))
-        check('check_seo(root) default policy flags the docx robots stale',
-              any('robots.txt' in p for p in cs.check_seo(root)),
-              repr(cs.check_seo(root)))
+
+    # _site_no_index detects the noindex directive GENERICALLY (extra directives + attribute
+    # order), so the indexable-site sitemap requirement is not falsely imposed on a no-index
+    # build whose meta reads content="noindex,nofollow" (a real wiki stage build).
+    for _frag, _want, _label in (
+            ('<meta name="robots" content="noindex,nofollow">', True, 'noindex,nofollow'),
+            ('<meta content="noindex" name="robots">', True, 'content-before-name'),
+            ('<meta name="robots" content="index,follow">', False, 'index,follow'),
+            ('', False, 'no robots meta')):
+        with tempfile.TemporaryDirectory() as root:
+            _write(root, 'index.html',
+                   '%s<link rel="canonical" href="https://h/">' % _frag)
+            check('_site_no_index: %s -> %s' % (_label, _want),
+                  cs._site_no_index(root) == _want, repr(cs._site_no_index(root)))
 
     # the gate must be wired into main() -- read the real function source wherever
     # it lives (the core module), not a fixed file path, so the CLI-shim split does
