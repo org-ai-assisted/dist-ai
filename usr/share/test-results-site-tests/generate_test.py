@@ -556,6 +556,18 @@ check("overview lists the FAIL run before the PASS run",
 a_page = read(os.path.join(out1, "kicksecure-lxqt-18-2-3-5-1", "index.html"))
 e_page = read(os.path.join(out1, "whonix-text-18-2-3-5-1", "index.html"))
 check("green run page has an <img", "<img" in a_page)
+## Every PUBLISHED screenshot <img> (alt="screenshot ...") must carry a positive-integer
+## width+height so the gallery reserves its layout box (no reflow on load; the universal
+## check_image_dims gate). Match screenshots specifically, not chrome logos.
+_SHOT_IMG = re.compile(r'<img\b[^>]*\balt="screenshot [^"]*"[^>]*>')
+_shot_tags = _SHOT_IMG.findall(a_page)
+check("green run page has a published screenshot <img>", bool(_shot_tags))
+check("every published screenshot <img> carries width+height",
+      all(re.search(r'\bwidth="[1-9]\d*"', tag) and re.search(r'\bheight="[1-9]\d*"', tag)
+          for tag in _shot_tags))
+check("screenshot-dims check is non-vacuous (canary: an unsized tag has no width)",
+      not re.search(r'\bwidth="[1-9]\d*"',
+                    '<img loading="lazy" src="x.webp" alt="screenshot 1">'))
 check("green run page is green (no golden needed)", "st-pass" in a_page)
 check("green run page webp exists",
       os.path.isfile(os.path.join(out1, "kicksecure-lxqt-18-2-3-5-1",

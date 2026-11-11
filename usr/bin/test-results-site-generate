@@ -472,6 +472,10 @@ def _process_shot(run_dir, page_dir, lane, step, attachment, mask_config, shot_c
         out_name = _flatten(sid) + ".webp"
         _save_webp(current, os.path.join(page_dir, out_name))
         base["webp"] = out_name
+        ## Record the published frame's intrinsic px size so _shot_html can stamp width+height
+        ## on the <img> -- a screenshot without them reserves no layout box and reflows the
+        ## gallery on load (the universal check_image_dims gate).
+        base["width"], base["height"] = current.size
     except Exception:  # noqa: BLE001 -- any shot error is per-shot, never aborts the run/site
         base["webp"] = None
     return base
@@ -1231,9 +1235,15 @@ def _shot_html(view, shot, step_status_cls=None):
             parts.append(' <span class="stage">(%s)</span>' % esc(stage))
     parts.append("</p>")
     if shot["webp"]:
+        ## Stamp intrinsic width+height so the <img> reserves its layout box (no reflow on load);
+        ## recorded by the publish step. CSS still governs rendered size. A shot with no recorded
+        ## dims (should not occur once published) degrades to an unsized <img>, caught by the gate.
+        dims = ""
+        if shot.get("width") and shot.get("height"):
+            dims = ' width="%d" height="%d"' % (shot["width"], shot["height"])
         parts.append(
-            '<a href="%s"><img loading="lazy" src="%s" alt="%s"></a>'
-            % (esc(shot["webp"]), esc(shot["webp"]), esc("screenshot %s" % shot["sid"]))
+            '<a href="%s"><img loading="lazy"%s src="%s" alt="%s"></a>'
+            % (esc(shot["webp"]), dims, esc(shot["webp"]), esc("screenshot %s" % shot["sid"]))
         )
     else:
         parts.append("<p>screenshot missing or unreadable</p>")
