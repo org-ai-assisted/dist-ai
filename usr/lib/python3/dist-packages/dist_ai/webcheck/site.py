@@ -452,7 +452,10 @@ def check_links(root, failures, mount=None, parent_roots=(), pages=None):
             _tag, candidates, frag = resolved
             hit = next((c for c in candidates if os.path.isfile(c)), None)
             if hit is None:
-                target = candidates[0] if candidates else value
+                # root-RELATIVE resolved target (not an absolute fs path) so the finding is
+                # machine-independent -- a committed per-site baseline stays portable across
+                # checkouts/CI, and the human-facing line is cleaner.
+                target = os.path.relpath(candidates[0], root) if candidates else value
                 failures.append('%s: broken internal link %r -> %s'
                                 % (rel, value, target))
                 continue
@@ -3229,6 +3232,33 @@ def _load_curated_paths(curated_file):
     return axe._load_paths_file(curated_file)
 
 
+def _default_webcheck_baseline_dir():
+    """Per-site accepted-findings baselines (one <basename>.txt per site), same
+    usr/share/website-tests layout as the curated sample -- no env var, nothing to recall."""
+    here = os.path.dirname(os.path.realpath(__file__))
+    return os.path.normpath(os.path.join(
+        here, '..', '..', '..', '..', '..',
+        'share', 'website-tests', 'webcheck-baselines'))
+
+
+# Overridable (tests). A site's baseline is <dir>/<site-basename>.txt: findings that are broken
+# on PRODUCTION too (upstream content, not a generator defect). GENERIC -- any site may ship
+# one; it EXACT-match suppresses accepted findings so a check (e.g. check_links) runs on every
+# policy without re-reporting pre-existing breaks. Prune a line once its break is fixed.
+WEBCHECK_BASELINE_DIR = _default_webcheck_baseline_dir()
+
+
+def _load_webcheck_baseline(root):
+    """The accepted-findings set for the site at `root` (empty when it ships no baseline)."""
+    path = os.path.join(WEBCHECK_BASELINE_DIR, os.path.basename(root) + '.txt')
+    try:
+        with open(path, encoding='utf-8') as handle:
+            lines = handle.read().splitlines()
+    except OSError:
+        return frozenset()
+    return frozenset(ln for ln in lines if ln.strip() and not ln.lstrip().startswith('#'))
+
+
 def audited_pages(root, policy, curated_file=None):
     """The HTML pages to AUDIT under `policy`, as absolute file paths.
 
@@ -3505,12 +3535,12 @@ def main():
         # (family, csr, wiki), scoped to the audited pages. check_footer's
         # family-links assertion is gated to 'family' (the CSR + wiki trees are not
         # in FAMILY); its footer-EXISTS check still runs for all.
-        # Broken-link/anchor checking for the WIKI is owned by mw-static-generator's own verify
-        # gate (mwstatic.verify) WITH a per-site baseline for the pre-existing upstream breaks;
-        # re-running it here (baseline-less) would only re-report those. family/csr have no
-        # separate link gate, so they still run it.
-        if policy != 'wiki':
-            check_links(root, failures, mount, parent_roots, pages)
+        # Broken-link + in-page-anchor audit, GENERIC across policies. For the wiki it runs over
+        # the FULL tree (`pages` is the curated subset there), matching the per-site baseline of
+        # accepted pre-existing upstream breaks applied below -- so dist-ai owns link-checking for
+        # every site (the generator's separate verify gate becomes redundant).
+        link_pages = pages if policy != 'wiki' else sorted(html_files(root))
+        check_links(root, failures, mount, parent_roots, link_pages)
         check_wording(root, failures, pages)
         check_footer(root, failures, require_family_links=(policy == 'family'), pages=pages)
         check_csp(root, failures, pages)
@@ -3566,6 +3596,11 @@ def main():
             check_footer_nav(root, failures)
             check_csr_csp(root, failures)
             check_page_metadata(root, failures)
+        # Suppress accepted pre-existing findings (broken on production too) listed in this
+        # site's baseline, so a GENERIC check runs on every policy without re-reporting them.
+        baseline = _load_webcheck_baseline(root)
+        if baseline:
+            failures[:] = [f for f in failures if f not in baseline]
         name = os.path.basename(root)
         if failures:
             total += len(failures)

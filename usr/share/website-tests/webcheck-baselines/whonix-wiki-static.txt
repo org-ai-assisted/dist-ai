@@ -1,0 +1,187 @@
+# Accepted pre-existing broken links/anchors for whonix-wiki-static (upstream content,
+# broken on production too). check_site.check_links suppresses EXACT matches.
+# Prune a line once its link/anchor is fixed. Seeded from check_links full-tree.
+wiki/Advanced_Documentation.html: link 'File_Transfer#Mount_and_Inspect_Images' targets missing #Mount_and_Inspect_Images
+wiki/Advanced_Documentation.html: link 'Install_Software#Whonix-Workstation_is_Firewalled' targets missing #Whonix-Workstation_is_Firewalled
+wiki/Advanced_Documentation.html: link 'Whonix-Workstation_Security_Hardening#Multiple_Tor_Browser_Instances_and_Workstations' targets missing #Multiple_Tor_Browser_Instances_and_Workstations
+wiki/Advanced_Security_Guide_Introduction.html: link 'Install_Software#Whonix-Workstation_is_Firewalled' targets missing #Whonix-Workstation_is_Firewalled
+wiki/Architecture_Support.html: link 'MacOS#MacOSApple_Silicon' targets missing #MacOSApple_Silicon
+wiki/Bridges.html: link 'Deprecated#flashproxy' targets missing #flashproxy
+wiki/Bridges.html: link 'Deprecated#scramblesuit' targets missing #scramblesuit
+wiki/Browser_Plugins.html: link 'Security_Guide#Recommendation_to_use_multiple_VM_Snapshots' targets missing #Recommendation_to_use_multiple_VM_Snapshots
+wiki/Browser_Plugins.html: link 'Warning#Avoid_non-Free_Software' targets missing #Avoid_non-Free_Software
+wiki/Browser_Tests.html: link 'Browser_Tests#about:tor' targets missing #about:tor
+wiki/Build_Version.html: link '/wiki/Moved:Systemcheck#Build_Version' targets missing #Build_Version
+wiki/Census.html: link 'Trust#Trusting_the_Whonix_Website' targets missing #Trusting_the_Whonix_Website
+wiki/Changelog.html: link './Moved:Strong_Linux_User_Account_Isolation#Bruteforcing_Linux_User_Account_Passwords_Protection' targets missing #Bruteforcing_Linux_User_Account_Passwords_Protection
+wiki/Chat.html: link 'Deprecated#Tor_Messenger' targets missing #Tor_Messenger
+wiki/Chrome.html: link './Moved:Google_Chrome_Repository_Insecurity#Google_Chrome_Repository_Insecurity' targets missing #Google_Chrome_Repository_Insecurity
+wiki/Comparison_with_Others.html: link 'MAC_Address#Introduction' targets missing #Introduction
+wiki/Comparison_with_Others.html: link 'Trust#Trusting_the_Whonix_Website' targets missing #Trusting_the_Whonix_Website
+wiki/Deprecated.html: broken in-page anchor #Check_Systemd_Journal_Log_of_Current_Boot
+wiki/Deprecated.html: broken in-page anchor #Check_Systemd_Journal_Log_of_Previous_Boot
+wiki/Desktop.html: link 'Debian_Packages#Packages_FAQ' targets missing #Packages_FAQ
+wiki/Desktop.html: link 'Login#Configuring_GUI_Autologin' targets missing #Configuring_GUI_Autologin
+wiki/Dev/Archived_Discussions.html: link '../Computer_Security_Education#Recommendation_to_use_a_dedicated_host_operating_system' targets missing #Recommendation_to_use_a_dedicated_host_operating_system
+wiki/Dev/Build_Documentation/Physical_Isolation.html: link '../../MAC_Address#Using_Personal_Computers_in_a_Public_Network' targets missing #Using_Personal_Computers_in_a_Public_Network
+wiki/Dev/Build_Documentation/generic-package.html: link '../../Security_Guide#Updates' targets missing #Updates
+wiki/Dev/Build_Documentation/generic-package/easy.html: link '../../../Security_Guide#Updates' targets missing #Updates
+wiki/Dev/Build_Documentation/images.html: link '../../Trust#Builds_from_Source_Code_versus_Builds_including_Binary_Packages' targets missing #Builds_from_Source_Code_versus_Builds_including_Binary_Packages
+wiki/Dev/Build_Documentation/monero-gui/easy.html: link '../../../Security_Guide#Updates' targets missing #Updates
+wiki/Dev/Build_Documentation/security-misc.html: link '../../Security_Guide#Updates' targets missing #Updates
+wiki/Dev/Build_Documentation/security-misc/easy.html: link '../../../Security_Guide#Updates' targets missing #Updates
+wiki/Dev/DHCP.html: broken internal link '../Special:AWCforum/st/id240#post_1143' -> wiki/Special:AWCforum/st/id240
+wiki/Dev/Default_Application_Policy.html: link '../File_Sharing#Updates' targets missing #Updates
+wiki/Dev/Download_Wizard.html: broken in-page anchor #TODO
+wiki/Dev/ImageResize.html: broken internal link '../File:Usb_installation.jpg' -> wiki/File:Usb_installation.jpg
+wiki/Dev/Inspiration.html: link '../Features#Advantages_of_Whonix' targets missing #Advantages_of_Whonix
+wiki/Dev/KVM.html: link '../Advanced_Security_Guide#Network_Time_Synchronization' targets missing #Network_Time_Synchronization
+wiki/Dev/Leak_Tests.html: link '../Alternative_DNS_Resolver#DNSSec' targets missing #DNSSec
+wiki/Dev/Logo.html: broken internal link '../:File:Whonix-vectorized-logo.svg' -> wiki/:File:Whonix-vectorized-logo.svg
+wiki/Dev/Logo_Contest.html: link 'Logo#Banner_2' targets missing #Banner_2
+wiki/Dev/Logo_Contest.html: link 'Logo#Logo_2' targets missing #Logo_2
+wiki/Dev/Operating_System.html: link '../Debian_Packages#Technical_Information' targets missing #Technical_Information
+wiki/Dev/Operating_System.html: link '../Features#Tunnel_Support' targets missing #Tunnel_Support
+wiki/Dev/Qubes.html: link '../Moved:Update#Warnings' targets missing #Warnings
+wiki/Dev/Qubes_Remote_Support.html: link '../SSH#Client_Configuration_File' targets missing #Client_Configuration_File
+wiki/Dev/Qubes_Remote_Support.html: link '../SSH#Server_Configuration_File' targets missing #Server_Configuration_File
+wiki/Dev/Redistribution.html: link '../Official_Online_Profiles#Whonix_Forums_Profiles' targets missing #Whonix_Forums_Profiles
+wiki/Dev/Source_Code_Intro.html: link '../File_Transfer#Mount_and_Inspect_Images' targets missing #Mount_and_Inspect_Images
+wiki/Dev/Technical_Introduction.html: link '../Advanced_Security_Guide#Side_Channel_Attacks' targets missing #Side_Channel_Attacks
+wiki/Dev/Threat_Model.html: link '../Security_Guide#Recommendation_to_use_multiple_VM_Snapshots' targets missing #Recommendation_to_use_multiple_VM_Snapshots
+wiki/Dev/TimeSync.html: link '../Advanced_Security_Guide#Network_Time_Synchronization' targets missing #Network_Time_Synchronization
+wiki/Dev/TimeSync.html: link '../Advanced_Security_Guide#Qubes' targets missing #Qubes
+wiki/Dev/TimeSync.html: link '../Advanced_Security_Guide#Spoof_the_Initial_Virtual_Hardware_Clock_Offset' targets missing #Spoof_the_Initial_Virtual_Hardware_Clock_Offset
+wiki/Dev/TimeSync.html: link '../Computer_Security_Education#Disable_TCP_Timestamps' targets missing #Disable_TCP_Timestamps
+wiki/Dev/TimeSync.html: link '../Fingerprint#For_the_websites_that_you_are_visiting' targets missing #For_the_websites_that_you_are_visiting
+wiki/Dev/TimeSync.html: link '../Other_Operating_Systems#About_Ubuntu' targets missing #About_Ubuntu
+wiki/Dev/TimeSync.html: link '../Sdwdate#Tor_Consensus_Time_Sanity_Check' targets missing #Tor_Consensus_Time_Sanity_Check
+wiki/Dev/TimeSync.html: link '../Sdwdate#sdwdate_Time_Sources_Criteria' targets missing #sdwdate_Time_Sources_Criteria
+wiki/Dev/VirtualBox.html: link '../Moved:Update#Warnings' targets missing #Warnings
+wiki/Dev/VirtualBox.html: link 'Windows_Installer#Rationale' targets missing #Rationale
+wiki/Dev/Virtualization_Platform.html: link '../Design#Porting_Simplicity' targets missing #Porting_Simplicity
+wiki/Dev/electrum.html: link '../Install_Software#Avoid_Manual_Software_Installation' targets missing #Avoid_Manual_Software_Installation
+wiki/Dev/electrum.html: link '../Install_Software#Avoid_Third_Party_Package_Managers' targets missing #Avoid_Third_Party_Package_Managers
+wiki/Dev/electrum.html: link '../Install_Software#Prefer_APT' targets missing #Prefer_APT
+wiki/Dev/wiki.html: broken internal link '../:Category:MultiWiki' -> wiki/:Category:MultiWiki
+wiki/Dev/wiki.html: broken internal link '../Special:Gadgets' -> wiki/Special:Gadgets
+wiki/Dev/wiki.html: link '../Special:Preferences#mw-prefsection-gadgets' targets missing #mw-prefsection-gadgets
+wiki/Disaster_Recovery.html: link 'Full_Disk_Encryption_and_Encrypted_Images#New_Removable_Media' targets missing #New_Removable_Media
+wiki/Download.html: broken in-page anchor #VirtualBox
+wiki/Features.html: broken in-page anchor #Tunnel_Support
+wiki/File:Qubes-Whonix-Gateway_TemplateVM_Qubes_VM_Manager_Settings.png.html: broken internal link '/wiki/File:Qubes-Whonix-Gateway_Template_Qubes_VM_Manager_Settings.png' -> wiki/File:Qubes-Whonix-Gateway_Template_Qubes_VM_Manager_Settings.png
+wiki/Firewall.html: link 'Install_Software#Whonix-Workstation_is_Firewalled' targets missing #Whonix-Workstation_is_Firewalled
+wiki/Ga.html: link '/wiki/Moved:VirtualBox/Guest_Additions#Issue' targets missing #Issue
+wiki/Host_Firewall.html: link './Moved:Host_Firewall_Basics#How-to:_Install_and_Configure_a_Firewall' targets missing #How-to:_Install_and_Configure_a_Firewall
+wiki/Host_Operating_System_Selection.html: link 'Warning#Always_Verify_Signatures' targets missing #Always_Verify_Signatures
+wiki/Imprint.html: broken internal link './Special:Contact' -> wiki/Special:Contact
+wiki/Install_Software.html: link './Moved:Update#Updates' targets missing #Updates
+wiki/Install_Software.html: link 'Debian_Packages#Technical_Information' targets missing #Technical_Information
+wiki/KVM.html: broken in-page anchor #Download_and_Extract
+wiki/KVM/Support.html: broken in-page anchor #User_Help_Forum
+wiki/Keystroke_and_Mouse_Deanonymization.html: link 'Tips_on_Remaining_Anonymous#clearnet' targets missing #clearnet
+wiki/MacOS.html: link 'Dev/Build_Documentation/images#VM_Creation' targets missing #VM_Creation
+wiki/MediaWiki:Priority_Support.html: broken internal link '/wiki/MediaWiki:Plus_Support' -> wiki/MediaWiki:Plus_Support
+wiki/MediaWiki:Professional_Support.html: broken internal link '/wiki/MediaWiki:Premium_Support' -> wiki/MediaWiki:Premium_Support
+wiki/Monero/Manual_Instructions.html: link '../Warning#Always_Verify_Signatures' targets missing #Always_Verify_Signatures
+wiki/Network_Time_Synchronization.html: link "KVM#Editing_an_Imported_Machine's_XML_Configuration" targets missing #Editing_an_Imported_Machine's_XML_Configuration
+wiki/Old_Project_Versions_and_News.html: link 'Deprecated#Updating_Tor' targets missing #Updating_Tor
+wiki/Old_Project_Versions_and_News.html: link 'FAQ#Whonix_crashes_because_of_PAE?' targets missing #Whonix_crashes_because_of_PAE?
+wiki/Old_Project_Versions_and_News.html: link 'Tor_Browser#New_Identity_Button' targets missing #New_Identity_Button
+wiki/Old_Stable_and_Earlier_Releases.html: broken internal link './Special:AWCforum' -> wiki/Special:AWCforum
+wiki/Old_Stable_and_Earlier_Releases.html: link './Moved:Strong_Linux_User_Account_Isolation#Bruteforcing_Linux_User_Account_Passwords' targets missing #Bruteforcing_Linux_User_Account_Passwords
+wiki/Old_Stable_and_Earlier_Releases.html: link 'E-Mail#Mozilla_Thunderbird_with_TorBirdy' targets missing #Mozilla_Thunderbird_with_TorBirdy
+wiki/Old_Stable_and_Earlier_Releases.html: link 'Tor_Browser#Hardening' targets missing #Hardening
+wiki/Old_Stable_and_Earlier_Releases.html: link 'Trust#Trusting_the_Whonix_Website' targets missing #Trusting_the_Whonix_Website
+wiki/Onion_Gaming.html: link 'Onion_Services#Step_3:_make_changes_to_Tor_config_take_effect' targets missing #Step_3:_make_changes_to_Tor_config_take_effect
+wiki/Other_Anonymizing_Networks.html: link 'Features#Tunnel_Support' targets missing #Tunnel_Support
+wiki/Other_Operating_Systems.html: broken in-page anchor #Change_Proxy_Settings
+wiki/Other_Operating_Systems.html: broken in-page anchor #Remove_Proxy_Settings
+wiki/Other_Operating_Systems.html: link 'Documentation#Advanced_Security_Guide' targets missing #Advanced_Security_Guide
+wiki/Other_Operating_Systems.html: link 'Documentation#Basic_Security_Guide' targets missing #Basic_Security_Guide
+wiki/Other_Operating_Systems.html: link 'KVM#DHCP' targets missing #DHCP
+wiki/Ports.html: link 'Deprecated#flashproxy' targets missing #flashproxy
+wiki/Privacy_Policy.html: broken in-page anchor #Log_Files
+wiki/Project_Policies.html: link 'Sdwdate#sdwdate_Time_Sources_Criteria' targets missing #sdwdate_Time_Sources_Criteria
+wiki/Qubes/Clone_VMs.html: link '/wiki/Multiple_Whonix-Workstation#Cloning_Templates' targets missing #Cloning_Templates
+wiki/Qubes/Reinstall.html: link '../Debian_Packages#Packages_FAQ' targets missing #Packages_FAQ
+wiki/Release_Upgrade_16_to_17.html: link 'Deprecated#Manual_Release_Upgrade' targets missing #Manual_Release_Upgrade
+wiki/Release_Upgrade_17_to_18.html: link 'Deprecated#Manual_Release_Upgrade' targets missing #Manual_Release_Upgrade
+wiki/Release_Upgrade_Whonix_15_to_Whonix_16.html: link 'Deprecated#Manual_Release_Upgrade' targets missing #Manual_Release_Upgrade
+wiki/Reporting_Bugs.html: link 'Support#The_User_Co-developer_Concept' targets missing #The_User_Co-developer_Concept
+wiki/RetroShare.html: link 'Security_Guide#Other_Anonymizing_Networks_over_Tor_UDP_Tunnel' targets missing #Other_Anonymizing_Networks_over_Tor_UDP_Tunnel
+wiki/Search_Engines.html: link 'Trust#Self-Hosting_vs_Third_Party_Hosting' targets missing #Self-Hosting_vs_Third_Party_Hosting
+wiki/Starting_Project.html: link 'Qubes/Install#Next_Steps' targets missing #Next_Steps
+wiki/Stream_Isolation.html: link 'Features#Tunnel_Support' targets missing #Tunnel_Support
+wiki/Stream_Isolation.html: link 'Whonix-Workstation_Security_Hardening#Multiple_Tor_Browser_Instances' targets missing #Multiple_Tor_Browser_Instances
+wiki/Stream_Isolation/Disable_Easy.html: link '../Features#Tunnel_Support' targets missing #Tunnel_Support
+wiki/Stream_Isolation/Disable_Easy.html: link '../Whonix-Workstation_Security_Hardening#Multiple_Tor_Browser_Instances' targets missing #Multiple_Tor_Browser_Instances
+wiki/System_Requirements.html: broken in-page anchor #Linux
+wiki/Template:Build_Documentation_Build_Package.html: broken internal link 'Dev/Build_Documentation/easy' -> wiki/Dev/Build_Documentation/easy
+wiki/Template:Build_Documentation_Build_Package.html: link 'Security_Guide#Updates' targets missing #Updates
+wiki/Template:Build_Documentation_Build_Package_Easy.html: link 'Security_Guide#Updates' targets missing #Updates
+wiki/Template:Build_Documentation_Build_Package_New.html: link 'Security_Guide#Updates' targets missing #Updates
+wiki/Template:Community_Support2.html: broken in-page anchor #Community_Support
+wiki/Template:Disable_Stream_Isolation_Easy.html: link 'Features#Tunnel_Support' targets missing #Tunnel_Support
+wiki/Template:Disable_Stream_Isolation_Easy.html: link 'Whonix-Workstation_Security_Hardening#Multiple_Tor_Browser_Instances' targets missing #Multiple_Tor_Browser_Instances
+wiki/Template:Git_clone_verify.html: link 'Warning#Always_Verify_Signatures' targets missing #Always_Verify_Signatures
+wiki/Template:Kicksecure_Choose_Stable.html: broken internal link 'CLI' -> wiki/CLI
+wiki/Template:Kicksecure_Choose_Stable.html: broken internal link 'LXQt' -> wiki/LXQt
+wiki/Template:Manual_Software_Installation.html: link 'Install_Software#Always_Verify_Signatures' targets missing #Always_Verify_Signatures
+wiki/Template:No_leaks_policy.html: broken in-page anchor #For_Reporting_Security_Issues
+wiki/Template:Non-functional_Onion_Services.html: broken in-page anchor #Updates
+wiki/Template:Prevent_Bypassing_the_Tunnel-Link.html: link 'Features#Tunnel_Support' targets missing #Tunnel_Support
+wiki/Template:Prevent_Bypassing_the_Tunnel-Link.html: link 'Whonix-Workstation_Security_Hardening#Multiple_Tor_Browser_Instances' targets missing #Multiple_Tor_Browser_Instances
+wiki/Template:Professional_Support.html: broken internal link '/wiki/Template:Premium_Support' -> wiki/Template:Premium_Support
+wiki/Template:Professional_Support_Skills.html: broken internal link '/wiki/Template:Premium_Support_Skills' -> wiki/Template:Premium_Support_Skills
+wiki/Template:Qubes_Operating_System_Updates.html: link 'Deprecated#KEYEXPIRED_Error' targets missing #KEYEXPIRED_Error
+wiki/Template:Should_I_be_concerned.html: link 'Browser_Tests#about:tor' targets missing #about:tor
+wiki/Template:Supported_Platforms.html: broken in-page anchor #Linux
+wiki/Template:Tor_Browser_Change_Proxy_Settings_Issues.html: link 'Whonix-Workstation_Security_Hardening#Multiple_Tor_Browser_Instances' targets missing #Multiple_Tor_Browser_Instances
+wiki/Template:Tor_Browser_Remove_Proxy_Settings.html: link 'Features#Tunnel_Support' targets missing #Tunnel_Support
+wiki/Template:Tor_Browser_Remove_Proxy_Settings.html: link 'Whonix-Workstation_Security_Hardening#Multiple_Tor_Browser_Instances' targets missing #Multiple_Tor_Browser_Instances
+wiki/Template:VPN-Firewall/Troubleshooting.html: broken in-page anchor #VPN_Configuration_File
+wiki/Template:VPN/Setup/Preparation.html: broken in-page anchor #Fail_Closed_Mechanism
+wiki/Template:VPN/Setup/Preparation.html: broken in-page anchor #VPN_Setup
+wiki/Template:VPN/Setup/Support_Requests.html: broken in-page anchor #Troubleshooting
+wiki/Template:VPN/Setup/resolvconf_adjustments.html: broken in-page anchor #DNS_Configuration
+wiki/Template:Verify_the_images.html: broken in-page anchor #signature
+wiki/Template:Windows_Hosts.html: link 'Warning#Always_Verify_Signatures' targets missing #Always_Verify_Signatures
+wiki/Testpage4.html: broken in-page anchor #abc
+wiki/Tor.html: link 'Install_Tor_Browser_Outside_of_Whonix#Moderate:_Qubes-Whonix' targets missing #Moderate:_Qubes-Whonix
+wiki/TorBirdy.html: link '/wiki/E-Mail#TorBirdy' targets missing #TorBirdy
+wiki/Tor_Browser.html: link 'Tips_on_Remaining_Anonymous#Change_Pseudonyms_Regularely' targets missing #Change_Pseudonyms_Regularely
+wiki/Tor_Browser.html: link 'Tor_Browser/Advanced_Users#Disabled_Torbutton_Functions' targets missing #Disabled_Torbutton_Functions
+wiki/Tor_Browser.html: link 'Tor_Browser/Manual_Download#Tor_Browser/Manual_Download' targets missing #Tor_Browser/Manual_Download
+wiki/Tor_Browser/Advanced_Users.html: link '../Features#Tunnel_Support' targets missing #Tunnel_Support
+wiki/Tor_Browser/Advanced_Users.html: link '../Whonix-Workstation_Security_Hardening#Multiple_Tor_Browser_Instances' targets missing #Multiple_Tor_Browser_Instances
+wiki/Tor_Browser/Download_Confirmation_Screen.html: link '/wiki/Tor_Browser#Download_Confirmation_Screen' targets missing #Download_Confirmation_Screen
+wiki/Tor_Browser/Downloader_by_Whonix.html: link '/wiki/Tor_Browser#Tor_Browser_Downloader_by' targets missing #Tor_Browser_Downloader_by
+wiki/Tor_Browser/Installation_Confirmation_Screen.html: link '/wiki/Tor_Browser#Installation_Confirmation_Screen' targets missing #Installation_Confirmation_Screen
+wiki/Trust.html: broken in-page anchor #Trusting_Debian_GNU/Linux
+wiki/Tunnel_UDP_over_Tor.html: link 'Terms_of_Service#Whonix_VPN_disclaimer' targets missing #Whonix_VPN_disclaimer
+wiki/Tunnels/Connecting_to_Tor_before_a_VPN.html: link '../Features#Tunnel_Support' targets missing #Tunnel_Support
+wiki/Tunnels/Connecting_to_Tor_before_a_VPN.html: link '../Whonix-Workstation_Security_Hardening#Multiple_Tor_Browser_Instances' targets missing #Multiple_Tor_Browser_Instances
+wiki/Tunnels/Connecting_to_Tor_before_a_proxy/Proxyfier_Method.html: link '../../Features#Tunnel_Support' targets missing #Tunnel_Support
+wiki/Tunnels/Connecting_to_Tor_before_a_proxy/Proxyfier_Method.html: link '../../Whonix-Workstation_Security_Hardening#Multiple_Tor_Browser_Instances' targets missing #Multiple_Tor_Browser_Instances
+wiki/Tunnels/Connecting_to_Tor_before_a_proxy/Transparent_Proxying_Method.html: link '../../Install_Software#Whonix-Workstation_is_Firewalled' targets missing #Whonix-Workstation_is_Firewalled
+wiki/Tunnels/Prevent_Bypassing_the_Tunnel-Link.html: link '../Features#Tunnel_Support' targets missing #Tunnel_Support
+wiki/Tunnels/Prevent_Bypassing_the_Tunnel-Link.html: link '../Whonix-Workstation_Security_Hardening#Multiple_Tor_Browser_Instances' targets missing #Multiple_Tor_Browser_Instances
+wiki/VFAQ.html: link 'VirtualBox#VirtualBox_Unavailable_in_Debian_main_due_to_Licensing_Issues' targets missing #VirtualBox_Unavailable_in_Debian_main_due_to_Licensing_Issues
+wiki/VMware.html: link 'Design#Other_Virtualization_Platforms' targets missing #Other_Virtualization_Platforms
+wiki/Verify_the_images.html: broken in-page anchor #Download_the_signify_Key
+wiki/Verify_the_images_using_Linux.html: link 'Signing_Key#Download_the_signify_Key' targets missing #Download_the_signify_Key
+wiki/Verify_the_images_using_Windows.html: link 'Warning#Always_Verify_Signatures' targets missing #Always_Verify_Signatures
+wiki/Warning.html: link 'Download#Stay_tuned' targets missing #Stay_tuned
+wiki/Whonix-Gateway_Firewall.html: link 'Install_Software#Whonix-Workstation_is_Firewalled' targets missing #Whonix-Workstation_is_Firewalled
+wiki/Whonix-Workstation_Firewall.html: link 'Install_Software#Whonix-Workstation_is_Firewalled' targets missing #Whonix-Workstation_is_Firewalled
+wiki/Whonix-Workstation_Security.html: link 'Tor_Browser#Hardening' targets missing #Hardening
+wiki/Whonix_Build_Version.html: link '/wiki/Moved:Systemcheck#Build_Version' targets missing #Build_Version
+wiki/Whonix_versus_Proxies.html: broken in-page anchor #Security_Experts_Opinion_on_VPNs
+wiki/Whonix_versus_Proxies.html: broken in-page anchor #VPN_Providers_Know_What_You_Are_Doing
+wiki/Whonix_versus_Proxies.html: broken in-page anchor #VPNs_don't_make_you_anonymous
+wiki/Whonix_versus_Proxies.html: broken internal link './:File:Tor-without-https.png' -> wiki/:File:Tor-without-https.png
+wiki/Whonix_versus_VPNs.html: broken internal link './Https:/coveryourtracks.eff.org/_9' -> wiki/Https:/coveryourtracks.eff.org/_9
+wiki/Whonix_versus_VPNs.html: link 'Features#Tunnel_Support' targets missing #Tunnel_Support
+wiki/Why_does_Whonix_use_Tor.html: link 'Features#Tunnel_Support' targets missing #Tunnel_Support
+wiki/Wickr.html: link 'Install_Software#Install_Software_in_a_TemplateBasedVM' targets missing #Install_Software_in_a_TemplateBasedVM

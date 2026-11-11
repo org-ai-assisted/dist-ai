@@ -1,0 +1,210 @@
+# Accepted pre-existing broken links/anchors for kicksecure-wiki-static (upstream content,
+# broken on production too). check_site.check_links suppresses EXACT matches.
+# Prune a line once its link/anchor is fixed. Seeded from check_links full-tree.
+wiki/About.html: link 'TimeSync#Attacks' targets missing #Attacks
+wiki/Advanced_Host_Security.html: link 'About#Torified_Apt_Upgrades' targets missing #Torified_Apt_Upgrades
+wiki/Advanced_Host_Security.html: link 'Advanced_Host_Security#Kicksecure' targets missing #Kicksecure
+wiki/Advanced_Host_Security.html: link 'Time_Attacks#Mitigations' targets missing #Mitigations
+wiki/Advanced_Security_Guide_Introduction.html: link 'Install_Software#Kicksecure_is_Firewalled' targets missing #Kicksecure_is_Firewalled
+wiki/Age-api.html: link 'Age-api#Terms_of_Service_Design_Draft' targets missing #Terms_of_Service_Design_Draft
+wiki/Anondate.html: broken in-page anchor #Tor_Consensus_Method
+wiki/Anondate.html: link 'Dev/TimeSync#Tor_Certificate_Lifetime' targets missing #Tor_Certificate_Lifetime
+wiki/AppArmor.html: link 'E-Mail#Mozilla_Thunderbird_with_TorBirdy' targets missing #Mozilla_Thunderbird_with_TorBirdy
+wiki/AppArmor.html: link 'Tor_Browser#Update_Tor_Browser' targets missing #Update_Tor_Browser
+wiki/Architecture_Support.html: link 'MacOS#MacOSApple_Silicon' targets missing #MacOSApple_Silicon
+wiki/Broken_Boot.html: broken in-page anchor #BIOS_/_Firmware
+wiki/Broken_Boot.html: broken in-page anchor #Desktop_startup
+wiki/Broken_Boot.html: broken in-page anchor #Hardware_preparation
+wiki/Broken_Boot.html: broken in-page anchor #Initramfs_launch
+wiki/Broken_Boot.html: broken in-page anchor #Kernel_/_initramfs_discovery_and_kernel_launch
+wiki/Broken_Boot.html: broken in-page anchor #Login_manager_startup
+wiki/Broken_Boot.html: broken in-page anchor #Power_on
+wiki/Broken_Boot.html: broken in-page anchor #Root_filesystem_discovery_and_handoff
+wiki/Build_Configuration.html: link 'Dev/Source_Code_Intro#Build_Configuration' targets missing #Build_Configuration
+wiki/Computer_Security_Introduction.html: link 'KVM#KVM_Setup_Instructions' targets missing #KVM_Setup_Instructions
+wiki/Configuration_Files.html: link 'Tor#Configuration' targets missing #Configuration
+wiki/Contribute.html: link 'Dev/TimeSync#Adjusting_time_slowly_using_adjtimex/ntp_adjtime' targets missing #Adjusting_time_slowly_using_adjtimex/ntp_adjtime
+wiki/Contribute.html: link 'Other_Operating_Systems#Kicksecure_Packages' targets missing #Kicksecure_Packages
+wiki/Contributors.html: link 'Support#IRC' targets missing #IRC
+wiki/Deprecated.html: broken in-page anchor #Try_a_non-whonix_VM
+wiki/Deprecated.html: link 'Time_Attacks#GNU/Linux_Host' targets missing #GNU/Linux_Host
+wiki/Deprecated.html: link 'Warning#Confirmation_Attacks' targets missing #Confirmation_Attacks
+wiki/Dev/Automatic_Updates.html: link '../Tor_Browser#Update_Tor_Browser' targets missing #Update_Tor_Browser
+wiki/Dev/Build_Documentation/images.html: link '../Qubes#Build_Kicksecure_for_Qubes_Templates' targets missing #Build_Kicksecure_for_Qubes_Templates
+wiki/Dev/Build_Documentation/images.html: link '../Source_Code_Intro#Build_Configuration' targets missing #Build_Configuration
+wiki/Dev/Default_Browser.html: link '../Miscellaneous_Threats_to_User_Freedom#Beyond_Licensing' targets missing #Beyond_Licensing
+wiki/Dev/Default_Browser.html: link 'Chromium#Chromium_reduced_capabilities_to_plugin_with_adblocker' targets missing #Chromium_reduced_capabilities_to_plugin_with_adblocker
+wiki/Dev/Entropy.html: broken in-page anchor #Software_Packages
+wiki/Dev/Licensing.html: link 'Operating_System#Ubuntu_Legal_Issues' targets missing #Ubuntu_Legal_Issues
+wiki/Dev/Redistribution.html: link '../Official_Online_Profiles#Kicksecure_Forums_Profiles' targets missing #Kicksecure_Forums_Profiles
+wiki/Dev/Relationship_With_Upstream.html: link '../Operating_System#Popularity_Contest' targets missing #Popularity_Contest
+wiki/Dev/Strong_Linux_User_Account_Isolation.html: broken in-page anchor #Prevent_Malware_from_Sniffing_the_Root_Password
+wiki/Dev/Strong_Linux_User_Account_Isolation.html: link '../Security-misc#SUID_Disabling_and_Permission_Hardening' targets missing #SUID_Disabling_and_Permission_Hardening
+wiki/Dev/VirtualBox.html: link '../KVM#Why_Use_KVM_Over_VirtualBox?' targets missing #Why_Use_KVM_Over_VirtualBox?
+wiki/Dev/boot.html: link 'Operating_System#Original_Base_Distributions_Only' targets missing #Original_Base_Distributions_Only
+wiki/Dev/image_formats.html: link '../Download_Security#balenaEtcher' targets missing #balenaEtcher
+wiki/Dev/mediawiki.html: broken in-page anchor #Extension_CSS_Fork
+wiki/Dev/mediawiki.html: broken in-page anchor #File_auto-generation.2C_Combine.2C_Minify.2C_Host_Locally.2C_mw-autogen.2C_src-copy
+wiki/Dev/mediawiki.html: broken in-page anchor #Headline_.28Widget.29
+wiki/Dev/mediawiki.html: broken in-page anchor #Intro_paragraph
+wiki/Dev/mediawiki.html: broken internal link '../MediaWiki:Anoneditwarning' -> wiki/MediaWiki:Anoneditwarning
+wiki/Dev/mediawiki.html: broken internal link '../MediaWiki:Captchahelp-text' -> wiki/MediaWiki:Captchahelp-text
+wiki/Dev/mediawiki.html: broken internal link '../MediaWiki:Cookiewarning-info' -> wiki/MediaWiki:Cookiewarning-info
+wiki/Dev/mediawiki.html: broken internal link '../MediaWiki:Cookiewarning-more-link' -> wiki/MediaWiki:Cookiewarning-more-link
+wiki/Dev/mediawiki.html: broken internal link '../MediaWiki:Shoutwiki-loginform-tos' -> wiki/MediaWiki:Shoutwiki-loginform-tos
+wiki/Dev/mediawiki.html: broken internal link '../MediaWiki:Shoutwiki-must-accept-tos' -> wiki/MediaWiki:Shoutwiki-must-accept-tos
+wiki/Dev/mediawiki.html: broken internal link '../MediaWiki:Sitenotice' -> wiki/MediaWiki:Sitenotice
+wiki/Dev/mediawiki.html: broken internal link '../MediaWiki:Useragreement' -> wiki/MediaWiki:Useragreement
+wiki/Dev/mediawiki.html: broken internal link '../Special:Export' -> wiki/Special:Export
+wiki/Dev/mediawiki.html: broken internal link '../Special:WhatLinksHere' -> wiki/Special:WhatLinksHere
+wiki/Dev/mediawiki.html: broken internal link '../Testpage' -> wiki/Testpage
+wiki/Dev/mediawiki.html: link '../Cookie_Policy#Preferences' targets missing #Preferences
+wiki/Dev/mediawiki.html: link 'mediawiki#ContentImage_(Template)_-_image_wrapper_for_overlenght_images' targets missing #ContentImage_(Template)_-_image_wrapper_for_overlenght_images
+wiki/Dev/mediawiki.html: link 'mediawiki#CustomScollbar' targets missing #CustomScollbar
+wiki/Dev/mediawiki.html: link 'mediawiki#Multiwiki' targets missing #Multiwiki
+wiki/Dev/mediawiki.html: link 'mediawiki#WikiBookIndex_Template' targets missing #WikiBookIndex_Template
+wiki/Dev/mediawiki.html: link 'mediawiki#WikitableAutoWrapper_and_ScrollableIndicator' targets missing #WikitableAutoWrapper_and_ScrollableIndicator
+wiki/Dev/mediawiki.html: link 'wikitest#Expand_Button_different_labels' targets missing #Expand_Button_different_labels
+wiki/Dev/mediawiki.html: link 'wikitest#Prebox_template' targets missing #Prebox_template
+wiki/Dev/mediawiki/Archive.html: broken internal link '../../MediaWiki:Gadgets-definition' -> wiki/MediaWiki:Gadgets-definition
+wiki/Dev/mediawiki/Archive.html: broken internal link '../../Template:Reflist' -> wiki/Template:Reflist
+wiki/Dev/mediawiki/Archive.html: broken internal link '../../Testpage' -> wiki/Testpage
+wiki/Dev/mediawiki/Archive.html: broken internal link '../../Widget:Page_Homepage' -> wiki/Widget:Page_Homepage
+wiki/Dev/secureblue.html: broken in-page anchor #Flathub_Package_Sources_Security
+wiki/Dev/systemcheck.html: broken in-page anchor #System_Checks
+wiki/Dev/todo.html: link '../Age-api#Interface_Design_Draft' targets missing #Interface_Design_Draft
+wiki/Dev/todo.html: link '../Sysmaint#enable_sudo_access_in_USER_session' targets missing #enable_sudo_access_in_USER_session
+wiki/Dev/todo.html: link 'bash#Safely_Using_Find_with_End-Of-Options' targets missing #Safely_Using_Find_with_End-Of-Options
+wiki/Dev/todo.html: link 'todo#Kicksecure_installer_versus_live-hardener_bug' targets missing #Kicksecure_installer_versus_live-hardener_bug
+wiki/Dev/todo/archived.html: broken in-page anchor #apparmor.d_review
+wiki/Dev/todo/archived.html: broken in-page anchor #automated_test_suite_-_cli_version
+wiki/Dev/todo/archived.html: broken in-page anchor #check_out_bubblejail
+wiki/Dev/todo/archived.html: broken in-page anchor #per-app_UID_sandboxing
+wiki/Dev/todo/archived.html: broken in-page anchor #sandbox-app-launcher
+wiki/Dev/todo/archived.html: broken in-page anchor #stackable_wrappers
+wiki/Dev/todo/archived.html: link '../../KVM#Clipboard_Sharing' targets missing #Clipboard_Sharing
+wiki/Dev/todo/archived.html: link '../../Systemcheck#Physical_Security_Check_-_Meaning_of_Colors' targets missing #Physical_Security_Check_-_Meaning_of_Colors
+wiki/Dev/todo/archived.html: link '../confidential_computing#Secure_Cloud_Hardware_TODO_Research_List' targets missing #Secure_Cloud_Hardware_TODO_Research_List
+wiki/Dev/todo/archived.html: link '../todo#ISO_-_error_message_during_boot:_mount:_/sysroot:_special_device_LiveOS_rootfs_does_not_exist' targets missing #ISO_-_error_message_during_boot:_mount:_/sysroot:_special_device_LiveOS_rootfs_does_not_exist
+wiki/Dev/website.html: broken internal link '../:File:Bootloader-pass.png' -> wiki/:File:Bootloader-pass.png
+wiki/Dev/website.html: broken internal link '../Template:Reflist' -> wiki/Template:Reflist
+wiki/Dev/website.html: broken internal link '../User:Patrick/myskin.css' -> wiki/User:Patrick/myskin.css
+wiki/Dev/website.html: link 'wikitest#CSS_Extension_Fork' targets missing #CSS_Extension_Fork
+wiki/Dev/wiki.html: broken internal link '../:Category:MultiWiki' -> wiki/:Category:MultiWiki
+wiki/Dev/wiki.html: broken internal link '../Special:Gadgets' -> wiki/Special:Gadgets
+wiki/Dev/wiki.html: broken internal link '../Testpage' -> wiki/Testpage
+wiki/Dev/wiki.html: link '../Special:Preferences#mw-prefsection-gadgets' targets missing #mw-prefsection-gadgets
+wiki/Dev/wiki.html: link 'mediawiki#New_Vector_Skin_and_Skin_Preferences' targets missing #New_Vector_Skin_and_Skin_Preferences
+wiki/Download_Security.html: broken in-page anchor #balenaEtcher
+wiki/Electrum/Manual_Installation.html: link '../Tor_Controller#Nyx' targets missing #Nyx
+wiki/File:500.png.html: broken internal link '/wiki/File:Kicksecure_old_logo.png' -> wiki/File:Kicksecure_old_logo.png
+wiki/File:Qubes-Whonix-Gateway_TemplateVM_Qubes_VM_Manager_Settings.png.html: broken internal link '/wiki/File:Qubes-Whonix-Gateway_Template_Qubes_VM_Manager_Settings.png' -> wiki/File:Qubes-Whonix-Gateway_Template_Qubes_VM_Manager_Settings.png
+wiki/File_indexing.html: link 'Dev/bash#Safely_Using_Find_with_End-Of-Options' targets missing #Safely_Using_Find_with_End-Of-Options
+wiki/Forum_Best_Practices.html: link 'Dev/mediawiki#MediaWiki_Clean_vs_Unclean_Links' targets missing #MediaWiki_Clean_vs_Unclean_Links
+wiki/Forum_Best_Practices.html: link 'Privacy_Policy_Technical_Details#View_Counters_on_the_Whonix_Website' targets missing #View_Counters_on_the_Whonix_Website
+wiki/Hardware_Wallet_Security.html: link 'Bitcoin#Bitcoin_Core' targets missing #Bitcoin_Core
+wiki/Hosting_a_Mirror.html: link 'Onion_Services#Notes_about_End-to-end_Security_of_Onion_Services' targets missing #Notes_about_End-to-end_Security_of_Onion_Services
+wiki/ISO.html: link 'Documentation#First_Kicksecure_Steps' targets missing #First_Kicksecure_Steps
+wiki/ISO.html: link 'ISO#Boot_the_ISO' targets missing #Boot_the_ISO
+wiki/Imprint.html: broken internal link './Special:Contact' -> wiki/Special:Contact
+wiki/Install_Software.html: link 'Multiple_Kicksecure#Multiple_Kicksecure_Templates' targets missing #Multiple_Kicksecure_Templates
+wiki/KVM/Support.html: broken in-page anchor #User_Help_Forum
+wiki/Kernel.html: link 'Multiple_Kicksecure#Multiple_Kicksecure_Templates' targets missing #Multiple_Kicksecure_Templates
+wiki/Kicksecure-Qubes_Security.html: link 'System_Requirements#Kicksecure-Qubes_System_Requirements' targets missing #Kicksecure-Qubes_System_Requirements
+wiki/Linux_Kernel_Runtime_Guard_LKRG.html: broken in-page anchor #debian
+wiki/Linux_Kernel_Runtime_Guard_LKRG/Build_Debian_Package_from_Source_Code.html: link '../Linux_Kernel_Runtime_Guard_LKRG#Authorship' targets missing #Authorship
+wiki/Linux_Kernel_Runtime_Guard_LKRG/Build_Debian_Package_from_Source_Code/Easy.html: broken internal link '../../Dev/Build_Documentation/lkrg' -> wiki/Dev/Build_Documentation/lkrg
+wiki/Linux_Kernel_Runtime_Guard_LKRG/Build_Debian_Package_from_Source_Code/Easy.html: link '../../Linux_Kernel_Runtime_Guard_LKRG#Authorship' targets missing #Authorship
+wiki/Linux_Kernel_Runtime_Guard_LKRG/Qubes.html: link '../Linux_Kernel_Runtime_Guard_LKRG#Authorship' targets missing #Authorship
+wiki/Linux_Kernel_Runtime_Guard_LKRG/Qubes.html: link '../Linux_Kernel_Runtime_Guard_LKRG#Features' targets missing #Features
+wiki/Linux_Kernel_Runtime_Guard_LKRG/Qubes.html: link '../Linux_Kernel_Runtime_Guard_LKRG#Security' targets missing #Security
+wiki/MAC_Address.html: link 'Tor_Entry_Guards#Alternating_Bridges' targets missing #Alternating_Bridges
+wiki/MAC_Address.html: link 'Tor_Entry_Guards#Clone_Whonix-Gateway_(sys-whonix)_with_New_Entry_Guards' targets missing #Clone_Whonix-Gateway_(sys-whonix)_with_New_Entry_Guards
+wiki/MAC_Address.html: link 'Tor_Entry_Guards#Fresh_Tor_Entry_Guards_by_Regenerating_the_Tor_State_File' targets missing #Fresh_Tor_Entry_Guards_by_Regenerating_the_Tor_State_File
+wiki/MAC_Address.html: link 'Tor_Entry_Guards#Mitigate_the_Threat_of_Guard_Fingerprinting' targets missing #Mitigate_the_Threat_of_Guard_Fingerprinting
+wiki/MAC_Address.html: link 'Tor_Entry_Guards#Regenerate_the_Tor_State_After_Saving_the_Tor_State_Folder' targets missing #Regenerate_the_Tor_State_After_Saving_the_Tor_State_Folder
+wiki/Malware_and_Firmware_Trojans.html: broken in-page anchor #For_Reporting_Security_Issues
+wiki/Nested_Virtualization.html: link 'KVM#Nested_KVM_Virtualization' targets missing #Nested_KVM_Virtualization
+wiki/Non_Anonymous_Onion_Encryption_and_NAT_Traversal.html: link 'Onion_Services#Onion_Service_Authentication' targets missing #Onion_Service_Authentication
+wiki/OpenPGP.html: link 'Onion_Services#How_Onion_Services_Connections_Work' targets missing #How_Onion_Services_Connections_Work
+wiki/OpenPGP.html: link 'Onion_Services#Onion_Services_Security' targets missing #Onion_Services_Security
+wiki/Operating_System_Software_and_Updates.html: link 'Tor_Controller#Nyx' targets missing #Nyx
+wiki/Operating_System_Software_and_Updates.html: link 'Tor_Controller#Nyx_Usage' targets missing #Nyx_Usage
+wiki/Privacy_Policy.html: broken in-page anchor #Log_Files
+wiki/Privacy_Policy_Technical_Details.html: broken in-page anchor #Funding_Comparison
+wiki/Privacy_Policy_Technical_Details.html: broken in-page anchor #Software_Comparison
+wiki/Privacy_Policy_Technical_Details.html: link 'Onion_Services#Notes_about_End-to-end_Security_of_Onion_Services' targets missing #Notes_about_End-to-end_Security_of_Onion_Services
+wiki/Progress_Reports_1.html: broken internal link './:Template:live' -> wiki/:Template:live
+wiki/Progress_Reports_1.html: link 'Dev/Logo#Badge' targets missing #Badge
+wiki/Progress_Reports_1.html: link 'Dev/Logo#Seal' targets missing #Seal
+wiki/Progress_Reports_1.html: link 'Dev/mediawiki#Archive_link' targets missing #Archive_link
+wiki/Progress_Reports_1.html: link 'Dev/mediawiki#CustomScollbar' targets missing #CustomScollbar
+wiki/Progress_Reports_1.html: link 'Dev/mediawiki#Extension_Dark_Mode_(Fork)' targets missing #Extension_Dark_Mode_(Fork)
+wiki/Progress_Reports_1.html: link 'Dev/mediawiki#Intro_paragraph' targets missing #Intro_paragraph
+wiki/Progress_Reports_1.html: link 'Dev/mediawiki#NoJS-Only_classes' targets missing #NoJS-Only_classes
+wiki/Progress_Reports_1.html: link 'Dev/mediawiki#SiteNotice_Donation_Banner' targets missing #SiteNotice_Donation_Banner
+wiki/Progress_Reports_1.html: link 'Dev/mediawiki#Splide_homepage_sliders' targets missing #Splide_homepage_sliders
+wiki/Progress_Reports_1.html: link 'Dev/mediawiki#Tab_Content_Controller' targets missing #Tab_Content_Controller
+wiki/Progress_Reports_1.html: link 'Dev/mediawiki#Wiki_Js_Loader' targets missing #Wiki_Js_Loader
+wiki/Progress_Reports_1.html: link 'Dev/mediawiki#WikitableAutoWrapper_and_ScrollableIndicator' targets missing #WikitableAutoWrapper_and_ScrollableIndicator
+wiki/Progress_Reports_1.html: link 'Dev/mediawiki#class_use-3-columns' targets missing #class_use-3-columns
+wiki/Progress_Reports_1.html: link 'Dev/website#Images,_Files_and_usage_of_thumb' targets missing #Images,_Files_and_usage_of_thumb
+wiki/Progress_Reports_2.html: broken in-page anchor #nurmagoz
+wiki/Qubes.html: broken in-page anchor #ISO
+wiki/Recovery.html: link 'KVM#Command_Line_Interface_(CLI)' targets missing #Command_Line_Interface_(CLI)
+wiki/Recovery.html: link 'Troubleshooting#Enable_Persistent_Systemd_Journal_Log' targets missing #Enable_Persistent_Systemd_Journal_Log
+wiki/Release_Upgrade_16_to_17.html: link 'Deprecated#Manual_Release_Upgrade' targets missing #Manual_Release_Upgrade
+wiki/Release_Upgrade_16_to_17.html: link 'Operating_System_Software_and_Updates#Standard_Upgrade_Steps' targets missing #Standard_Upgrade_Steps
+wiki/Release_Upgrade_17_to_18.html: link 'Deprecated#Manual_Release_Upgrade' targets missing #Manual_Release_Upgrade
+wiki/Release_Upgrade_17_to_18.html: link 'Operating_System_Software_and_Updates#Standard_Upgrade_Steps' targets missing #Standard_Upgrade_Steps
+wiki/Reporting_Bugs.html: link 'Support#The_User_Co-developer_Concept' targets missing #The_User_Co-developer_Concept
+wiki/Reporting_Bugs.html: link 'Tor_Browser#Tor_Browser_Downloader_by_Kicksecure' targets missing #Tor_Browser_Downloader_by_Kicksecure
+wiki/Root.html: broken in-page anchor #Default_Password
+wiki/Root.html: broken internal link './Special:Search/compartmentalization' -> wiki/Special:Search/compartmentalization
+wiki/Root.html: link 'Debian#User_Account_Information' targets missing #User_Account_Information
+wiki/Root.html: link 'Desktop#Virtual_Console' targets missing #Virtual_Console
+wiki/SSH.html: link 'Onion_Services#Onion_Services_Reliability_Issues' targets missing #Onion_Services_Reliability_Issues
+wiki/SSH.html: link 'Onion_Services#Step_3:_Configure_Onion_Services_Authentication' targets missing #Step_3:_Configure_Onion_Services_Authentication
+wiki/Sdwdate-gui.html: link 'Multiple_Whonix-Workstation#Qubes-Whonix' targets missing #Qubes-Whonix
+wiki/Sdwdate.html: link 'Dev/TimeSync#NTP' targets missing #NTP
+wiki/Sdwdate.html: link 'Onion_Services#Notes_about_End-to-end_Security_of_Onion_Services' targets missing #Notes_about_End-to-end_Security_of_Onion_Services
+wiki/Sdwdate.html: link 'Tor#UDP' targets missing #UDP
+wiki/Security_Roadmap.html: link 'Vm-app-manager#Sandbox_Escape_Mitigation' targets missing #Sandbox_Escape_Mitigation
+wiki/Signify.html: link 'Verify_the_images#Signify_Signatures' targets missing #Signify_Signatures
+wiki/Software_Signature_Verification_Usability_Issues_and_Proposed_Solutions.html: broken internal link 'Dev/Download_Statistics_example' -> wiki/Dev/Download_Statistics_example
+wiki/Spectre_Meltdown.html: link 'Multiple_Kicksecure#Multiple_Kicksecure' targets missing #Multiple_Kicksecure
+wiki/Support.html: link 'Contribute#Answer_Questions' targets missing #Answer_Questions
+wiki/System_Hardening_Checklist.html: link 'E-Mail#Email_Provider_Comparison' targets missing #Email_Provider_Comparison
+wiki/System_Hardening_Checklist.html: link 'E-Mail#Safe_Email_Principles' targets missing #Safe_Email_Principles
+wiki/System_Hardening_Checklist.html: link 'Network_Time_Synchronization#Spoof_the_Initial_Virtual_Hardware_Clock_Offset' targets missing #Spoof_the_Initial_Virtual_Hardware_Clock_Offset
+wiki/System_Hardening_Checklist.html: link 'Open_Source_Hardware#Buyer_Considerations' targets missing #Buyer_Considerations
+wiki/System_Hardening_Checklist.html: link 'Time_Attacks#Mitigations' targets missing #Mitigations
+wiki/Template:Build_Documentation_Build_Package.html: broken internal link 'Dev/Build_Documentation/easy' -> wiki/Dev/Build_Documentation/easy
+wiki/Template:Contributor_List.html: link 'Dev/TimeSync#Adjusting_time_slowly_using_adjtimex/ntp_adjtime' targets missing #Adjusting_time_slowly_using_adjtimex/ntp_adjtime
+wiki/Template:Install_Backport.html: link 'Multiple_Kicksecure#Multiple_Kicksecure_Templates' targets missing #Multiple_Kicksecure_Templates
+wiki/Template:No_leaks_policy.html: broken in-page anchor #For_Reporting_Security_Issues
+wiki/Template:Non-functional_Onion_Services.html: broken in-page anchor #Updates
+wiki/Template:Persistent_Tor_Entry_Guards_Introduction.html: link 'Tor_Entry_Guards#Alternating_Bridges' targets missing #Alternating_Bridges
+wiki/Template:Persistent_Tor_Entry_Guards_Introduction.html: link 'Tor_Entry_Guards#Clone_Kicksecure_(kicksecure)_with_New_Entry_Guards' targets missing #Clone_Kicksecure_(kicksecure)_with_New_Entry_Guards
+wiki/Template:Persistent_Tor_Entry_Guards_Introduction.html: link 'Tor_Entry_Guards#Fresh_Tor_Entry_Guards_by_Regenerating_the_Tor_State_File' targets missing #Fresh_Tor_Entry_Guards_by_Regenerating_the_Tor_State_File
+wiki/Template:Persistent_Tor_Entry_Guards_Introduction.html: link 'Tor_Entry_Guards#Regenerate_the_Tor_State_After_Saving_the_Tor_State_Folder' targets missing #Regenerate_the_Tor_State_After_Saving_the_Tor_State_Folder
+wiki/Template:Prefer_stable_APT.html: link 'Multiple_Kicksecure#Multiple_Kicksecure_Templates' targets missing #Multiple_Kicksecure_Templates
+wiki/Template:Project_Choose_Stable.html: broken internal link '../CLI' -> CLI
+wiki/Template:Project_Choose_Stable.html: broken internal link '../LXQt' -> LXQt
+wiki/Template:Project_Choose_Stable.html: broken internal link 'CLI' -> wiki/CLI
+wiki/Template:Project_Choose_Stable.html: broken internal link 'LXQt' -> wiki/LXQt
+wiki/Template:Quick_mention.html: broken in-page anchor #Quick_Mentions
+wiki/Template:Secure_tor_browser_downloads.html: link 'Tor_Browser#Onion_Services_Encryption' targets missing #Onion_Services_Encryption
+wiki/Template:TBB_localhost.html: link 'Fingerprint#web_fingerprint' targets missing #web_fingerprint
+wiki/Template:Tor_Browser_Local_Connections.html: link 'Tor_Browser#Local_Connections' targets missing #Local_Connections
+wiki/Template:VPN-Firewall/Troubleshooting.html: broken in-page anchor #VPN_Configuration_File
+wiki/Template:VPN/Setup/resolvconf_adjustments.html: broken in-page anchor #DNS_Configuration
+wiki/Template:Verify_the_images.html: broken in-page anchor #signature
+wiki/Tor_Versioning.html: link 'Multiple_Kicksecure#Multiple_Kicksecure_Templates' targets missing #Multiple_Kicksecure_Templates
+wiki/Troubleshooting.html: link 'KVM#Troubleshooting' targets missing #Troubleshooting
+wiki/Trust.html: link 'Dev/Qubes#Official_Builds' targets missing #Official_Builds
+wiki/Verify_the_images_using_Linux.html: link 'Signing_Key#Download_the_signify_Key' targets missing #Download_the_signify_Key
+wiki/VirtualBox/Installer.html: broken internal link '../:File:VirtualBox_VERR_VMX_MSR_LOCKED_OR_DISABLED.png' -> wiki/:File:VirtualBox_VERR_VMX_MSR_LOCKED_OR_DISABLED.png
+wiki/Warning.html: link 'Download#Stay_tuned' targets missing #Stay_tuned
+wiki/Warning.html: link 'Technical_Introduction#Security_Overview' targets missing #Security_Overview
+wiki/Website_Tests.html: link 'E-Mail#Webmail' targets missing #Webmail

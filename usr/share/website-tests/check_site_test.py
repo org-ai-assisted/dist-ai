@@ -2366,20 +2366,32 @@ def run():
                         'header nav inconsistent', 'is not a direct <footer> child'):
             check('wiki battery emits no family-chrome FAIL (%s)' % _needle,
                   _needle not in err, repr(err))
-    # The wiki policy SKIPS check_links (the generator's verify gate + baseline owns wiki
-    # links); check_seo runs GENERICALLY (coverage/presence, not site-generate byte-match), so
-    # it passes on the wiki fixture. A wiki fixture with a broken in-page anchor still PASSES --
-    # proving check_links is delegated (it would flag the anchor under the family policy).
+    # check_links runs GENERICALLY for the wiki now (un-special-cased, full-tree): a broken
+    # in-page anchor IS flagged. A per-site accepted-findings baseline suppresses pre-existing
+    # breaks (broken on prod too), so a real content site still passes -- dist-ai owns
+    # link-checking for every policy (the generator's separate verify gate is redundant).
     with tempfile.TemporaryDirectory() as root:
         _build_wiki(root)
         _write(root, 'wiki/ISO.html',
                _wiki_page('ISO', 'wiki/ISO').replace(
                    '</div>', '<a href="#does-not-exist">x</a></div>', 1))
         rc, _out, err = _run_main([root])
-        check('wiki policy skips check_links (broken anchor not flagged)',
-              'broken in-page anchor' not in err and 'targets missing' not in err, repr(err))
-        check('wiki fixture with a broken anchor still passes (links delegated to verify)',
-              rc == 0, repr((rc, err)))
+        check('check_links runs for the wiki (broken anchor flagged)',
+              'broken in-page anchor #does-not-exist' in err, repr(err))
+        check('an unbaselined broken anchor fails the wiki run', rc == 1, repr((rc, err)))
+        _bdir = tempfile.mkdtemp()
+        with open(os.path.join(_bdir, os.path.basename(root) + '.txt'), 'w',
+                  encoding='utf-8') as _bh:
+            _bh.write('# accepted pre-existing break\n'
+                      'wiki/ISO.html: broken in-page anchor #does-not-exist\n')
+        _saved_bdir = check_site.WEBCHECK_BASELINE_DIR
+        check_site.WEBCHECK_BASELINE_DIR = _bdir
+        try:
+            rc2, _o2, err2 = _run_main([root])
+        finally:
+            check_site.WEBCHECK_BASELINE_DIR = _saved_bdir
+        check('a baselined finding is suppressed (wiki run passes)',
+              rc2 == 0 and 'does-not-exist' not in err2, repr((rc2, err2)))
     # A wiki page MISSING its CSP meta FAILS (check_csp runs under the wiki policy).
     with tempfile.TemporaryDirectory() as root:
         _build_wiki(root, csp=None)
