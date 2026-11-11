@@ -51,6 +51,16 @@ check_eq() {
       fail=$((fail + 1))
    fi
 }
+check_absent() {
+   ## $1 description, $2 actual, $3 substring that must NOT appear
+   if [[ "$2" != *"$3"* ]]; then
+      printf '%s\n' "PASS: $1"
+      pass=$((pass + 1))
+   else
+      printf '%s\n' "FAIL: $1" "  must NOT contain: $3" "  actual: $2" >&2
+      fail=$((fail + 1))
+   fi
+}
 
 workdir="$(mktemp --directory)"
 cleanup() {
@@ -110,7 +120,9 @@ check "rsync verifies by content (--checksum -- persistent mirror, no stale/part
    "${argv}" "--checksum"
 check "rsync is an exact delta mirror (--delete)"              "${argv}" "--delete"
 check "rsync excludes .git"                                    "${argv}" "--exclude=.git"
-check "rsync drops tree-escaping symlinks (--safe-links)"      "${argv}" "--safe-links"
+check "rsync neutralizes symlinks + clears stale (--munge-links, not --safe-links)" \
+   "${argv}" "--munge-links"
+check_absent "rsync omits --perms so umask governs the owner-only mirror (F1)" "${argv}" "--perms"
 check "rsync recurses"                                         "${argv}" "--recursive"
 
 ## The destination is a PERSISTENT mirror on the disk cache base, NOT a per-run throwaway staging
@@ -132,6 +144,12 @@ else
    printf '%s\n' "FAIL: persistent mirror dir not created (${workdir}/.cache/test-results-deploy/mirror/results)" >&2
    fail=$((fail + 1))
 fi
+
+## F1: the persistent mirror holds the raw plane (screenshots + pre-redaction OCR), so it must be
+## owner-only -- not world-readable at rest. The driver chmods the mirror root 0700. Canary: the
+## pre-fix driver created it under the inherited umask (0755), so this fails on old code.
+check_eq "persistent mirror dir is owner-only 0700 (F1 -- raw plane not world-readable)" \
+   "$(stat -c '%a' "${workdir}/.cache/test-results-deploy/mirror/results" 2>/dev/null || true)" "700"
 
 ## INCREMENTAL regression: a SECOND run must reuse the SAME mirror dest -- the whole point of the
 ## fix (transfer only the delta into a kept tree). The pre-fix per-run mktemp dest differed every
@@ -159,6 +177,28 @@ PATH="${stubdir}:${PATH}" HOME="${workdir}" TEST_RESULTS_PAGES_REPO="${pages_rep
    "${deploy}" >/dev/null 2>&1 || true
 check "TEST_RESULTS_MIRROR_DIR overrides the mirror location" \
    "$(tail -1 -- "${argv_file}" 2>/dev/null || true)" "${override_mirror}/results"
+
+## F3: a RELATIVE TEST_RESULTS_STAGING_DIR must absolutize cleanly even with CDPATH set. Without
+## `CDPATH= cd`, a CDPATH hit makes cd echo the resolved dir, doubling staging_base into a two-line
+## value that corrupts every derived path. Run with cwd + CDPATH pointing at the dir that holds the
+## relative staging name, so a bare `cd <rel>` would resolve via CDPATH and print. CANARY: on the
+## pre-fix `cd ... && pwd`, the clean mirror dir below is never created (the path gains a newline).
+rel_base='relcdstage'
+mkdir --parents -- "${workdir}/${rel_base}"
+(
+   cd -- "${workdir}" || exit 0
+   CDPATH="${workdir}" PATH="${stubdir}:${PATH}" HOME="${workdir}" \
+      TEST_RESULTS_PAGES_REPO="${pages_repo}" TEST_RESULTS_DEPLOY_TARGET=server-admin \
+      TEST_RESULTS_REMOTE=/var/www/results TEST_RESULTS_STAGING_DIR="${rel_base}" \
+      "${deploy}" >/dev/null 2>&1 || true
+)
+if [ -d "${workdir}/${rel_base}/mirror/results" ]; then
+   printf '%s\n' "PASS: relative staging dir + CDPATH absolutizes cleanly (F3)"
+   pass=$((pass + 1))
+else
+   printf '%s\n' "FAIL: relative staging dir + CDPATH corrupted the mirror path (F3)" >&2
+   fail=$((fail + 1))
+fi
 
 printf '%s\n' "===== deploy_test: ${pass} pass, ${fail} fail ====="
 [ "${fail}" -eq 0 ]

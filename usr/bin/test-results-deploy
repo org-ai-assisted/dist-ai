@@ -148,16 +148,24 @@ exec {lock_fd}>"${lock_file}" || die "could not open deploy lock: ${lock_file}"
 flock --timeout 3600 "${lock_fd}" \
    || die "another test-results-deploy holds the Pages-repo lock (waited 3600s)"
 
+## Owner-only everything this deploy writes locally: the PERSISTENT mirror holds the RAW plane --
+## screenshots AND pre-redaction OCR sidecars (the generator redacts/masks only on the way to the
+## published site). A world-readable at-rest copy would leak that to any other local user, so a
+## restrictive umask governs every dir/file created below (mirror, scratch, index).
+umask 077
 mkdir --parents -- "${staging_base}"
 ## Absolutize: a RELATIVE override would make the mirror + scratch paths relative, and the later
 ## `cd` into the Pages repo then points the EXIT-trap cleanup AND the mirror at the wrong directory.
-staging_base="$(cd -- "${staging_base}" && pwd)"
+## CDPATH= so a cd onto a CDPATH entry cannot echo the path and double the captured value.
+staging_base="$(CDPATH='' cd -- "${staging_base}" && pwd)"
 
 ## PERSISTENT mirror of the results plane -- deliberately NOT cleaned between runs. The incremental
 ## rsync below keeps it in sync, so each publish transfers only the DELTA (normally one finished
-## run's screenshots). Overridable; defaults under the disk staging base.
+## run's screenshots). Overridable; defaults under the disk staging base. chmod 700 pins the mirror
+## root owner-only even if a prior run (or the rsync top dir) left it wider -- a 0700 root blocks
+## another user from traversing to the cells regardless of their individual modes.
 mirror="${TEST_RESULTS_MIRROR_DIR:-${staging_base}/mirror}/results"
-mkdir --parents -- "${mirror}"
+install -d -m 700 -- "${mirror}"
 
 ## Throwaway scratch (private git index + commit-message temp) on the disk base, not the small /tmp
 ## tmpfs. Cleaned by the EXIT trap; the mirror is kept.
@@ -182,8 +190,14 @@ printf '%s\n' "${me}: syncing results plane from ${rsync_remote}"
 ## 100M+ plane from zero on every retry and never finishes, wedging every publish (the failure this
 ## fixes). rsync moves ONLY changed/new files and --partial resumes an interrupted transfer, so a
 ## slow link costs at most a slow FIRST sync, never a permanent wedge. --delete keeps the mirror an
-## exact copy (a cell removed on the server drops from the site); --safe-links drops any symlink
-## escaping the tree; .git is never part of the world-readable nginx-webroot plane.
+## exact copy (a cell removed on the server drops from the site); .git is never part of the
+## world-readable nginx-webroot plane.
+## No --perms: let the umask above govern the mirror's modes (owner-only); --perms would stamp the
+## server's world-readable a+rX modes onto this at-rest copy of the raw plane and re-widen the 0700
+## root. --munge-links (not --safe-links): --safe-links SKIPS an unsafe symlink but still counts its
+## name present, so --delete would NOT drop a stale regular file the server later replaced with such
+## a symlink (stale/PII bytes retained); --munge-links instead transfers it as an inert, de-fanged
+## link -- the stale file is replaced and no link can escape the tree.
 ## --checksum: this mirror is PERSISTENT, so a file is kept across runs -- verify every file by
 ## content, not the default size+second-mtime quick check. That quick check would silently keep a
 ## stale cell whose replacement is the same size at the same mtime, AND would not re-fetch a
@@ -191,8 +205,8 @@ printf '%s\n' "${me}: syncing results plane from ${rsync_remote}"
 ## a stale/false-green result. The checksums are computed on each end (local disk reads + a tiny
 ## per-file checksum exchange), so delta efficiency over the slow link is preserved.
 rsync \
-   --recursive --links --perms --times --checksum \
-   --delete --partial --safe-links --exclude='.git' \
+   --recursive --links --times --checksum \
+   --delete --partial --munge-links --exclude='.git' \
    --rsh="${rsync_rsh}" \
    -- "${rsync_remote}/" "${mirror}/" \
    || die "rsync mirror of ${rsync_remote} failed"
