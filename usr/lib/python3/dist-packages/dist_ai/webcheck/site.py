@@ -3299,6 +3299,52 @@ def _keyframe_blocks(text):
         yield name, text[start:i - 1]
 
 
+# A RASTER-PHOTO <img> (png/jpg/jpeg/gif/bmp, or webp output) loaded WITHOUT both a positive
+# width and height reserves no layout box, so the page reflows when it loads (CLS). Only raster
+# extensions are checked: SVG is vector (viewBox aspect, unsized by design), and a video / data:
+# / external img has no known-and-settable intrinsic raster size. Whitespace-anchored attr
+# patterns so data-width / aria-src do not match a real attr; a positive integer (empty/0
+# reserves nothing) is required.
+_IMG_DIMS_RASTER_EXTS = ('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp')
+_IMG_DIMS_TAG = re.compile(r'<img\b[^>]*>', re.IGNORECASE)
+_IMG_DIMS_HAS_W = re.compile(r'(?<=\s)width\s*=\s*["\']\s*[1-9]\d*', re.IGNORECASE)
+_IMG_DIMS_HAS_H = re.compile(r'(?<=\s)height\s*=\s*["\']\s*[1-9]\d*', re.IGNORECASE)
+_IMG_DIMS_SRC = re.compile(r'(?<=\s)src\s*=\s*["\']([^"\']*)["\']', re.IGNORECASE)
+
+
+def find_imgs_missing_dims(html):
+    """Every local raster-photo <img> in `html` that lacks a positive-integer width+height
+    (would cause layout shift). Canonical home: the mw-static-generator content-quality gate
+    imports this so the invariant has ONE definition, no drift."""
+    bad = []
+    for match in _IMG_DIMS_TAG.finditer(html):
+        tag = match.group(0)
+        src = _IMG_DIMS_SRC.search(tag)
+        if not src:
+            continue
+        value = src.group(1).strip()
+        if value.startswith(('http://', 'https://', '//')):
+            continue  # external -- its intrinsic size is not ours to know/set
+        path = value.lower().split('#', 1)[0].split('?', 1)[0]
+        if not path.endswith(_IMG_DIMS_RASTER_EXTS):
+            continue  # svg (vector), video, data: -- not a raster photo
+        if not (_IMG_DIMS_HAS_W.search(tag) and _IMG_DIMS_HAS_H.search(tag)):
+            bad.append(tag)
+    return bad
+
+
+def check_image_dims(root, failures):
+    # Full-tree (every served .html), under EVERY policy -- a universal CLS defect, not a
+    # curated-audit concern. Cheap regex per file (no html.parser).
+    for page in sorted(html_files(root)):
+        rel = os.path.relpath(page, root)
+        with open(page, encoding='utf-8', errors='replace') as handle:
+            text = handle.read()
+        for tag in find_imgs_missing_dims(text):
+            failures.append('%s: raster <img> without layout-reserving width+height: %s'
+                            % (rel, tag))
+
+
 def check_css_animations(root, failures):
     """No CSS @keyframes animates a non-compositable property (Lighthouse 'avoid non-composited
     animations'). Scans every stylesheet in the tree (site-wide: a handful of files). Waive a
@@ -3434,6 +3480,8 @@ def main():
         check_fouc(root, failures, pages)
         check_supply_chain(root, failures, pages)
         check_image_format(root, failures, pages)
+        # Full-tree raster <img> dimension completeness (CLS) -- every policy, every served page.
+        check_image_dims(root, failures)
         # Site-wide asset hygiene (CSS/JS files, not per-page): no non-composited CSS animation
         # and no discarded-layout-read forced reflow (Lighthouse perf insights the score-based
         # lighthouse gate, being UNSCORED, never catches).

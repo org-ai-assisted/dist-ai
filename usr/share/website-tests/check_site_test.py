@@ -1106,6 +1106,32 @@ def run():
     check('check_forced_reflow invoked from main()',
           'check_forced_reflow(root' in main_body)
 
+    # check_image_dims: a local raster-photo <img> without BOTH a positive width+height reflows
+    # the page (CLS). svg (vector), external, and a sized raster are exempt; data-* / 0 / empty
+    # are not dims. Full-tree, every policy. Canonical home for the mw-static-generator gate.
+    def _dims_failures(root):
+        failures: list[str] = []
+        check_site.check_image_dims(root, failures)
+        return failures
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               '<!doctype html><html><head><title>t</title></head><body>'
+               '<img src="a.png">'                                 # raster, no dims -> FLAG
+               '<img src="b.png" width="10" height="20">'          # sized -> ok
+               '<img src="c.svg">'                                 # vector -> exempt
+               '<img src="https://x/d.png" >'                      # external -> exempt
+               '<img src="e.png" data-width="5" data-height="5">'  # data-* not dims -> FLAG
+               '<img src="f.png" width="0" height="0">'            # zero reserves no box -> FLAG
+               '</body></html>')
+        fails = _dims_failures(root)
+        check('check_image_dims: unsized raster flagged', any('a.png' in f for f in fails), repr(fails))
+        check('check_image_dims: sized raster not flagged', not any('b.png' in f for f in fails), repr(fails))
+        check('check_image_dims: svg exempt', not any('c.svg' in f for f in fails), repr(fails))
+        check('check_image_dims: external exempt', not any('d.png' in f for f in fails), repr(fails))
+        check('check_image_dims: data-* attrs are not dims (flagged)', any('e.png' in f for f in fails), repr(fails))
+        check('check_image_dims: zero dims flagged', any('f.png' in f for f in fails), repr(fails))
+    check('check_image_dims invoked from main()', 'check_image_dims(root' in main_body)
+
     # check_links: a '..'-traversal target that escapes the site root is a BROKEN
     # link (it would 404 on the deployed site), never validated against some
     # unrelated real file that happens to exist on the test host.
