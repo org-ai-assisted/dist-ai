@@ -203,8 +203,8 @@ static enum child_outcome classify_child(int status)
 }
 
 /* Run kb_handle_keymap in a forked child against a backing fd of `fd_len` bytes
- * (written from `content`, or truncated to that length when `content` is NULL)
- * but a compositor-declared `size`, with `old_map` as the previously-seen map. */
+ * (written from `content`) with a compositor-declared `size`, and `old_map` as
+ * the previously-seen map. */
 static enum child_outcome run_keymap_child(const char *content, size_t fd_len,
                                            uint32_t size, const char *old_map)
 {
@@ -216,11 +216,8 @@ static enum child_outcome run_keymap_child(const char *content, size_t fd_len,
     fd = mkstemp(tmpl);
     assert(fd >= 0);
     assert(unlink(tmpl) == 0);
-    if (content != NULL) {
-        assert(write(fd, content, fd_len) == (ssize_t)fd_len);
-    } else {
-        assert(ftruncate(fd, (off_t)fd_len) == 0);
-    }
+    assert(content != NULL);
+    assert(write(fd, content, fd_len) == (ssize_t)fd_len);
 
     pid = fork();
     assert(pid >= 0);
@@ -243,15 +240,14 @@ static enum child_outcome run_keymap_child(const char *content, size_t fd_len,
 }
 
 /* kb_handle_keymap guards: an adequate map matching the previous one takes the
- * early return cleanly; a map with no NUL terminator in `size` bytes exits(1);
- * and a backing fd SHORTER than the declared size is rejected by the fstat
- * guard with exit(1) rather than faulting SIGBUS past end-of-file. */
+ * early return cleanly; a map with no NUL terminator in `size` bytes exits(1).
+ * A backing fd SHORTER than the declared size is deliberately NOT guarded
+ * (upstream WONTFIX: a hostile compositor can crash kloak many ways and already
+ * sees all input), so that case is not tested. */
 static void unit_kb_handle_keymap(void)
 {
     CHECK(run_keymap_child("xkb", 4, 4, "xkb") == CH_EXIT0);
     CHECK(run_keymap_child("abcd", 4, 4, NULL) == CH_EXIT1);
-    /* declared size 100 but only 2 bytes back the fd: fstat guard -> exit(1) */
-    CHECK(run_keymap_child(NULL, 2, 100, NULL) == CH_EXIT1);
 }
 
 /* Regression for two audit items (Whonix/kloak#24). Item D: check_screen_touch
