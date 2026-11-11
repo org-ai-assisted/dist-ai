@@ -3001,11 +3001,31 @@ def render_sitemap(root, host):
     return '\n'.join(lines) + '\n'
 
 
-# A <meta name="robots"> carrying the noindex directive, detected GENERICALLY: tolerant of
-# extra directives (content="noindex,nofollow"), quoting, whitespace, and attribute order
-# (the tag match allows attrs before name=; the content is read from the matched tag).
-_META_ROBOTS_RE = re.compile(r'<meta\b[^>]*\bname\s*=\s*["\']robots["\'][^>]*>', re.IGNORECASE)
-_META_CONTENT_RE = re.compile(r'\bcontent\s*=\s*["\']([^"\']*)["\']', re.IGNORECASE)
+class _RobotsMetaProbe(html.parser.HTMLParser):
+    """Record whether the FIRST <meta name="robots"> carries the noindex directive as a TOKEN.
+    html.parser (not a regex) is load-bearing: a meta inside a comment or <script>/<style> text
+    is invisible; `data-content` is a distinct attribute, not `content`; the FIRST value of a
+    duplicated attribute wins (browser semantics); unquoted attributes parse; and `noindex` is a
+    comma/space token, so `noindexable` does NOT count."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.no_index = False
+        self._done = False
+
+    def handle_starttag(self, tag, attrs):
+        if self._done or tag != 'meta':
+            return
+        first = {}
+        for key, value in attrs:
+            kl = key.lower()
+            if kl not in first:       # FIRST value wins
+                first[kl] = value or ''
+        if first.get('name', '').lower() != 'robots':
+            return
+        self._done = True             # only the first robots meta is authoritative
+        tokens = re.split(r'[\s,]+', first.get('content', '').lower())
+        self.no_index = 'noindex' in tokens
 
 
 def _site_no_index(root):
@@ -3018,11 +3038,10 @@ def _site_no_index(root):
             text = handle.read()
     except OSError:
         return False
-    tag = _META_ROBOTS_RE.search(text)
-    if not tag:
-        return False
-    content = _META_CONTENT_RE.search(tag.group(0))
-    return bool(content) and 'noindex' in content.group(1).lower()
+    probe = _RobotsMetaProbe()
+    probe.feed(text)
+    probe.close()
+    return probe.no_index
 
 
 def render_robots(host, no_index=False, artifact_exts=('pdf', 'tex', 'bib')):
@@ -3112,8 +3131,13 @@ def check_seo(root, policy=None):
         else:
             with open(sitemap_path, encoding='utf-8', errors='replace') as handle:
                 sitemap = handle.read()
+            # Compare against the actual <loc> VALUES, not a raw substring: a substring test
+            # false-passes a URL that is only a prefix of another <loc> or that appears only in
+            # a comment. Unescape so an &amp; in a <loc> matches the raw page URL.
+            locs = {html.unescape(m) for m in
+                    re.findall(r'<loc>\s*(.*?)\s*</loc>', sitemap, re.IGNORECASE | re.DOTALL)}
             for url in seo_page_urls(root, host):
-                if url not in sitemap:
+                if url not in locs:
                     problems.append('sitemap.xml does not list %s' % url)
     # robots.txt: every site ships one (a crawler fetches it first).
     if not os.path.isfile(os.path.join(root, 'robots.txt')):
@@ -3349,37 +3373,52 @@ _IMG_DIMS_RASTER_EXTS = ('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp')
 
 
 def _is_pos_int_attr(value):
-    """True iff `value` is a COMPLETE positive-integer attribute (a bare pixel count): not a
-    prefix like 10% / 20px (a browser ignores the unit on a width/height ATTR, so these reserve
-    no box), and not 0."""
+    """True iff `value` is a COMPLETE positive-integer pixel count: not a prefix like 10% / 20px
+    (a browser ignores the unit on a width/height ATTR, so these reserve no box), not 0, and
+    ASCII digits only (HTML dimension attrs reject fullwidth/other Unicode digits)."""
     if value is None:
         return False
     v = value.strip()
-    return v.isdigit() and int(v) > 0
+    return v.isascii() and v.isdigit() and int(v) > 0
 
 
 class _ImgDimsProbe(html.parser.HTMLParser):
     """Collect every LOCAL raster-photo <img> that lacks a positive-integer width AND height.
-    html.parser (not a raw regex) is load-bearing: it never surfaces an <img> inside an HTML
-    comment or <script>/<style> text (those render no image -> no CLS), and it reads each
-    attribute's COMPLETE value, so width="10%" / height="20px" are correctly NOT pixel dims."""
+    html.parser (not a raw regex) is load-bearing: an <img> inside a comment or a raw-text
+    element (<script>/<style>/<textarea>/<title>) renders no image, so it is skipped; the FIRST
+    value of a duplicated attribute wins (browser semantics); and each dimension's COMPLETE
+    value is read, so width="10%" / height="20px" are correctly NOT pixel dims."""
+
+    _RAW_TEXT = ('script', 'style', 'textarea', 'title')
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.bad: list[str] = []
+        self._raw_depth = 0
 
     def handle_starttag(self, tag, attrs):
-        if tag != 'img':
+        if tag in self._RAW_TEXT:
+            self._raw_depth += 1
             return
-        attr = dict(attrs)
-        src = (attr.get('src') or '').strip()
-        if not src or src.startswith(('http://', 'https://', '//')):
+        if tag != 'img' or self._raw_depth:
+            return
+        first: dict[str, str] = {}
+        for key, value in attrs:
+            kl = key.lower()
+            if kl not in first:       # FIRST value wins, like a browser
+                first[kl] = value or ''
+        src = first.get('src', '').strip()
+        if not src or src.lower().startswith(('http://', 'https://', '//')):
             return  # no src, or external -- its intrinsic size is not ours to know/set
         path = src.lower().split('#', 1)[0].split('?', 1)[0]
         if not path.endswith(_IMG_DIMS_RASTER_EXTS):
             return  # svg (vector), video, data: -- not a raster photo
-        if not (_is_pos_int_attr(attr.get('width')) and _is_pos_int_attr(attr.get('height'))):
+        if not (_is_pos_int_attr(first.get('width')) and _is_pos_int_attr(first.get('height'))):
             self.bad.append(self.get_starttag_text() or ('<img src="%s">' % src))
+
+    def handle_endtag(self, tag):
+        if tag in self._RAW_TEXT and self._raw_depth:
+            self._raw_depth -= 1
 
 
 def find_imgs_missing_dims(markup):

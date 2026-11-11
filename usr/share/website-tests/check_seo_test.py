@@ -223,6 +223,18 @@ def run():
             h.write('<!-- reformatted by another generator -->\n')
         check('a covering-but-reformatted sitemap is accepted',
               cs.check_seo(root) == [], repr(cs.check_seo(root)))
+        # coverage is by <loc> VALUE, not substring: a page whose URL appears only in a comment
+        # (or only as a prefix of another <loc>) is NOT counted -- it is flagged.
+        _seed(root, host)
+        with open(os.path.join(root, 'sitemap.xml'), 'w', encoding='utf-8') as h:
+            h.write('<?xml version="1.0"?><urlset>'
+                    '<url><loc>https://%s/sub/</loc></url>'
+                    '<!-- https://%s/ -->'
+                    '</urlset>\n' % (host, host))
+        _probs = cs.check_seo(root)
+        check('home URL present only in a comment/prefix is flagged (not substring-matched)',
+              any('does not list' in p and p.rstrip().endswith('/') for p in _probs),
+              repr(_probs))
 
     # check_seo: missing sitemap
     with tempfile.TemporaryDirectory() as root:
@@ -309,7 +321,14 @@ def run():
             ('<meta name="robots" content="noindex,nofollow">', True, 'noindex,nofollow'),
             ('<meta content="noindex" name="robots">', True, 'content-before-name'),
             ('<meta name="robots" content="index,follow">', False, 'index,follow'),
-            ('', False, 'no robots meta')):
+            ('', False, 'no robots meta'),
+            ('<!-- <meta name="robots" content="noindex"> -->', False, 'noindex in a comment'),
+            ('<meta data-content="noindex" name="robots" content="index,follow">',
+             False, 'data-content decoy (real content is index)'),
+            ('<meta name="robots" content="noindexable">', False, 'noindexable != noindex token'),
+            ('<meta name=robots content=noindex>', True, 'unquoted noindex'),
+            ('<script>var x="<meta name=\'robots\' content=\'noindex\'>";</script>',
+             False, 'noindex only in script text')):
         with tempfile.TemporaryDirectory() as root:
             _write(root, 'index.html',
                    '%s<link rel="canonical" href="https://h/">' % _frag)

@@ -1125,6 +1125,10 @@ def run():
                '<img src="g.png" width="10%" height="20px">'       # unit/percent != px int -> FLAG
                '<!-- <img src="h.png"> -->'                        # HTML comment -> NOT an image
                '<script>var s = "<img src=\'i.png\'>";</script>'   # script text -> NOT an image
+               '<img src="j.png" width="10%" height="20px" width="100" height="100">'  # dup: 1st wins -> FLAG
+               '<img src="k.png" width="\\uff11\\uff10" height="\\uff12\\uff10">'  # fullwidth digits -> FLAG
+               '<img src="HTTP://cdn/l.png">'                       # external (upper scheme) -> exempt
+               '<textarea><img src="m.png"></textarea>'            # raw-text element -> NOT an image
                '</body></html>')
         fails = _dims_failures(root)
         check('check_image_dims: unsized raster flagged', any('a.png' in f for f in fails), repr(fails))
@@ -1139,6 +1143,14 @@ def run():
               not any('h.png' in f for f in fails), repr(fails))
         check('check_image_dims: <img> in <script> text is not flagged',
               not any('i.png' in f for f in fails), repr(fails))
+        check('check_image_dims: duplicate dim attrs use the FIRST (invalid) value (flagged)',
+              any('j.png' in f for f in fails), repr(fails))
+        check('check_image_dims: fullwidth/non-ASCII digits are not px integers (flagged)',
+              any('k.png' in f for f in fails), repr(fails))
+        check('check_image_dims: uppercase external scheme is exempt',
+              not any('l.png' in f for f in fails), repr(fails))
+        check('check_image_dims: <img> in a <textarea> is not flagged',
+              not any('m.png' in f for f in fails), repr(fails))
     check('check_image_dims invoked from main()', 'check_image_dims(root' in main_body)
 
     # check_links: a '..'-traversal target that escapes the site root is a BROKEN
