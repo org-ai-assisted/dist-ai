@@ -9,6 +9,7 @@ rules (R-161, R-172, R-200) also carry fix(), sharing the very constants their
 detect() uses -- so the detector and the rewriter cannot drift."""
 
 import ast
+import bisect
 import re
 from typing import Any
 
@@ -2449,25 +2450,29 @@ _SOURCE_GUARD_HANDLERS = frozenset(("true", ":", "exit"))
 
 
 def _toplevel_source_offsets(tree):
-    """Byte offsets of every 'source'/'.' CallExpr in TREE, computed ONCE so the guard
-    scan can test 'does this operand hold a source' by offset range (O(1) over the few
-    sources a script has) instead of re-walking each nested subtree -- which turned a
-    long '|| '-chain into O(n^2) work (a DoS on contributor-supplied shell)."""
-    return [off
-            for call in bash_ast.call_exprs(tree)
-            if bash_ast.command_name(call) in ("source", ".")
-            for off in [(call.get("Pos") or {}).get("Offset")]
-            if off is not None]
+    """SORTED byte offsets of every 'source'/'.' CallExpr in TREE, computed ONCE so the
+    guard scan can test 'does this operand hold a source' by a binary search over a span
+    instead of re-walking each nested subtree -- which turned a long '|| '-chain, or many
+    separate 'source || exit' statements, into O(n^2) work (a DoS on contributor shell)."""
+    return sorted(
+        off
+        for call in bash_ast.call_exprs(tree)
+        if bash_ast.command_name(call) in ("source", ".")
+        for off in [(call.get("Pos") or {}).get("Offset")]
+        if off is not None)
 
 
 def _stmt_has_source(stmt, src_offsets):
-    """True if a precomputed source offset falls within STMT's byte span -- equivalent
-    to 'STMT's subtree holds a source' but without walking the subtree."""
+    """True if a precomputed (SORTED) source offset falls within STMT's byte span --
+    equivalent to 'STMT's subtree holds a source' but via a binary search, not a subtree
+    walk and not a linear scan of the offsets (so the whole guard scan stays near-linear
+    even with many sources)."""
     start = (stmt.get("Pos") or {}).get("Offset")
     end = (stmt.get("End") or {}).get("Offset")
     if start is None or end is None:
         return False
-    return any(start <= off < end for off in src_offsets)
+    index = bisect.bisect_left(src_offsets, start)
+    return index < len(src_offsets) and src_offsets[index] < end
 
 
 def _failure_propagates(stmt, src_offsets):
@@ -2570,7 +2575,11 @@ def _guarded_source_spans(tree):
             continue
         ## 'exit' aborts only with at most one argument: 'exit 1 2' is "too many
         ## arguments" and RETURNS without terminating, so a multi-arg exit is not a
-        ## guard ('true'/':' mark the source optional regardless of args).
+        ## guard ('true'/':' mark the source optional regardless of args). A single arg
+        ## that WORD-SPLITS at runtime ('exit $VAR' with VAR="1 2") is deliberately NOT
+        ## modelled: exit codes are not multi-word, an unquoted expansion is already an
+        ## SC2086 lint, and separating it from the valid 'exit $?' / 'exit "$rc"' would
+        ## mean reimplementing bash word-splitting -- do NOT add that here.
         if handler == "exit" and len(bash_ast.args(handler_cmd)) > 2:
             continue
         left = binary.get("X") or {}
