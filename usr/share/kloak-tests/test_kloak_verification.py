@@ -197,6 +197,29 @@ class KloakVerification(unittest.TestCase):
                         [binary], check=True, capture_output=True, text=True)
                     self.assertIn('all assertions passed', result.stdout)
 
+    def test_make_build_warning_clean(self) -> None:
+        ## The harness compiles above use plain gcc -O2 and so MISS the shipped
+        ## Makefile's -Werror set (WARN_CFLAGS: -Wconversion/-Wformat=2/
+        ## -Wtype-limits/...). Build the REAL tree here so a -Werror regression
+        ## fails in this suite, not only in a downstream package build. Native
+        ## arch only -- a 32-bit (i386/armhf) format/conversion check needs a
+        ## cross/multilib toolchain not assumed present.
+        make = _require('make')
+        build_root = tempfile.mkdtemp(prefix='kloak-build-')
+        self.addCleanup(shutil.rmtree, build_root, ignore_errors=True)
+        tree = os.path.join(build_root, 'kloak')
+        ## .git is a submodule pointer file here; exclude it (and nothing else,
+        ## so make clean sees any stale artifacts a source checkout carries).
+        shutil.copytree(_repo(), tree, symlinks=False,
+                        ignore=shutil.ignore_patterns('.git'))
+        subprocess.run([make, '-C', tree, 'clean'],
+                       capture_output=True, text=True)
+        result = subprocess.run(
+            [make, '-C', tree], capture_output=True, text=True)
+        self.assertEqual(
+            result.returncode, 0,
+            'make failed (WARN_CFLAGS is -Werror):\n%s' % result.stderr[-3000:])
+
     def test_cbmc_proofs_verify(self) -> None:
         for function, (cbmc_file, extra) in CBMC_FUNCTIONS.items():
             with self.subTest(function=function):
