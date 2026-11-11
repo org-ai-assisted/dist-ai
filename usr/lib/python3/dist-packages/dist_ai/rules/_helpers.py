@@ -701,6 +701,52 @@ def _statement_list_spans(tree):
     return spans
 
 
+def conditional_or_deferred_spans(tree):
+    """(start, end) byte spans where a CallExpr does NOT run UNCONDITIONALLY in the
+    PARENT shell at sourcing time -- so a 'set -o errexit' there is not in force at
+    the top level and a 'source' there is not a fallible top-level load. Covers:
+
+    - function bodies (deferred to call time) and subshells / command- & process-
+      substitutions (a child process) -- reused from boundary_spans;
+    - a conditional BRANCH: an if THEN / elif / else body (and an elif CONDITION,
+      reached only when a prior condition was false), a for/while/until DO body, a
+      case item, and the right operand of an '&&'/'||'.
+
+    NOT included (they run unconditionally in the parent shell, so a call there is
+    genuinely top level): a bare '{ ...; }' brace group and the leading if/while
+    CONDITION. The AST, not the column, is authoritative: a legacy port wraps the
+    body in main() without re-indenting, so column 0 no longer means top level."""
+    spans = list(boundary_spans(tree))
+    and_or = bash_ast.and_op() | bash_ast.or_op()
+
+    def add(span):
+        if span is not None:
+            spans.append(span)
+
+    for node in bash_ast.iter_nodes(tree):
+        if not isinstance(node, dict):
+            continue
+        kind = node.get("Type")
+        if kind == "IfClause":
+            add(_stmt_list_span(node.get("Then")))
+            ## Walk the whole elif/else chain: shfmt nests each 'elif' as an Else
+            ## dict with NO Type, so iter_nodes never dispatches on it.
+            els = node.get("Else")
+            while isinstance(els, dict):
+                add(_stmt_list_span(els.get("Cond")))
+                add(_stmt_list_span(els.get("Then")))
+                add(_stmt_list_span(els.get("Stmts")))
+                els = els.get("Else")
+        elif kind in ("WhileClause", "UntilClause", "ForClause"):
+            add(_stmt_list_span(node.get("Do")))
+        elif kind == "CaseClause":
+            for item in node.get("Items") or []:
+                add(_stmt_list_span(item.get("Stmts")))
+        elif kind == "BinaryCmd" and node.get("Op") in and_or:
+            add(_node_span(node.get("Y") or {}))
+    return spans
+
+
 def enclosing_container_span(tree, offset):
     """(start, end) of the innermost STATEMENT-LIST enclosing OFFSET. A guard
     enforces a printf only when the printf falls in this span (the same branch, or

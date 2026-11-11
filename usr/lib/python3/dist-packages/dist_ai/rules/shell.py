@@ -2355,33 +2355,22 @@ _SHIFT_VERBOSE = re.compile(r'^[ \t]*shopt -s shift_verbose[ \t]*$',
 _INDENTED_LC_ALL = re.compile(r'^[ \t]+export LC_ALL=C[ \t]*$', re.MULTILINE)
 ## A source-able guarded script keeps its strict block inside main() (so sourcing
 ## does not leak it); top-level errexit must then come from the '#!/bin/bash -e'
-## shebang -- the sourceable skill's canonical skeleton. '-e' is matched in the
-## shebang; '|| true' is the check_runtime guard idiom whose failure cannot fall
-## through, so a top-level source carrying it is NOT the bug signal.
-_GUARDED_SOURCE_TAIL = re.compile(r'\|\|[ \t]*true[ \t]*$')
-_SHEBANG_ERREXIT = re.compile(r'bash[ \t]+-[a-zA-Z]*e')
-
-
-def _func_body_spans(tree):
-    """(start, end) byte offsets of every function body in TREE, for an
-    AST-scope 'is this at the true top level' test. Needed because a legacy port
-    wraps the body in main() WITHOUT re-indenting -- so column 0 no longer means
-    top level; only the AST does."""
-    spans = []
-    for decl in bash_ast.func_decls(tree):
-        pos = decl.get("Pos") or {}
-        end = decl.get("End") or {}
-        if "Offset" in pos and "Offset" in end:
-            spans.append((pos["Offset"], end["Offset"]))
-    return spans
+## shebang -- the sourceable skill's canonical skeleton. Shebang errexit and the
+## top-level 'source' guard are decided structurally (the helpers below), not by a
+## single-line regex a trailing comment, a line-continuation, CRLF, or a split
+## '-u -e' / '-o errexit' shebang could fool.
 
 
 def _toplevel_calls(tree, names):
-    """Yield (call, line) for every CallExpr whose command name is in NAMES and
-    whose position is OUTSIDE every function body (the true top level). A name
-    appearing only inside a quoted string or here-document is not a CallExpr, so
-    it is never yielded (no text-scan false positives)."""
-    spans = _func_body_spans(tree)
+    """Yield (call, line) for every CallExpr whose command name is in NAMES and that
+    runs UNCONDITIONALLY at the script's top level -- in the parent shell on every
+    source and every exec. Excludes a call inside a function body, a subshell /
+    command substitution, or a conditional branch (if/elif/else, loop, case, an
+    '&&'/'||' right operand): a 'set -o errexit' there is not in force at the top
+    level and a 'source' there does not run at sourcing time. A name appearing only
+    inside a quoted string or here-document is not a CallExpr, so it is never yielded
+    (no text-scan false positives)."""
+    spans = h.conditional_or_deferred_spans(tree)
     for call in bash_ast.call_exprs(tree):
         if bash_ast.command_name(call) not in names:
             continue
@@ -2392,11 +2381,30 @@ def _toplevel_calls(tree, names):
         yield call, pos.get("Line")
 
 
-def _set_enables_errexit(call):
-    """True if a 'set' CallExpr turns errexit ON -- 'set -o errexit' or a
-    short-flag bundle carrying 'e' (-e, -eu, -euo ...). Scans up to a bare '--'
-    (end-of-options makes the rest positional)."""
-    toks = [bash_ast.word_lit(word) for word in bash_ast.args(call)][1:]
+def _or_guarded_spans(tree):
+    """(start, end) spans of the LEFT operand of every '||'. A top-level 'source'
+    there has an explicit failure handler ('|| true', '|| exit 1', ...), so its
+    failure cannot SILENTLY fall through the was_executed guard into main(). AST-
+    based, so a trailing comment, a line-continuation, or a CRLF before the '||'
+    does not hide the guard (a single-line '|| true$' regex did)."""
+    or_ops = bash_ast.or_op()
+    spans = []
+    for node in bash_ast.iter_nodes(tree):
+        if not (isinstance(node, dict) and node.get("Type") == "BinaryCmd"
+                and node.get("Op") in or_ops):
+            continue
+        left = node.get("X") or {}
+        start = (left.get("Pos") or {}).get("Offset")
+        end = (left.get("End") or {}).get("Offset")
+        if start is not None and end is not None:
+            spans.append((start, end))
+    return spans
+
+
+def _argv_enables_errexit(toks):
+    """True if OPTION tokens TOKS turn errexit ON -- '-o errexit' or a short-flag
+    bundle carrying 'e' (-e, -eu, -euo ...). Scans up to a bare '--' (end-of-options
+    makes the rest positional)."""
     index = 0
     while index < len(toks):
         tok = toks[index]
@@ -2412,6 +2420,30 @@ def _set_enables_errexit(call):
             return True
         index += 1
     return False
+
+
+def _set_enables_errexit(call):
+    """True if a 'set' CallExpr turns errexit ON (see _argv_enables_errexit)."""
+    toks = [bash_ast.word_lit(word) for word in bash_ast.args(call)][1:]
+    return _argv_enables_errexit(toks)
+
+
+def _shebang_enables_errexit(shebang_line):
+    """True if the '#!' line runs bash with errexit on. Parses the argv after the
+    bash interpreter the same way _set_enables_errexit parses a 'set' call, so split
+    short flags ('-u -e'), bundles ('-eu'), and the long form ('-o errexit') are all
+    recognised -- a single regex matched only an adjacent '-...e'."""
+    if not shebang_line.startswith("#!"):
+        return False
+    words = shebang_line[2:].split()
+    bash_index = None
+    for index, word in enumerate(words):
+        if word.rsplit("/", 1)[-1] == "bash":
+            bash_index = index
+            break
+    if bash_index is None:
+        return False
+    return _argv_enables_errexit(words[bash_index + 1:])
 
 
 class StrictModeBlock(Rule):
@@ -2461,25 +2493,26 @@ class StrictModeBlock(Rule):
         ## 'set -o errexit' must NOT count as top-level (it does not run on source).
         if guarded:
             source_lines = source.split("\n")
-            toplevel_errexit = bool(
-                _SHEBANG_ERREXIT.search(source_lines[0])) or any(
-                    _set_enables_errexit(call)
-                    for call, _line in _toplevel_calls(ctx.tree, ("set",)))
+            toplevel_errexit = _shebang_enables_errexit(source_lines[0]) or any(
+                _set_enables_errexit(call)
+                for call, _line in _toplevel_calls(ctx.tree, ("set",)))
             if not toplevel_errexit:
-                for _call, line in _toplevel_calls(ctx.tree, ("source", ".")):
-                    line_text = (source_lines[line - 1]
-                                 if line and line - 1 < len(source_lines) else "")
-                    if not _GUARDED_SOURCE_TAIL.search(line_text):
-                        yield model.fail(
-                            "R-010",
-                            "R-010 sourceable shebang: a source-able "
-                            "(was_executed) script with an unguarded top-level "
-                            "'source' must use '#!/bin/bash -e' so a failed "
-                            "top-level source aborts before the was_executed "
-                            "guard reaches main() (top-level errexit is off -- "
-                            "the strict block runs only inside main)",
-                            ctx.path, line or 1)
-                        break
+                guarded_spans = _or_guarded_spans(ctx.tree)
+                for call, line in _toplevel_calls(ctx.tree, ("source", ".")):
+                    offset = (call.get("Pos") or {}).get("Offset")
+                    if offset is not None and any(
+                            s <= offset < e for s, e in guarded_spans):
+                        continue
+                    yield model.fail(
+                        "R-010",
+                        "R-010 sourceable shebang: a source-able "
+                        "(was_executed) script with an unguarded top-level "
+                        "'source' must use '#!/bin/bash -e' so a failed "
+                        "top-level source aborts before the was_executed "
+                        "guard reaches main() (top-level errexit is off -- "
+                        "the strict block runs only inside main)",
+                        ctx.path, line or 1)
+                    break
         if present == 0 and guarded:
             ## Source-able guarded script: exempt from the all-seven column-zero
             ## rule (a guard CALL alone exempts -- a sourced-only lib that defines

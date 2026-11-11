@@ -1131,6 +1131,38 @@ expect_rule "${sheb_fail}" "${src_unguarded}" "absent"  "#!/bin/bash -e"
 src_guarded_only=$'source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/check_runtime.bsh || true\nif ! declare -F was_executed >/dev/null; then\n   exit 1\nfi\nmain() {\n   set -o errexit\n   set -o nounset\n   set -o pipefail\n   set -o errtrace\n   shopt -s inherit_errexit\n   shopt -s shift_verbose\n   export LC_ALL=C\n   true\n}\nif was_executed "${BASH_SOURCE[0]}"; then\n   main "$@"\nfi'
 expect_rule "${sheb_fail}" "${src_guarded_only}" "absent" "#!/bin/bash"
 
+## R-010 sourceable shebang -- AST SCOPE. The top-level set/source scan must count
+## only calls that run UNCONDITIONALLY at sourcing time: a 'set -o errexit' or a
+## 'source' nested in a compound statement (if/for/while/case body, subshell,
+## '&&'/'||' branch) does not. The old scan excluded only function bodies, so a
+## was_executed guard block WITHOUT a main() wrapper fooled it.
+full_main=$'main() {\n   set -o errexit\n   set -o nounset\n   set -o pipefail\n   set -o errtrace\n   shopt -s inherit_errexit\n   shopt -s shift_verbose\n   export LC_ALL=C\n   true\n}\nif was_executed "${BASH_SOURCE[0]}"; then\n   main "$@"\nfi'
+## (a) BYPASS: an unguarded top-level source + 'set -o errexit' INSIDE the guard
+## block (no main()). Old: the in-if errexit read as top-level suppressed the scan
+## -> MISSED. New: the errexit is conditional, so the top-level source is flagged.
+bypass_errexit_in_guard=$'source /nonexistent/optional_library.bsh\nif ! declare -F was_executed >/dev/null; then\n   exit 1\nfi\nif was_executed "${BASH_SOURCE[0]}"; then\n   set -o errexit\n   set -o nounset\n   set -o pipefail\n   set -o errtrace\n   shopt -s inherit_errexit\n   shopt -s shift_verbose\n   export LC_ALL=C\nfi'
+expect_rule "${sheb_fail}" "${bypass_errexit_in_guard}" "present" "#!/bin/bash"
+## (b) FALSE POSITIVE: a 'source' INSIDE the guard block runs only on execution,
+## never at sourcing time. Old: flagged as an unguarded top-level source. New:
+## spared. No 'set -o errexit', so the (a) bypass path does not also mask it on old
+## code -- the false positive shows in isolation.
+fp_source_in_guard=$'if ! declare -F was_executed >/dev/null; then\n   exit 1\nfi\nif was_executed "${BASH_SOURCE[0]}"; then\n   source /usr/libexec/helper-scripts/strings.bsh\n   echo "Executed directly"\nfi'
+expect_rule "${sheb_fail}" "${fp_source_in_guard}" "absent" "#!/bin/bash"
+## F2: the '|| true' guard is read off the AST (the left operand of '||'), not a
+## single-line '|| true$' regex -- so a trailing comment, a line-continuation, and
+## an aborting '|| exit 1' guard are all recognised (none flagged).
+expect_rule "${sheb_fail}" $'source lib.bsh || true ## optional\n'"${full_main}" "absent" "#!/bin/bash"
+expect_rule "${sheb_fail}" $'source lib.bsh || exit 1\n'"${full_main}"           "absent" "#!/bin/bash"
+expect_rule "${sheb_fail}" $'source lib.bsh \\\n   || true\n'"${full_main}"      "absent" "#!/bin/bash"
+## F3: top-level errexit from a SPLIT short-flag shebang ('-u -e') or the long form
+## ('-o errexit') is recognised, so an unguarded top-level source is safe (the
+## shebang aborts on its failure) -- NOT flagged. The bare-shebang control IS
+## flagged, so the two above pass because of the shebang, not a vacuous scan.
+src_unguarded_plain=$'source strings.bsh\n'"${full_main}"
+expect_rule "${sheb_fail}" "${src_unguarded_plain}" "absent"  "#!/bin/bash -u -e"
+expect_rule "${sheb_fail}" "${src_unguarded_plain}" "absent"  "#!/bin/bash -o errexit"
+expect_rule "${sheb_fail}" "${src_unguarded_plain}" "present" "#!/bin/bash"
+
 ## R-080: a 'shellcheck source=' path must be relative, anchored with ./ or
 ## ../ (start with '.'). An absolute path OR a bare name (no ./) is FLAGGED.
 expect_rule "R-080" "# shellcheck source=get_colors.sh"          "present"
