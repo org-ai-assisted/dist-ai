@@ -1154,13 +1154,23 @@ def run():
               not any('l.png' in f for f in fails), repr(fails))
         check('check_image_dims: <img> in a <textarea> is not flagged',
               not any('m.png' in f for f in fails), repr(fails))
-    # regression: a nested raw-text start tag inside a <title>/<textarea> body must not strand
-    # the parser and silence every LATER image. CDATA_CONTENT_ELEMENTS makes the body opaque;
-    # a hand-rolled depth counter left _raw_depth stuck positive and missed after.png.
-    _strand = '<title><textarea></title><img src="after.png">'
-    check('check_image_dims: unsized raster after a <title><textarea> body is still flagged',
-          any('after.png' in f for f in check_site.find_imgs_missing_dims(_strand)),
-          repr(check_site.find_imgs_missing_dims(_strand)))
+    # regression: a raw-text element must not strand the probe and silence every LATER image. A
+    # browser resumes normal parsing after the body closes, so an unsized raster after it is a
+    # real image and must be flagged. Covers the ways html.parser's own raw-text handling fails:
+    #  - nested raw-text start tag in the body (a depth counter stays stuck positive)
+    #  - a tolerant end tag </title/> or </textarea foo> (CDATA_CONTENT_ELEMENTS never exits)
+    for _case in ('<title><textarea></title><img src="after.png">',
+                  '<title>x</title/><img src="after.png">',
+                  '<textarea>x</textarea foo><img src="after.png">'):
+        check('check_image_dims: unsized raster after a raw-text body is flagged (%r)' % _case[:24],
+              any('after.png' in f for f in check_site.find_imgs_missing_dims(_case)),
+              repr(check_site.find_imgs_missing_dims(_case)))
+    # a browser does NOT self-close a raw-text element: <title/> opens RCDATA until </title>/EOF,
+    # so the following <img> is inside the title (renders nothing) and must NOT be flagged.
+    _selfclose = '<title/><img src="intitle.png">'
+    check('check_image_dims: <img> after a self-closed <title/> is inside RCDATA (not flagged)',
+          not any('intitle.png' in f for f in check_site.find_imgs_missing_dims(_selfclose)),
+          repr(check_site.find_imgs_missing_dims(_selfclose)))
     check('check_image_dims invoked from main()', 'check_image_dims(root' in main_body)
 
     # check_links: a '..'-traversal target that escapes the site root is a BROKEN
@@ -3170,13 +3180,25 @@ def run():
     check('positive tabindex flagged',
           any('positive tabindex' in f for f in
               _wiki_failures(_good_head, _good_body + '<a href="#" tabindex="3">x</a>')))
-    # regression: a malformed tabindex must not abort the whole wiki check. A superscript digit
-    # (U+00B2) is isdigit()-True but int() raises; "++1" survives lstrip('+').isdigit() yet int()
-    # raises. Both must be ignored (not counted, no crash) -- old code raised ValueError here.
-    check('malformed tabindex (superscript / double-sign) is ignored, not a crash',
+    # regression: tabindex is parsed by HTML integer rules, deciding positivity WITHOUT int().
+    #  - a superscript digit (U+00B2), "++1", and a 4301-digit value are NOT a positive integer a
+    #    browser honors (and int() would raise on the superscript / the over-long value) -> ignored,
+    #    no crash. A leading NBSP (U+00A0) is a parse error (only ASCII whitespace is skipped).
+    _huge = '9' * 4301
+    check('non-positive / malformed tabindex is ignored, never crashes (superscript / ++1 / NBSP / 4301-digit)',
           _wiki_failures(_good_head, _good_body
-                         + '<a href="#" tabindex="' + chr(0xb2) + '">x</a>'
-                         + '<span tabindex="++1">y</span>') == [])
+                         + '<a href="#" tabindex="' + chr(0xb2) + '">a</a>'
+                         + '<span tabindex="++1">b</span>'
+                         + '<span tabindex="' + chr(0xa0) + '1">c</span>'
+                         + '<span tabindex="-' + _huge + '">d</span>') == [])
+    #  - trailing junk is ignored: "1x" / "1.0" parse to a POSITIVE tabindex a browser honors
+    check('tabindex with trailing junk (1x / 1.0) is a positive tabindex (flagged)',
+          any('positive tabindex' in f for f in
+              _wiki_failures(_good_head, _good_body + '<a href="#" tabindex="1x">x</a>')))
+    #  - a huge all-digit value IS positive and must be flagged (decided without int(), no crash)
+    check('an over-long positive tabindex is flagged, not a crash',
+          any('positive tabindex' in f for f in
+              _wiki_failures(_good_head, _good_body + '<span tabindex="' + _huge + '">x</span>')))
     check('check_wiki_conformance is invoked from main() under the wiki policy',
           'check_wiki_conformance(root' in inspect.getsource(check_site.main))
 

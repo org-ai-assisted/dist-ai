@@ -3389,7 +3389,25 @@ def _is_pos_int_attr(value):
     if value is None:
         return False
     v = value.strip()
-    return v.isascii() and v.isdigit() and int(v) > 0
+    # positive iff a nonzero digit is present; decided WITHOUT int() so a pathologically long
+    # digit run (> sys.get_int_max_str_digits(), default 4300) cannot raise ValueError.
+    return v.isascii() and v.isdigit() and any(c != '0' for c in v)
+
+
+def _html_tabindex_positive(value):
+    """True iff `value` is a tabindex a browser parses as a POSITIVE integer (breaks focus order).
+    Follows HTML's rules for parsing integers: skip leading ASCII whitespace (only -- a NBSP is a
+    parse error), an optional sign, then the LEADING run of ASCII digits (trailing junk like
+    "1x"/"1.0" is ignored, so they ARE positive). Positivity is decided without int() so a
+    4301-digit value cannot raise ValueError and abort the whole wiki check."""
+    s = value.lstrip('\t\n\f\r ')           # HTML ASCII whitespace only
+    negative = s[:1] == '-'
+    if s[:1] in ('+', '-'):
+        s = s[1:]
+    i = 0
+    while i < len(s) and s[i] in '0123456789':
+        i += 1
+    return not negative and any(c != '0' for c in s[:i])
 
 
 class _ImgDimsProbe(html.parser.HTMLParser):
@@ -3399,17 +3417,33 @@ class _ImgDimsProbe(html.parser.HTMLParser):
     value of a duplicated attribute wins (browser semantics); and each dimension's COMPLETE
     value is read, so width="10%" / height="20px" are correctly NOT pixel dims."""
 
-    # textarea/title added to the stock ('script', 'style') so html.parser treats their RCDATA
-    # bodies as opaque: an <img> inside renders no image and is skipped, and a nested raw-text
-    # start tag or a stray </textarea> in the body cannot strand a hand-rolled depth counter
-    # (which then silently skips every later image). Close-tag matching still works.
-    CDATA_CONTENT_ELEMENTS = ('script', 'style', 'textarea', 'title')
+    # script/style/textarea/title are raw text (CDATA/RCDATA): their body is opaque TEXT to a
+    # browser, so a tag-looking <img> inside renders nothing. Track the OPEN raw-text element by
+    # NAME (they never nest) and ignore every start tag until its end tag. NOT html.parser's
+    # CDATA_CONTENT_ELEMENTS: that mode's closer matches only </tag>, missing </title/> and
+    # </textarea foo> which a browser DOES honor -- it strands the parser in CDATA and drops every
+    # later image. NOT a depth counter either: a nested raw-text start tag in the body strands it.
+    _RAW_TEXT = ('script', 'style', 'textarea', 'title')
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.bad: list[str] = []
+        self._raw: str | None = None   # name of the open raw-text element, or None
+
+    def handle_startendtag(self, tag, attrs):
+        # a browser does NOT self-close a raw-text element: <title/> opens RCDATA until </title>.
+        if tag in self._RAW_TEXT:
+            self.handle_starttag(tag, attrs)
+            return
+        self.handle_starttag(tag, attrs)
+        self.handle_endtag(tag)
 
     def handle_starttag(self, tag, attrs):
+        if self._raw is not None:
+            return                    # inside raw text: all content (even tag-looking) is opaque
+        if tag in self._RAW_TEXT:
+            self._raw = tag
+            return
         if tag != 'img':
             return
         first: dict[str, str] = {}
@@ -3425,6 +3459,10 @@ class _ImgDimsProbe(html.parser.HTMLParser):
             return  # svg (vector), video, data: -- not a raster photo
         if not (_is_pos_int_attr(first.get('width')) and _is_pos_int_attr(first.get('height'))):
             self.bad.append(self.get_starttag_text() or ('<img src="%s">' % src))
+
+    def handle_endtag(self, tag):
+        if self._raw is not None and tag == self._raw:
+            self._raw = None
 
 
 def find_imgs_missing_dims(markup):
@@ -3554,12 +3592,7 @@ class _WikiHeadAudit(html.parser.HTMLParser):
             self.skip_hrefs.append(attr.get('href', ''))
         elif tag == 'main':
             self.main_ids.append(attr.get('id', ''))
-        # A complete signed ASCII integer only: a superscript-digit tabindex (U+00B2) is
-        # isdigit()-True but int() raises, and "++1" survives lstrip('+').isdigit() yet int()
-        # raises -- either would abort the whole wiki check on one malformed attribute.
-        tabindex = attr.get('tabindex', '').strip()
-        digits = tabindex[1:] if tabindex[:1] in ('+', '-') else tabindex
-        if digits.isascii() and digits.isdigit() and int(tabindex) > 0:
+        if _html_tabindex_positive(attr.get('tabindex', '')):
             self.positive_tabindex += 1
 
 
