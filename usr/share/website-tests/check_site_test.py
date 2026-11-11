@@ -2331,13 +2331,21 @@ def run():
         csp_meta = ('<meta http-equiv="Content-Security-Policy" content="%s">' % csp) if csp else ''
         edit = '<span class="mw-editsection">e</span>' if mw else ''
         content_cls = 'mw-parser-output' if mw else 'content'
+        # A minimal VALID wiki page carries the mw-static-generator head + a11y conformance
+        # (viewport, light+dark theme-color, twitter:card, skip link to <main id=main-content>),
+        # so the wiki battery -- which now includes check_wiki_conformance -- passes.
         return ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
+                '<meta name="viewport" content="width=device-width, initial-scale=1">'
                 '<title>%s</title>%s'
                 '<link rel="canonical" href="https://wiki.example/%s">'
                 '<meta name="description" content="d">'
-                '</head><body>%s'
-                '<div class="%s"><h1>%s</h1>'
-                '<p>About Open Source and Free Software.</p></div>'
+                '<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">'
+                '<meta name="theme-color" content="#16181b" media="(prefers-color-scheme: dark)">'
+                '<meta name="twitter:card" content="summary">'
+                '</head><body>'
+                '<a class="skip-link" href="#main-content">Skip to main content</a>%s'
+                '<main id="main-content"><div class="%s"><h1>%s</h1>'
+                '<p>About Open Source and Free Software.</p></div></main>'
                 '<footer class="site-footer">wiki footer</footer>'
                 '</body></html>') % (title, csp_meta, canon_path, edit, content_cls, title)
 
@@ -3099,6 +3107,61 @@ def run():
 
     check('check_served_markup_safety is invoked from main() with the audited pages',
           'check_served_markup_safety(root, failures, pages)' in main_body)
+
+    # check_wiki_conformance: the mw-static-generator head + a11y invariants (frontend-checklist
+    # fixes). A conformant page is clean; each missing/wrong invariant is flagged; tabindex 0/-1
+    # are fine (ONLY a positive tabindex is flagged -- the canary).
+    def _wiki_failures(head, body):
+        with tempfile.TemporaryDirectory() as root:
+            _write(root, 'wiki/Page.html',
+                   '<!doctype html><html lang="en"><head>%s</head><body>%s</body></html>'
+                   % (head, body))
+            failures: list[str] = []
+            check_site.check_wiki_conformance(root, failures)
+            return failures
+
+    _good_head = (
+        '<meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        '<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">'
+        '<meta name="theme-color" content="#16181b" media="(prefers-color-scheme: dark)">'
+        '<meta name="twitter:card" content="summary">')
+    _good_body = (
+        '<a class="skip-link" href="#main-content">Skip to main content</a>'
+        '<main id="main-content"><p>ok</p></main>')
+    check('wiki conformance: a conformant page is clean',
+          _wiki_failures(_good_head, _good_body) == [], _wiki_failures(_good_head, _good_body))
+    check('wiki conformance: tabindex 0 and -1 are NOT flagged (canary)',
+          _wiki_failures(_good_head, _good_body
+                         + '<a href="#" tabindex="0">a</a><div tabindex="-1">b</div>') == [])
+    check('missing skip-to-content link flagged',
+          any('skip-to-content' in f for f in
+              _wiki_failures(_good_head, '<main id="main-content"><p>x</p></main>')))
+    check('skip link with no <main id=main-content> flagged',
+          any('skip-to-content' in f for f in _wiki_failures(
+              _good_head,
+              '<a class="skip-link" href="#main-content">s</a><main><p>x</p></main>')))
+    check('theme-color without a dark variant flagged',
+          any('theme-color' in f for f in _wiki_failures(
+              _good_head.replace(
+                  '<meta name="theme-color" content="#16181b" media="(prefers-color-scheme: dark)">',
+                  ''),
+              _good_body)))
+    check('missing twitter:card flagged',
+          any('twitter:card' in f for f in _wiki_failures(
+              _good_head.replace('<meta name="twitter:card" content="summary">', ''), _good_body)))
+    check('zoom-disabling viewport flagged',
+          any('pinch-zoom' in f for f in _wiki_failures(
+              _good_head.replace('initial-scale=1', 'initial-scale=1, user-scalable=no'),
+              _good_body)))
+    check('<meta> inside <body> flagged',
+          any('inside <body>' in f for f in
+              _wiki_failures(_good_head, _good_body + '<meta name="robots" content="noindex">')))
+    check('positive tabindex flagged',
+          any('positive tabindex' in f for f in
+              _wiki_failures(_good_head, _good_body + '<a href="#" tabindex="3">x</a>')))
+    check('check_wiki_conformance is invoked from main() under the wiki policy',
+          'check_wiki_conformance(root' in inspect.getsource(check_site.main))
 
     passed = sum(1 for _n, ok, _d in results if ok)
     failed = len(results) - passed

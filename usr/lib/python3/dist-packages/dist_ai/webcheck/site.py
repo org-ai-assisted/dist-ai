@@ -3513,6 +3513,91 @@ def check_forced_reflow(root, failures):
                     % (os.path.relpath(path, root), match.group(0)[:60].strip()))
 
 
+class _WikiHeadAudit(html.parser.HTMLParser):
+    """Collect the mw-static-generator head + a11y conformance signals for ONE page: the
+    skip-to-content link + its <main> target id, the theme-color metas' media= values, the
+    twitter:card meta, the viewport content, any <meta> that appears inside <body>, and any
+    positive tabindex. The wiki-policy conformance check asserts presence/absence of these."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.in_body = False
+        self.skip_hrefs: list[str] = []      # href of every <a class~=skip-link>
+        self.main_ids: list[str] = []        # id of every <main>
+        self.theme_media: list[str] = []     # media= of every <meta name=theme-color>
+        self.has_twitter_card = False
+        self.viewport = None                 # content= of <meta name=viewport> (None = absent)
+        self.meta_in_body = 0
+        self.positive_tabindex = 0
+
+    def handle_starttag(self, tag, attrs):
+        attr = {name: (value or '') for name, value in attrs}
+        if tag == 'body':
+            self.in_body = True
+        if tag == 'meta':
+            if self.in_body:
+                self.meta_in_body += 1
+            name = attr.get('name', '').lower()
+            if name == 'theme-color':
+                self.theme_media.append(attr.get('media', ''))
+            elif name == 'twitter:card':
+                self.has_twitter_card = True
+            elif name == 'viewport':
+                self.viewport = attr.get('content', '')
+        elif tag == 'a' and 'skip-link' in attr.get('class', '').split():
+            self.skip_hrefs.append(attr.get('href', ''))
+        elif tag == 'main':
+            self.main_ids.append(attr.get('id', ''))
+        tabindex = attr.get('tabindex', '')
+        if tabindex.lstrip('+').isdigit() and int(tabindex) > 0:
+            self.positive_tabindex += 1
+
+
+# A viewport that DISABLES pinch-zoom (WCAG 1.4.4 failure): user-scalable no/0 or a
+# maximum-scale cap. The generator must never emit these.
+_VIEWPORT_ZOOM_BLOCK_RE = re.compile(
+    r'user-scalable\s*=\s*(?:no|0)|maximum-scale\s*=\s*[0-9.]+', re.IGNORECASE)
+
+
+def check_wiki_conformance(root, failures, pages=None):
+    """mw-static-generator head + a11y invariants, asserted on each audited (curated, REAL)
+    page -- redirect stubs carry a deliberately minimal head and are not in the curated audit
+    set, so they are never scanned here. Locks in the frontend-checklist conformance fixes so
+    they cannot silently regress: a focus-visible skip link to <main id="main-content">, BOTH a
+    light and a dark theme-color meta, a twitter:card meta, a zoom-ALLOWING viewport, no <meta>
+    stranded in <body>, and no positive tabindex."""
+    for page in (html_files(root) if pages is None else pages):
+        rel = os.path.relpath(page, root)
+        audit = _WikiHeadAudit()
+        with open(page, encoding='utf-8') as handle:
+            audit.feed(handle.read())
+        if '#main-content' not in audit.skip_hrefs or 'main-content' not in audit.main_ids:
+            failures.append(
+                '%s: missing the skip-to-content link to <main id="main-content"> '
+                '(a11y skip-navigation)' % rel)
+        if not (any('light' in m for m in audit.theme_media)
+                and any('dark' in m for m in audit.theme_media)):
+            failures.append(
+                '%s: theme-color must carry BOTH a light and a dark '
+                '(prefers-color-scheme) variant' % rel)
+        if not audit.has_twitter_card:
+            failures.append('%s: missing <meta name="twitter:card">' % rel)
+        if audit.viewport is None:
+            failures.append('%s: missing the viewport meta' % rel)
+        elif _VIEWPORT_ZOOM_BLOCK_RE.search(audit.viewport):
+            failures.append(
+                '%s: viewport disables pinch-zoom (user-scalable/maximum-scale) '
+                '-- a WCAG 1.4.4 failure' % rel)
+        if audit.meta_in_body:
+            failures.append(
+                '%s: %d <meta> element(s) inside <body> (meta belongs in <head>)'
+                % (rel, audit.meta_in_body))
+        if audit.positive_tabindex:
+            failures.append(
+                '%s: %d element(s) with a positive tabindex (breaks focus order; use '
+                'tabindex="0"/"-1")' % (rel, audit.positive_tabindex))
+
+
 def main():
     from dist_ai.webcheck import cli
     argv_roots = sys.argv[1:]
@@ -3635,6 +3720,10 @@ def main():
             check_footer_nav(root, failures)
             check_csr_csp(root, failures)
             check_page_metadata(root, failures)
+        # mw-static-generator head + a11y conformance (frontend-checklist fixes), on the
+        # curated real pages only -- redirect stubs are not in the audit set.
+        if policy == 'wiki':
+            check_wiki_conformance(root, failures, pages)
         # Suppress accepted pre-existing findings (broken on production too) listed in this
         # site's baseline, so a GENERIC check runs on every policy without re-reporting them.
         baseline = _load_webcheck_baseline(root)
