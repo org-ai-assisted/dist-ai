@@ -1126,7 +1126,10 @@ def run():
                '<!-- <img src="h.png"> -->'                        # HTML comment -> NOT an image
                '<script>var s = "<img src=\'i.png\'>";</script>'   # script text -> NOT an image
                '<img src="j.png" width="10%" height="20px" width="100" height="100">'  # dup: 1st wins -> FLAG
-               '<img src="k.png" width="\\uff11\\uff10" height="\\uff12\\uff10">'  # fullwidth digits -> FLAG
+               # fullwidth digits U+FF11 U+FF10 / U+FF12 U+FF10 (chr() keeps the source ASCII):
+               # these ARE isdigit()-True, so only the production isascii() guard flags them -> FLAG
+               '<img src="k.png" width="' + chr(0xff11) + chr(0xff10)
+               + '" height="' + chr(0xff12) + chr(0xff10) + '">'
                '<img src="HTTP://cdn/l.png">'                       # external (upper scheme) -> exempt
                '<textarea><img src="m.png"></textarea>'            # raw-text element -> NOT an image
                '</body></html>')
@@ -1151,6 +1154,13 @@ def run():
               not any('l.png' in f for f in fails), repr(fails))
         check('check_image_dims: <img> in a <textarea> is not flagged',
               not any('m.png' in f for f in fails), repr(fails))
+    # regression: a nested raw-text start tag inside a <title>/<textarea> body must not strand
+    # the parser and silence every LATER image. CDATA_CONTENT_ELEMENTS makes the body opaque;
+    # a hand-rolled depth counter left _raw_depth stuck positive and missed after.png.
+    _strand = '<title><textarea></title><img src="after.png">'
+    check('check_image_dims: unsized raster after a <title><textarea> body is still flagged',
+          any('after.png' in f for f in check_site.find_imgs_missing_dims(_strand)),
+          repr(check_site.find_imgs_missing_dims(_strand)))
     check('check_image_dims invoked from main()', 'check_image_dims(root' in main_body)
 
     # check_links: a '..'-traversal target that escapes the site root is a BROKEN
@@ -3160,6 +3170,13 @@ def run():
     check('positive tabindex flagged',
           any('positive tabindex' in f for f in
               _wiki_failures(_good_head, _good_body + '<a href="#" tabindex="3">x</a>')))
+    # regression: a malformed tabindex must not abort the whole wiki check. A superscript digit
+    # (U+00B2) is isdigit()-True but int() raises; "++1" survives lstrip('+').isdigit() yet int()
+    # raises. Both must be ignored (not counted, no crash) -- old code raised ValueError here.
+    check('malformed tabindex (superscript / double-sign) is ignored, not a crash',
+          _wiki_failures(_good_head, _good_body
+                         + '<a href="#" tabindex="' + chr(0xb2) + '">x</a>'
+                         + '<span tabindex="++1">y</span>') == [])
     check('check_wiki_conformance is invoked from main() under the wiki policy',
           'check_wiki_conformance(root' in inspect.getsource(check_site.main))
 

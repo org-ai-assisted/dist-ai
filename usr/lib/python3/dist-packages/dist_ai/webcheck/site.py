@@ -3399,18 +3399,18 @@ class _ImgDimsProbe(html.parser.HTMLParser):
     value of a duplicated attribute wins (browser semantics); and each dimension's COMPLETE
     value is read, so width="10%" / height="20px" are correctly NOT pixel dims."""
 
-    _RAW_TEXT = ('script', 'style', 'textarea', 'title')
+    # textarea/title added to the stock ('script', 'style') so html.parser treats their RCDATA
+    # bodies as opaque: an <img> inside renders no image and is skipped, and a nested raw-text
+    # start tag or a stray </textarea> in the body cannot strand a hand-rolled depth counter
+    # (which then silently skips every later image). Close-tag matching still works.
+    CDATA_CONTENT_ELEMENTS = ('script', 'style', 'textarea', 'title')
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.bad: list[str] = []
-        self._raw_depth = 0
 
     def handle_starttag(self, tag, attrs):
-        if tag in self._RAW_TEXT:
-            self._raw_depth += 1
-            return
-        if tag != 'img' or self._raw_depth:
+        if tag != 'img':
             return
         first: dict[str, str] = {}
         for key, value in attrs:
@@ -3425,10 +3425,6 @@ class _ImgDimsProbe(html.parser.HTMLParser):
             return  # svg (vector), video, data: -- not a raster photo
         if not (_is_pos_int_attr(first.get('width')) and _is_pos_int_attr(first.get('height'))):
             self.bad.append(self.get_starttag_text() or ('<img src="%s">' % src))
-
-    def handle_endtag(self, tag):
-        if tag in self._RAW_TEXT and self._raw_depth:
-            self._raw_depth -= 1
 
 
 def find_imgs_missing_dims(markup):
@@ -3558,8 +3554,12 @@ class _WikiHeadAudit(html.parser.HTMLParser):
             self.skip_hrefs.append(attr.get('href', ''))
         elif tag == 'main':
             self.main_ids.append(attr.get('id', ''))
-        tabindex = attr.get('tabindex', '')
-        if tabindex.lstrip('+').isdigit() and int(tabindex) > 0:
+        # A complete signed ASCII integer only: a superscript-digit tabindex (U+00B2) is
+        # isdigit()-True but int() raises, and "++1" survives lstrip('+').isdigit() yet int()
+        # raises -- either would abort the whole wiki check on one malformed attribute.
+        tabindex = attr.get('tabindex', '').strip()
+        digits = tabindex[1:] if tabindex[:1] in ('+', '-') else tabindex
+        if digits.isascii() and digits.isdigit() and int(tabindex) > 0:
             self.positive_tabindex += 1
 
 
