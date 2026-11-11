@@ -3316,31 +3316,50 @@ def _keyframe_blocks(text):
 # patterns so data-width / aria-src do not match a real attr; a positive integer (empty/0
 # reserves nothing) is required.
 _IMG_DIMS_RASTER_EXTS = ('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp')
-_IMG_DIMS_TAG = re.compile(r'<img\b[^>]*>', re.IGNORECASE)
-_IMG_DIMS_HAS_W = re.compile(r'(?<=\s)width\s*=\s*["\']\s*[1-9]\d*', re.IGNORECASE)
-_IMG_DIMS_HAS_H = re.compile(r'(?<=\s)height\s*=\s*["\']\s*[1-9]\d*', re.IGNORECASE)
-_IMG_DIMS_SRC = re.compile(r'(?<=\s)src\s*=\s*["\']([^"\']*)["\']', re.IGNORECASE)
 
 
-def find_imgs_missing_dims(html):
-    """Every local raster-photo <img> in `html` that lacks a positive-integer width+height
+def _is_pos_int_attr(value):
+    """True iff `value` is a COMPLETE positive-integer attribute (a bare pixel count): not a
+    prefix like 10% / 20px (a browser ignores the unit on a width/height ATTR, so these reserve
+    no box), and not 0."""
+    if value is None:
+        return False
+    v = value.strip()
+    return v.isdigit() and int(v) > 0
+
+
+class _ImgDimsProbe(html.parser.HTMLParser):
+    """Collect every LOCAL raster-photo <img> that lacks a positive-integer width AND height.
+    html.parser (not a raw regex) is load-bearing: it never surfaces an <img> inside an HTML
+    comment or <script>/<style> text (those render no image -> no CLS), and it reads each
+    attribute's COMPLETE value, so width="10%" / height="20px" are correctly NOT pixel dims."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.bad: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag != 'img':
+            return
+        attr = dict(attrs)
+        src = (attr.get('src') or '').strip()
+        if not src or src.startswith(('http://', 'https://', '//')):
+            return  # no src, or external -- its intrinsic size is not ours to know/set
+        path = src.lower().split('#', 1)[0].split('?', 1)[0]
+        if not path.endswith(_IMG_DIMS_RASTER_EXTS):
+            return  # svg (vector), video, data: -- not a raster photo
+        if not (_is_pos_int_attr(attr.get('width')) and _is_pos_int_attr(attr.get('height'))):
+            self.bad.append(self.get_starttag_text() or ('<img src="%s">' % src))
+
+
+def find_imgs_missing_dims(markup):
+    """Every local raster-photo <img> in `markup` that lacks a positive-integer width+height
     (would cause layout shift). Canonical home: the mw-static-generator content-quality gate
     imports this so the invariant has ONE definition, no drift."""
-    bad = []
-    for match in _IMG_DIMS_TAG.finditer(html):
-        tag = match.group(0)
-        src = _IMG_DIMS_SRC.search(tag)
-        if not src:
-            continue
-        value = src.group(1).strip()
-        if value.startswith(('http://', 'https://', '//')):
-            continue  # external -- its intrinsic size is not ours to know/set
-        path = value.lower().split('#', 1)[0].split('?', 1)[0]
-        if not path.endswith(_IMG_DIMS_RASTER_EXTS):
-            continue  # svg (vector), video, data: -- not a raster photo
-        if not (_IMG_DIMS_HAS_W.search(tag) and _IMG_DIMS_HAS_H.search(tag)):
-            bad.append(tag)
-    return bad
+    probe = _ImgDimsProbe()
+    probe.feed(markup)
+    probe.close()
+    return probe.bad
 
 
 def check_image_dims(root, failures):

@@ -1122,6 +1122,9 @@ def run():
                '<img src="https://x/d.png" >'                      # external -> exempt
                '<img src="e.png" data-width="5" data-height="5">'  # data-* not dims -> FLAG
                '<img src="f.png" width="0" height="0">'            # zero reserves no box -> FLAG
+               '<img src="g.png" width="10%" height="20px">'       # unit/percent != px int -> FLAG
+               '<!-- <img src="h.png"> -->'                        # HTML comment -> NOT an image
+               '<script>var s = "<img src=\'i.png\'>";</script>'   # script text -> NOT an image
                '</body></html>')
         fails = _dims_failures(root)
         check('check_image_dims: unsized raster flagged', any('a.png' in f for f in fails), repr(fails))
@@ -1130,6 +1133,12 @@ def run():
         check('check_image_dims: external exempt', not any('d.png' in f for f in fails), repr(fails))
         check('check_image_dims: data-* attrs are not dims (flagged)', any('e.png' in f for f in fails), repr(fails))
         check('check_image_dims: zero dims flagged', any('f.png' in f for f in fails), repr(fails))
+        check('check_image_dims: percent/unit dims are not px integers (flagged)',
+              any('g.png' in f for f in fails), repr(fails))
+        check('check_image_dims: <img> inside an HTML comment is not flagged',
+              not any('h.png' in f for f in fails), repr(fails))
+        check('check_image_dims: <img> in <script> text is not flagged',
+              not any('i.png' in f for f in fails), repr(fails))
     check('check_image_dims invoked from main()', 'check_image_dims(root' in main_body)
 
     # check_links: a '..'-traversal target that escapes the site root is a BROKEN
