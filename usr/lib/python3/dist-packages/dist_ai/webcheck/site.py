@@ -3334,15 +3334,23 @@ def find_imgs_missing_dims(html):
 
 
 def check_image_dims(root, failures):
-    # Full-tree (every served .html), under EVERY policy -- a universal CLS defect, not a
-    # curated-audit concern. Cheap regex per file (no html.parser).
-    for page in sorted(html_files(root)):
-        rel = os.path.relpath(page, root)
-        with open(page, encoding='utf-8', errors='replace') as handle:
-            text = handle.read()
-        for tag in find_imgs_missing_dims(text):
-            failures.append('%s: raster <img> without layout-reserving width+height: %s'
-                            % (rel, tag))
+    # Full-tree, under EVERY policy -- a universal CLS defect. Scans EVERY served .html,
+    # INCLUDING an image-shadowed one (still served; html_files would skip it), matching the
+    # content-quality gate's original rglob('*.html') scope so nothing regresses. Cheap regex
+    # per file: the invariant targets our machine-generated, UTF-8, double-quoted <img> output,
+    # not adversarial hand-authored HTML.
+    for base, dirs, files in os.walk(root):
+        _prune_git(dirs)
+        for name in sorted(files):
+            if not name.endswith('.html'):
+                continue
+            page = os.path.join(base, name)
+            rel = os.path.relpath(page, root)
+            with open(page, encoding='utf-8', errors='replace') as handle:
+                text = handle.read()
+            for tag in find_imgs_missing_dims(text):
+                failures.append('%s: raster <img> without layout-reserving width+height: %s'
+                                % (rel, tag))
 
 
 def check_css_animations(root, failures):
