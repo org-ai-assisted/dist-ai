@@ -112,7 +112,6 @@ static void unit_parse_esc_key_str(void)
 static void unit_dup_option_rejected(void)
 {
     char *argv[] = { "kloak", "-k", "KEY_A", "-k", "KEY_B", NULL };
-    int jmp_rslt = 0;
 
     esc_key_list = NULL;
     esc_key_sublist_len = NULL;
@@ -120,14 +119,19 @@ static void unit_dup_option_rejected(void)
     esc_key_list_len = 0;
     optind = 1;
 
-    jmp_rslt = setjmp(g_reject);
-    if (jmp_rslt == 0) {
+    /* setjmp must be the controlling expression itself (C 7.13.1.1 -- assigning
+     * its result is undefined). exit(code) is mapped to longjmp(g_reject,
+     * code + 1), so a rejecting exit(1) arrives here as 2. */
+    switch (setjmp(g_reject)) {
+    case 0:
         parse_cli_args(5, argv);
-        /* parse_cli_args returned -- the duplicate -k was NOT rejected. */
-        CHECK(0);
-    } else {
-        /* exit(code) was mapped to longjmp(g_reject, code + 1). */
-        CHECK(jmp_rslt - 1 == 1);
+        CHECK(0);   /* returned -- the duplicate -k was NOT rejected */
+        break;
+    case 2:
+        break;      /* exit(1): the guard rejected the duplicate */
+    default:
+        CHECK(0);   /* exited with an unexpected code */
+        break;
     }
 }
 
