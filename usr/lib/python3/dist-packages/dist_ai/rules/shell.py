@@ -2428,10 +2428,14 @@ _SOURCE_GUARD_HANDLERS = frozenset(("true", ":", "exit", "return"))
 
 def _guarded_source_spans(tree):
     """(start, end) spans of the LEFT operand of every '|| <handler>' whose handler
-    is in _SOURCE_GUARD_HANDLERS -- a top-level 'source' there cannot silently fall
-    through the was_executed guard into main(). AST-based, so a trailing comment, a
-    line-continuation, or a CRLF before the '||' cannot hide the guard (a one-line
-    '|| true$' regex missed all three)."""
+    is in _SOURCE_GUARD_HANDLERS AND whose left operand is a simple command or an
+    '&&'/'||' chain -- there a failed 'source' propagates its status to the handler,
+    so its failure cannot silently fall through the was_executed guard into main().
+    A BRACE GROUP / subshell left operand is NOT a guard: '{ source x; true; } ||
+    exit 1' yields the group's LAST status (true), so the handler never sees the
+    source's failure. AST-based, so a trailing comment, a line-continuation, or a
+    CRLF before the '||' cannot hide the guard (a one-line '|| true$' regex missed
+    all three)."""
     or_ops = bash_ast.or_op()
     spans = []
     for node in bash_ast.iter_nodes(tree):
@@ -2442,6 +2446,10 @@ def _guarded_source_spans(tree):
         if handler not in _SOURCE_GUARD_HANDLERS:
             continue
         left = node.get("X") or {}
+        ## The source's status reaches the handler only from a simple command or an
+        ## '&&'/'||' chain; a Block/subshell can mask it with a trailing command.
+        if (left.get("Cmd") or {}).get("Type") not in ("CallExpr", "BinaryCmd"):
+            continue
         start = (left.get("Pos") or {}).get("Offset")
         end = (left.get("End") or {}).get("Offset")
         if start is not None and end is not None:

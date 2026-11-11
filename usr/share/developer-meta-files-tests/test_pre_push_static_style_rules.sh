@@ -1167,6 +1167,12 @@ expect_rule "${sheb_fail}" $'source lib.bsh \\\n   || true\n'"${full_main}"     
 ## '|| echo warn' is NOT a guard: a failed source still falls through to main(), so
 ## it stays FLAGGED (the handler set must not over-spare an arbitrary '|| cmd').
 expect_rule "${sheb_fail}" $'source lib.bsh || echo warn\n'"${full_main}"        "present" "#!/bin/bash"
+## The handler must see the source's STATUS: a brace group ending in another command
+## ('{ source x; true; } || exit 1') masks the source failure (group returns true),
+## so '|| exit 1' never fires -- NOT a guard, stays FLAGGED. An '&&' chain propagates
+## the failure ('[ -f x ] && source x || true'), so it IS a guard -- spared.
+expect_rule "${sheb_fail}" $'{ source lib.bsh; true; } || exit 1\n'"${full_main}"      "present" "#!/bin/bash"
+expect_rule "${sheb_fail}" $'[ -f /etc/foo.conf ] && source /etc/foo.conf || true\n'"${full_main}" "absent" "#!/bin/bash"
 ## Shebang errexit: ONLY a combined short-flag bundle ('-e', '-eu') enables errexit
 ## via a Linux shebang (the kernel passes the post-interpreter tail as ONE argv
 ## word). A split '-u -e' or a long '-o errexit' is a BROKEN shebang bash rejects,
