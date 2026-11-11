@@ -1176,6 +1176,23 @@ def run():
     check('check_image_dims: <img> after a self-closed <title/> is inside RCDATA (not flagged)',
           not any('intitle.png' in f for f in check_site.find_imgs_missing_dims(_selfclose)),
           repr(check_site.find_imgs_missing_dims(_selfclose)))
+    # an <img> inside an <svg> (title/desc/foreignObject) is not an HTML image and is not painted
+    _svgimg = '<svg><title><img src="icon.png"></title></svg>'
+    check('check_image_dims: <img> inside <svg> is not flagged',
+          not any('icon.png' in f for f in check_site.find_imgs_missing_dims(_svgimg)),
+          repr(check_site.find_imgs_missing_dims(_svgimg)))
+    # html5lib DECODES character refs, so a crafted src must not inject a control char (e.g. a
+    # newline forging a CI ::warning:: line) into the finding string -- it is escaped, single-line.
+    _inject = check_site.find_imgs_missing_dims('<img src="x&#10;::warning::y.png">')
+    check('check_image_dims: a decoded control char in src is escaped, not injected',
+          _inject and not any('\n' in f for f in _inject) and any('\\x0a' in f for f in _inject),
+          repr(_inject))
+    # two <img>s with the SAME src but different other attrs are DISTINCT findings, so an
+    # exact-match baseline entry for one cannot silently suppress a second (new) occurrence.
+    _dup = check_site.find_imgs_missing_dims(
+        '<img src="hero.png" alt="accepted"><img src="hero.png" alt="new regression">')
+    check('check_image_dims: same-src imgs with different attrs are distinct findings',
+          len(set(_dup)) == 2, repr(_dup))
     check('check_image_dims invoked from main()', 'check_image_dims(root' in main_body)
 
     # check_links: a '..'-traversal target that escapes the site root is a BROKEN

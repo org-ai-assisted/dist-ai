@@ -3383,9 +3383,11 @@ _IMG_DIMS_RASTER_EXTS = ('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp')
 
 
 def _is_pos_int_attr(value):
-    """True iff `value` is a COMPLETE positive-integer pixel count: not a prefix like 10% / 20px
-    (a browser ignores the unit on a width/height ATTR, so these reserve no box), not 0, and
-    ASCII digits only (HTML dimension attrs reject fullwidth/other Unicode digits)."""
+    """True iff `value` is a COMPLETE unitless positive-integer pixel count. We REQUIRE that form
+    (the web.dev/MDN CLS best practice: unitless width+height let the browser reserve the aspect-
+    ratio box) and deliberately flag 10% / 20px / 10.5 -- a browser may still reserve some box from
+    those, but the generator emits unitless integers (from the image's pixel size), so a unit or
+    fraction is a drift to flag. Rejects 0 and non-ASCII digits (HTML dimension attrs are ASCII)."""
     if value is None:
         return False
     v = value.strip()
@@ -3410,6 +3412,25 @@ def _html_tabindex_positive(value):
     return not negative and any(c != '0' for c in s[:i])
 
 
+_CONTROL_CHARS_RE = re.compile(r'[\x00-\x1f\x7f]')
+
+
+def _img_report(img):
+    """A single-line, control-char-free rendering of `img`'s start tag for a finding message.
+    Keeps EVERY attribute (so two <img>s with the same src but a different alt/class are DISTINCT
+    findings, not collapsed onto one exact-match baseline entry that would then suppress both), and
+    escapes control characters -- html5lib DECODES character references, so a crafted wiki src like
+    `safe&#10;::warning::x.png` would otherwise inject a newline (a forged CI workflow-command line)
+    or an ANSI escape into the log."""
+    parts = ['img']
+    for key, val in img.attrs.items():
+        if isinstance(val, list):             # bs4 multi-valued attr (class, rel, ...)
+            val = ' '.join(val)
+        safe = _CONTROL_CHARS_RE.sub(lambda m: '\\x%02x' % ord(m.group()), val)
+        parts.append('%s="%s"' % (key, safe))
+    return '<%s>' % ' '.join(parts)
+
+
 def find_imgs_missing_dims(markup):
     """Every local raster-photo <img> in `markup` that lacks a positive-integer width AND height
     (which would cause layout shift / CLS). Parsed with html5lib via bs4 -- the WHATWG-spec parser,
@@ -3426,6 +3447,8 @@ def find_imgs_missing_dims(markup):
     soup = BeautifulSoup(markup, 'html5lib')
     bad = []
     for img in soup.find_all('img'):
+        if img.find_parent('svg') is not None:
+            continue  # inside an <svg> (title/desc/foreignObject): not an HTML image, not painted
         src = (img.get('src') or '').strip()
         if not src or src.lower().startswith(('http://', 'https://', '//')):
             continue  # no src, or external -- its intrinsic size is not ours to know/set
@@ -3433,7 +3456,7 @@ def find_imgs_missing_dims(markup):
         if not path.endswith(_IMG_DIMS_RASTER_EXTS):
             continue  # svg (vector), video, data: -- not a raster photo
         if not (_is_pos_int_attr(img.get('width')) and _is_pos_int_attr(img.get('height'))):
-            bad.append('<img src="%s">' % src)
+            bad.append(_img_report(img))
     return bad
 
 
@@ -3561,14 +3584,17 @@ class _WikiHeadAudit(html.parser.HTMLParser):
         if _html_tabindex_positive(attr.get('tabindex', '')):
             self.positive_tabindex += 1
         # SCOPE (settled, matching _csp_meta_and_order): this gate validates our GENERATOR's
-        # output, not adversarial HTML. html.parser lacks RCDATA tokenization, so tag-looking text
-        # inside a <title>/<textarea> body (e.g. <title><span tabindex="1"></title>) is seen as a
-        # real element here though a browser treats it as text. The generator ESCAPES such content
-        # (it emits &lt;span&gt;), so this cannot occur in audited output; and the error is
-        # safe-direction -- a loud false conformance failure, never a silently missed defect.
-        # Fixing it means an html5lib rewrite of this multi-check audit (find_imgs_missing_dims
-        # took that route) -- out of scope for a generator-validation gate; do NOT reinvent the
-        # tokenizer here.
+        # output, not adversarial HTML, and html.parser is not a WHATWG tokenizer. Two edges exist,
+        # BOTH only on markup the generator cannot emit:
+        #  - FALSE FAIL: tag-looking text inside a <title>/<textarea> body (e.g.
+        #    <title><span tabindex="1"></title>) is read as a real element though a browser treats
+        #    it as text -- the generator ESCAPES such content (emits &lt;span&gt;).
+        #  - SILENT MISS: a malformed raw-text closer (</script/>, </style foo>) does not leave
+        #    html.parser's CDATA mode, so a later element is skipped -- the generator emits only
+        #    clean </script>/</style>.
+        # Neither can occur in audited output. Making this browser-faithful means an html5lib
+        # rewrite of this multi-check audit (as find_imgs_missing_dims did); out of scope for a
+        # generator-validation gate -- do NOT reinvent the tokenizer here.
 
 
 # A viewport that DISABLES pinch-zoom (WCAG 1.4.4 failure): user-scalable no/0 or a
