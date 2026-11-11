@@ -99,7 +99,9 @@ def _validation_of(attachment):
 ## for privacy-masked lanes -- both change a run's published assets, so old entries must not be reused.
 ## v5: privacy-masked lanes get PER-RECT OCR redaction (re-OCR + drop in-rect tokens) instead of a
 ## whole-lane drop, so a masked lane's published OCR asset differs from a v4 entry.
-CACHE_FORMAT_VERSION = 5
+## 6: the per-shot dict gained width/height (stamped onto the <img>); a v5 cache entry lacks
+## them and would reuse an unsized tag on an incremental run, so invalidate every v5 entry.
+CACHE_FORMAT_VERSION = 6
 
 ## Legend: status -> human label. Order is display order on the page.
 STATUS_LABEL = [

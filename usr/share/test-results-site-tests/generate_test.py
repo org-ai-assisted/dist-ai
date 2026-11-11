@@ -826,6 +826,15 @@ run_generator(plane, site1, cache_dir=cache_dir)
 check("incremental re-run REUSED run A webp (not re-encoded)",
       int(os.stat(a_webp).st_mtime) == EPOCH)
 check("incremental re-run kept run A webp byte-identical", read_bytes(a_webp) == a_bytes)
+## Regression: the cache-REUSED shot dict must still carry width/height so the re-emitted
+## screenshot <img> stays sized. A shot-schema addition without a CACHE_FORMAT_VERSION bump
+## would reuse a dim-less entry -> unsized <img>, defeating check_image_dims on incremental runs.
+_a_incr = read(os.path.join(out1, "kicksecure-lxqt-18-2-3-5-1", "index.html"))
+_shot_incr = _SHOT_IMG.findall(_a_incr)
+check("incremental (cache-reused) screenshot <img> still carries width+height",
+      bool(_shot_incr) and all(
+          re.search(r'\bwidth="[1-9]\d*"', tag) and re.search(r'\bheight="[1-9]\d*"', tag)
+          for tag in _shot_incr))
 os.utime(a_webp, (EPOCH, EPOCH))
 run_generator(plane, site1, cache_dir=cache_dir, full_rebuild=True)
 check("--full-rebuild re-encoded run A webp", int(os.stat(a_webp).st_mtime) != EPOCH)
