@@ -3410,69 +3410,31 @@ def _html_tabindex_positive(value):
     return not negative and any(c != '0' for c in s[:i])
 
 
-class _ImgDimsProbe(html.parser.HTMLParser):
-    """Collect every LOCAL raster-photo <img> that lacks a positive-integer width AND height.
-    html.parser (not a raw regex) is load-bearing: an <img> inside a comment or a raw-text
-    element (<script>/<style>/<textarea>/<title>) renders no image, so it is skipped; the FIRST
-    value of a duplicated attribute wins (browser semantics); and each dimension's COMPLETE
-    value is read, so width="10%" / height="20px" are correctly NOT pixel dims."""
-
-    # script/style/textarea/title are raw text (CDATA/RCDATA): their body is opaque TEXT to a
-    # browser, so a tag-looking <img> inside renders nothing. Track the OPEN raw-text element by
-    # NAME (they never nest) and ignore every start tag until its end tag. NOT html.parser's
-    # CDATA_CONTENT_ELEMENTS: that mode's closer matches only </tag>, missing </title/> and
-    # </textarea foo> which a browser DOES honor -- it strands the parser in CDATA and drops every
-    # later image. NOT a depth counter either: a nested raw-text start tag in the body strands it.
-    _RAW_TEXT = ('script', 'style', 'textarea', 'title')
-
-    def __init__(self):
-        super().__init__(convert_charrefs=True)
-        self.bad: list[str] = []
-        self._raw: str | None = None   # name of the open raw-text element, or None
-
-    def handle_startendtag(self, tag, attrs):
-        # a browser does NOT self-close a raw-text element: <title/> opens RCDATA until </title>.
-        if tag in self._RAW_TEXT:
-            self.handle_starttag(tag, attrs)
-            return
-        self.handle_starttag(tag, attrs)
-        self.handle_endtag(tag)
-
-    def handle_starttag(self, tag, attrs):
-        if self._raw is not None:
-            return                    # inside raw text: all content (even tag-looking) is opaque
-        if tag in self._RAW_TEXT:
-            self._raw = tag
-            return
-        if tag != 'img':
-            return
-        first: dict[str, str] = {}
-        for key, value in attrs:
-            kl = key.lower()
-            if kl not in first:       # FIRST value wins, like a browser
-                first[kl] = value or ''
-        src = first.get('src', '').strip()
+def find_imgs_missing_dims(markup):
+    """Every local raster-photo <img> in `markup` that lacks a positive-integer width AND height
+    (which would cause layout shift / CLS). Parsed with html5lib via bs4 -- the WHATWG-spec parser,
+    already a dependency -- so only <img> that a browser actually RENDERS is considered: one inside
+    a comment, or inside a raw-text element (<script>/<style> CDATA, <textarea>/<title> RCDATA)
+    whose body is opaque text, is not an element and is correctly excluded. html.parser cannot do
+    this faithfully (no RCDATA mode; its CDATA closer misses </title/> // </textarea foo> and a
+    nested <script> strands the parse, dropping every later image) -- the parser-reinvention trap.
+    A duplicated width/height keeps the FIRST value (html5lib drops the rest), matching a browser;
+    each dimension's COMPLETE value must be an ASCII positive integer, so width="10%" / "20px" are
+    correctly NOT pixel dims. Canonical home: the mw-static-generator content-quality gate imports
+    this so the invariant has ONE definition, no drift."""
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(markup, 'html5lib')
+    bad = []
+    for img in soup.find_all('img'):
+        src = (img.get('src') or '').strip()
         if not src or src.lower().startswith(('http://', 'https://', '//')):
-            return  # no src, or external -- its intrinsic size is not ours to know/set
+            continue  # no src, or external -- its intrinsic size is not ours to know/set
         path = src.lower().split('#', 1)[0].split('?', 1)[0]
         if not path.endswith(_IMG_DIMS_RASTER_EXTS):
-            return  # svg (vector), video, data: -- not a raster photo
-        if not (_is_pos_int_attr(first.get('width')) and _is_pos_int_attr(first.get('height'))):
-            self.bad.append(self.get_starttag_text() or ('<img src="%s">' % src))
-
-    def handle_endtag(self, tag):
-        if self._raw is not None and tag == self._raw:
-            self._raw = None
-
-
-def find_imgs_missing_dims(markup):
-    """Every local raster-photo <img> in `markup` that lacks a positive-integer width+height
-    (would cause layout shift). Canonical home: the mw-static-generator content-quality gate
-    imports this so the invariant has ONE definition, no drift."""
-    probe = _ImgDimsProbe()
-    probe.feed(markup)
-    probe.close()
-    return probe.bad
+            continue  # svg (vector), video, data: -- not a raster photo
+        if not (_is_pos_int_attr(img.get('width')) and _is_pos_int_attr(img.get('height'))):
+            bad.append('<img src="%s">' % src)
+    return bad
 
 
 def check_image_dims(root, failures):
@@ -3575,7 +3537,11 @@ class _WikiHeadAudit(html.parser.HTMLParser):
         self.positive_tabindex = 0
 
     def handle_starttag(self, tag, attrs):
-        attr = {name: (value or '') for name, value in attrs}
+        # FIRST value of a duplicated attribute wins, like a browser (a dict comprehension would
+        # keep the LAST, so <x a="1" a="2"> would misread as "2").
+        attr: dict[str, str] = {}
+        for name, value in attrs:
+            attr.setdefault(name, value or '')
         if tag == 'body':
             self.in_body = True
         if tag == 'meta':
@@ -3594,6 +3560,15 @@ class _WikiHeadAudit(html.parser.HTMLParser):
             self.main_ids.append(attr.get('id', ''))
         if _html_tabindex_positive(attr.get('tabindex', '')):
             self.positive_tabindex += 1
+        # SCOPE (settled, matching _csp_meta_and_order): this gate validates our GENERATOR's
+        # output, not adversarial HTML. html.parser lacks RCDATA tokenization, so tag-looking text
+        # inside a <title>/<textarea> body (e.g. <title><span tabindex="1"></title>) is seen as a
+        # real element here though a browser treats it as text. The generator ESCAPES such content
+        # (it emits &lt;span&gt;), so this cannot occur in audited output; and the error is
+        # safe-direction -- a loud false conformance failure, never a silently missed defect.
+        # Fixing it means an html5lib rewrite of this multi-check audit (find_imgs_missing_dims
+        # took that route) -- out of scope for a generator-validation gate; do NOT reinvent the
+        # tokenizer here.
 
 
 # A viewport that DISABLES pinch-zoom (WCAG 1.4.4 failure): user-scalable no/0 or a

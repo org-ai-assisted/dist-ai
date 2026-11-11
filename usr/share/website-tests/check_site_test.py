@@ -1154,15 +1154,20 @@ def run():
               not any('l.png' in f for f in fails), repr(fails))
         check('check_image_dims: <img> in a <textarea> is not flagged',
               not any('m.png' in f for f in fails), repr(fails))
-    # regression: a raw-text element must not strand the probe and silence every LATER image. A
-    # browser resumes normal parsing after the body closes, so an unsized raster after it is a
-    # real image and must be flagged. Covers the ways html.parser's own raw-text handling fails:
+    # regression: a raw-text element must not strand the parser and silence every LATER image. A
+    # browser resumes normal parsing after the body closes (html5lib does; a hand-rolled
+    # html.parser pass did not), so an unsized raster after it is a real image and must be flagged.
+    # Each input stranded one of the earlier html.parser attempts:
     #  - nested raw-text start tag in the body (a depth counter stays stuck positive)
     #  - a tolerant end tag </title/> or </textarea foo> (CDATA_CONTENT_ELEMENTS never exits)
+    #  - a <script>/<style> inside a <textarea>/<title> body (html.parser's built-in CDATA strands)
+    #  - a comment inside RCDATA swallowing the real close tag (normal-mode name tracking strands)
     for _case in ('<title><textarea></title><img src="after.png">',
                   '<title>x</title/><img src="after.png">',
-                  '<textarea>x</textarea foo><img src="after.png">'):
-        check('check_image_dims: unsized raster after a raw-text body is flagged (%r)' % _case[:24],
+                  '<textarea>x</textarea foo><img src="after.png">',
+                  '<textarea><script></textarea><img src="after.png">',
+                  '<title><!-- </title> --><img src="after.png">'):
+        check('check_image_dims: unsized raster after a raw-text body is flagged (%r)' % _case[:28],
               any('after.png' in f for f in check_site.find_imgs_missing_dims(_case)),
               repr(check_site.find_imgs_missing_dims(_case)))
     # a browser does NOT self-close a raw-text element: <title/> opens RCDATA until </title>/EOF,
@@ -3199,6 +3204,11 @@ def run():
     check('an over-long positive tabindex is flagged, not a crash',
           any('positive tabindex' in f for f in
               _wiki_failures(_good_head, _good_body + '<span tabindex="' + _huge + '">x</span>')))
+    #  - a duplicated attribute keeps the FIRST value, like a browser: <div tabindex="-1"
+    #    tabindex="1"> is tabindex -1 (not positive), not the second value
+    check('a duplicated tabindex uses the FIRST value (not flagged when the first is -1)',
+          _wiki_failures(_good_head, _good_body
+                         + '<div tabindex="-1" tabindex="1">x</div>') == [])
     check('check_wiki_conformance is invoked from main() under the wiki policy',
           'check_wiki_conformance(root' in inspect.getsource(check_site.main))
 
