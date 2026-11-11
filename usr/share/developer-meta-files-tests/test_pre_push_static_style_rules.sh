@@ -1179,6 +1179,23 @@ expect_rule "${sheb_fail}" $'[ -f /etc/foo.conf ] && source /etc/foo.conf || tru
 ## through to main() anyway.
 expect_rule "${sheb_fail}" $'source lib.bsh || { exit 1; }\n'"${full_main}"           "present" "#!/bin/bash"
 expect_rule "${sheb_fail}" $'source lib.bsh || (exit 1)\n'"${full_main}"              "present" "#!/bin/bash"
+## A failed source's STATUS must REACH the '|| <handler>'. These forms MASK it, so the
+## handler never aborts and the source falls through to main() -- each STAYS flagged
+## (verified against real bash: every one runs main() with the source failed):
+##   '|| echo warn || exit 1' -- echo succeeds, so the outer '|| exit' never fires
+##   '! source ...        '   -- '!' flips the source failure to success
+##   'source ... | true'      -- the pipeline status is 'true' (no pipefail)
+##   'source ... || return 1' -- top-level 'return' in an EXECUTED script warns and
+##                               CONTINUES (it aborts only a function / sourced file)
+##   'source ... || ! true'   -- a negated handler does not abort
+expect_rule "${sheb_fail}" $'source lib.bsh || echo warn || exit 1\n'"${full_main}"  "present" "#!/bin/bash"
+expect_rule "${sheb_fail}" $'! source lib.bsh || exit 1\n'"${full_main}"             "present" "#!/bin/bash"
+expect_rule "${sheb_fail}" $'source lib.bsh | true || exit 1\n'"${full_main}"        "present" "#!/bin/bash"
+expect_rule "${sheb_fail}" $'source lib.bsh || return 1\n'"${full_main}"             "present" "#!/bin/bash"
+expect_rule "${sheb_fail}" $'source lib.bsh || ! true\n'"${full_main}"               "present" "#!/bin/bash"
+## '&&'-chains of simple commands DO propagate a failure to the handler, so they stay
+## spared (no false positive from the masking fix above).
+expect_rule "${sheb_fail}" $'true && source lib.bsh || exit 1\n'"${full_main}"       "absent"  "#!/bin/bash"
 ## Shebang errexit: ONLY a combined short-flag bundle ('-e', '-eu') directly on the
 ## bash interpreter enables errexit via a Linux shebang (the kernel passes the
 ## post-interpreter tail as ONE argv word). A split '-u -e', a long '-o errexit', or
@@ -1192,6 +1209,14 @@ expect_rule "${sheb_fail}" "${src_unguarded_plain}" "present" "#!/bin/bash -u -e
 expect_rule "${sheb_fail}" "${src_unguarded_plain}" "present" "#!/bin/bash -o errexit"
 expect_rule "${sheb_fail}" "${src_unguarded_plain}" "present" "#!/usr/bin/env bash -e"
 expect_rule "${sheb_fail}" "${src_unguarded_plain}" "present" "#!/bin/bash"
+## A SPACE after '#!' is valid -- the kernel skips leading whitespace -- so
+## '#! /bin/bash -e' DOES enable errexit and the source is safe: NOT flagged (locks the
+## space-after-'#!' false positive). Trailing junk ('-e extra') or a multi-word bundle
+## ('-euo pipefail') is ONE broken argv word bash rejects ("invalid option"), errexit
+## never set, so the source STAYS flagged.
+expect_rule "${sheb_fail}" "${src_unguarded_plain}" "absent"  "#! /bin/bash -e"
+expect_rule "${sheb_fail}" "${src_unguarded_plain}" "present" "#!/bin/bash -euo pipefail"
+expect_rule "${sheb_fail}" "${src_unguarded_plain}" "present" "#!/bin/bash -e extra"
 
 ## R-080: a 'shellcheck source=' path must be relative, anchored with ./ or
 ## ../ (start with '.'). An absolute path OR a bare name (no ./) is FLAGGED.

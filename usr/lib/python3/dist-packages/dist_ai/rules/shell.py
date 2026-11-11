@@ -2356,16 +2356,20 @@ _INDENTED_LC_ALL = re.compile(r'^[ \t]+export LC_ALL=C[ \t]*$', re.MULTILINE)
 ## A source-able guarded script keeps its strict block inside main() (so sourcing
 ## does not leak it); top-level errexit must then come from the '#!/bin/bash -e'
 ## shebang -- the sourceable skill's canonical skeleton. _SHEBANG_ERREXIT matches
-## '-e' in a combined short-flag bundle (-e, -eu, -ue): the ONLY forms a Linux
-## shebang honours -- the kernel passes the whole post-interpreter tail as ONE argv
-## word, so a split '-u -e' or a long '-o errexit' is a shebang bash REJECTS
-## (errexit never set), correctly NOT matched. The match is ANCHORED to the bash
-## INTERPRETER token (^#!<path>bash <flag>), so '#!/usr/bin/env bash -e' -- where
-## env is the interpreter and 'bash -e' its single (broken) argument -- also does
-## not match. The top-level 'source' guard is read off the AST
+## '-e' in a combined short-flag bundle (-e, -eu, -ue): the ONLY form a Linux shebang
+## honours -- the kernel passes the whole post-interpreter tail as ONE argv word, so a
+## split '-u -e', a long '-o errexit', a trailing word ('-e extra') or a broken bundle
+## ('-euo pipefail', '-o' wants a value) is a single arg bash REJECTS ("invalid
+## option", errexit never set). The bundle is ANCHORED to the end of that one word
+## ([ \t]*\r?$), so none of those match. Optional whitespace after '#!' is allowed --
+## the kernel skips it, so '#! /bin/bash -e' DOES enable errexit and matches. The match
+## is anchored to the bash INTERPRETER token (^#!<ws>?<path>bash <flag>), so
+## '#!/usr/bin/env bash -e' -- env the interpreter, 'bash -e' its single (broken)
+## argument -- does not match (the no-whitespace run before 'bash' cannot cross the
+## space after env). The top-level 'source' guard is read off the AST
 ## (_guarded_source_spans), not a one-line regex a comment / continuation / CRLF
 ## could fool.
-_SHEBANG_ERREXIT = re.compile(r'^#![^ \t]*bash[ \t]+-[a-zA-Z]*e')
+_SHEBANG_ERREXIT = re.compile(r'^#![ \t]*[^ \t]*bash[ \t]+-[a-zA-Z]*e[a-zA-Z]*[ \t]*\r?$')
 
 
 def _toplevel_calls(tree, names, spans):
@@ -2423,37 +2427,71 @@ def _was_executed_guard_body_spans(tree):
 
 
 ## Command names whose simple '|| <name>' tail keeps a failed top-level source from
-## SILENTLY reaching main(): 'true'/':' mark it optional, 'exit'/'return' abort the
-## shell. '|| echo warn' is NOT a guard (execution continues with the source failed,
+## SILENTLY reaching main(): 'true'/':' mark it optional, 'exit' aborts. 'return' is
+## NOT a guard: a top-level 'return' in an EXECUTED script (the path the was_executed
+## guard gates) only warns and CONTINUES -- it aborts a function or a sourced file,
+## not the executed top level -- so a failed 'source || return' still reaches main().
+## '|| echo warn' is NOT a guard either (execution continues with the source failed,
 ## the R-010 hazard). A COMPOUND handler ('|| { ...; }', '|| ( ... )') is
 ## conservatively treated as none -- no in-tree guard uses one, and a subshell
 ## '( exit )' would not abort the parent anyway.
-_SOURCE_GUARD_HANDLERS = frozenset(("true", ":", "exit", "return"))
+_SOURCE_GUARD_HANDLERS = frozenset(("true", ":", "exit"))
+
+
+def _failure_propagates(stmt):
+    """True if a failed 'source' inside STMT makes STMT's exit status non-zero, so an
+    outer '|| <handler>' observes the failure. Only a simple command or a PURE
+    '&&'-chain of simple commands qualifies: '&&' carries any operand's failure to the
+    chain's status, so the handler fires. A '||' sub-chain ('source || echo'), a pipe
+    ('source | cmd' -- no pipefail, the status is the last stage), a '!'-negation (flips
+    the failure to success), a brace group or a subshell can all leave a SUCCEEDING
+    neighbour as the status and MASK the source failure, so none qualify. Iterative down
+    the left spine -- a deeply nested '&&' chain must not overflow the stack (the reason
+    bash_ast.iter_nodes is iterative too)."""
+    and_ops = bash_ast.and_op()
+    while isinstance(stmt, dict) and not stmt.get("Negated"):
+        cmd = stmt.get("Cmd") or {}
+        kind = cmd.get("Type")
+        if kind == "CallExpr":
+            return True
+        if kind == "BinaryCmd" and cmd.get("Op") in and_ops:
+            ## 'X && Y' is left-associative, so the chain's depth lives on X -- descend
+            ## it iteratively. Y is a single stmt and must itself be a plain,
+            ## non-negated simple command (a pipe / '||' / group there could mask).
+            right = cmd.get("Y") or {}
+            if right.get("Negated") or (right.get("Cmd") or {}).get(
+                    "Type") != "CallExpr":
+                return False
+            stmt = cmd.get("X")
+            continue
+        return False
+    return False
 
 
 def _guarded_source_spans(tree):
-    """(start, end) spans of the LEFT operand of every '|| <handler>' whose handler
-    is in _SOURCE_GUARD_HANDLERS AND whose left operand is a simple command or an
-    '&&'/'||' chain -- there a failed 'source' propagates its status to the handler,
-    so its failure cannot silently fall through the was_executed guard into main().
-    A BRACE GROUP / subshell left operand is NOT a guard: '{ source x; true; } ||
-    exit 1' yields the group's LAST status (true), so the handler never sees the
-    source's failure. AST-based, so a trailing comment, a line-continuation, or a
-    CRLF before the '||' cannot hide the guard (a one-line '|| true$' regex missed
-    all three)."""
+    """(start, end) spans of the LEFT operand of every '|| <handler>' whose handler is
+    in _SOURCE_GUARD_HANDLERS, whose handler stmt is not itself negated, AND whose left
+    operand PROPAGATES a failed source's status to the handler (_failure_propagates) --
+    so a failed 'source' there cannot silently fall through the was_executed guard into
+    main(). A left operand that can MASK the failure ('source || echo', 'source | cmd',
+    '! source', '{ source; cmd; }', a subshell) is NOT a guard. AST-based, so a trailing
+    comment, a line-continuation, or a CRLF before the '||' cannot hide the guard (a
+    one-line '|| true$' regex missed all three)."""
     or_ops = bash_ast.or_op()
     spans = []
     for node in bash_ast.iter_nodes(tree):
         if not (isinstance(node, dict) and node.get("Type") == "BinaryCmd"
                 and node.get("Op") in or_ops):
             continue
-        handler = bash_ast.command_name((node.get("Y") or {}).get("Cmd") or {})
+        right = node.get("Y") or {}
+        ## A negated handler ('|| ! true') does not abort, so it is not a guard.
+        if right.get("Negated"):
+            continue
+        handler = bash_ast.command_name(right.get("Cmd") or {})
         if handler not in _SOURCE_GUARD_HANDLERS:
             continue
         left = node.get("X") or {}
-        ## The source's status reaches the handler only from a simple command or an
-        ## '&&'/'||' chain; a Block/subshell can mask it with a trailing command.
-        if (left.get("Cmd") or {}).get("Type") not in ("CallExpr", "BinaryCmd"):
+        if not _failure_propagates(left):
             continue
         start = (left.get("Pos") or {}).get("Offset")
         end = (left.get("End") or {}).get("Offset")
