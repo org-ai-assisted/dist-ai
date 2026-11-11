@@ -10,7 +10,7 @@ Rendered-layout guard: a wiki tab's PREVIEW THUMBNAIL must be CENTERED on a
 phone.
 
 A wiki tab (.tab-content-controller > .tcc-content > .tcc-section) can hold a
-preview thumbnail (.thumb with an <img>). On a phone that image should be
+preview thumbnail (.thumbframe with an <img>). On a phone that image should be
 centered in the tab body. When a tab body is wrapped in {{GoogleOff}} ->
 <div data-nosnippet>, the thumb sits one level deeper and a direct-child CSS rule
 missed it, so the image aligned LEFT with a lopsided gap and extra top whitespace
@@ -18,7 +18,7 @@ missed it, so the image aligned LEFT with a lopsided gap and extra top whitespac
 
 Measurement, at the phone width (default 390px), for each
 .tab-content-controller, for each :scope > .tcc-content > .tcc-section that holds
-a .thumb with an <img>:
+a .thumbframe with an <img>:
   - isolate-activate the section (remove .active from its siblings, add .active to
     it -- the CSS `.mininav-ready .tcc-section:not(.active){display:none}` hides
     the others), so only this section is laid out;
@@ -26,8 +26,8 @@ a .thumb with an <img>:
     pane's padding + client border): leftGap = img.left - contentLeft,
     rightGap = contentRight - img.right;
   - the asymmetry asym = |leftGap - rightGap|. An OFFENDER is asym > ASYM_MAX_PX.
-Measure the IMG, not the .thumb wrapper (the wrapper can be full-width while the
-image sits left). The controller's original active state is restored afterwards.
+Measure the IMG, not the .thumbframe wrapper (the wrapper can be full-width while
+the image sits left). The controller's original active state is restored afterwards.
 
 This needs a real browser (Playwright), so, like check_mobile.py, it is NOT
 pure/static: it SKIPs (exit 77) cleanly when Playwright or chromium is
@@ -56,7 +56,7 @@ VIEWPORT = 390
 ASYM_MAX_PX = 12
 
 # Tab-preview thumbnail CENTERING probe. For each .tab-content-controller, for
-# each :scope > .tcc-content > .tcc-section that holds a .thumb > img, isolate-
+# each :scope > .tcc-content > .tcc-section that holds a .thumbframe > img, isolate-
 # activate the section, then measure the IMG box vs the .tcc-content CONTENT box
 # (padding + client border subtracted). Returns EVERY such thumb
 # {ctrl, sec, name, leftGap, rightGap, asym}; the caller flags asym > ASYM_MAX_PX.
@@ -75,7 +75,7 @@ TABTHUMB_JS = r"""
     if (!secs.length) return;
     const origActive = secs.map(s => s.classList.contains('active'));
     secs.forEach((sec, si) => {
-      const thumb = Array.from(sec.querySelectorAll('.thumb')).find(t => t.querySelector('img'));
+      const thumb = Array.from(sec.querySelectorAll('.thumbframe')).find(t => t.querySelector('img'));
       if (!thumb) return;
       const img = thumb.querySelector('img');
       secs.forEach(s => s.classList.remove('active'));
