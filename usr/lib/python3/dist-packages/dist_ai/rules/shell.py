@@ -2355,22 +2355,22 @@ _SHIFT_VERBOSE = re.compile(r'^[ \t]*shopt -s shift_verbose[ \t]*$',
 _INDENTED_LC_ALL = re.compile(r'^[ \t]+export LC_ALL=C[ \t]*$', re.MULTILINE)
 ## A source-able guarded script keeps its strict block inside main() (so sourcing
 ## does not leak it); top-level errexit must then come from the '#!/bin/bash -e'
-## shebang -- the sourceable skill's canonical skeleton. Shebang errexit and the
-## top-level 'source' guard are decided structurally (the helpers below), not by a
-## single-line regex a trailing comment, a line-continuation, CRLF, or a split
-## '-u -e' / '-o errexit' shebang could fool.
+## shebang -- the sourceable skill's canonical skeleton. _SHEBANG_ERREXIT matches
+## '-e' in a combined short-flag bundle (-e, -eu, -ue): the ONLY forms a Linux
+## shebang honours -- the kernel passes the whole post-interpreter tail as ONE argv
+## word, so a split '-u -e', a long '-o errexit', or an 'env bash -e' is a shebang
+## bash/env REJECT (errexit never set), correctly NOT matched. The top-level
+## 'source' guard is read off the AST (_guarded_source_spans), not a one-line regex
+## a trailing comment / line-continuation / CRLF could fool.
+_SHEBANG_ERREXIT = re.compile(r'bash[ \t]+-[a-zA-Z]*e')
 
 
-def _toplevel_calls(tree, names):
-    """Yield (call, line) for every CallExpr whose command name is in NAMES and that
-    runs UNCONDITIONALLY at the script's top level -- in the parent shell on every
-    source and every exec. Excludes a call inside a function body, a subshell /
-    command substitution, or a conditional branch (if/elif/else, loop, case, an
-    '&&'/'||' right operand): a 'set -o errexit' there is not in force at the top
-    level and a 'source' there does not run at sourcing time. A name appearing only
-    inside a quoted string or here-document is not a CallExpr, so it is never yielded
-    (no text-scan false positives)."""
-    spans = h.conditional_or_deferred_spans(tree)
+def _toplevel_calls(tree, names, spans):
+    """Yield (call, line) for every CallExpr whose command name is in NAMES and whose
+    offset is OUTSIDE every (start, end) in SPANS -- the regions whose calls do not
+    count for the CALLER's question (the two detect() scans pass different sets; see
+    there). A name appearing only inside a quoted string or here-document is not a
+    CallExpr, so it is never yielded (no text-scan false positives)."""
     for call in bash_ast.call_exprs(tree):
         if bash_ast.command_name(call) not in names:
             continue
@@ -2381,17 +2381,65 @@ def _toplevel_calls(tree, names):
         yield call, pos.get("Line")
 
 
-def _or_guarded_spans(tree):
-    """(start, end) spans of the LEFT operand of every '||'. A top-level 'source'
-    there has an explicit failure handler ('|| true', '|| exit 1', ...), so its
-    failure cannot SILENTLY fall through the was_executed guard into main(). AST-
-    based, so a trailing comment, a line-continuation, or a CRLF before the '||'
-    does not hide the guard (a single-line '|| true$' regex did)."""
+def _was_executed_guard_body_spans(tree):
+    """(start, end) spans of the then/elif/else bodies of every `if` whose CONDITION
+    calls was_executed/was_sourced. A top-level 'source' THERE runs in the executed
+    branch (beside the main() the guard gates), not as a load that falls THROUGH the
+    guard into main() -- so it is not the R-010 hazard. A source in any OTHER
+    conditional ('[ -f x ] && source x', 'if [ -f x ]; then source x; fi') still
+    falls through on failure and stays in scope, so only the guard body is excluded
+    (NOT the whole conditional-span set the errexit scan uses)."""
+    guard_offsets = [
+        offset
+        for call in bash_ast.call_exprs(tree)
+        if bash_ast.command_name(call) in ("was_executed", "was_sourced")
+        for offset in [(call.get("Pos") or {}).get("Offset")]
+        if offset is not None]
+    if not guard_offsets:
+        return []
+    spans = []
+
+    def add(stmts):
+        span = h.stmt_list_span(stmts)
+        if span is not None:
+            spans.append(span)
+
+    for node in bash_ast.iter_nodes(tree):
+        if not (isinstance(node, dict) and node.get("Type") == "IfClause"):
+            continue
+        cond = h.stmt_list_span(node.get("Cond"))
+        if cond is None or not any(cond[0] <= o < cond[1] for o in guard_offsets):
+            continue
+        add(node.get("Then"))
+        els = node.get("Else")
+        while isinstance(els, dict):
+            add(els.get("Then"))
+            add(els.get("Stmts"))
+            els = els.get("Else")
+    return spans
+
+
+## Command names whose '|| <name>' tail stops a failed top-level source from
+## SILENTLY falling through to main(): 'true'/':' mark the source explicitly
+## optional, 'exit'/'return' abort. '|| echo warn' and the like are NOT guards --
+## execution continues into main() with the source failed, the R-010 hazard.
+_SOURCE_GUARD_HANDLERS = frozenset(("true", ":", "exit", "return"))
+
+
+def _guarded_source_spans(tree):
+    """(start, end) spans of the LEFT operand of every '|| <handler>' whose handler
+    is in _SOURCE_GUARD_HANDLERS -- a top-level 'source' there cannot silently fall
+    through the was_executed guard into main(). AST-based, so a trailing comment, a
+    line-continuation, or a CRLF before the '||' cannot hide the guard (a one-line
+    '|| true$' regex missed all three)."""
     or_ops = bash_ast.or_op()
     spans = []
     for node in bash_ast.iter_nodes(tree):
         if not (isinstance(node, dict) and node.get("Type") == "BinaryCmd"
                 and node.get("Op") in or_ops):
+            continue
+        handler = bash_ast.command_name((node.get("Y") or {}).get("Cmd") or {})
+        if handler not in _SOURCE_GUARD_HANDLERS:
             continue
         left = node.get("X") or {}
         start = (left.get("Pos") or {}).get("Offset")
@@ -2401,10 +2449,11 @@ def _or_guarded_spans(tree):
     return spans
 
 
-def _argv_enables_errexit(toks):
-    """True if OPTION tokens TOKS turn errexit ON -- '-o errexit' or a short-flag
-    bundle carrying 'e' (-e, -eu, -euo ...). Scans up to a bare '--' (end-of-options
-    makes the rest positional)."""
+def _set_enables_errexit(call):
+    """True if a 'set' CallExpr turns errexit ON -- 'set -o errexit' or a
+    short-flag bundle carrying 'e' (-e, -eu, -euo ...). Scans up to a bare '--'
+    (end-of-options makes the rest positional)."""
+    toks = [bash_ast.word_lit(word) for word in bash_ast.args(call)][1:]
     index = 0
     while index < len(toks):
         tok = toks[index]
@@ -2420,30 +2469,6 @@ def _argv_enables_errexit(toks):
             return True
         index += 1
     return False
-
-
-def _set_enables_errexit(call):
-    """True if a 'set' CallExpr turns errexit ON (see _argv_enables_errexit)."""
-    toks = [bash_ast.word_lit(word) for word in bash_ast.args(call)][1:]
-    return _argv_enables_errexit(toks)
-
-
-def _shebang_enables_errexit(shebang_line):
-    """True if the '#!' line runs bash with errexit on. Parses the argv after the
-    bash interpreter the same way _set_enables_errexit parses a 'set' call, so split
-    short flags ('-u -e'), bundles ('-eu'), and the long form ('-o errexit') are all
-    recognised -- a single regex matched only an adjacent '-...e'."""
-    if not shebang_line.startswith("#!"):
-        return False
-    words = shebang_line[2:].split()
-    bash_index = None
-    for index, word in enumerate(words):
-        if word.rsplit("/", 1)[-1] == "bash":
-            bash_index = index
-            break
-    if bash_index is None:
-        return False
-    return _argv_enables_errexit(words[bash_index + 1:])
 
 
 class StrictModeBlock(Rule):
@@ -2482,23 +2507,38 @@ class StrictModeBlock(Rule):
         guarded = any(
             bash_ast.command_name(call) in ("was_executed", "was_sourced")
             for call in bash_ast.call_exprs(ctx.tree))
-        ## Source-able shebang: a guarded script runs its TRUE top level (outside
-        ## every function) with errexit OFF unless the '#!/bin/bash -e' shebang
-        ## supplies it (a top-level 'set -o errexit' would leak into a sourcing
-        ## shell, which the strict-in-main pattern exists to avoid). An UNGUARDED
-        ## top-level 'source' (no '|| true') is then a fallible command whose
-        ## failure falls through the was_executed guard into main() and runs its
-        ## side effects -- the repair-torrc authdir regression. Scope is AST, not
-        ## column: a legacy port keeps main()'s body at column 0, so its in-main
-        ## 'set -o errexit' must NOT count as top-level (it does not run on source).
+        ## Source-able shebang: a guarded script runs its TRUE top level with errexit
+        ## OFF unless '#!/bin/bash -e' supplies it (a top-level 'set -o errexit' would
+        ## leak into a sourcing shell, which the strict-in-main pattern avoids). An
+        ## UNGUARDED top-level 'source' is then a fallible command whose failure falls
+        ## through the was_executed guard into main() -- the repair-torrc authdir
+        ## regression. Scope is AST, not column (a legacy port keeps main()'s body at
+        ## column 0). The two scans use DIFFERENT exclusions:
+        ##   errexit scan -- a 'set -o errexit' counts only when it runs
+        ##     UNCONDITIONALLY at top level, so exclude functions, subshells/
+        ##     substitutions AND every conditional branch (conditional_or_deferred_
+        ##     spans): one inside 'if was_executed; then ...' never runs on source and
+        ##     runs only AFTER the top-level source on exec.
+        ##   source scan -- a 'source' is dangerous wherever it runs in the parent
+        ##     shell and can fall through to main(), so exclude ONLY functions,
+        ##     subshells/substitutions (boundary_spans) and the was_executed GUARD
+        ##     BODY (a source there sits beside main(), not above it). A source in any
+        ##     other conditional ('[ -f x ] && source x') still falls through on
+        ##     failure, so it is NOT excluded.
         if guarded:
             source_lines = source.split("\n")
-            toplevel_errexit = _shebang_enables_errexit(source_lines[0]) or any(
-                _set_enables_errexit(call)
-                for call, _line in _toplevel_calls(ctx.tree, ("set",)))
+            toplevel_errexit = bool(
+                _SHEBANG_ERREXIT.search(source_lines[0])) or any(
+                    _set_enables_errexit(call)
+                    for call, _line in _toplevel_calls(
+                        ctx.tree, ("set",),
+                        h.conditional_or_deferred_spans(ctx.tree)))
             if not toplevel_errexit:
-                guarded_spans = _or_guarded_spans(ctx.tree)
-                for call, line in _toplevel_calls(ctx.tree, ("source", ".")):
+                source_exclude = (h.boundary_spans(ctx.tree)
+                                  + _was_executed_guard_body_spans(ctx.tree))
+                guarded_spans = _guarded_source_spans(ctx.tree)
+                for call, line in _toplevel_calls(
+                        ctx.tree, ("source", "."), source_exclude):
                     offset = (call.get("Pos") or {}).get("Offset")
                     if offset is not None and any(
                             s <= offset < e for s, e in guarded_spans):

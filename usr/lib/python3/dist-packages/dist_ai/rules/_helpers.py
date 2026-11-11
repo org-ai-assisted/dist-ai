@@ -647,7 +647,7 @@ def _innermost_reaches(offset, scope_spans, barrier_spans):
     return best is not None and best_is_scope
 
 
-def _stmt_list_span(stmts):
+def stmt_list_span(stmts):
     raw_starts = [(s.get("Pos") or {}).get("Offset") for s in (stmts or [])]
     raw_ends = [(s.get("End") or {}).get("Offset") for s in (stmts or [])]
     starts: list[int] = [o for o in raw_starts if o is not None]
@@ -664,7 +664,7 @@ def _statement_list_spans(tree):
     spans = []
 
     def add(stmts):
-        span = _stmt_list_span(stmts)
+        span = stmt_list_span(stmts)
         if span is not None:
             spans.append(span)
 
@@ -728,20 +728,20 @@ def conditional_or_deferred_spans(tree):
             continue
         kind = node.get("Type")
         if kind == "IfClause":
-            add(_stmt_list_span(node.get("Then")))
+            add(stmt_list_span(node.get("Then")))
             ## Walk the whole elif/else chain: shfmt nests each 'elif' as an Else
             ## dict with NO Type, so iter_nodes never dispatches on it.
             els = node.get("Else")
             while isinstance(els, dict):
-                add(_stmt_list_span(els.get("Cond")))
-                add(_stmt_list_span(els.get("Then")))
-                add(_stmt_list_span(els.get("Stmts")))
+                add(stmt_list_span(els.get("Cond")))
+                add(stmt_list_span(els.get("Then")))
+                add(stmt_list_span(els.get("Stmts")))
                 els = els.get("Else")
         elif kind in ("WhileClause", "UntilClause", "ForClause"):
-            add(_stmt_list_span(node.get("Do")))
+            add(stmt_list_span(node.get("Do")))
         elif kind == "CaseClause":
             for item in node.get("Items") or []:
-                add(_stmt_list_span(item.get("Stmts")))
+                add(stmt_list_span(item.get("Stmts")))
         elif kind == "BinaryCmd" and node.get("Op") in and_or:
             add(_node_span(node.get("Y") or {}))
     return spans

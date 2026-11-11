@@ -1148,19 +1148,34 @@ expect_rule "${sheb_fail}" "${bypass_errexit_in_guard}" "present" "#!/bin/bash"
 ## code -- the false positive shows in isolation.
 fp_source_in_guard=$'if ! declare -F was_executed >/dev/null; then\n   exit 1\nfi\nif was_executed "${BASH_SOURCE[0]}"; then\n   source /usr/libexec/helper-scripts/strings.bsh\n   echo "Executed directly"\nfi'
 expect_rule "${sheb_fail}" "${fp_source_in_guard}" "absent" "#!/bin/bash"
-## F2: the '|| true' guard is read off the AST (the left operand of '||'), not a
-## single-line '|| true$' regex -- so a trailing comment, a line-continuation, and
-## an aborting '|| exit 1' guard are all recognised (none flagged).
+## A source in a NON-guard conditional ('[ -f x ] && source x', 'if [ -f x ]; then
+## source x; fi') still runs in the parent shell on exec and falls through to main()
+## on failure -- no handler, not the was_executed guard body -- so it STAYS flagged.
+## Only the errexit scan excludes all conditionals; the source scan excludes just
+## the guard body.
+cond_source_and=$'[ -f /etc/foo.conf ] && source /etc/foo.conf\n'"${full_main}"
+expect_rule "${sheb_fail}" "${cond_source_and}" "present" "#!/bin/bash"
+cond_source_if=$'if [ -f /etc/foo.conf ]; then\n   source /etc/foo.conf\nfi\n'"${full_main}"
+expect_rule "${sheb_fail}" "${cond_source_if}" "present" "#!/bin/bash"
+## F2: the '|| <handler>' guard is read off the AST (left operand of '||' whose
+## right operand is true/:/exit/return), not a single-line '|| true$' regex -- so a
+## trailing comment, a line-continuation, and an aborting '|| exit 1' are all
+## recognised (none flagged).
 expect_rule "${sheb_fail}" $'source lib.bsh || true ## optional\n'"${full_main}" "absent" "#!/bin/bash"
 expect_rule "${sheb_fail}" $'source lib.bsh || exit 1\n'"${full_main}"           "absent" "#!/bin/bash"
 expect_rule "${sheb_fail}" $'source lib.bsh \\\n   || true\n'"${full_main}"      "absent" "#!/bin/bash"
-## F3: top-level errexit from a SPLIT short-flag shebang ('-u -e') or the long form
-## ('-o errexit') is recognised, so an unguarded top-level source is safe (the
-## shebang aborts on its failure) -- NOT flagged. The bare-shebang control IS
-## flagged, so the two above pass because of the shebang, not a vacuous scan.
+## '|| echo warn' is NOT a guard: a failed source still falls through to main(), so
+## it stays FLAGGED (the handler set must not over-spare an arbitrary '|| cmd').
+expect_rule "${sheb_fail}" $'source lib.bsh || echo warn\n'"${full_main}"        "present" "#!/bin/bash"
+## Shebang errexit: ONLY a combined short-flag bundle ('-e', '-eu') enables errexit
+## via a Linux shebang (the kernel passes the post-interpreter tail as ONE argv
+## word). A split '-u -e' or a long '-o errexit' is a BROKEN shebang bash rejects,
+## so an unguarded top-level source under it is NOT safe and STAYS flagged -- this
+## locks the behavior against a mistaken "recognise split/long shebangs" change.
 src_unguarded_plain=$'source strings.bsh\n'"${full_main}"
-expect_rule "${sheb_fail}" "${src_unguarded_plain}" "absent"  "#!/bin/bash -u -e"
-expect_rule "${sheb_fail}" "${src_unguarded_plain}" "absent"  "#!/bin/bash -o errexit"
+expect_rule "${sheb_fail}" "${src_unguarded_plain}" "absent"  "#!/bin/bash -eu"
+expect_rule "${sheb_fail}" "${src_unguarded_plain}" "present" "#!/bin/bash -u -e"
+expect_rule "${sheb_fail}" "${src_unguarded_plain}" "present" "#!/bin/bash -o errexit"
 expect_rule "${sheb_fail}" "${src_unguarded_plain}" "present" "#!/bin/bash"
 
 ## R-080: a 'shellcheck source=' path must be relative, anchored with ./ or
