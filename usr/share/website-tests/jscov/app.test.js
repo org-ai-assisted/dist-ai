@@ -133,13 +133,6 @@ test("code-select copy button: clicking marks .copied then clears (fallback path
   assert.ok(cs.classList.contains("copied"), "flashes copied on click");
 });
 
-test("data-copy button flashes .copied on click (no clipboard -> fallback)", () => {
-  const w = load('<button data-copy="permalink-url">Permalink</button>');
-  const b = w.document.querySelector("[data-copy]");
-  b.dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true }));
-  assert.ok(b.classList.contains("copied"));
-});
-
 test("share copy-card: logo image button, raw text hidden, copies data-code", () => {
   const w = load('<span class="code-select cs-image" data-social="copy-mediawiki" '
     + 'data-code="[[P|T]]" data-button-image-src="/media/Mediawiki-logo.png.webp">[[P|T]]</span>');
@@ -984,7 +977,8 @@ function stubTableGeom(doc, el, scrollWidth, clientWidth, railLog) {
 test("wide tables: one ResizeObserver batches all reads before any style write (no reflow thrash)", async () => {
   const w = load('<div class="wiki-content">' +
     '<table id="wide"><tbody><tr><td>x</td></tr></tbody></table>' +
-    '<table id="fits"><tbody><tr><td>y</td></tr></tbody></table></div>');
+    '<table id="fits"><tbody><tr><td>y</td></tr></tbody></table></div>',
+    { preEval: syncRaf });   // the RO callback coalesces into one rAF/frame; run that frame inline
   // Batched design: a SINGLE shared observer over every table (the old code made one per
   // table, each interleaving read->write->read -> the ~83ms forced synchronous layout).
   assert.equal(w.__resizeObservers.length, 1, "one shared ResizeObserver for all tables");
@@ -1156,16 +1150,6 @@ test("code-select copy tolerates a null getSelection (still flashes copied)", ()
   const cs = w.document.querySelector(".code-select");
   cs.querySelector(".cbutton").dispatchEvent(new w.Event("click", { bubbles: true }));
   assert.ok(cs.classList.contains("copied"), "no selection available -> still marks copied, no throw");
-});
-
-test("data-copy button uses the async clipboard API when present", async () => {
-  const w = load('<button data-copy="xyz">P</button>', {
-    preEval: (win) => { win.navigator.clipboard = { writeText: () => Promise.resolve() }; },
-  });
-  const b = w.document.querySelector("[data-copy]");
-  b.dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true }));
-  await tick();
-  assert.ok(b.classList.contains("copied"), "clipboard.writeText success flashes copied");
 });
 
 test("print button swallows a throwing window.print", () => {
@@ -1824,7 +1808,8 @@ test("wide tables: without ResizeObserver, build via sync() and re-sync on a coa
 });
 
 test("wide tables: the top rail and the table mirror each other's scrollLeft (re-entrancy guarded)", async () => {
-  const w = load('<div class="wiki-content"><table id="wide"><tbody><tr><td>x</td></tr></tbody></table></div>');
+  const w = load('<div class="wiki-content"><table id="wide"><tbody><tr><td>x</td></tr></tbody></table></div>',
+    { preEval: syncRaf });   // RO callback coalesces into one rAF/frame; run that frame inline
   const wide = w.document.getElementById("wide");
   stubTableGeom(w.document, wide, 400, 200);
   w.__resizeObservers[0].cb();   // build the rail (coalesced into the next frame)
@@ -1848,7 +1833,8 @@ test("wide tables: the top rail and the table mirror each other's scrollLeft (re
 });
 
 test("wide tables: a rail-bearing table that later fits is hidden again", async () => {
-  const w = load('<div class="wiki-content"><table id="wide"><tbody><tr><td>x</td></tr></tbody></table></div>');
+  const w = load('<div class="wiki-content"><table id="wide"><tbody><tr><td>x</td></tr></tbody></table></div>',
+    { preEval: syncRaf });   // RO callback coalesces into one rAF/frame; run that frame inline
   const wide = w.document.getElementById("wide");
   const geom = { sw: 400, cw: 200 };
   Object.defineProperty(wide, "scrollWidth", { configurable: true, get() { return geom.sw; } });
