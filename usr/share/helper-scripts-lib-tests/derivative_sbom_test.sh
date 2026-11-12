@@ -479,6 +479,28 @@ printf '%s\n' '{ not json' > "${bad_frag}/bad.cdx.json"
 check "merge-tool: malformed fragment fails closed (exit 1)" \
    "$(merge_rc "${merge_base}" "${bad_frag}")" "1"
 
+## A missing/mistyped FRAGMENTS_DIR is misconfiguration -> fail closed, never a
+## silently fragment-less (incomplete) SBOM. An existing EMPTY dir is NOT an
+## error (zero fragments -> base-only). This pair is the canary: the fail-closed
+## asserts are RED on the old code (which silently emitted base-only, exit 0),
+## while the empty-dir assert guards against over-correcting into failing on empty.
+missing_frag="${test_dir}/does-not-exist.d"
+check "merge-tool: non-existent FRAGMENTS_DIR fails closed (exit 1)" \
+   "$(merge_rc "${merge_base}" "${missing_frag}")" "1"
+notdir_frag="${test_dir}/notdir.cdx.json"
+printf '%s\n' 'not a directory' > "${notdir_frag}"
+check "merge-tool: non-directory FRAGMENTS_DIR fails closed (exit 1)" \
+   "$(merge_rc "${merge_base}" "${notdir_frag}")" "1"
+emptydir_frag="${test_dir}/empty-direct.d"
+mkdir --parents -- "${emptydir_frag}"
+emptydir_out="${test_dir}/empty-direct.cdx.json"
+emptydir_rc=0
+printf '%s' "${merge_base}" | "${merge_tool}" "${emptydir_frag}" > "${emptydir_out}" 2>/dev/null \
+   || emptydir_rc=$?
+check "merge-tool: empty-but-existing dir succeeds (exit 0)" "${emptydir_rc}" "0"
+check "merge-tool: empty-but-existing dir yields base-only (base survives)" \
+   "$(purl_count "${emptydir_out}" 'pkg:deb/debian/bash@5.2')" "1"
+
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
    printf '%s\n' "FAILED"
