@@ -3,3 +3,8 @@
 # pre-existing accessibility debt we tolerate; a listed one that no longer fires is
 # reported as resolved, not required. Re-seed (overwrites) with:
 #   webcheck-axe-sandbox --write-baseline <site-root>
+# Accepted tap-target debt: 3 adjacent citation sups [2][3][4] alone in one <li> on
+# System_Requirements form a crowded tiny cluster (dev1497 owns the real fix; task #41).
+/wiki/System_Requirements target-size a[href$="#cite_note-2"]
+/wiki/System_Requirements target-size a[href$="#cite_note-3"]
+/wiki/System_Requirements target-size a[href$="#cite_note-4"]
