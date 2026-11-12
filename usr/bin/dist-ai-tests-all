@@ -228,6 +228,7 @@ e2e_suites=(
    tb-updater-tests-e2e
    dm-upload-images-tests-e2e
    tirdad-isn-nat-tests
+   kloak-tests-e2e
 )
 integration_suites=(
    whonix-firewall-leaktest-tests
@@ -708,10 +709,12 @@ wire() {
          fi
          ;;
       kloak)
-         ## CBMC-only proof suite: it compiles the real src/kloak.c (via kloak's
-         ## KLOAK_FUZZING seam) with wayland-scanner-generated protocol headers.
-         ## No helper-scripts / python subject import, so KLOAK_REPO (which holds
-         ## src/ + protocol/) is the only wiring needed.
+         ## kloak suites compile/build the real src/kloak*.c (via kloak's
+         ## KLOAK_FUZZING seam, or the Makefile for the build + e2e lanes) with
+         ## wayland-scanner-generated protocol headers. No helper-scripts /
+         ## python subject import, so KLOAK_REPO (which holds src/ + protocol/)
+         ## is the only wiring needed -- for the CBMC/unit suite, the build-
+         ## warning lane, and the daemon e2e lane alike.
          wire_env=( "KLOAK_REPO=$( pkg_dir kloak )" )
          ;;
       dist-base-files)
