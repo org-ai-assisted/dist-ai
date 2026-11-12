@@ -2874,14 +2874,17 @@ def run():
         check_site.check_wording(root, _fails)
         check('check_wording passes correctly-capitalized prose', not _fails, _fails)
     # The hyphen's word boundary must NOT make "non-free software" / "non-open source" (the
-    # OPPOSITE term) match -- capitalizing it would be nonsense. A standalone phrase still flags.
+    # OPPOSITE term) match -- capitalizing it would be nonsense. The negation guard is
+    # case-insensitive, so a sentence-initial "Non-free software" / "NON-open source" is excluded
+    # too; the phrase match stays case-sensitive, so a genuine lowercase "free software" still flags.
     with tempfile.TemporaryDirectory() as root:
         _write(root, 'index.html',
-               '<!doctype html><html><body><p>add-ons often contain non-free software and '
-               'non-open source blobs</p></body></html>')
+               '<!doctype html><html><body>'
+               '<p>add-ons often contain non-free software and non-open source blobs</p>'
+               '<p>Non-free software is discouraged; NON-open source too.</p></body></html>')
         _fails = []
         check_site.check_wording(root, _fails)
-        check('check_wording does NOT flag "non-free software" / "non-open source"', not _fails, _fails)
+        check('check_wording does NOT flag non-/Non-/NON- "free software"/"open source"', not _fails, _fails)
     # License-notice boilerplate quotes "free software" in the FSF's OWN lowercase (GPL short
     # notice / madaidan license). It is accepted, NOT flagged -- capitalizing would misquote it.
     for _notice in ('This is free software, and you are welcome to redistribute it '
