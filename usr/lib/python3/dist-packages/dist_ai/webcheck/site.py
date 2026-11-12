@@ -3516,7 +3516,7 @@ def check_css_animations(root, failures):
 # never flags a legitimate read. Defer the dependent change with requestAnimationFrame instead.
 #
 # Matches the single `void <operand>.<layout-read>` idiom and nothing wider. The operand is
-# matched POSITIVELY -- a `(`?-wrapped member chain of [word $ . [ ]] only -- never a permissive
+# matched POSITIVELY -- a `(`?-wrapped dotted member chain of [word $ .] only -- never a permissive
 # "gap minus some separators" (that leaks: `||`, `&&`, `?:`, `)`, `*/`, a U+2028/U+2029 line
 # terminator and an EOL all split `void 0` from a LATER, unrelated read, each a false positive):
 #   - `(?<![\w$.])void\b` is the `void` OPERATOR, not a `.void` property access (`holder.void.el
@@ -3524,15 +3524,18 @@ def check_css_animations(root, failures):
 #   - `[ \t]*\(?[ \t]*` accepts `void el.offsetHeight` and the parenthesized `void(el.offsetHeight)`
 #     minifiers (Terser) emit -- the site JS is minified -- but only HORIZONTAL space, so `void`
 #     at end-of-line cannot swallow the newline into the operand.
-#   - the operand class excludes whitespace, operators, `)` and `?`, so it cannot cross an operator
-#     (`void 0 || el.read`), a closed paren (`void(0) && el.read`) or a ternary (`void 0 ? el.read
-#     : 0`) into an unrelated read. A read reached only THROUGH a call (`void getEl().offsetHeight`)
-#     is likewise not flagged: the conservative choice, errs toward never flagging a legitimate read.
+#   - the operand class is word/$/dot only: it cannot cross whitespace, an operator (`void 0 ||
+#     el.read`), a closed paren (`void(0) && el.read`), a ternary (`void 0 ? el.read : 0`) nor a
+#     `[...]` subscript into an unrelated read. Deliberate conservative false-negatives, erring
+#     toward never flagging a legitimate read: a read used as a subscript (`void a[el.offsetHeight]`
+#     keeps the value), a read reached through a call (`void getEl().offsetHeight`) or a computed
+#     member (`void a[i+1].offsetHeight`), and a newline between `void` and its operand, are all
+#     left unflagged.
 # Heuristic text scan: a `void <chain>.<read>` written inside a JS comment or string literal would
 # still match. Immaterial on the real (minified, comment-stripped) site JS this gates; not worth a
 # JS tokenizer.
 _VOID_REFLOW_RE = re.compile(
-    r'(?<![\w$.])void\b[ \t]*\(?[ \t]*[\w$.\[\]]*?'
+    r'(?<![\w$.])void\b[ \t]*\(?[ \t]*[\w$.]*?'
     r'\.(?:offset(?:Width|Height|Top|Left)|scroll(?:Width|Height|Top|Left)'
     r'|client(?:Width|Height)|getBoundingClientRect)\b')
 
@@ -3547,13 +3550,13 @@ def check_forced_reflow(root, failures):
                 continue
             path = os.path.join(base_dir, name)
             try:
-                # Decode the way a browser would (_decode_bom): a UTF-16 BOM is honored (else
-                # a BOM'd bundle decodes to `v\x00o\x00i...` and the idiom is silently missed),
-                # and a stray non-UTF-8 byte becomes U+FFFD instead of an uncaught
-                # UnicodeDecodeError that crashes the whole run. The idiom is pure ASCII, so
-                # replacement cannot corrupt a match.
-                with open(path, 'rb') as handle:
-                    text = _decode_bom(handle.read())
+                # JS is decoded as UTF-8: a module script is ALWAYS UTF-8 and a classic script
+                # is UTF-8 in practice, so unlike CSS/HTML this is NOT BOM-sniffed (a UTF-16-BOM
+                # file the browser would not run as JS must not be mis-scanned). errors='replace'
+                # keeps a stray non-UTF-8 byte from crashing the run with an uncaught
+                # UnicodeDecodeError; the idiom is pure ASCII, so replacement cannot corrupt a match.
+                with open(path, encoding='utf-8', errors='replace') as handle:
+                    text = handle.read()
             except OSError:
                 continue
             for match in _VOID_REFLOW_RE.finditer(text):
