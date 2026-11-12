@@ -148,67 +148,77 @@ test("share copy-card: logo image button, raw text hidden, copies data-code", ()
   assert.ok(btn.querySelector("img.cbutton-img"), "logo stays after copy (no glyph swap)");
 });
 
-test("per-heading share: inert <template> REPLACES the no-JS permalink on first press (no dup), copy wired", () => {
+test("per-heading share: first press clones the ONE proto, substitutes this heading's values, replaces the no-JS permalink", () => {
   const w = load(
-    '<span class="share-tooltip" data-anchor="Sec">' +
+    '<span class="share-tooltip" data-anchor="Sec"' +
+    ' data-share-direct="https://x.test/wiki/Page#Sec" data-share-secpath="Page#Sec" data-share-text="Sec">' +
     '<a class="headline-anchor" href="#Sec">s</a>' +
     '<span class="menu-wrapper"><span class="menu">' +
     '<span class="menu-headline">h</span>' +
     '<span class="code-select" data-code="https://x.test/wiki/Page#Sec">p</span>' +
-    '<template class="share-full">' +  // the full menu RE-INCLUDES the permalink (as on real pages)
-    '<span class="menu-headline">h2</span>' +
-    '<span class="code-select" data-code="https://x.test/wiki/Page#Sec">p2</span>' +
-    '<span class="share-social"><a href="https://soc.test">x</a></span></template>' +
-    "</span></span></span>");
+    "</span></span></span>" +
+    '<template class="share-proto">' +                                       // ONE page-level proto, sentinels
+    '<span class="menu-headline">H</span>' +                                 // text + class carry no sentinel
+    '<span class="code-select" data-code="ZZSHAREDIRECTZZ">D=ZZSHAREDIRECTZZ</span>' +   // data-code + text: raw
+    '<span class="code-select" data-code="[[ZZSHARESECPATHZZ|ZZSHARETEXTZZ]]">w</span>' +  // raw secpath+text
+    '<span class="share-social"><a class="share-icon" href="https://soc.test/?u=ZZSHAREDIRECTZZ&amp;t=ZZSHARETEXTZZ">x</a></span>' +
+    "</template>");
   const tip = w.document.querySelector(".share-tooltip");
   // template content is inert: querySelectorAll does NOT descend into it, so only the permalink
-  // code-select is live/enriched at load -- the ~130-node menu costs no DOM/style/layout yet.
+  // code-select is live at load -- the full menu costs no DOM/style/layout yet.
   assert.equal(w.document.querySelectorAll(".menu .code-select").length, 1,
     "only the permalink code-select is live before the share is pressed");
-  assert.ok(tip.querySelector("template.share-full"), "full section menu is parked in a <template>");
-  // first press activates it: the template's full menu (which RE-INCLUDES the permalink) replaces
-  // the rendered no-JS permalink, so the direct link is NOT duplicated.
+  assert.ok(!tip.getAttribute("data-share-built"), "not built before first press");
+  // first press: clone the proto, substitute this heading's values, drop the no-JS permalink.
   tip.dispatchEvent(new w.Event("pointerdown", { bubbles: true }));
-  assert.ok(!tip.querySelector("template.share-full"), "template is consumed on first press");
-  assert.equal(w.document.querySelectorAll(".menu .menu-headline").length, 1,
-    "the 'Copy or share this direct link' headline is not duplicated");
-  const live = w.document.querySelectorAll(".menu .code-select");
-  assert.equal(live.length, 1, "exactly one (deduped) permalink code-select in the live menu");
-  assert.ok(live[0].classList.contains("js-fully-loaded"), "the activated copy button is wired");
-  assert.ok(tip.querySelector(".share-social"), "the social share row is injected from the template");
-  // idempotent: a second press is a no-op (no template left), does not duplicate
+  assert.equal(tip.getAttribute("data-share-built"), "1", "built on first press");
+  const menu = tip.querySelector(".menu");
+  assert.ok(menu.innerHTML.indexOf("ZZSHARE") === -1, "every sentinel is substituted");
+  const codes = [...menu.querySelectorAll(".code-select")].map((c) => c.getAttribute("data-code"));
+  assert.ok(codes.indexOf("https://x.test/wiki/Page#Sec") !== -1,
+    "the direct-link field copies the RAW absolute URL (not url-encoded)");
+  assert.ok(codes.indexOf("[[Page#Sec|Sec]]") !== -1, "the wikitext field substitutes secpath + text raw");
+  assert.ok(menu.querySelector("a.share-icon").getAttribute("href")
+    .indexOf(encodeURIComponent("https://x.test/wiki/Page#Sec")) !== -1,
+    "the social share URL URL-ENCODES the direct link (it lands in a query string)");
+  assert.ok(menu.querySelector(".code-select").classList.contains("js-fully-loaded"),
+    "the injected copy fields are wired");
+  // idempotent: a second press is a no-op (the data-share-built guard), no rebuild/duplication
+  const n = menu.querySelectorAll(".menu-headline").length;
   tip.dispatchEvent(new w.Event("pointerdown", { bubbles: true }));
-  assert.equal(w.document.querySelectorAll(".menu .code-select").length, 1, "no duplication on re-press");
+  assert.equal(menu.querySelectorAll(".menu-headline").length, n, "no rebuild / duplication on re-press");
 });
 
-test("per-heading share: HOVER (pointerover) primes the full menu -- no click needed", () => {
+test("per-heading share: HOVER (pointerover) primes the full menu from the proto -- no click needed", () => {
   const w = load(
-    '<span class="share-tooltip" data-anchor="Sec">' +
+    '<span class="share-tooltip" data-anchor="Sec"' +
+    ' data-share-direct="https://x.test/#Sec" data-share-secpath="P#Sec" data-share-text="Sec">' +
     '<a class="headline-anchor" href="#Sec">s</a>' +
     '<span class="menu-wrapper"><span class="menu">' +
-    '<span class="code-select" data-code="https://x.test/wiki/Page#Sec">p</span>' +
-    '<template class="share-full">' +
-    '<span class="menu-headline">h2</span>' +
-    '<span class="share-social"><a href="https://soc.test">x</a></span></template>' +
-    "</span></span></span>");
+    '<span class="code-select" data-code="https://x.test/#Sec">p</span>' +
+    "</span></span></span>" +
+    '<template class="share-proto">' +
+    '<span class="menu-headline">H</span>' +
+    '<span class="share-social"><a href="https://soc.test/?u=ZZSHAREDIRECTZZ">x</a></span>' +
+    "</template>");
   const tip = w.document.querySelector(".share-tooltip");
-  assert.ok(tip.querySelector("template.share-full"), "menu parked in <template> at load");
-  // Hover ALONE (no press/click) must inject the full menu so CSS :hover reveals it (desktop
+  // Hover ALONE (no press/click) must build the full menu so CSS :hover reveals it (desktop
   // hover-to-open). Regression: priming was gated on pointerdown, so hover showed only the
   // pre-rendered permalink and a click was required to expand.
   tip.querySelector(".headline-anchor").dispatchEvent(new w.Event("pointerover", { bubbles: true }));
-  assert.ok(!tip.querySelector("template.share-full"), "hover consumes the template (full menu injected, no click)");
+  assert.equal(tip.getAttribute("data-share-built"), "1", "hover alone builds the full menu (no click)");
   assert.ok(tip.querySelector(".share-social"), "social row present after hover alone");
 });
 
 test("per-heading share: tap/click toggles a persistent .share-open; outside press + Escape close it", () => {
   const w = load(
-    '<span class="share-tooltip" data-anchor="Sec">' +
+    '<span class="share-tooltip" data-anchor="Sec"' +
+    ' data-share-direct="https://x.test/#Sec" data-share-secpath="P#Sec" data-share-text="Sec">' +
     '<a class="headline-anchor" href="#Sec">s</a>' +
     '<span class="menu-wrapper"><span class="menu">' +
-    '<span class="code-select" data-code="https://x.test/wiki/Page#Sec">p</span>' +
-    '<template class="share-full"><span class="code-select" data-code="SEC">y</span></template>' +
+    '<span class="code-select" data-code="https://x.test/#Sec">p</span>' +
     "</span></span></span>" +
+    '<template class="share-proto"><span class="code-select" data-code="ZZSHAREDIRECTZZ">y</span></template>' +
     '<p id="elsewhere">body</p>');
   const tip = w.document.querySelector(".share-tooltip");
   const anchor = tip.querySelector(".headline-anchor");
@@ -235,6 +245,35 @@ test("per-heading share: tap/click toggles a persistent .share-open; outside pre
   assert.ok(tip.classList.contains("share-open"), "reopened again");
   w.document.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   assert.ok(!tip.classList.contains("share-open"), "Escape closes the menu");
+});
+
+test("per-heading share: no-op without data-share-direct, without a proto, or without a .menu", () => {
+  // footer/authored menu: no data-share-direct -> activate returns, the menu is untouched
+  const w = load(
+    '<span class="share-tooltip" data-anchor="F"><a class="headline-anchor" href="#F">f</a>' +
+    '<span class="menu-wrapper"><span class="menu"><span class="code-select" data-code="X">x</span>' +
+    "</span></span></span>");
+  const tip = w.document.querySelector(".share-tooltip");
+  tip.dispatchEvent(new w.Event("pointerdown", { bubbles: true }));
+  assert.ok(!tip.getAttribute("data-share-built"), "no data-share-direct -> not built");
+  assert.equal(w.document.querySelectorAll(".menu .code-select").length, 1, "menu untouched");
+  // data-share-direct present but NO proto in the document -> a no-op, never throws
+  const w2 = load(
+    '<span class="share-tooltip" data-share-direct="https://x.test/#S" data-share-secpath="P#S" data-share-text="S">' +
+    '<a class="headline-anchor" href="#S">s</a>' +
+    '<span class="menu-wrapper"><span class="menu"><span class="code-select" data-code="X">x</span>' +
+    "</span></span></span>");
+  const tip2 = w2.document.querySelector(".share-tooltip");
+  assert.doesNotThrow(() => tip2.dispatchEvent(new w2.Event("pointerdown", { bubbles: true })));
+  assert.ok(!tip2.getAttribute("data-share-built"), "no proto -> not built");
+  // data-share-direct + proto present but the tooltip has NO .menu -> no-op (the `|| !menu` branch)
+  const w3 = load(
+    '<span class="share-tooltip" data-share-direct="https://x.test/#S" data-share-secpath="P#S" data-share-text="S">' +
+    '<a class="headline-anchor" href="#S">s</a></span>' +
+    '<template class="share-proto"><span class="code-select" data-code="ZZSHAREDIRECTZZ">y</span></template>');
+  const tip3 = w3.document.querySelector(".share-tooltip");
+  assert.doesNotThrow(() => tip3.dispatchEvent(new w3.Event("pointerdown", { bubbles: true })));
+  assert.ok(!tip3.getAttribute("data-share-built"), "no .menu -> not built");
 });
 
 test("hash navigation scrolls the target into view (content-visibility anchor fix)", () => {
