@@ -333,17 +333,21 @@ test("native <details> collapsible needs no JS toggle (app.js leaves it alone)",
   assert.ok(box.querySelector("summary"), "native <summary> kept");
 });
 
-test("expand/collapse-all toggles every <details> collapsible", () => {
+test("expand/collapse-all toggles every <details> + flips the label and arrow state", () => {
   const w = load(
-    '<button class="expand-or-collapse-all-button">x</button>' +
+    '<button class="expand-or-collapse-all-button">Expand all</button>' +
     '<details class="mw-collapsible"></details>' +
     '<details class="mw-collapsible" open></details>');
   const all = w.document.querySelector(".expand-or-collapse-all-button");
   const items = () => [...w.document.querySelectorAll("details.mw-collapsible")];
   all.dispatchEvent(new w.Event("click", { bubbles: true }));  // one closed -> open all
   assert.equal(items().filter((d) => !d.open).length, 0, "all open after expand");
+  assert.equal(all.textContent, "Collapse all", "label flips to Collapse all");
+  assert.ok(all.classList.contains("is-expanded"), "is-expanded set -> CSS shows the up arrow");
   all.dispatchEvent(new w.Event("click", { bubbles: true }));  // none closed -> close all
   assert.equal(items().filter((d) => d.open).length, 0, "all closed after collapse");
+  assert.equal(all.textContent, "Expand all", "label flips back to Expand all");
+  assert.ok(!all.classList.contains("is-expanded"), "is-expanded cleared -> down arrow");
 });
 
 // ---- tabs ----------------------------------------------------------------------------------
