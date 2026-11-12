@@ -269,12 +269,21 @@ TAPTARGET_JS = r"""
     let block = a.parentElement;
     while (block && !BLOCK.has(block.tagName)) block = block.parentElement;
     if (!block) return;                       // not in a text block -> let the general lane handle
-    // RENDERED text of the block that is NOT inside any <a> descendant (the 'sentence' around the
-    // link). innerText (not textContent) so a display:none sibling, a <script>/<style>, or a
-    // visually-hidden node does not count as sentence text and wrongly mark a standalone link
-    // inline. (This is a block-text heuristic, not a line-box analysis -- see the module docstring.)
+    // RENDERED non-link text of the block (the 'sentence' around the link). Both sides MUST use the
+    // same rendered basis: block.innerText (not textContent) already EXCLUDES a display:none /
+    // visually-hidden descendant, a <script>/<style>, etc. But x.innerText on a display:none anchor
+    // falls back to its RAW descendant text content -- so summing every anchor's innerText would
+    // subtract text blockText never counted, driving nonLink negative and wrongly marking an
+    // in-sentence link standalone (two crowded inline links then read as false violations). Count an
+    // anchor toward linkText only when it is actually RENDERED in the block: getClientRects() is
+    // empty for a display:none anchor OR one inside a display:none subtree (nested), and nonempty for
+    // visibility:hidden (whose innerText is already '' -- a no-op) and opacity:0 (which DOES
+    // contribute to innerText, so must stay counted; do NOT reuse shown(), which drops opacity:0).
+    // (This is a block-text heuristic, not a line-box analysis -- see the module docstring.)
     let linkText = '';
-    block.querySelectorAll('a').forEach((x) => { linkText += (x.innerText || ''); });
+    block.querySelectorAll('a').forEach((x) => {
+      if (x.getClientRects().length) linkText += (x.innerText || '');
+    });
     const blockText = block.innerText || '';
     const nonLink = blockText.replace(/\s+/g, '').length - linkText.replace(/\s+/g, '').length;
     // Allow a couple of separator chars (middot / pipe / comma between links) as still standalone.

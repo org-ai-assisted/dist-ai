@@ -118,6 +118,12 @@ def run() -> int:
     # sibling does not count as sentence text and wrongly exempt a stacked link.
     ck("block.innerText" in tt.TAPTARGET_JS,
        "standalone text uses rendered innerText, not raw textContent")
+    # A hidden anchor is counted toward link-text ONLY when it is actually rendered in the block,
+    # so a display:none anchor's raw innerText (which blockText never counted) cannot drive nonLink
+    # negative and wrongly mark an in-sentence link standalone. Browser-exercised in
+    # check_taptarget_js_test.py; canaried here so a silent revert reddens on the host too.
+    ck("getClientRects" in tt.TAPTARGET_JS,
+       "link-text counts only anchors rendered in the block (hidden-anchor double-count guard)")
     vnames = [n for n, _, _ in tt.VIEWPORTS]
     ck("mobile" in vnames and "desktop" in vnames,
        "measures BOTH a mobile and a desktop viewport")
