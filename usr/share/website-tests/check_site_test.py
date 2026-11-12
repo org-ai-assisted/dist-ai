@@ -3258,6 +3258,16 @@ def run():
     # so the skip is specific to redirect stubs, not a blanket pass for any sparse head.
     check('wiki conformance canary: minimal head WITHOUT refresh is still flagged',
           _wiki_failures('<meta charset="utf-8">', '<p>x</p>') != [])
+    # regression (CodeRabbit r4551032140): the stub skip is earned ONLY by a content= that
+    # NAVIGATES (a url= target, as the generator emits content="0; url=..."). A refresh meta
+    # with empty content, a bare delay (self-reload, no url=), or no content attr is a REAL
+    # content page -- it must NOT inherit the skip, else its missing head/a11y set false-GREENs.
+    # OLD code set is_redirect for ANY refresh meta, so each of these was wrongly skipped.
+    for _bad_refresh in ('content=""', 'content="5"', ''):
+        check('wiki conformance: refresh meta (%s) without a url= target is NOT a stub -> still flagged'
+              % (_bad_refresh or 'no content attr'),
+              _wiki_failures('<meta charset="utf-8"><meta http-equiv="refresh" %s>' % _bad_refresh,
+                             '<p>x</p>') != [])
     # regression: tabindex is parsed by HTML integer rules, deciding positivity WITHOUT int().
     #  - a superscript digit (U+00B2), "++1", and a 4301-digit value are NOT a positive integer a
     #    browser honors (and int() would raise on the superscript / the over-long value) -> ignored,

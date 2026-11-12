@@ -2405,6 +2405,52 @@ def check_video_captions(root, failures, pages=None):
                 '%s: <video> without a <track kind="captions"> (WCAG 1.2.2)' % rel)
 
 
+class _VideoCaptionAudit(html.parser.HTMLParser):
+    """Count <video> elements with no descendant <track kind="captions"> (WCAG 1.2.2). Driven by
+    html.parser like every other audit here (NOT a raw-text regex), so: markup inside an HTML
+    comment or a <script>/<style> body is invisible (never a browser-rendered <video>); the kind=
+    value matches regardless of quoting (single/double/unquoted); and it is keyed on the attribute
+    NAME, so `data-kind="captions"` does NOT satisfy it. A <video> left unclosed renders nothing
+    and is not counted."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self._stack = []          # one bool per open <video>: has a captions track yet?
+        self.missing = 0
+
+    def _maybe_track(self, tag, attrs):
+        if tag == "track" and self._stack:
+            if (dict(attrs).get("kind") or "").strip().lower() == "captions":
+                self._stack[-1] = True
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "video":
+            self._stack.append(False)
+        else:
+            self._maybe_track(tag, attrs)        # <track> is void: usually a starttag
+
+    def handle_startendtag(self, tag, attrs):
+        self._maybe_track(tag, attrs)            # or an explicit <track .../>
+
+    def handle_endtag(self, tag):
+        if tag == "video" and self._stack and not self._stack.pop():
+            self.missing += 1
+
+
+def check_video_captions(root, failures, pages=None):
+    """Every <video> must carry a <track kind="captions"> (WCAG 1.2.2 / axe video-caption): a
+    silent instructional video ships a descriptive-caption track, so a captionless <video> is a
+    real a11y gap, flagged here."""
+    for page in (html_files(root) if pages is None else pages):
+        rel = os.path.relpath(page, root)
+        audit = _VideoCaptionAudit()
+        with open(page, encoding="utf-8") as handle:
+            audit.feed(handle.read())
+        for _ in range(audit.missing):
+            failures.append(
+                '%s: <video> without a <track kind="captions"> (WCAG 1.2.2)' % rel)
+
+
 def check_toc_complete(root, failures, pages=None):
     # A page's "On this page" TOC (<nav class="toc">) must list EVERY top-level content
     # section (<section class="cat" id=...>), so a newly added section cannot silently
@@ -3566,6 +3612,13 @@ def check_forced_reflow(root, failures):
                     % (os.path.relpath(path, root), match.group(0)[:60].strip()))
 
 
+# A meta-refresh REDIRECTS only when its content names a target: "<delay>; url=<URL>"
+# (the generator emits content="0; url=..."). A bare delay reloads the SAME page and an
+# empty/absent content does nothing -- neither is a redirect stub, so neither earns the
+# conformance skip below (that would false-GREEN a real content page's missing head/a11y set).
+_META_REFRESH_URL_RE = re.compile(r'url\s*=\s*\S', re.IGNORECASE)
+
+
 class _WikiHeadAudit(html.parser.HTMLParser):
     """Collect the mw-static-generator head + a11y conformance signals for ONE page: the
     skip-to-content link + its <main> target id, the theme-color metas' media= values, the
@@ -3595,7 +3648,8 @@ class _WikiHeadAudit(html.parser.HTMLParser):
         if tag == 'meta':
             if self.in_body:
                 self.meta_in_body += 1
-            if attr.get('http-equiv', '').lower() == 'refresh':
+            if (attr.get('http-equiv', '').lower() == 'refresh'
+                    and _META_REFRESH_URL_RE.search(attr.get('content', ''))):
                 self.is_redirect = True
             name = attr.get('name', '').lower()
             if name == 'theme-color':
