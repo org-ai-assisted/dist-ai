@@ -981,7 +981,7 @@ function stubTableGeom(doc, el, scrollWidth, clientWidth, railLog) {
   Object.defineProperty(el, "clientWidth", { configurable: true, get() { return clientWidth; } });
 }
 
-test("wide tables: one ResizeObserver batches all reads before any style write (no reflow thrash)", () => {
+test("wide tables: one ResizeObserver batches all reads before any style write (no reflow thrash)", async () => {
   const w = load('<div class="wiki-content">' +
     '<table id="wide"><tbody><tr><td>x</td></tr></tbody></table>' +
     '<table id="fits"><tbody><tr><td>y</td></tr></tbody></table></div>');
@@ -997,7 +997,8 @@ test("wide tables: one ResizeObserver batches all reads before any style write (
   stubTableGeom(w.document, wide, 400, 200, railLog);  // overflows -> needs a rail
   stubTableGeom(w.document, fits, 150, 200, railLog);  // fits -> no rail
 
-  ro.cb();  // one batched callback == the frame's resize delivery for all tables
+  ro.cb();  // one batched callback; the measure+write is coalesced into the next frame
+  await new Promise((r) => setTimeout(r, 30));
 
   assert.ok(railLog.length >= 2, "every table's geometry was read");
   assert.ok(railLog.every((sawRail) => sawRail === false),
@@ -1822,11 +1823,12 @@ test("wide tables: without ResizeObserver, build via sync() and re-sync on a coa
   assert.ok(rail && rail.classList.contains("table-scroll-top"), "the fallback built the top rail on resize");
 });
 
-test("wide tables: the top rail and the table mirror each other's scrollLeft (re-entrancy guarded)", () => {
+test("wide tables: the top rail and the table mirror each other's scrollLeft (re-entrancy guarded)", async () => {
   const w = load('<div class="wiki-content"><table id="wide"><tbody><tr><td>x</td></tr></tbody></table></div>');
   const wide = w.document.getElementById("wide");
   stubTableGeom(w.document, wide, 400, 200);
-  w.__resizeObservers[0].cb();   // build the rail
+  w.__resizeObservers[0].cb();   // build the rail (coalesced into the next frame)
+  await new Promise((r) => setTimeout(r, 30));
   const rail = wide.previousElementSibling;
   // Setting scrollLeft normally fires no scroll event in jsdom; make it do so, which also
   // re-enters the sibling's handler while the sync lock is held (exercising the lock guard).
@@ -1845,18 +1847,20 @@ test("wide tables: the top rail and the table mirror each other's scrollLeft (re
   assert.equal(wide.scrollLeft, 45, "scrolling the rail syncs the table");
 });
 
-test("wide tables: a rail-bearing table that later fits is hidden again", () => {
+test("wide tables: a rail-bearing table that later fits is hidden again", async () => {
   const w = load('<div class="wiki-content"><table id="wide"><tbody><tr><td>x</td></tr></tbody></table></div>');
   const wide = w.document.getElementById("wide");
   const geom = { sw: 400, cw: 200 };
   Object.defineProperty(wide, "scrollWidth", { configurable: true, get() { return geom.sw; } });
   Object.defineProperty(wide, "clientWidth", { configurable: true, get() { return geom.cw; } });
   const ro = w.__resizeObservers[0];
-  ro.cb();   // overwide -> builds + shows the rail
+  ro.cb();   // overwide -> builds + shows the rail (coalesced into the next frame)
+  await new Promise((r) => setTimeout(r, 30));
   const rail = wide.previousElementSibling;
   assert.equal(rail.style.display, "", "rail shown while overwide");
   geom.sw = 150;   // now it fits
   ro.cb();
+  await new Promise((r) => setTimeout(r, 30));
   assert.equal(rail.style.display, "none", "rail hidden once the table fits");
   assert.equal(wide.style.marginTop, "", "the overwide pin is released");
 });
