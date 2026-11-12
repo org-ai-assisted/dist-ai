@@ -2873,6 +2873,38 @@ def run():
         _fails = []
         check_site.check_wording(root, _fails)
         check('check_wording passes correctly-capitalized prose', not _fails, _fails)
+    # The hyphen's word boundary must NOT make "non-free software" / "non-open source" (the
+    # OPPOSITE term) match -- capitalizing it would be nonsense. A standalone phrase still flags.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               '<!doctype html><html><body><p>add-ons often contain non-free software and '
+               'non-open source blobs</p></body></html>')
+        _fails = []
+        check_site.check_wording(root, _fails)
+        check('check_wording does NOT flag "non-free software" / "non-open source"', not _fails, _fails)
+    # License-notice boilerplate quotes "free software" in the FSF's OWN lowercase (GPL short
+    # notice / madaidan license). It is accepted, NOT flagged -- capitalizing would misquote it.
+    for _notice in ('This is free software, and you are welcome to redistribute it '
+                    'under certain conditions; see the wiki source code for details.',
+                    'This program is free software; you can redistribute it and/or modify it.'):
+        with tempfile.TemporaryDirectory() as root:
+            _write(root, 'index.html',
+                   '<!doctype html><html><body><blockquote>%s</blockquote></body></html>' % _notice)
+            _fails = []
+            check_site.check_wording(root, _fails)
+            check('check_wording accepts the license-notice "free software" (not flagged)',
+                  not _fails, _fails)
+    # But a lowercase use OUTSIDE the accepted notice is still flagged, even when a notice is
+    # also present -- the accept is scoped to the notice sentence, not a blanket page pass.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               '<!doctype html><html><body>'
+               '<blockquote>This is free software, and you are welcome to redistribute it.</blockquote>'
+               '<p>our editorial take on free software in general</p></body></html>')
+        _fails = []
+        check_site.check_wording(root, _fails)
+        check('check_wording still flags editorial "free software" alongside a license notice',
+              any('Free Software' in f for f in _fails), _fails)
 
     # CSP form-action invariant (form-action does NOT fall back to default-src).
     _csp_head = ('<!doctype html><html><head><meta http-equiv="Content-Security-Policy" '

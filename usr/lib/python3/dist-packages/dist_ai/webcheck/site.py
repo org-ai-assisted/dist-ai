@@ -67,10 +67,28 @@ KNOWN_PROJECT_PATHS: tuple[str, ...] = (
 SUBSITES: dict[str, tuple[str, str]] = {
 }
 
-# Prose wording rule: these must be capitalized as proper labels.
+# Prose wording rule: these must be capitalized as proper labels. The (?<!non-) guard keeps the
+# hyphen's word boundary from matching the OPPOSITE term -- "non-free software" / "non-open source"
+# is not the Free Software / Open Source label and must never be "corrected" to it.
 WORDING = [
-    (re.compile(r'\bopen source\b'), 'open source', 'Open Source'),
-    (re.compile(r'\bfree software\b'), 'free software', 'Free Software'),
+    (re.compile(r'(?<!non-)\bopen source\b'), 'open source', 'Open Source'),
+    (re.compile(r'(?<!non-)\bfree software\b'), 'free software', 'Free Software'),
+]
+
+# License notices quote "free software"/"open source" in the FSF's OWN deliberate lowercase
+# (the GPL short-notice, the madaidan license). That is quoted license boilerplate, not
+# editorial prose, so the proper-label rule does not apply -- capitalizing it would misquote a
+# recognized license string. Accept a WORDING match that falls ENTIRELY inside one of these
+# fixed notice sentences; the same lowercase phrase ANYWHERE ELSE on the page is still flagged.
+def _ws_phrase(phrase):
+    # Match the phrase tolerant of any whitespace run between tokens -- extracted page text wraps
+    # the notice across newlines, so a literal-space pattern would miss it.
+    return re.compile(r'\s+'.join(re.escape(tok) for tok in phrase.split()), re.IGNORECASE)
+
+
+WORDING_LICENSE_ACCEPT = [
+    _ws_phrase('this is free software, and you are welcome to redistribute it'),
+    _ws_phrase('this program is free software; you can redistribute it'),
 ]
 
 
@@ -483,10 +501,14 @@ def check_wording(root, failures, pages=None):
         with open(page, encoding='utf-8') as handle:
             ext.feed(handle.read())
         text = ext.text()
+        # Spans of accepted license-notice text; a match inside one is quoted boilerplate.
+        accepted = [m.span() for pat in WORDING_LICENSE_ACCEPT for m in pat.finditer(text)]
         for pattern, bad, good in WORDING:
-            if pattern.search(text):
-                failures.append('%s: prose uses %r; use %r'
-                                % (rel, bad, good))
+            for m in pattern.finditer(text):
+                if any(s <= m.start() and m.end() <= e for s, e in accepted):
+                    continue
+                failures.append('%s: prose uses %r; use %r' % (rel, bad, good))
+                break  # one finding per phrase per page
 
 
 # A verifiable claim stamped with a date (a coverage %, a line count, a "tested
@@ -2451,6 +2473,52 @@ def check_video_captions(root, failures, pages=None):
                 '%s: <video> without a <track kind="captions"> (WCAG 1.2.2)' % rel)
 
 
+class _VideoCaptionAudit(html.parser.HTMLParser):
+    """Count <video> elements with no descendant <track kind="captions"> (WCAG 1.2.2). Driven by
+    html.parser like every other audit here (NOT a raw-text regex), so: markup inside an HTML
+    comment or a <script>/<style> body is invisible (never a browser-rendered <video>); the kind=
+    value matches regardless of quoting (single/double/unquoted); and it is keyed on the attribute
+    NAME, so `data-kind="captions"` does NOT satisfy it. A <video> left unclosed renders nothing
+    and is not counted."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self._stack = []          # one bool per open <video>: has a captions track yet?
+        self.missing = 0
+
+    def _maybe_track(self, tag, attrs):
+        if tag == "track" and self._stack:
+            if (dict(attrs).get("kind") or "").strip().lower() == "captions":
+                self._stack[-1] = True
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "video":
+            self._stack.append(False)
+        else:
+            self._maybe_track(tag, attrs)        # <track> is void: usually a starttag
+
+    def handle_startendtag(self, tag, attrs):
+        self._maybe_track(tag, attrs)            # or an explicit <track .../>
+
+    def handle_endtag(self, tag):
+        if tag == "video" and self._stack and not self._stack.pop():
+            self.missing += 1
+
+
+def check_video_captions(root, failures, pages=None):
+    """Every <video> must carry a <track kind="captions"> (WCAG 1.2.2 / axe video-caption): a
+    silent instructional video ships a descriptive-caption track, so a captionless <video> is a
+    real a11y gap, flagged here."""
+    for page in (html_files(root) if pages is None else pages):
+        rel = os.path.relpath(page, root)
+        audit = _VideoCaptionAudit()
+        with open(page, encoding="utf-8") as handle:
+            audit.feed(handle.read())
+        for _ in range(audit.missing):
+            failures.append(
+                '%s: <video> without a <track kind="captions"> (WCAG 1.2.2)' % rel)
+
+
 def check_toc_complete(root, failures, pages=None):
     # A page's "On this page" TOC (<nav class="toc">) must list EVERY top-level content
     # section (<section class="cat" id=...>), so a newly added section cannot silently
@@ -3648,6 +3716,9 @@ class _WikiHeadAudit(html.parser.HTMLParser):
         if tag == 'meta':
             if self.in_body:
                 self.meta_in_body += 1
+            if (attr.get('http-equiv', '').lower() == 'refresh'
+                    and _META_REFRESH_URL_RE.search(attr.get('content', ''))):
+                self.is_redirect = True
             if (attr.get('http-equiv', '').lower() == 'refresh'
                     and _META_REFRESH_URL_RE.search(attr.get('content', ''))):
                 self.is_redirect = True
