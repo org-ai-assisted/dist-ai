@@ -3515,19 +3515,24 @@ def check_css_animations(root, failures):
 # "Forced reflow". Only the discarded form is gated: a real measurement keeps its value, so this
 # never flags a legitimate read. Defer the dependent change with requestAnimationFrame instead.
 #
-# Matches the single `void <expr>.<layout-read>` idiom and nothing wider:
-#   - `\bvoid\b` then `\s*\(?` accepts both `void el.offsetHeight` and the parenthesized
-#     `void(el.offsetHeight)` minifiers (Terser) emit -- the site JS is minified.
-#   - the gap forbids newline/`,`/`;`/`:`/`{`/`}`, so a `void 0` can never reach across a
-#     statement boundary (ASI, ternary, comma-decl, a `void 0` in a comment) to a later,
-#     unrelated layout read.
-#   - the gap also forbids `(`, which is what distinguishes the discarded read
-#     (`void(el.read)` / `void el.read`) from a read passed as an ARG to a voided call
-#     (`void foo(el.read)` -- the `(` lands in the gap and blocks the match). A read reached
-#     only THROUGH a call in the object chain (`void getEl().offsetHeight`) is likewise not
-#     flagged: the conservative choice, errs toward never flagging a legitimate read.
+# Matches the single `void <operand>.<layout-read>` idiom and nothing wider. The operand is
+# matched POSITIVELY -- a `(`?-wrapped member chain of [word $ . [ ]] only -- never a permissive
+# "gap minus some separators" (that leaks: `||`, `&&`, `?:`, `)`, `*/`, a U+2028/U+2029 line
+# terminator and an EOL all split `void 0` from a LATER, unrelated read, each a false positive):
+#   - `(?<![\w$.])void\b` is the `void` OPERATOR, not a `.void` property access (`holder.void.el
+#     .offsetHeight` keeps its value) nor a substring (`avoid`).
+#   - `[ \t]*\(?[ \t]*` accepts `void el.offsetHeight` and the parenthesized `void(el.offsetHeight)`
+#     minifiers (Terser) emit -- the site JS is minified -- but only HORIZONTAL space, so `void`
+#     at end-of-line cannot swallow the newline into the operand.
+#   - the operand class excludes whitespace, operators, `)` and `?`, so it cannot cross an operator
+#     (`void 0 || el.read`), a closed paren (`void(0) && el.read`) or a ternary (`void 0 ? el.read
+#     : 0`) into an unrelated read. A read reached only THROUGH a call (`void getEl().offsetHeight`)
+#     is likewise not flagged: the conservative choice, errs toward never flagging a legitimate read.
+# Heuristic text scan: a `void <chain>.<read>` written inside a JS comment or string literal would
+# still match. Immaterial on the real (minified, comment-stripped) site JS this gates; not worth a
+# JS tokenizer.
 _VOID_REFLOW_RE = re.compile(
-    r'\bvoid\b\s*\(?[^;{}(,:\r\n]*?'
+    r'(?<![\w$.])void\b[ \t]*\(?[ \t]*[\w$.\[\]]*?'
     r'\.(?:offset(?:Width|Height|Top|Left)|scroll(?:Width|Height|Top|Left)'
     r'|client(?:Width|Height)|getBoundingClientRect)\b')
 
@@ -3542,12 +3547,13 @@ def check_forced_reflow(root, failures):
                 continue
             path = os.path.join(base_dir, name)
             try:
-                # errors='replace': a minified/vendored .js with a stray non-UTF-8 byte
-                # must still be TOKENIZED (U+FFFD, never an abort -- see _decode_bom),
-                # not crash the run with an uncaught UnicodeDecodeError. The idiom scanned
-                # for is pure ASCII, so substitution cannot corrupt a match.
-                with open(path, encoding='utf-8', errors='replace') as handle:
-                    text = handle.read()
+                # Decode the way a browser would (_decode_bom): a UTF-16 BOM is honored (else
+                # a BOM'd bundle decodes to `v\x00o\x00i...` and the idiom is silently missed),
+                # and a stray non-UTF-8 byte becomes U+FFFD instead of an uncaught
+                # UnicodeDecodeError that crashes the whole run. The idiom is pure ASCII, so
+                # replacement cannot corrupt a match.
+                with open(path, 'rb') as handle:
+                    text = _decode_bom(handle.read())
             except OSError:
                 continue
             for match in _VOID_REFLOW_RE.finditer(text):

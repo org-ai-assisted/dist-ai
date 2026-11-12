@@ -1109,27 +1109,46 @@ def run():
         check('void(el.offsetHeight) parenthesized forced-reflow flagged',
               any('offsetHeight' in f for f in _reflow_failures(root)),
               repr(_reflow_failures(root)))
-    # F2: a `void 0` must never link across a statement boundary to a LATER, unrelated layout
-    # read (ASI / ternary / comma-decl / a `void 0` in a comment / a read passed as a call arg).
+    # F2: `void` (as the undefined idiom `void 0` / `void(0)`) must never link to a LATER,
+    # unrelated layout read -- across a statement boundary, operator, closed paren, ternary,
+    # newline/line-terminator, or a member chain where `void` is a PROPERTY name, nor a read
+    # passed as a call ARG. Each would falsely flag a kept measurement.
     for label, js in (
             ('ASI newline', 'void 0\nconst h = el.offsetHeight;'),
             ('ternary', 'x ? void 0 : el.offsetHeight;'),
+            ('ternary no space', 'void 0?el.offsetHeight:0'),
             ('comma-decl', 'void 0, h = el.offsetHeight;'),
-            ('commented void', '// void 0\nel.offsetHeight;'),
-            ('read as voided-call arg', 'void foo(el.offsetHeight);')):
+            ('commented void 0', '// void 0\nel.offsetHeight;'),
+            ('void at end of line', '// void\nconst h = el.offsetHeight;'),
+            ('read as voided-call arg', 'void foo(el.offsetHeight);'),
+            ('|| operator', 'if (x === void 0 || el.offsetHeight > 0) {}'),
+            ('inline block comment', '/* void 0 */ const h = el.offsetHeight;'),
+            ('void(0) || read', 'const h = void(0) || el.offsetHeight;'),
+            ('void(0) && read', 'void(0) && document.body.offsetHeight;'),
+            ('property named void', 'const h = holder.void.el.offsetHeight;'),
+            ('U+2028 line terminator', 'void 0' + chr(0x2028) + 'const h = el.offsetHeight;'),
+            ('U+2029 line terminator', 'void 0' + chr(0x2029) + 'const h = el.offsetHeight;')):
         with tempfile.TemporaryDirectory() as root:
             _write(root, 'app.js', js)
-            check('unrelated read after void 0 not flagged (%s)' % label,
+            check('unrelated read not flagged (%s)' % label,
                   _reflow_failures(root) == [], repr(_reflow_failures(root)))
     with tempfile.TemporaryDirectory() as root:
         # F1: a non-UTF-8 .js (lone 0xff, as minified/vendored bundles carry) must not crash
-        # check_forced_reflow -- it is read with errors='replace', so the decodable part is
-        # still scanned and a real idiom in the same file is still flagged.
+        # check_forced_reflow -- it is decoded via _decode_bom (U+FFFD, never an abort), so the
+        # decodable part is still scanned and a real idiom in the same file is still flagged.
         with open(os.path.join(root, 'bad.js'), 'wb') as handle:
             handle.write(b'\xffvoid el.offsetHeight;')
         fails = _reflow_failures(root)   # must not raise UnicodeDecodeError
         check('non-UTF-8 .js scanned without crashing, idiom still flagged',
               any('offsetHeight' in f for f in fails), repr(fails))
+    with tempfile.TemporaryDirectory() as root:
+        # F1: a UTF-16-BOM .js (browser honors the BOM) must be decoded by its BOM, not read as
+        # UTF-8 garbage -- else a real forced-reflow idiom is silently missed.
+        with open(os.path.join(root, 'bom.js'), 'wb') as handle:
+            handle.write('void el.offsetHeight;'.encode('utf-16'))   # encodes a BOM
+        check('UTF-16-BOM .js decoded by BOM, idiom still flagged',
+              any('offsetHeight' in f for f in _reflow_failures(root)),
+              repr(_reflow_failures(root)))
     check('check_forced_reflow invoked from main()',
           'check_forced_reflow(root' in main_body)
 
