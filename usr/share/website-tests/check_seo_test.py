@@ -29,6 +29,7 @@ import inspect
 import os
 import sys
 import tempfile
+import unittest.mock
 import xml.etree.ElementTree
 
 
@@ -254,6 +255,27 @@ def run():
         check('a malformed sitemap.xml is flagged',
               any('not well-formed XML' in p for p in cs.check_seo(root)),
               repr(cs.check_seo(root)))
+        # an existing-but-UNREADABLE sitemap.xml is reported, not crashed-on: os.path.isfile
+        # is True for a file open() cannot read (EACCES/EIO), so the read must wrap OSError
+        # like every other artifact read here. Denied uid-independently (chmod 000 does not
+        # stop CI root) by failing open() for the sitemap path only and delegating otherwise.
+        _seed(root, host)
+        sitemap_path = os.path.join(root, 'sitemap.xml')
+        real_open = open
+
+        def _deny_sitemap(path, *args, **kwargs):
+            if os.path.abspath(path) == os.path.abspath(sitemap_path):
+                raise PermissionError(13, 'Permission denied')
+            return real_open(path, *args, **kwargs)
+        crashed = False
+        with unittest.mock.patch('builtins.open', _deny_sitemap):
+            try:
+                _probs = cs.check_seo(root)
+            except OSError:
+                crashed = True
+                _probs = []
+        check('an unreadable sitemap.xml is reported, not crashed-on',
+              not crashed and any('unreadable' in p for p in _probs), repr(_probs))
 
     # check_seo: missing sitemap
     with tempfile.TemporaryDirectory() as root:

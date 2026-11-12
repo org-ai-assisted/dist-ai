@@ -3292,26 +3292,33 @@ def check_seo(root, policy=None):
         if not os.path.isfile(sitemap_path):
             problems.append('sitemap.xml missing (an indexable site must list its pages)')
         else:
-            with open(sitemap_path, 'rb') as handle:
-                sitemap = handle.read()
-            # Parse as XML and read the real <loc> ELEMENTS, not a regex over the raw text:
-            # ElementTree reports a commented-out <loc> as a comment node (non-str .tag), so it
-            # is invisible here -- a raw scan would false-pass a page that only a disabled <loc>
-            # covers. Comparing exact element values (not a substring) also rejects a <loc> that
-            # is merely a prefix of a page URL; ET unescapes entities, so an &amp; already matches
-            # the raw page URL. defusedxml guards XXE / entity-bomb / external-DTD.
+            # os.path.isfile() is True for an existing file that cannot be read (EACCES/EIO),
+            # so the open can still raise -- report it rather than crashing the whole run, as
+            # every other artifact read in this module (index.html, css, favicon png) does.
             try:
-                sitemap_root = _safe_fromstring(sitemap)
-            except Exception:  # noqa: BLE001 -- any XML parse failure is a real SEO defect
-                problems.append('sitemap.xml is not well-formed XML')
+                with open(sitemap_path, 'rb') as handle:
+                    sitemap = handle.read()
+            except OSError:
+                problems.append('sitemap.xml unreadable')
             else:
-                locs = {(el.text or '').strip()
-                        for el in sitemap_root.iter()
-                        if isinstance(el.tag, str)
-                        and el.tag.rsplit('}', 1)[-1].lower() == 'loc'}
-                for url in seo_page_urls(root, host):
-                    if url not in locs:
-                        problems.append('sitemap.xml does not list %s' % url)
+                # Parse as XML and read the real <loc> ELEMENTS, not a regex over the raw text:
+                # ElementTree reports a commented-out <loc> as a comment node (non-str .tag), so it
+                # is invisible here -- a raw scan would false-pass a page that only a disabled <loc>
+                # covers. Comparing exact element values (not a substring) also rejects a <loc> that
+                # is merely a prefix of a page URL; ET unescapes entities, so an &amp; already matches
+                # the raw page URL. defusedxml guards XXE / entity-bomb / external-DTD.
+                try:
+                    sitemap_root = _safe_fromstring(sitemap)
+                except Exception:  # noqa: BLE001 -- any XML parse failure is a real SEO defect
+                    problems.append('sitemap.xml is not well-formed XML')
+                else:
+                    locs = {(el.text or '').strip()
+                            for el in sitemap_root.iter()
+                            if isinstance(el.tag, str)
+                            and el.tag.rsplit('}', 1)[-1].lower() == 'loc'}
+                    for url in seo_page_urls(root, host):
+                        if url not in locs:
+                            problems.append('sitemap.xml does not list %s' % url)
     # robots.txt: every site ships one (a crawler fetches it first).
     if not os.path.isfile(os.path.join(root, 'robots.txt')):
         problems.append('robots.txt missing')
