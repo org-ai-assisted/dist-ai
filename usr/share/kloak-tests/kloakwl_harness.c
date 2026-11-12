@@ -26,6 +26,7 @@ offset-global-space audit regressions.
 #include <stdint.h>
 #include <string.h>
 #include <sys/wait.h>
+#include <unistd.h>
 
 static int checks = 0;
 #define CHECK(cond) do { assert(cond); ++checks; } while (0)
@@ -319,6 +320,52 @@ static void unit_abs_coord_invalid(void)
     }
 }
 
+/* Regression for Whonix/kloak#35 (degraded mode on a failed Wayland connect).
+ * open_wl_sock, when connect() to the compositor socket fails, must report the
+ * connection as lost to the parent (CTP_PACKET_WAYLAND_LOST) and exit(0) -- so
+ * the parent honors degraded mode (skip the grab, await the escape combo). The
+ * old code exit(1)'d and sent nothing, which the parent saw as the child
+ * aborting during early init. Run in a forked child: it points send_write_fd at
+ * a pipe and calls open_wl_sock against a WAYLAND_DISPLAY under an empty
+ * XDG_RUNTIME_DIR, so the socket cannot exist and connect() fails with ENOENT
+ * deterministically. The parent asserts a lone WAYLAND_LOST header arrived and
+ * the child exited 0. */
+static void unit_open_wl_sock_degraded(void)
+{
+    char runtime_dir[] = "/tmp/kloak_wlsock_XXXXXX";
+    int pipe_fds[2];
+    pid_t pid;
+    int status = 0;
+    enum ctp_packet_type pkt = CTP_PACKET_INIT_ACK;
+    ssize_t got;
+
+    assert(mkdtemp(runtime_dir) != NULL);
+    assert(pipe(pipe_fds) == 0);
+
+    pid = fork();
+    assert(pid >= 0);
+    if (pid == 0) {
+        assert(close(pipe_fds[0]) == 0);
+        send_write_fd = pipe_fds[1];
+        assert(setenv("XDG_RUNTIME_DIR", runtime_dir, 1) == 0);
+        assert(setenv("WAYLAND_DISPLAY", "kloak-nonexistent-wl", 1) == 0);
+        /* The WARNING path writes to stderr; keep the test output clean. */
+        (void)!freopen("/dev/null", "w", stderr);
+        (void)open_wl_sock();
+        /* Must not return in the degraded case: it exits. */
+        _exit(2);
+    }
+    assert(close(pipe_fds[1]) == 0);
+    got = read(pipe_fds[0], &pkt, sizeof(pkt));
+    assert(close(pipe_fds[0]) == 0);
+    assert(waitpid(pid, &status, 0) == pid);
+    assert(rmdir(runtime_dir) == 0);
+
+    CHECK(got == (ssize_t)sizeof(pkt));
+    CHECK(pkt == CTP_PACKET_WAYLAND_LOST);
+    CHECK(classify_child(status) == CH_EXIT0);
+}
+
 int main(void)
 {
     unit_check_screen_touch();
@@ -332,6 +379,7 @@ int main(void)
     unit_cross_overlap_and_offset_global_space();
     unit_recalc_global_space_gap();
     unit_abs_coord_invalid();
+    unit_open_wl_sock_degraded();
     printf("kloakwl harness: all assertions passed (%d checks)\n", checks);
     return 0;
 }

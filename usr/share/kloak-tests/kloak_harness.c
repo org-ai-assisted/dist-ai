@@ -252,6 +252,38 @@ static void unit_parse_inotify_unknown_mask_bails(void)
     CHECK(name == NULL && pos == -1 && !overflow);
 }
 
+/* Regression for Whonix/kloak#34 (the busy-loop coupled to the #35 degraded
+ * path). applayer_poll_init must stop watching the child pipe (ev_fds[2]) when
+ * the Wayland connect failed: in degraded mode the child has already exited, so
+ * its pipe only ever reports POLLHUP, and the main loop services ev_fds[2] only
+ * under `if (wl_connect_success)` -- so a watched dead pipe returns instantly
+ * every iteration and spins at 100% CPU. A negative fd makes poll ignore it.
+ * Old code set ev_fds[2].fd = recv_read_fd unconditionally. Needs a real
+ * (device-less) libinput context, since applayer_poll_init reads
+ * libinput_get_fd(li). */
+static void unit_degraded_poll_skips_dead_pipe(void)
+{
+    li = libinput_path_create_context(&li_interface, NULL);
+    assert(li != NULL);
+    inotify_fd = -1;    /* stored into ev_fds[1].fd; value is otherwise unused */
+    recv_read_fd = 42;  /* the fd a non-degraded run would watch */
+
+    wl_connect_success = true;
+    applayer_poll_init();
+    CHECK(ev_fds[2].fd == recv_read_fd);
+    free(ev_fds);
+    ev_fds = NULL;
+
+    wl_connect_success = false;
+    applayer_poll_init();
+    CHECK(ev_fds[2].fd == -1);
+    free(ev_fds);
+    ev_fds = NULL;
+
+    libinput_unref(li);
+    li = NULL;
+}
+
 int main(void)
 {
     unit_lookup_keycode();
@@ -263,6 +295,7 @@ int main(void)
     unit_calc_next_led_state();
     unit_parse_inotify_events();
     unit_parse_inotify_unknown_mask_bails();
+    unit_degraded_poll_skips_dead_pipe();
     printf("kloak harness: all assertions passed (%d checks)\n", checks);
     return 0;
 }
