@@ -279,6 +279,12 @@ run_required_unit_test check_console_test.py
 run_required_unit_test check_vnu_test.py
 run_required_unit_test check_axe_test.py
 
+## Unit regression for the WCAG 2.5.8 tap-target lane's browser-free geometry engine (under-size,
+## the spacing exception incl. circle-vs-rect, the same-href union, the inline exemption, and the
+## whole evaluate() verdict). The browser side only extracts rectangles; this tests every
+## size/spacing decision with no browser, so it runs everywhere.
+run_required_unit_test check_taptarget_test.py
+
 ## Unit regression for the cspell spell-check lane's browser-free logic (issue-line parser,
 ## baseline round-trip, finding_key, scan_root new-vs-baseline, fail-loud error handling).
 ## cspell itself is npm/sandbox-only and STUBBED in the test, so this runs everywhere.
