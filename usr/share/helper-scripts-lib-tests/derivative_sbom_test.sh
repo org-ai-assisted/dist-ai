@@ -512,9 +512,11 @@ noread_rc="$(merge_rc "${merge_base}" "${noread_frag}")"
 chmod 755 -- "${noread_frag}"
 check "merge-tool: unlistable fragments dir fails closed (exit 1)" "${noread_rc}" "1"
 
-## A fifo fragment is refused WITHOUT hanging (O_NONBLOCK open + fstat, no
-## blocking read). timeout guards against a regression that reintroduces the
-## blocking open.
+## A non-regular special file is refused via the O_PATH open + fstat, with no
+## blocking read and no device-open side effect. A fifo stands in for that whole
+## class (symlink already covered above; a device node needs root mknod, which
+## this non-root suite cannot create but which takes the identical fstat
+## rejection branch). timeout guards against a regression to a blocking open.
 fifo_frag="${test_dir}/fifo-fragments.d"
 mkdir --parents -- "${fifo_frag}"
 mkfifo -- "${fifo_frag}/f.cdx.json"
