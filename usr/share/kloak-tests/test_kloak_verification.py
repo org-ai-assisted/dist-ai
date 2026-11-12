@@ -200,22 +200,22 @@ class KloakVerification(unittest.TestCase):
     def test_make_build_warning_clean(self) -> None:
         ## The harness compiles above use plain gcc -O2 and so MISS the shipped
         ## Makefile's -Werror set (WARN_CFLAGS: -Wconversion/-Wformat=2/
-        ## -Wtype-limits/...). Build the REAL tree here so a -Werror regression
-        ## fails in this suite, not only in a downstream package build. Native
-        ## arch only -- a 32-bit (i386/armhf) format/conversion check needs a
-        ## cross/multilib toolchain not assumed present.
+        ## -Wtype-limits/...). Drive the REAL Makefile in the checkout (no copy --
+        ## KLOAK_REPO is a throwaway CI / ephemeral sandbox tree) so a -Werror
+        ## regression fails in this suite, not only in a downstream package
+        ## build. `make clean` restores the tree whether the build passes or
+        ## fails (it removes the binaries + the wayland-scanner-generated
+        ## protocol sources). Native arch only -- a 32-bit (i386/armhf)
+        ## format/conversion check needs a cross/multilib toolchain not assumed
+        ## present.
         make = _require('make')
-        build_root = tempfile.mkdtemp(prefix='kloak-build-')
-        self.addCleanup(shutil.rmtree, build_root, ignore_errors=True)
-        tree = os.path.join(build_root, 'kloak')
-        ## .git is a submodule pointer file here; exclude it (and nothing else,
-        ## so make clean sees any stale artifacts a source checkout carries).
-        shutil.copytree(_repo(), tree, symlinks=False,
-                        ignore=shutil.ignore_patterns('.git'))
-        subprocess.run([make, '-C', tree, 'clean'],
-                       capture_output=True, text=True)
+        repo = _repo()
+        self.addCleanup(subprocess.run, [make, '-C', repo, 'clean'],
+                        capture_output=True, text=True)
+        subprocess.run([make, '-C', repo, 'clean'], capture_output=True,
+                       text=True)
         result = subprocess.run(
-            [make, '-C', tree], capture_output=True, text=True)
+            [make, '-C', repo], capture_output=True, text=True)
         self.assertEqual(
             result.returncode, 0,
             'make failed (WARN_CFLAGS is -Werror):\n%s' % result.stderr[-3000:])
