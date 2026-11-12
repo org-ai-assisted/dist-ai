@@ -3,6 +3,4 @@
 # pre-existing accessibility debt we tolerate; a listed one that no longer fires is
 # reported as resolved, not required. Re-seed (overwrites) with:
 #   webcheck-axe-sandbox --write-baseline <site-root>
-# No accepted violations: the standalone citation cluster debt (task #41) is fixed --
-# refs.py marks reference-only containers .reference-cluster and style.css gives the
-# markers >=24x24 hit boxes; axe target-size is 0 on System_Requirements (mobile+desktop).
+# No accepted violations.
