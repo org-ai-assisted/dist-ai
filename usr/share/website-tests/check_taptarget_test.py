@@ -114,6 +114,11 @@ def run() -> int:
            "extractor excludes inline marker %s from candidacy" % marker)
     ck("closest(EXEMPT_MARKER)" in tt.TAPTARGET_JS, "extractor applies the marker exclusion")
     ck("summary" in tt.TAPTARGET_JS, "a native <summary> disclosure is a spacing neighbour")
+    # Visibility excludes a target under an opacity:0 ancestor (opacity is not inherited, so a
+    # per-element opacity test misses an inactive tab/accordion panel left in flow). shown() runs
+    # in-browser, so this canaries the ancestor walk cannot be silently dropped.
+    ck("hiddenByAncestorOpacity" in tt.TAPTARGET_JS,
+       "extractor excludes targets under an opacity:0 ancestor")
     # Standalone classification reads RENDERED text (innerText), so a display:none/script/style
     # sibling does not count as sentence text and wrongly exempt a stacked link.
     ck("block.innerText" in tt.TAPTARGET_JS,

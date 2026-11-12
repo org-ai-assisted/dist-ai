@@ -280,9 +280,10 @@ run_required_unit_test check_vnu_test.py
 run_required_unit_test check_axe_test.py
 
 ## Unit regression for the WCAG 2.5.8 tap-target lane's browser-free geometry engine (under-size,
-## the spacing exception incl. circle-vs-rect, the same-href union, the inline exemption, and the
-## whole evaluate() verdict). The browser side only extracts rectangles; this tests every
-## size/spacing decision with no browser, so it runs everywhere.
+## the spacing exception incl. circle-vs-rect, the inline exemption, and the whole evaluate()
+## verdict). The browser side only extracts rectangles; this tests every size/spacing decision
+## with no browser, so it runs everywhere. The browser audit of real pages runs via the
+## webcheck-taptarget-sandbox delegation below.
 run_required_unit_test check_taptarget_test.py
 
 ## Unit regression for the cspell spell-check lane's browser-free logic (issue-line parser,
@@ -590,6 +591,7 @@ delegate_sandbox_lane 'website-lint-tests (html-tidy/stylelint)' webcheck-lint-s
 delegate_sandbox_lane 'website-vnu-tests (vnu conformance)' webcheck-vnu-sandbox "${roots[@]}"
 delegate_sandbox_lane 'website-lighthouse-tests (lighthouse)' webcheck-lighthouse-sandbox "${roots[@]}"
 delegate_sandbox_lane 'website-axe-tests (axe-core)' webcheck-axe-sandbox "${roots[@]}"
+delegate_sandbox_lane 'website-taptarget-tests (WCAG 2.5.8 tap targets)' webcheck-taptarget-sandbox "${roots[@]}"
 delegate_sandbox_lane 'website-cspell-tests (spell-check)' webcheck-cspell-sandbox "${roots[@]}"
 ## jscov keys covered.txt (and jsfuzz keys fuzzed.txt) on the CANONICAL site identity, so pass
 ## <site>=<path> pairs -- a bare override path's basename would mis-key and silently drop that
