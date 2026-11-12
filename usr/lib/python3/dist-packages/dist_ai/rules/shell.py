@@ -2400,13 +2400,20 @@ def _toplevel_calls(tree, names, spans):
 
 
 def _was_executed_guard_body_spans(tree):
-    """(start, end) spans of the then/elif/else bodies of every `if` whose CONDITION
-    calls was_executed/was_sourced. A top-level 'source' THERE runs in the executed
-    branch (beside the main() the guard gates), not as a load that falls THROUGH the
-    guard into main() -- so it is not the R-010 hazard. A source in any OTHER
-    conditional ('[ -f x ] && source x', 'if [ -f x ]; then source x; fi') still
-    falls through on failure and stays in scope, so only the guard body is excluded
-    (NOT the whole conditional-span set the errexit scan uses)."""
+    """(start, end) spans of the then/elif/else bodies of every TOP-LEVEL `if` that
+    both (a) carries a was_executed/was_sourced guard CALL in the cond of ANY branch
+    of its if/elif chain AND (b) is the TERMINAL top-level construct -- no further
+    top-level statement runs after it. Such a guard gates the script's executed block
+    from WITHIN: a 'source' in its body sits beside the main() the guard reaches, not
+    as a load that falls THROUGH the guard into a main() run unconditionally AFTER the
+    block. When top-level code DOES follow the guarded if ('if was_sourced ...; then
+    ...; else source x; fi' then 'main "$@"'), the branch that runs on direct
+    EXECUTION falls through to it on a failed source -- the R-010 hazard -- so the body
+    is NOT excluded. A source in a NON-guard conditional ('[ -f x ] && source x',
+    'if [ -f x ]; then source x; fi') also stays in scope; only the guard body is
+    excluded, NOT the whole conditional-span set the errexit scan uses. A guard nested
+    in a function never reaches here -- the whole function is already a boundary span
+    the source scan excludes."""
     guard_offsets = [
         offset
         for call in bash_ast.call_exprs(tree)
@@ -2415,6 +2422,7 @@ def _was_executed_guard_body_spans(tree):
         if offset is not None]
     if not guard_offsets:
         return []
+    top_stmts = tree.get("Stmts") or []
     spans = []
 
     def add(stmts):
@@ -2422,14 +2430,30 @@ def _was_executed_guard_body_spans(tree):
         if span is not None:
             spans.append(span)
 
-    for node in bash_ast.iter_nodes(tree):
-        if not (isinstance(node, dict) and node.get("Type") == "IfClause"):
+    def cond_has_guard(cond):
+        span = h.stmt_list_span(cond)
+        return span is not None and any(span[0] <= o < span[1] for o in guard_offsets)
+
+    for stmt in top_stmts:
+        cmd = stmt.get("Cmd")
+        if not (isinstance(cmd, dict) and cmd.get("Type") == "IfClause"):
             continue
-        cond = h.stmt_list_span(node.get("Cond"))
-        if cond is None or not any(cond[0] <= o < cond[1] for o in guard_offsets):
+        guarded = cond_has_guard(cmd.get("Cond"))
+        els = cmd.get("Else")
+        while isinstance(els, dict):
+            guarded = guarded or cond_has_guard(els.get("Cond"))
+            els = els.get("Else")
+        if not guarded:
             continue
-        add(node.get("Then"))
-        els = node.get("Else")
+        end = (stmt.get("End") or {}).get("Offset")
+        if end is not None and any(
+                (other.get("Pos") or {}).get("Offset", -1) >= end
+                for other in top_stmts):
+            ## Top-level code runs after the guarded if -> a source in ANY branch
+            ## can fall through to it on direct execution, so it stays flagged.
+            continue
+        add(cmd.get("Then"))
+        els = cmd.get("Else")
         while isinstance(els, dict):
             add(els.get("Then"))
             add(els.get("Stmts"))
@@ -2668,9 +2692,11 @@ class StrictModeBlock(Rule):
         ##     runs only AFTER the top-level source on exec.
         ##   source scan -- a 'source' is dangerous wherever it runs in the parent
         ##     shell and can fall through to main(), so exclude ONLY functions,
-        ##     subshells/substitutions (boundary_spans) and the was_executed GUARD
-        ##     BODY (a source there sits beside main(), not above it). A source in any
-        ##     other conditional ('[ -f x ] && source x') still falls through on
+        ##     subshells/substitutions (boundary_spans) and the body of a TERMINAL
+        ##     was_executed/was_sourced guarded if (a source there sits beside the
+        ##     main() the guard reaches, not above a main() that runs after the
+        ##     block). A source in any other conditional ('[ -f x ] && source x'), or
+        ##     in a guarded if that top-level code runs after, still falls through on
         ##     failure, so it is NOT excluded.
         if guarded:
             source_lines = source.split("\n")

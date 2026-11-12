@@ -1157,6 +1157,33 @@ cond_source_and=$'[ -f /etc/foo.conf ] && source /etc/foo.conf\n'"${full_main}"
 expect_rule "${sheb_fail}" "${cond_source_and}" "present" "#!/bin/bash"
 cond_source_if=$'if [ -f /etc/foo.conf ]; then\n   source /etc/foo.conf\nfi\n'"${full_main}"
 expect_rule "${sheb_fail}" "${cond_source_if}" "present" "#!/bin/bash"
+## F3: a was_executed guard in an ELIF cond. shfmt nests elif inside the outer if's
+## Else dict with no Type, so scanning only the OUTER cond missed it and flagged the
+## safe elif-body source. A source there runs only in the executed branch, beside the
+## gated code, so the TERMINAL guarded if (nothing runs after it) is SPARED.
+fp_elif_guard=$'if [ -n "${DEBUG:-}" ]; then\n   echo debug\nelif was_executed "${BASH_SOURCE[0]}"; then\n   source /usr/libexec/helper-scripts/strings.bsh\nfi'
+expect_rule "${sheb_fail}" "${fp_elif_guard}" "absent" "#!/bin/bash"
+## ...but the same elif guard with main() running AFTER the block: the elif source
+## falls through to main() on a failed execute, so it STAYS flagged (a guard body is
+## excluded only for a terminal guarded if, not when top-level code follows).
+haz_elif_guard_main=$'main() {\n   set -o errexit\n   true\n}\nif [ -n "${DEBUG:-}" ]; then\n   echo debug\nelif was_executed "${BASH_SOURCE[0]}"; then\n   source /usr/lib/nonexistent.bsh\nfi\nmain "$@"'
+expect_rule "${sheb_fail}" "${haz_elif_guard_main}" "present" "#!/bin/bash"
+## F4: a was_sourced guard with an ELSE that sources, and main() called AFTER the if.
+## was_sourced is FALSE on direct execution, so the else runs and a failed source
+## there falls THROUGH to the unconditional main() -- the hazard. The guard does NOT
+## gate main() from within (main runs after the block), so the else is NOT excluded:
+## FLAGGED. Blanket-excluding every guard-body branch missed this.
+fn_sourced_else_main=$'main() {\n   set -o errexit\n   true\n}\nif was_sourced "${BASH_SOURCE[0]}"; then\n   true\nelse\n   source /usr/lib/nonexistent.bsh\nfi\nmain "$@"'
+expect_rule "${sheb_fail}" "${fn_sourced_else_main}" "present" "#!/bin/bash"
+## The same shape with NOTHING after the if is SPARED: the else source cannot fall
+## through to a main() (there is none), so the terminal guarded if stays excluded.
+fp_sourced_else_terminal=$'if was_sourced "${BASH_SOURCE[0]}"; then\n   true\nelse\n   source /usr/lib/nonexistent.bsh\nfi'
+expect_rule "${sheb_fail}" "${fp_sourced_else_terminal}" "absent" "#!/bin/bash"
+## Symmetric was_executed case (same root): a source in the then-branch with main()
+## called AFTER the if falls through on a failed execute -> FLAGGED. The canonical
+## 'if was_executed; then main "$@"; fi' (main INSIDE, nothing after) stays spared.
+fn_executed_then_main=$'main() {\n   set -o errexit\n   true\n}\nif was_executed "${BASH_SOURCE[0]}"; then\n   source /usr/lib/nonexistent.bsh\nfi\nmain "$@"'
+expect_rule "${sheb_fail}" "${fn_executed_then_main}" "present" "#!/bin/bash"
 ## F2: the '|| <handler>' guard is read off the AST (left operand of '||' whose
 ## right operand is true/:/exit/return), not a single-line '|| true$' regex -- so a
 ## trailing comment, a line-continuation, and an aborting '|| exit 1' are all
