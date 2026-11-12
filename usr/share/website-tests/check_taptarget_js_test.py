@@ -154,6 +154,9 @@ async def _run_async(stats):
             try:
                 await asyncio.wait_for(browser.close(), timeout=5)
             except Exception:
+                # Best-effort teardown: the assertions already ran and their verdicts are
+                # captured in `stats`; a browser that already closed or hangs on close must not
+                # turn a completed check run into a failure (mirrors taptarget._taptarget_page).
                 pass
 
 
