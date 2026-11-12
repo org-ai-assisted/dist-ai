@@ -501,6 +501,29 @@ check "merge-tool: empty-but-existing dir succeeds (exit 0)" "${emptydir_rc}" "0
 check "merge-tool: empty-but-existing dir yields base-only (base survives)" \
    "$(purl_count "${emptydir_out}" 'pkg:deb/debian/bash@5.2')" "1"
 
+## An existing-but-UNLISTABLE fragments dir must fail closed, never silently emit
+## a fragment-less SBOM. Canary: Path.glob swallows the listdir OSError (base-only,
+## exit 0 on old code); the explicit os.scandir propagates it -> die. (Suite runs
+## non-root per its contract; root bypasses the mode bits.)
+noread_frag="${test_dir}/noread-fragments.d"
+mkdir --parents -- "${noread_frag}"
+printf '%s\n' '{"type":"application","name":"nr","purl":"pkg:generic/nr@1"}' > "${noread_frag}/n.cdx.json"
+chmod 000 -- "${noread_frag}"
+noread_rc="$(merge_rc "${merge_base}" "${noread_frag}")"
+chmod 755 -- "${noread_frag}"
+check "merge-tool: unlistable fragments dir fails closed (exit 1)" "${noread_rc}" "1"
+
+## A fifo fragment is refused WITHOUT hanging (O_NONBLOCK open + fstat, no
+## blocking read). timeout guards against a regression that reintroduces the
+## blocking open.
+fifo_frag="${test_dir}/fifo-fragments.d"
+mkdir --parents -- "${fifo_frag}"
+mkfifo -- "${fifo_frag}/f.cdx.json"
+fifo_rc=0
+printf '%s' "${merge_base}" | timeout --kill-after=10 10 "${merge_tool}" "${fifo_frag}" >/dev/null 2>&1 \
+   || fifo_rc=$?
+check "merge-tool: fifo fragment refused without hang (exit 1)" "${fifo_rc}" "1"
+
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
    printf '%s\n' "FAILED"
