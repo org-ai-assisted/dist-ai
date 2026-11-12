@@ -210,7 +210,11 @@ def resolve_axe_source() -> Optional[str]:
 #     pointing at different destinations (a real wayfinding defect on the family sites).
 #   - target-size (WCAG 2.5.8 AA, WCAG 2.2): touch targets below 24x24 CSS px without the 24px
 #     spacing exception (undersized/crowded tap targets -- footnote markers, inline icon links).
-#     The inline-in-sentence exception is honoured by axe, so prose links are not flagged.
+#     axe-core does NOT implement WCAG 2.5.8's inline / line-height exception, so a target in a
+#     sentence or a table cell's flowing text (a prose link, a [n] citation superscript) IS
+#     flagged even though it is WCAG-compliant. Such verified false-positives are cleared via a
+#     justified entry in the axe baseline, not a code change -- do not enlarge inline prose
+#     targets to satisfy this rule.
 #
 # identical-links-same-purpose reports as INCOMPLETE, not a violation: axe-core's
 # identical-links-same-purpose-after sets result=undefined for a same-accessible-name/different-
