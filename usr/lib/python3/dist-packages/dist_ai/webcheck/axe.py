@@ -250,7 +250,9 @@ _FORCE_RENDER_JS = (
 # Audit each page at BOTH widths: some violations (notably target-size, from heading/link wrapping)
 # fire only at a narrow viewport. The baseline key (path, rule, target) is viewport-agnostic, so a
 # desktop+mobile duplicate collapses to one key and a mobile-only issue is a distinct new key.
-_VIEWPORTS = (("desktop", {"width": 1280, "height": 800}),
+# Desktop keeps Playwright's default 1280x720 (unchanged from the pre-mobile gate), so adding the
+# mobile pass does not shift which @media(max-height) elements are visible on the desktop audit.
+_VIEWPORTS = (("desktop", {"width": 1280, "height": 720}),
               ("mobile", {"width": 390, "height": 844}))
 
 
@@ -267,7 +269,7 @@ async def _axe_page(browser, url: str, axe_src: str, settle_ms: int,
     from urllib.parse import urlparse
     allowed = urlparse(url).netloc
     nav: Dict[str, Any] = {"count": 0, "redirect": None}
-    page = await browser.new_page(viewport=viewport or {"width": 1280, "height": 800})
+    page = await browser.new_page(viewport=viewport or {"width": 1280, "height": 720})
 
     async def _hermetic(route):
         # A redirect stub (meta-refresh / JS) issues a SECOND main-frame navigation after the page
