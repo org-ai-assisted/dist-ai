@@ -269,12 +269,29 @@ TAPTARGET_JS = r"""
     let block = a.parentElement;
     while (block && !BLOCK.has(block.tagName)) block = block.parentElement;
     if (!block) return;                       // not in a text block -> let the general lane handle
-    // RENDERED text of the block that is NOT inside any <a> descendant (the 'sentence' around the
-    // link). innerText (not textContent) so a display:none sibling, a <script>/<style>, or a
-    // visually-hidden node does not count as sentence text and wrongly mark a standalone link
-    // inline. (This is a block-text heuristic, not a line-box analysis -- see the module docstring.)
+    // RENDERED non-link text of the block (the 'sentence' around the link). Both sides MUST use the
+    // same rendered basis: block.innerText (not textContent) already EXCLUDES a display:none /
+    // visually-hidden descendant, a <script>/<style>, etc. x.innerText tracks that rendered basis in
+    // every case EXCEPT one: on an element inside a display:none subtree it falls back to the RAW
+    // descendant text content, so summing every anchor's innerText would subtract text blockText
+    // never counted -- driving nonLink negative and wrongly marking an in-sentence link standalone
+    // (two crowded inline links then read as false violations). So subtract an anchor only when it is
+    // actually RENDERED in the block: not inside a display:none subtree up to the block. The test is
+    // display-only (NOT a box/getClientRects test) on purpose -- a display:contents anchor has NO box
+    // yet its text IS in block.innerText, and visibility:hidden / opacity:0 already yield the right
+    // x.innerText ('' / the rendered text); getClientRects or shown() would wrongly drop those
+    // rendered contributions, over-counting nonLink and FALSELY exempting a real standalone link.
+    // (This is a block-text heuristic, not a line-box analysis -- see the module docstring.)
+    const renderedInBlock = (x) => {
+      for (let el = x; el && el !== block; el = el.parentElement) {
+        if (getComputedStyle(el).display === 'none') return false;
+      }
+      return true;
+    };
     let linkText = '';
-    block.querySelectorAll('a').forEach((x) => { linkText += (x.innerText || ''); });
+    block.querySelectorAll('a').forEach((x) => {
+      if (renderedInBlock(x)) linkText += (x.innerText || '');
+    });
     const blockText = block.innerText || '';
     const nonLink = blockText.replace(/\s+/g, '').length - linkText.replace(/\s+/g, '').length;
     // Allow a couple of separator chars (middot / pipe / comma between links) as still standalone.
