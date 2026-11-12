@@ -247,9 +247,18 @@ _FORCE_RENDER_JS = (
     "el.style.setProperty('content-visibility', 'visible', 'important'); } } } catch (e) {} }")
 
 
-async def _axe_page(browser, url: str, axe_src: str, settle_ms: int) -> dict:
-    """Load one page, inject axe-core, run it, return its violations. Own close is time-boxed so a
-    wedged page cannot hang here -- the caller ALSO wraps this in a hard wall-clock timeout.
+# Audit each page at BOTH widths: some violations (notably target-size, from heading/link wrapping)
+# fire only at a narrow viewport. The baseline key (path, rule, target) is viewport-agnostic, so a
+# desktop+mobile duplicate collapses to one key and a mobile-only issue is a distinct new key.
+_VIEWPORTS = (("desktop", {"width": 1280, "height": 800}),
+              ("mobile", {"width": 390, "height": 844}))
+
+
+async def _axe_page(browser, url: str, axe_src: str, settle_ms: int,
+                    viewport: Optional[dict] = None) -> dict:
+    """Load one page at `viewport` (default desktop), inject axe-core, run it, return its
+    violations. Own close is time-boxed so a wedged page cannot hang here -- the caller ALSO wraps
+    this in a hard wall-clock timeout.
 
     axe-core is injected by EVALUATING its source (page.evaluate), NOT add_script_tag: the family
     sites ship a strict `script-src 'self'` CSP (exactly what the console lane guards), which
@@ -258,7 +267,7 @@ async def _axe_page(browser, url: str, axe_src: str, settle_ms: int) -> dict:
     from urllib.parse import urlparse
     allowed = urlparse(url).netloc
     nav: Dict[str, Any] = {"count": 0, "redirect": None}
-    page = await browser.new_page()
+    page = await browser.new_page(viewport=viewport or {"width": 1280, "height": 800})
 
     async def _hermetic(route):
         # A redirect stub (meta-refresh / JS) issues a SECOND main-frame navigation after the page
@@ -341,38 +350,39 @@ async def check(base: str, paths: List[str], axe_source: str, settle_ms: int = 1
             raise _EngineUnavailable(str(exc)) from exc
         for path in paths:
             url = base.rstrip("/") + "/" + path.lstrip("/")
-            try:
-                res = await asyncio.wait_for(
-                    _axe_page(browser, url, axe_src, settle_ms), timeout=hard_timeout)
-            except Exception:
-                # This page wedged -> recreate the browser so the wedge does not cascade.
+            for vp_name, vp in _VIEWPORTS:
                 try:
-                    await asyncio.wait_for(browser.close(), timeout=5)
+                    res = await asyncio.wait_for(
+                        _axe_page(browser, url, axe_src, settle_ms, vp), timeout=hard_timeout)
                 except Exception:
-                    # This page's audit failed (timeout, navigation or evaluation error); a close
-                    # that also errors or hangs does not change recovery. Discard this browser and
-                    # relaunch a clean one below so the failure cannot cascade to later pages.
-                    pass
-                browser = await p.chromium.launch()
-                print("TIMEOUT   %s" % path, flush=True)
-                problems.append("wedged: %s" % path)
-                continue
-            if res.get("redirect"):
-                # A redirect stub (meta-refresh off-mount); not an auditable content page. Its
-                # target is a real page audited on its own. Skip -- never a violation or a problem.
-                print("redir     %s" % path, flush=True)
-                continue
-            status = res.get("status", 0)
-            if status < 200 or status >= 400:
-                print("HTTP %-4d %s" % (status, path), flush=True)
-                problems.append("bad status %d: %s" % (status, path))
-                continue
-            page_keys = result_keys(path, res.get("violations", []))
-            print("%-9s %3d %s" % ("viol" if page_keys else "ok", len(page_keys), path),
-                  flush=True)
-            for _path, rule, target in page_keys:
-                print("          -> %s @ %s" % (rule, _safe_terminal(target[:200])), flush=True)
-            keys.update(page_keys)
+                    # This page wedged -> recreate the browser so the wedge does not cascade.
+                    try:
+                        await asyncio.wait_for(browser.close(), timeout=5)
+                    except Exception:
+                        # This page's audit failed (timeout, navigation or evaluation error); a
+                        # close that also errors or hangs does not change recovery. Discard this
+                        # browser and relaunch a clean one below so it cannot cascade to later pages.
+                        pass
+                    browser = await p.chromium.launch()
+                    print("TIMEOUT   %s [%s]" % (path, vp_name), flush=True)
+                    problems.append("wedged: %s [%s]" % (path, vp_name))
+                    continue
+                if res.get("redirect"):
+                    # A redirect stub (meta-refresh off-mount); not an auditable content page. Its
+                    # target is a real page audited on its own. Skip -- never a violation or problem.
+                    print("redir     %s [%s]" % (path, vp_name), flush=True)
+                    continue
+                status = res.get("status", 0)
+                if status < 200 or status >= 400:
+                    print("HTTP %-4d %s [%s]" % (status, path, vp_name), flush=True)
+                    problems.append("bad status %d: %s [%s]" % (status, path, vp_name))
+                    continue
+                page_keys = result_keys(path, res.get("violations", []))
+                print("%-9s %3d %s [%s]"
+                      % ("viol" if page_keys else "ok", len(page_keys), path, vp_name), flush=True)
+                for _path, rule, target in page_keys:
+                    print("          -> %s @ %s" % (rule, _safe_terminal(target[:200])), flush=True)
+                keys.update(page_keys)
         try:
             await asyncio.wait_for(browser.close(), timeout=5)
         except Exception:

@@ -437,8 +437,10 @@ def run() -> int:
         def __init__(self, offsite, delayed=False):
             self._offsite = offsite
             self._delayed = delayed
+            self.last_viewport = None
 
-        async def new_page(self):
+        async def new_page(self, viewport=None):
+            self.last_viewport = viewport
             return _FakePage(self._offsite, self._delayed)
 
     _local = "http://127.0.0.1:8000/wiki/Stub.html"
@@ -461,6 +463,17 @@ def run() -> int:
     _okpage = _asyncio.run(ax._axe_page(_FakeBrowser(None), _local, "axe=1", 0))
     ck("redirect" not in _okpage and _okpage.get("status") == 200,
        "a non-redirecting page audits normally (no false redirect): %r" % _okpage)
+
+    # mobile-width coverage: the gate audits each page at BOTH a desktop and a narrow viewport, so
+    # a target-size (or any wrap-dependent) violation that fires only on a mobile layout is caught,
+    # not just desktop. Guard that _VIEWPORTS keeps both widths and that _axe_page forwards one.
+    _b = _FakeBrowser(None)
+    _asyncio.run(ax._axe_page(_b, _local, "axe=1", 0, {"width": 390, "height": 844}))
+    ck(_b.last_viewport == {"width": 390, "height": 844},
+       "_axe_page forwards its viewport to new_page: %r" % _b.last_viewport)
+    _widths = {vp["width"] for _n, vp in ax._VIEWPORTS}
+    ck(390 in _widths and any(w >= 1000 for w in _widths),
+       "_VIEWPORTS audits both a mobile (390) and a desktop width: %r" % _widths)
 
     # identical-links-same-purpose (WCAG 2.4.9 AAA) is OFF by default in axe-core; the run options
     # must keep it explicitly enabled, or the gate silently stops catching two same-name links that
