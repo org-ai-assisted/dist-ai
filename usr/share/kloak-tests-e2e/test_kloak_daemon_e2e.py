@@ -167,10 +167,14 @@ class KloakDaemonE2E(unittest.TestCase):
         ## cannot clash with another compositor already in this machine.
         log = open(os.path.join(cls._work, 'labwc.log'), 'wb')
         cls._compositor_log = log
+        ## _stop_compositor closes the log (and terminates the compositor if it
+        ## started); register it before Popen so a raising Popen cannot leak the
+        ## fd. cls._compositor stays None until assigned, which _stop_compositor
+        ## tolerates.
+        cls.addClassCleanup(cls._stop_compositor)
         cls._compositor = subprocess.Popen(
             ['unshare', '--net', 'labwc'], env=env,
             stdout=log, stderr=subprocess.STDOUT)
-        cls.addClassCleanup(cls._stop_compositor)
 
         cls.wayland_display = ''
         for _ in range(30):
@@ -208,10 +212,12 @@ class KloakDaemonE2E(unittest.TestCase):
         env['WAYLAND_DISPLAY'] = wayland_display
         log_path = os.path.join(self._work, 'kloak-%s.log' % wayland_display)
         log = open(log_path, 'wb')
+        ## Register the close the instant the fd is acquired, so a raising Popen
+        ## cannot leak it.
+        self.addCleanup(log.close)
         proc = subprocess.Popen(
             [self.kloak_bin, '-d', '0'], env=env,
             stdout=log, stderr=subprocess.STDOUT)
-        self.addCleanup(log.close)
         self.addCleanup(self._kill, proc)
         return proc, log_path
 
