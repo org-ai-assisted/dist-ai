@@ -211,9 +211,9 @@ class KloakVerification(unittest.TestCase):
         make = _require('make')
         repo = _repo()
         self.addCleanup(subprocess.run, [make, '-C', repo, 'clean'],
-                        capture_output=True, text=True)
+                        capture_output=True, text=True, check=True)
         subprocess.run([make, '-C', repo, 'clean'], capture_output=True,
-                       text=True)
+                       text=True, check=True)
         result = subprocess.run(
             [make, '-C', repo], capture_output=True, text=True)
         self.assertEqual(
