@@ -139,6 +139,11 @@ def run() -> int:
        "measures BOTH a mobile and a desktop viewport")
     ck(abs(tt.MIN_PX - 24.0) < 1e-9, "the WCAG 2.5.8 minimum is 24 CSS px")
 
+    # The per-(page,viewport) outer wall-clock MUST exceed the 45s inner goto budget with headroom
+    # for the post-nav force-lazy + settle + evaluates, else a page whose networkidle lands near 45s
+    # is cancelled before its successful measurement and falsely reported "wedged".
+    ck(tt.HARD_TIMEOUT > 45, "per-page timeout has headroom over the 45s goto budget")
+
     # _skip raises SystemExit(77) (the shared env-unmet contract).
     try:
         tt._skip("canary")

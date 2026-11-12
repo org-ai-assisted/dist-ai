@@ -65,8 +65,11 @@ MIN_PX = 24.0
 VIEWPORTS: Tuple[Tuple[str, int, int], ...] = (("mobile", 390, 844), ("desktop", 1280, 900))
 # Post-load settle before measuring, ms (fonts/webfont swap can nudge a line box height).
 SETTLE_MS = 400
-# Per-page hard wall-clock, s (mirrors axe.check's hard_timeout rationale).
-HARD_TIMEOUT = 45
+# Per-(page,viewport) hard wall-clock, s. MUST exceed the inner goto timeout (45s) with headroom
+# for the post-nav force-lazy + settle + two evaluates, or a page whose networkidle legitimately
+# lands near 45s is cancelled before its (successful) measurement and falsely reported "wedged".
+# 55 gives ~10s headroom over the 45s goto, matching axe.check.
+HARD_TIMEOUT = 55
 _CTRL_CHARS = re.compile(r'[\x00-\x1f\x7f-\x9f]')
 
 
@@ -370,14 +373,17 @@ class _EngineUnavailable(Exception):
 
 
 async def check(base: str, paths: List[str], settle_ms: int = SETTLE_MS,
-                hard_timeout: int = HARD_TIMEOUT) -> Tuple[List[str], List[str]]:
-    """Measure every page at every viewport. Returns (failures, problems): a failure is a WCAG
-    2.5.8 violation line; a problem is an unauditable page (wedge / bad status), which the caller
-    fails on -- an unmeasured page is never a silent clean (mirrors axe.check)."""
+                hard_timeout: int = HARD_TIMEOUT) -> Tuple[List[str], List[str], int]:
+    """Measure every page at every viewport. Returns (failures, problems, measured): a failure is a
+    WCAG 2.5.8 violation line; a problem is an unauditable page (wedge / bad status), which the
+    caller fails on -- an unmeasured page is never a silent clean (mirrors axe.check). `measured` is
+    the count of (page, viewport) loads actually audited (not a redirect stub / bad status / wedge),
+    so the caller can refuse a vacuous audit where nothing was measured."""
     from playwright.async_api import async_playwright
 
     failures: List[str] = []
     problems: List[str] = []
+    measured = 0
     async with async_playwright() as p:
         try:
             browser = await p.chromium.launch()
@@ -408,6 +414,7 @@ async def check(base: str, paths: List[str], settle_ms: int = SETTLE_MS,
                     print("HTTP %-4d %s [%s]" % (status, path, vname), flush=True)
                     problems.append("bad status %d: %s [%s]" % (status, path, vname))
                     continue
+                measured += 1
                 fails = evaluate(res.get("records", []))
                 print("%-9s %3d %s [%s]" % ("viol" if fails else "ok", len(fails), path, vname),
                       flush=True)
@@ -423,7 +430,7 @@ async def check(base: str, paths: List[str], settle_ms: int = SETTLE_MS,
             # Best-effort final teardown: the measurement is complete and captured; a close that
             # errors/hangs here must not turn a clean run into a failure.
             pass
-    return failures, problems
+    return failures, problems, measured
 
 
 def _docroots(roots: List[str]) -> Dict[str, dict]:
@@ -462,7 +469,7 @@ def _load_paths_file(path: str) -> List[str]:
 
 
 def _serve_and_check(docroot: str, entry: dict, settle_ms: int, hard_timeout: int,
-                     restrict: Optional[List[str]]) -> Tuple[List[str], List[str]]:
+                     restrict: Optional[List[str]]) -> Tuple[List[str], List[str], int]:
     """Serve one docroot on a localhost mount (reusing mobile.py's harness) and measure its pages.
     `restrict` (a curated path list) overrides the enumerated tree."""
     handler = functools.partial(_MountHandler, directory=docroot)
@@ -499,7 +506,8 @@ def check_roots(roots: List[str], settle_ms: int = SETTLE_MS, hard_timeout: int 
     for docroot, entry in _docroots(roots).items():
         site = os.path.basename(os.path.normpath(docroot))
         try:
-            failures, problems = _serve_and_check(docroot, entry, settle_ms, hard_timeout, restrict)
+            failures, problems, measured = _serve_and_check(docroot, entry, settle_ms,
+                                                             hard_timeout, restrict)
         except _EngineUnavailable as exc:
             if audited == 0:
                 _skip('chromium engine unavailable: %s' % exc)
@@ -511,8 +519,17 @@ def check_roots(roots: List[str], settle_ms: int = SETTLE_MS, hard_timeout: int 
             print("%s: FAIL    %s" % (site, _safe_terminal(line)), file=sys.stderr)
         for problem in problems:
             print("%s: FAIL    %s" % (site, problem), file=sys.stderr)
-        print("%s: %d WCAG-2.5.8 violation(s), %d unauditable page(s) (viewports: %s)"
-              % (site, len(failures), len(problems),
+        # Vacuous-audit guard (fail CLOSED, mirrors axe._VacuousAudit): a docroot that was served
+        # but measured ZERO pages -- every requested page was a redirect stub -- certifies nothing,
+        # so a "0 violations" is a hollow pass. This lane has no baseline to backstop it, so refuse
+        # it here. Only fires when there were no real failures/problems (those already red the gate).
+        if measured == 0 and not failures and not problems:
+            print("%s: FAIL    vacuous audit -- every served page redirected, 0 tap targets measured"
+                  % site, file=sys.stderr)
+            overall = 1
+        print("%s: %d WCAG-2.5.8 violation(s), %d unauditable page(s), %d page-view(s) measured"
+              " (viewports: %s)"
+              % (site, len(failures), len(problems), measured,
                  "+".join(n for n, _, _ in VIEWPORTS)))
         if failures or problems:
             overall = 1
