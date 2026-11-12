@@ -1103,6 +1103,33 @@ def run():
         _write(root, 'app.js', 'var h=el.offsetHeight;use(h);void 0;')
         check('kept layout read (and void 0) not flagged', _reflow_failures(root) == [],
               repr(_reflow_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        # F3: the parenthesized `void(...)` form minifiers emit must be flagged, not missed.
+        _write(root, 'app.min.js', 'void(el.offsetHeight);')
+        check('void(el.offsetHeight) parenthesized forced-reflow flagged',
+              any('offsetHeight' in f for f in _reflow_failures(root)),
+              repr(_reflow_failures(root)))
+    # F2: a `void 0` must never link across a statement boundary to a LATER, unrelated layout
+    # read (ASI / ternary / comma-decl / a `void 0` in a comment / a read passed as a call arg).
+    for label, js in (
+            ('ASI newline', 'void 0\nconst h = el.offsetHeight;'),
+            ('ternary', 'x ? void 0 : el.offsetHeight;'),
+            ('comma-decl', 'void 0, h = el.offsetHeight;'),
+            ('commented void', '// void 0\nel.offsetHeight;'),
+            ('read as voided-call arg', 'void foo(el.offsetHeight);')):
+        with tempfile.TemporaryDirectory() as root:
+            _write(root, 'app.js', js)
+            check('unrelated read after void 0 not flagged (%s)' % label,
+                  _reflow_failures(root) == [], repr(_reflow_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        # F1: a non-UTF-8 .js (lone 0xff, as minified/vendored bundles carry) must not crash
+        # check_forced_reflow -- it is read with errors='replace', so the decodable part is
+        # still scanned and a real idiom in the same file is still flagged.
+        with open(os.path.join(root, 'bad.js'), 'wb') as handle:
+            handle.write(b'\xffvoid el.offsetHeight;')
+        fails = _reflow_failures(root)   # must not raise UnicodeDecodeError
+        check('non-UTF-8 .js scanned without crashing, idiom still flagged',
+              any('offsetHeight' in f for f in fails), repr(fails))
     check('check_forced_reflow invoked from main()',
           'check_forced_reflow(root' in main_body)
 

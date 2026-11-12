@@ -3514,8 +3514,21 @@ def check_css_animations(root, failures):
 # has no purpose but to force a synchronous relayout -- the main-thread stall Lighthouse flags as
 # "Forced reflow". Only the discarded form is gated: a real measurement keeps its value, so this
 # never flags a legitimate read. Defer the dependent change with requestAnimationFrame instead.
+#
+# Matches the single `void <expr>.<layout-read>` idiom and nothing wider:
+#   - `\bvoid\b` then `\s*\(?` accepts both `void el.offsetHeight` and the parenthesized
+#     `void(el.offsetHeight)` minifiers (Terser) emit -- the site JS is minified.
+#   - the gap forbids newline/`,`/`;`/`:`/`{`/`}`, so a `void 0` can never reach across a
+#     statement boundary (ASI, ternary, comma-decl, a `void 0` in a comment) to a later,
+#     unrelated layout read.
+#   - the gap also forbids `(`, which is what distinguishes the discarded read
+#     (`void(el.read)` / `void el.read`) from a read passed as an ARG to a voided call
+#     (`void foo(el.read)` -- the `(` lands in the gap and blocks the match). A read reached
+#     only THROUGH a call in the object chain (`void getEl().offsetHeight`) is likewise not
+#     flagged: the conservative choice, errs toward never flagging a legitimate read.
 _VOID_REFLOW_RE = re.compile(
-    r'\bvoid\s[^;{}]*?\.(?:offset(?:Width|Height|Top|Left)|scroll(?:Width|Height|Top|Left)'
+    r'\bvoid\b\s*\(?[^;{}(,:\r\n]*?'
+    r'\.(?:offset(?:Width|Height|Top|Left)|scroll(?:Width|Height|Top|Left)'
     r'|client(?:Width|Height)|getBoundingClientRect)\b')
 
 
@@ -3529,7 +3542,11 @@ def check_forced_reflow(root, failures):
                 continue
             path = os.path.join(base_dir, name)
             try:
-                with open(path, encoding='utf-8') as handle:
+                # errors='replace': a minified/vendored .js with a stray non-UTF-8 byte
+                # must still be TOKENIZED (U+FFFD, never an abort -- see _decode_bom),
+                # not crash the run with an uncaught UnicodeDecodeError. The idiom scanned
+                # for is pure ASCII, so substitution cannot corrupt a match.
+                with open(path, encoding='utf-8', errors='replace') as handle:
                     text = handle.read()
             except OSError:
                 continue
