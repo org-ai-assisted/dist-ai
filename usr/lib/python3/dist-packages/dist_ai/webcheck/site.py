@@ -67,12 +67,14 @@ KNOWN_PROJECT_PATHS: tuple[str, ...] = (
 SUBSITES: dict[str, tuple[str, str]] = {
 }
 
-# Prose wording rule: these must be capitalized as proper labels. The (?<!non-) guard keeps the
+# Prose wording rule: these must be capitalized as proper labels. The negation guard keeps the
 # hyphen's word boundary from matching the OPPOSITE term -- "non-free software" / "non-open source"
-# is not the Free Software / Open Source label and must never be "corrected" to it.
+# is not the Free Software / Open Source label and must never be "corrected" to it. The guard is
+# case-INSENSITIVE ([Nn][Oo][Nn]-, so Non-/NON- sentence-initial is excluded too), while the phrase
+# match stays case-SENSITIVE so a genuine lowercase "free software" is still flagged.
 WORDING = [
-    (re.compile(r'(?<!non-)\bopen source\b'), 'open source', 'Open Source'),
-    (re.compile(r'(?<!non-)\bfree software\b'), 'free software', 'Free Software'),
+    (re.compile(r'(?<![Nn][Oo][Nn]-)\bopen source\b'), 'open source', 'Open Source'),
+    (re.compile(r'(?<![Nn][Oo][Nn]-)\bfree software\b'), 'free software', 'Free Software'),
 ]
 
 # License notices quote "free software"/"open source" in the FSF's OWN deliberate lowercase
@@ -2519,6 +2521,52 @@ def check_video_captions(root, failures, pages=None):
                 '%s: <video> without a <track kind="captions"> (WCAG 1.2.2)' % rel)
 
 
+class _VideoCaptionAudit(html.parser.HTMLParser):
+    """Count <video> elements with no descendant <track kind="captions"> (WCAG 1.2.2). Driven by
+    html.parser like every other audit here (NOT a raw-text regex), so: markup inside an HTML
+    comment or a <script>/<style> body is invisible (never a browser-rendered <video>); the kind=
+    value matches regardless of quoting (single/double/unquoted); and it is keyed on the attribute
+    NAME, so `data-kind="captions"` does NOT satisfy it. A <video> left unclosed renders nothing
+    and is not counted."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self._stack = []          # one bool per open <video>: has a captions track yet?
+        self.missing = 0
+
+    def _maybe_track(self, tag, attrs):
+        if tag == "track" and self._stack:
+            if (dict(attrs).get("kind") or "").strip().lower() == "captions":
+                self._stack[-1] = True
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "video":
+            self._stack.append(False)
+        else:
+            self._maybe_track(tag, attrs)        # <track> is void: usually a starttag
+
+    def handle_startendtag(self, tag, attrs):
+        self._maybe_track(tag, attrs)            # or an explicit <track .../>
+
+    def handle_endtag(self, tag):
+        if tag == "video" and self._stack and not self._stack.pop():
+            self.missing += 1
+
+
+def check_video_captions(root, failures, pages=None):
+    """Every <video> must carry a <track kind="captions"> (WCAG 1.2.2 / axe video-caption): a
+    silent instructional video ships a descriptive-caption track, so a captionless <video> is a
+    real a11y gap, flagged here."""
+    for page in (html_files(root) if pages is None else pages):
+        rel = os.path.relpath(page, root)
+        audit = _VideoCaptionAudit()
+        with open(page, encoding="utf-8") as handle:
+            audit.feed(handle.read())
+        for _ in range(audit.missing):
+            failures.append(
+                '%s: <video> without a <track kind="captions"> (WCAG 1.2.2)' % rel)
+
+
 def check_toc_complete(root, failures, pages=None):
     # A page's "On this page" TOC (<nav class="toc">) must list EVERY top-level content
     # section (<section class="cat" id=...>), so a newly added section cannot silently
@@ -3716,6 +3764,9 @@ class _WikiHeadAudit(html.parser.HTMLParser):
         if tag == 'meta':
             if self.in_body:
                 self.meta_in_body += 1
+            if (attr.get('http-equiv', '').lower() == 'refresh'
+                    and _META_REFRESH_URL_RE.search(attr.get('content', ''))):
+                self.is_redirect = True
             if (attr.get('http-equiv', '').lower() == 'refresh'
                     and _META_REFRESH_URL_RE.search(attr.get('content', ''))):
                 self.is_redirect = True
