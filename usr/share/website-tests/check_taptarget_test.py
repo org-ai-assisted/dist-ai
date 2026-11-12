@@ -30,14 +30,7 @@ def _load():
 tt = _load()
 
 
-_HREF = iter(range(1, 10000))
-
-
-def _rec(x, y, w, h, candidate=True, standalone=True, sel="a", href=None):
-    # Distinct href per record unless one is given: the spacing test treats two SAME-href links as
-    # one equivalent target (no mutual crowding), so a crowding test must use distinct hrefs.
-    if href is None:
-        href = "/p%d" % next(_HREF)
+def _rec(x, y, w, h, candidate=True, standalone=True, sel="a", href="/p"):
     return {"x": float(x), "y": float(y), "w": float(w), "h": float(h),
             "candidate": candidate, "standalone": standalone, "sel": sel, "href": href}
 
@@ -97,28 +90,14 @@ def run() -> int:
     ck([f["href"] for f in fails2] == ["/c"],
        "a non-candidate neighbour crowds the candidate but is not itself flagged")
 
-    # effective_size: adjacent same-href links union into one target; a far same-href one does not.
-    icon = _rec(100, 0, 15, 20, href="/dl")       # icon link
-    text = _rec(118, 0, 23, 20, href="/dl")        # same-href text link, 3px gap
-    ew, eh = tt.effective_size(text, [icon, text])
-    ck(ew >= 24 and eh < 24, "icon+text same-href union clears 24px width (got %gx%g)" % (ew, eh))
-    far = _rec(100, 500, 15, 20, href="/dl")       # same href but far away
-    ew2, _ = tt.effective_size(_rec(118, 0, 23, 20, href="/dl"), [far])
-    ck(ew2 < 24, "a FAR same-href link is not unioned (stays undersized)")
-    # evaluate(): an icon+text pair (each undersized) is one adequately-sized target -> PASS, even
-    # crowded by a different-href neighbour.
-    pair = [_rec(100, 0, 15, 24, href="/dl"), _rec(118, 0, 23, 24, href="/dl"),
-            _rec(120, 20, 60, 24, href="/other")]
-    ck([f["href"] for f in tt.evaluate(pair)] == [],
-       "an icon+text same-href pair unions to >=24x24 and passes")
-
-    # Same-href equivalence: two undersized links to the SAME destination do not crowd each other
-    # (a mis-tap lands the user in the same place) -- the wiki icon+text / gallery thumb+caption
-    # pattern. Crowded but same href -> PASS; crowded but DIFFERENT href -> FAIL.
-    same = [_rec(0, 0, 40, 20, href="/dest"), _rec(0, 8, 40, 20, href="/dest")]
-    ck(tt.evaluate(same) == [], "two crowded same-href links do not crowd each other (pass)")
-    diff = [_rec(0, 0, 40, 20, href="/one"), _rec(0, 8, 40, 20, href="/two")]
-    ck(len(tt.evaluate(diff)) == 2, "two crowded different-href links both FAIL")
+    # Crowding is purely geometric (destination-independent): the icon+text and gallery pairs are
+    # sized by CSS, so the engine does not special-case same-href links. Two crowded standalone
+    # undersized links both FAIL regardless of href.
+    crowded = [_rec(0, 0, 40, 20, href="/same"), _rec(0, 8, 40, 20, href="/same")]
+    ck(len(tt.evaluate(crowded)) == 2, "two crowded standalone undersized links both FAIL")
+    # A size-adequate link (>=24x24) passes even when crowded -- the CSS fix lifts the real cases.
+    sized = [_rec(0, 0, 40, 24, href="/a"), _rec(0, 8, 40, 24, href="/b")]
+    ck(tt.evaluate(sized) == [], "a crowded but >=24x24 standalone link passes (size route)")
 
     # Neighbour set is drawn from the content SCOPE, not document-wide (chrome overlays excluded).
     ck("SCOPE.querySelectorAll(INTERACTIVE)" in tt.TAPTARGET_JS,
@@ -134,6 +113,11 @@ def run() -> int:
         ck(marker in tt.TAPTARGET_JS,
            "extractor excludes inline marker %s from candidacy" % marker)
     ck("closest(EXEMPT_MARKER)" in tt.TAPTARGET_JS, "extractor applies the marker exclusion")
+    ck("summary" in tt.TAPTARGET_JS, "a native <summary> disclosure is a spacing neighbour")
+    # Standalone classification reads RENDERED text (innerText), so a display:none/script/style
+    # sibling does not count as sentence text and wrongly exempt a stacked link.
+    ck("block.innerText" in tt.TAPTARGET_JS,
+       "standalone text uses rendered innerText, not raw textContent")
     vnames = [n for n, _, _ in tt.VIEWPORTS]
     ck("mobile" in vnames and "desktop" in vnames,
        "measures BOTH a mobile and a desktop viewport")

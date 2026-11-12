@@ -41,6 +41,20 @@ row on desktop, so a single viewport under-reports.
 Needs a real browser (Playwright + chromium), so like check_mobile.py / check_width.py it SKIPs
 (exit 77) when the browser is unavailable, and shares that module's page-discovery + HTTP mount
 harness. Usage: taptarget.py <site-root> [<site-root> ...]  (or via check_taptarget.py).
+
+SCOPE / threat model: this is a REGRESSION gate over our OWN generator's trusted static HTML, not
+an adversarial WCAG scanner. It catches a realistic size/spacing regression in generated wiki
+content; it does NOT try to resist hostile markup crafted to slip past it (the generator, not an
+attacker, writes the audited pages). Two consequences worth stating plainly:
+  - `standalone` is a BLOCK-TEXT heuristic (does the link's enclosing li/p/td hold non-link
+    sentence text), not a line-box analysis. A block-level link that happens to share a block with
+    unrelated prose can be mis-classified inline (under-flagged); a real generated page does not mix
+    a stacked link list with a sentence in one block, so this has not occurred on the wikis.
+  - geometry is judged on the bounding RECTANGLE (what getBoundingClientRect / axe measure); a
+    clip-path/rounded target with a smaller solid area, a WebSocket/service-worker exfil from a
+    hostile page, and onclick-differing same-href links are all out of scope -- none is produced by
+    our generator. The hermetic page routing mirrors webcheck.axe and is defence-in-depth, not an
+    exfil boundary (the sandbox confinement is).
 """
 from __future__ import annotations
 
@@ -108,35 +122,6 @@ def is_undersized(rec: Record, min_px: float = MIN_PX) -> bool:
     return rec["w"] < min_px - 0.01 or rec["h"] < min_px - 0.01
 
 
-def _rect_gap(a: Record, b: Record) -> float:
-    """Shortest distance between two rectangles' areas (0 when they touch or overlap)."""
-    dx = max(a["x"] - (b["x"] + b["w"]), b["x"] - (a["x"] + a["w"]), 0.0)
-    dy = max(a["y"] - (b["y"] + b["h"]), b["y"] - (a["y"] + a["h"]), 0.0)
-    return math.hypot(dx, dy)
-
-
-def effective_size(rec: Record, targets: List[Record], min_px: float = MIN_PX) -> Tuple[float, float]:
-    """The tap target's effective (width, height), UNIONING adjacent same-destination links.
-
-    WCAG 2.5.8 treats links that do the same thing as ONE target. The wiki's icon+text pattern
-    (`<a href=X><img></a> <a href=X>text</a>`) and a gallery's thumbnail+caption both split one
-    destination across two small boxes; a user tapping either lands in the same place, so the real
-    target is their union -- which clears 24x24 even when each piece does not. Union only same-href
-    links that are ADJACENT (touching/overlapping or within min_px), so two unrelated uses of one
-    href elsewhere on the page are never merged into a bogus page-spanning target."""
-    x0, y0 = rec["x"], rec["y"]
-    x1, y1 = rec["x"] + rec["w"], rec["y"] + rec["h"]
-    href = rec.get("href") or ""
-    if href:
-        for o in targets:
-            if o is rec or (o.get("href") or "") != href:
-                continue
-            if _rect_gap(rec, o) <= min_px:
-                x0 = min(x0, o["x"]); y0 = min(y0, o["y"])
-                x1 = max(x1, o["x"] + o["w"]); y1 = max(y1, o["y"] + o["h"])
-    return x1 - x0, y1 - y0
-
-
 def well_spaced(rec: Record, others: List[Record], min_px: float = MIN_PX) -> bool:
     """True when `rec`'s 24px-diameter circle (radius min_px/2) intersects NO other target's box
     and NO other undersized target's circle -- the WCAG 2.5.8 spacing exception. An isolated small
@@ -150,16 +135,8 @@ def well_spaced(rec: Record, others: List[Record], min_px: float = MIN_PX) -> bo
     nearby large button crowds a small link just as a nearby small link does."""
     r = min_px / 2.0
     cx, cy = _center(rec)
-    href = rec.get("href") or ""
     for other in others:
         if other is rec:
-            continue
-        # Two links to the SAME destination are functionally ONE target -- a mis-tap between them
-        # lands the user in the same place, which is harmless, so they do not "crowd" each other in
-        # the sense 2.5.8 guards (WCAG's equivalent-target reasoning). This is exactly the wiki
-        # icon+text pattern (a File/Cd-rom icon link beside its same-href text link) and a gallery
-        # thumbnail link above its same-href caption link; neither should flag the other.
-        if href and (other.get("href") or "") == href:
             continue
         ocx, ocy = _center(other)
         if is_undersized(other, min_px):
@@ -187,10 +164,7 @@ def evaluate(records: List[Record], min_px: float = MIN_PX) -> List[Record]:
             continue
         if not rec.get("standalone"):
             continue
-        # Size against the EFFECTIVE target (same-href adjacent links unioned): an icon+text or
-        # thumbnail+caption pair that together clears 24x24 is one adequately-sized target.
-        ew, eh = effective_size(rec, targets, min_px)
-        if ew >= min_px - 0.01 and eh >= min_px - 0.01:
+        if not is_undersized(rec, min_px):
             continue
         if well_spaced(rec, targets, min_px):
             continue
@@ -248,7 +222,7 @@ TAPTARGET_JS = r"""
   };
   // Every rendered interactive target -- the spacing neighbour set. document-wide (header nav,
   // buttons) so a small content link crowded by a control is still caught.
-  const INTERACTIVE = 'a[href], button, input:not([type=hidden]), select, textarea, '
+  const INTERACTIVE = 'a[href], button, input:not([type=hidden]), select, textarea, summary, '
                     + '[role=button], [tabindex]:not([tabindex="-1"])';
   const interactive = [];
   // Neighbours are drawn from the CONTENT region only. A page-chrome overlay -- the fixed cookie
@@ -256,15 +230,22 @@ TAPTARGET_JS = r"""
   // and is not a persistent neighbour a content link can be mis-tapped against; counting it would
   // flag a content link merely because a dismissible banner happens to overlap it at the viewport
   // bottom. Same scope as the candidates, so only content-vs-content crowding is judged.
-  SCOPE.querySelectorAll(INTERACTIVE).forEach((el) => { if (shown(el)) interactive.push(el); });
+  // An inline citation/archive marker (the [N] superscript, the "archived version" icon) is a tiny
+  // raised mark, not a tap-target competing for the same tap, so it is excluded from the neighbour
+  // set as well as from candidacy -- else a content link sitting beside its own citation marker
+  // (a comparison-table header link next to its archive icon) reads as crowded though it is not.
+  const EXEMPT_MARKER = 'sup, .reference, .mw-cite-backlink, .mw-editsection, .cite-backlink, '
+                      + '.ext-link-to-archive';
+  SCOPE.querySelectorAll(INTERACTIVE).forEach((el) => {
+    if (shown(el) && !el.closest(EXEMPT_MARKER)) interactive.push(el);
+  });
   // Content-link candidates: a[href] inside the content scope. Classify standalone vs inline.
   // Citation / edit-section markers (a [N] footnote superscript, a cite backlink, an edit link)
   // are INLINE targets by nature -- in a sentence, constrained by its line-height -- so WCAG 2.5.8
   // exempts them; they are never candidates (they REMAIN spacing neighbours via `interactive`).
   // This keeps the lane from fighting the separate footnote-superscript fix, which deliberately
-  // makes an in-text [N] a tiny raised mark.
-  const EXEMPT_MARKER = 'sup, .reference, .mw-cite-backlink, .mw-editsection, .cite-backlink, '
-                      + '.ext-link-to-archive';
+  // makes an in-text [N] a tiny raised mark. (EXEMPT_MARKER is defined above, where the same
+  // markers are also excluded from the neighbour set.)
   const candidates = new Set();
   SCOPE.querySelectorAll('a[href]').forEach((a) => {
     if (!shown(a)) return;
@@ -278,14 +259,17 @@ TAPTARGET_JS = r"""
     // the IMAGE's dimensions (the img-dims / responsiveness gates), a different concern than the
     // text-link crowding this lane guards -- and measuring one with a broken/absent image yields a
     // spurious tiny rect. Require real text so this lane stays the text-link gate it is.
-    if (!(a.textContent || '').trim()) return;
+    if (!(a.innerText || '').trim()) return;
     let block = a.parentElement;
     while (block && !BLOCK.has(block.tagName)) block = block.parentElement;
     if (!block) return;                       // not in a text block -> let the general lane handle
-    // Text of the block that is NOT inside any <a> descendant (the 'sentence' around the link).
+    // RENDERED text of the block that is NOT inside any <a> descendant (the 'sentence' around the
+    // link). innerText (not textContent) so a display:none sibling, a <script>/<style>, or a
+    // visually-hidden node does not count as sentence text and wrongly mark a standalone link
+    // inline. (This is a block-text heuristic, not a line-box analysis -- see the module docstring.)
     let linkText = '';
-    block.querySelectorAll('a').forEach((x) => { linkText += x.textContent; });
-    const blockText = block.textContent || '';
+    block.querySelectorAll('a').forEach((x) => { linkText += (x.innerText || ''); });
+    const blockText = block.innerText || '';
     const nonLink = blockText.replace(/\s+/g, '').length - linkText.replace(/\s+/g, '').length;
     // Allow a couple of separator chars (middot / pipe / comma between links) as still standalone.
     const standalone = nonLink <= 2;
@@ -403,20 +387,20 @@ async def check(base: str, paths: List[str], settle_ms: int = SETTLE_MS,
                         # Relaunch a clean browser so the wedge cannot cascade to later pages.
                         pass
                     browser = await p.chromium.launch()
-                    print("TIMEOUT   %s [%s]" % (path, vname), flush=True)
+                    print("TIMEOUT   %s [%s]" % (_safe_terminal(path), vname), flush=True)
                     problems.append("wedged: %s [%s]" % (path, vname))
                     continue
                 if res.get("redirect"):
-                    print("redir     %s [%s]" % (path, vname), flush=True)
+                    print("redir     %s [%s]" % (_safe_terminal(path), vname), flush=True)
                     continue
                 status = res.get("status", 0)
                 if status < 200 or status >= 400:
-                    print("HTTP %-4d %s [%s]" % (status, path, vname), flush=True)
+                    print("HTTP %-4d %s [%s]" % (status, _safe_terminal(path), vname), flush=True)
                     problems.append("bad status %d: %s [%s]" % (status, path, vname))
                     continue
                 measured += 1
                 fails = evaluate(res.get("records", []))
-                print("%-9s %3d %s [%s]" % ("viol" if fails else "ok", len(fails), path, vname),
+                print("%-9s %3d %s [%s]" % ("viol" if fails else "ok", len(fails), _safe_terminal(path), vname),
                       flush=True)
                 for rec in fails:
                     line = ("%s [%s]: %s %.0fx%.0f px -> %s"
