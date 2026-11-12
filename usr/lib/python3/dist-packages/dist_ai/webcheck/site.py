@@ -2405,6 +2405,52 @@ def check_video_captions(root, failures, pages=None):
                 '%s: <video> without a <track kind="captions"> (WCAG 1.2.2)' % rel)
 
 
+class _VideoCaptionAudit(html.parser.HTMLParser):
+    """Count <video> elements with no descendant <track kind="captions"> (WCAG 1.2.2). Driven by
+    html.parser like every other audit here (NOT a raw-text regex), so: markup inside an HTML
+    comment or a <script>/<style> body is invisible (never a browser-rendered <video>); the kind=
+    value matches regardless of quoting (single/double/unquoted); and it is keyed on the attribute
+    NAME, so `data-kind="captions"` does NOT satisfy it. A <video> left unclosed renders nothing
+    and is not counted."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self._stack = []          # one bool per open <video>: has a captions track yet?
+        self.missing = 0
+
+    def _maybe_track(self, tag, attrs):
+        if tag == "track" and self._stack:
+            if (dict(attrs).get("kind") or "").strip().lower() == "captions":
+                self._stack[-1] = True
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "video":
+            self._stack.append(False)
+        else:
+            self._maybe_track(tag, attrs)        # <track> is void: usually a starttag
+
+    def handle_startendtag(self, tag, attrs):
+        self._maybe_track(tag, attrs)            # or an explicit <track .../>
+
+    def handle_endtag(self, tag):
+        if tag == "video" and self._stack and not self._stack.pop():
+            self.missing += 1
+
+
+def check_video_captions(root, failures, pages=None):
+    """Every <video> must carry a <track kind="captions"> (WCAG 1.2.2 / axe video-caption): a
+    silent instructional video ships a descriptive-caption track, so a captionless <video> is a
+    real a11y gap, flagged here."""
+    for page in (html_files(root) if pages is None else pages):
+        rel = os.path.relpath(page, root)
+        audit = _VideoCaptionAudit()
+        with open(page, encoding="utf-8") as handle:
+            audit.feed(handle.read())
+        for _ in range(audit.missing):
+            failures.append(
+                '%s: <video> without a <track kind="captions"> (WCAG 1.2.2)' % rel)
+
+
 def check_toc_complete(root, failures, pages=None):
     # A page's "On this page" TOC (<nav class="toc">) must list EVERY top-level content
     # section (<section class="cat" id=...>), so a newly added section cannot silently
@@ -3556,6 +3602,7 @@ class _WikiHeadAudit(html.parser.HTMLParser):
         self.viewport = None                 # content= of <meta name=viewport> (None = absent)
         self.meta_in_body = 0
         self.positive_tabindex = 0
+        self.is_redirect = False             # <meta http-equiv=refresh> -> a redirect stub
 
     def handle_starttag(self, tag, attrs):
         # FIRST value of a duplicated attribute wins, like a browser (a dict comprehension would
@@ -3568,6 +3615,8 @@ class _WikiHeadAudit(html.parser.HTMLParser):
         if tag == 'meta':
             if self.in_body:
                 self.meta_in_body += 1
+            if attr.get('http-equiv', '').lower() == 'refresh':
+                self.is_redirect = True
             name = attr.get('name', '').lower()
             if name == 'theme-color':
                 self.theme_media.append(attr.get('media', ''))
@@ -3613,6 +3662,12 @@ def check_wiki_conformance(root, failures, pages=None):
         audit = _WikiHeadAudit()
         with open(page, encoding='utf-8') as handle:
             audit.feed(handle.read())
+        # A redirect stub (<meta http-equiv=refresh>) carries a deliberately minimal head -- it
+        # redirects to the real page (which DOES carry the full a11y/SEO set), so the skip-link /
+        # theme-color / twitter:card / viewport invariants do not apply. Skip it whether this runs
+        # on the curated set or (deploy-stage) the whole tree. Mirrors check_links' stub handling.
+        if audit.is_redirect:
+            continue
         if '#main-content' not in audit.skip_hrefs or 'main-content' not in audit.main_ids:
             failures.append(
                 '%s: missing the skip-to-content link to <main id="main-content"> '

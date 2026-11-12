@@ -3199,6 +3199,18 @@ def run():
     check('positive tabindex flagged',
           any('positive tabindex' in f for f in
               _wiki_failures(_good_head, _good_body + '<a href="#" tabindex="3">x</a>')))
+    # A redirect stub (<meta http-equiv=refresh>) carries a deliberately minimal head and must be
+    # SKIPPED -- not flagged for the missing skip-link/theme-color/twitter:card/viewport (the real
+    # target page carries them). This is the deploy-stage full-tree case: on a whole-tree check the
+    # stubs are iterated, so the skip has to live in the check, not only in the curated page set.
+    _stub_head = '<meta charset="utf-8"><meta http-equiv="refresh" content="0; url=/wiki/Real">'
+    check('wiki conformance: a redirect stub is SKIPPED (not flagged)',
+          _wiki_failures(_stub_head, '<p>Redirecting...</p>') == [],
+          _wiki_failures(_stub_head, '<p>Redirecting...</p>'))
+    # Canary: the SAME minimal head WITHOUT the refresh meta is a real (broken) page -> still flagged,
+    # so the skip is specific to redirect stubs, not a blanket pass for any sparse head.
+    check('wiki conformance canary: minimal head WITHOUT refresh is still flagged',
+          _wiki_failures('<meta charset="utf-8">', '<p>x</p>') != [])
     # regression: tabindex is parsed by HTML integer rules, deciding positivity WITHOUT int().
     #  - a superscript digit (U+00B2), "++1", and a 4301-digit value are NOT a positive integer a
     #    browser honors (and int() would raise on the superscript / the over-long value) -> ignored,
