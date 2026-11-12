@@ -192,10 +192,13 @@ test("per-heading share: first press clones the ONE proto, substitutes this head
     "the direct-link field copies the RAW url, literal ) intact -- JS does NOT url-encode");
   assert.equal(byCode(".cs-wiki"), "[[Page#Sec|a bc]]",
     "the wikitext field substitutes Python's pre-stripped value verbatim (JS does not strip/compose)");
-  const href = menu.querySelector("a.share-icon").getAttribute("href");
-  assert.ok(href.indexOf("u=https%3A%2F%2Fx.test%2Fwiki%2FPage%23See_%29_now") !== -1,
-    "the social url carries Python's percent-encoded link verbatim (%29, not ), and NOT double-encoded)");
-  assert.ok(href.indexOf("t=Sec") !== -1, "the social title sentinel is substituted too");
+  // EXACT href (not a substring): proves the origin is unchanged, u carries Python's
+  // percent-encoded link verbatim (%29, not ), NOT double-encoded), t is substituted, and the
+  // proto's &amp; round-trips to a single & -- a substring check would miss a wrong origin / an
+  // extra param / a longer u or t.
+  assert.equal(menu.querySelector("a.share-icon").getAttribute("href"),
+    "https://soc.test/?u=https%3A%2F%2Fx.test%2Fwiki%2FPage%23See_%29_now&t=Sec",
+    "the social url is built by pure 1:1 substitution -- no encoding, no extra params, origin intact");
   assert.equal(menu.querySelector("a.share-icon").getAttribute("aria-label"), "Open in X: Introduction (2)",
     "the social aria-label carries the disambiguated section name verbatim");
   assert.ok(menu.querySelector(".code-select").classList.contains("js-fully-loaded"),
