@@ -196,22 +196,16 @@ TAPTARGET_JS = r"""
              || document.querySelector('.wiki-content') || document.body;
   const rects = [];
   const seen = new Map();
-  // CSS opacity:0 hides a subtree but is NOT inherited -- getComputedStyle(child).opacity stays 1
-  // under an opacity:0 ancestor (an inactive tab/accordion panel the generator leaves in flow). A
-  // per-element opacity test alone would then measure a link inside a fully transparent panel as
-  // both a candidate and a spacing neighbour, so a crowded hidden link could fail the audit. Walk
-  // ancestors for a zero computed opacity. (visibility:hidden IS inherited, and display:none
-  // collapses the box, so those two are already caught by the element's own style + the box test.)
-  const hiddenByAncestorOpacity = (el) => {
-    for (let n = el; n && n.nodeType === 1; n = n.parentElement)
-      if (parseFloat(getComputedStyle(n).opacity) === 0) return true;
-    return false;
-  };
+  // Visibility filter: the element's OWN visibility:hidden / display:none / opacity:0, then a
+  // nonzero box. Deliberately NOT an ancestor-opacity walk: opacity does not disable hit-testing,
+  // so an opacity:0 ANCESTOR still leaves its descendants as live pointer targets (and a
+  // display:contents or top-layer box is painted outside that ancestor's opacity entirely) --
+  // excluding them would DROP real crowding neighbours (false negative). Our generator hides an
+  // inactive panel with display:none / visibility:hidden (both caught here), never bare opacity:0.
   const shown = (el) => {
     const s = getComputedStyle(el);
     if (s.visibility === 'hidden' || s.display === 'none' || parseFloat(s.opacity) === 0)
       return false;
-    if (hiddenByAncestorOpacity(el)) return false;
     const r = el.getBoundingClientRect();
     return r.width > 0 && r.height > 0;
   };
