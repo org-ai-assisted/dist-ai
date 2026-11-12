@@ -1184,6 +1184,14 @@ expect_rule "${sheb_fail}" "${fp_sourced_else_terminal}" "absent" "#!/bin/bash"
 ## 'if was_executed; then main "$@"; fi' (main INSIDE, nothing after) stays spared.
 fn_executed_then_main=$'main() {\n   set -o errexit\n   true\n}\nif was_executed "${BASH_SOURCE[0]}"; then\n   source /usr/lib/nonexistent.bsh\nfi\nmain "$@"'
 expect_rule "${sheb_fail}" "${fn_executed_then_main}" "present" "#!/bin/bash"
+## A top-level brace group '{ ...; }' runs unconditionally in the parent shell, so a
+## guarded if inside it is top-level for this scan: a TERMINAL one (no code after) is
+## still SPARED (its body cannot fall through), but one with main() AFTER the group
+## STAYS flagged -- the brace wrapper must not hide the fall-through.
+fp_brace_terminal_guard=$'{\n   if was_executed "${BASH_SOURCE[0]}"; then\n      source /usr/lib/nonexistent.bsh\n   fi\n}'
+expect_rule "${sheb_fail}" "${fp_brace_terminal_guard}" "absent" "#!/bin/bash"
+haz_brace_guard_main=$'main() {\n   set -o errexit\n   true\n}\n{\n   if was_executed "${BASH_SOURCE[0]}"; then\n      source /usr/lib/nonexistent.bsh\n   fi\n}\nmain "$@"'
+expect_rule "${sheb_fail}" "${haz_brace_guard_main}" "present" "#!/bin/bash"
 ## F2: the '|| <handler>' guard is read off the AST (left operand of '||' whose
 ## right operand is true/:/exit/return), not a single-line '|| true$' regex -- so a
 ## trailing comment, a line-continuation, and an aborting '|| exit 1' are all

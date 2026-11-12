@@ -2422,7 +2422,22 @@ def _was_executed_guard_body_spans(tree):
         if offset is not None]
     if not guard_offsets:
         return []
-    top_stmts = tree.get("Stmts") or []
+
+    def flatten(stmts):
+        ## A top-level brace group '{ ...; }' (Type Block) runs UNCONDITIONALLY in
+        ## the parent shell, so its statements are top-level for fall-through: a
+        ## guarded if there, and any code after it, count the same as if unwrapped.
+        ## A subshell '( ... )' is NOT flattened -- it is already a boundary span.
+        out = []
+        for stmt in stmts or []:
+            cmd = stmt.get("Cmd")
+            if isinstance(cmd, dict) and cmd.get("Type") == "Block":
+                out.extend(flatten(cmd.get("Stmts")))
+            else:
+                out.append(stmt)
+        return out
+
+    top_stmts = flatten(tree.get("Stmts"))
     spans = []
 
     def add(stmts):
