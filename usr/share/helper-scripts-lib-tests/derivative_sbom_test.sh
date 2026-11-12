@@ -481,9 +481,8 @@ check "merge-tool: malformed fragment fails closed (exit 1)" \
 
 ## A missing/mistyped FRAGMENTS_DIR is misconfiguration -> fail closed, never a
 ## silently fragment-less (incomplete) SBOM. An existing EMPTY dir is NOT an
-## error (zero fragments -> base-only). This pair is the canary: the fail-closed
-## asserts are RED on the old code (which silently emitted base-only, exit 0),
-## while the empty-dir assert guards against over-correcting into failing on empty.
+## error (zero fragments -> base-only); the empty-dir assert pins that the
+## fail-closed guard does not over-reach into failing on empty.
 missing_frag="${test_dir}/does-not-exist.d"
 check "merge-tool: non-existent FRAGMENTS_DIR fails closed (exit 1)" \
    "$(merge_rc "${merge_base}" "${missing_frag}")" "1"
@@ -502,9 +501,9 @@ check "merge-tool: empty-but-existing dir yields base-only (base survives)" \
    "$(purl_count "${emptydir_out}" 'pkg:deb/debian/bash@5.2')" "1"
 
 ## An existing-but-UNLISTABLE fragments dir must fail closed, never silently emit
-## a fragment-less SBOM. Canary: Path.glob swallows the listdir OSError (base-only,
-## exit 0 on old code); the explicit os.scandir propagates it -> die. (Suite runs
-## non-root per its contract; root bypasses the mode bits.)
+## a fragment-less SBOM: Path.glob swallows a listdir OSError, so the tool lists
+## via os.scandir which propagates it -> die. (Suite runs non-root per its
+## contract; root bypasses the mode bits.)
 noread_frag="${test_dir}/noread-fragments.d"
 mkdir --parents -- "${noread_frag}"
 printf '%s\n' '{"type":"application","name":"nr","purl":"pkg:generic/nr@1"}' > "${noread_frag}/n.cdx.json"
