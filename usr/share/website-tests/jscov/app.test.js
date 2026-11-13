@@ -594,6 +594,18 @@ test("search: unchecking the magnifier toggle hides AND clears the results dropd
   assert.equal(results.querySelector("li a"), null, "results are cleared on close");
 });
 
+test("search: checking the magnifier toggle focuses the field so the user can type", () => {
+  const w = load(
+    '<span class="site-search"><input type="checkbox" id="search-toggle"><input id="search-input"></span>',
+    { searchIndex: [] });
+  const toggle = w.document.getElementById("search-toggle");
+  const input = w.document.getElementById("search-input");
+  toggle.checked = true;
+  toggle.dispatchEvent(new w.Event("change"));
+  assert.equal(w.document.activeElement, input,
+    "the search field is focused the moment the magnifier opens it");
+});
+
 test("search hides namespaced (n:1) pages unless the query is namespace-qualified", async () => {
   async function run(query) {
     const w = load('<input id="search-input">',
