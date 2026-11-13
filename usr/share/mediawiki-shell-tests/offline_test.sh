@@ -260,6 +260,46 @@ else
 fi
 
 ## ===========================================================================
+printf '%s\n' "=== mw-file-to-web-archive: archive_save records a redirected save ==="
+## ===========================================================================
+## Regression: curl_web_archive_opts use --location, so a successful /save/ redirect reports
+## the FINAL snapshot code (HTTP 200), not the 302. archive_save must detect the snapshot from
+## the 'location:' header (like archive_check) and record it to already-archived.txt, NOT fall
+## through to the unknown-case branch. A bare `== "302"` check misclassifies the save.
+## Drives the REAL archive_save (sourced via the script's sourced-guard) with a stubbed network
+## layer -- no live wiki/archive.org.
+as_tmp="$(mktemp -d)"
+as_out="$(
+  export MEDIAWIKI_SHELL_COMMON="${mw_common}"
+  export TMPFOLDER="${as_tmp}"
+  mkdir -p -- "${TMPFOLDER}/webarchive"
+  touch -- "${TMPFOLDER}/webarchive/already-archived.txt" \
+           "${TMPFOLDER}/webarchive/already-unknown-case-error.txt"
+  # shellcheck disable=SC1090,SC1091  # real subject resolved at runtime; sourced-guard skips main
+  source "${mw_bin}/mw-file-to-web-archive"
+  # Stub the network layer: a successful save that curl followed (--location) reports HTTP 200
+  # with the snapshot in the 'location:' header written to the output temp.
+  # shellcheck disable=SC2317  # invoked indirectly by archive_save, not statically visible
+  curl_run() {
+    printf '%s\n' 'location: https://web.archive.org/web/20260101000000/https://example.com/x' \
+      > "${TMPFOLDER}/webarchive/curl-output-temp"
+    printf '%s' '200'
+  }
+  # shellcheck disable=SC2034  # expanded by the sourced archive_save's curl_run call (nounset)
+  curl_web_archive_opts=( "--head" )   # value irrelevant; the stub ignores them
+  archive_save "https://example.com/x" >/dev/null 2>&1 || true
+  if grep --quiet -- 'example.com' "${TMPFOLDER}/webarchive/already-archived.txt"; then
+    printf '%s' 'recorded'
+  elif grep --quiet -- 'example.com' "${TMPFOLDER}/webarchive/already-unknown-case-error.txt"; then
+    printf '%s' 'misclassified'
+  else
+    printf '%s' 'none'
+  fi
+)"
+safe-rm --recursive --force -- "${as_tmp}"
+assert_eq "redirected save (HTTP 200 + snapshot location) recorded, not misclassified" "recorded" "${as_out}"
+
+## ===========================================================================
 printf '%s\n' "=== SUMMARY ==="
 ## ===========================================================================
 printf '%s\n' "PASS=${PASS} FAIL=${FAIL}"
