@@ -239,6 +239,21 @@ rc=0
 assert_rc "exit_handler falls back to \$? with no argument" "5" "${rc}"
 
 ## ===========================================================================
+printf '%s\n' "=== help-flag detection: no unanchored '=~ (-h|--help)' ==="
+## ===========================================================================
+## Regression: `[[ "${1-}" =~ (-h|--help) ]]` is an UNANCHORED regex, so it
+## matches any argument merely CONTAINING "-h" (a path like
+## /home/.../-home-user/... , or a filename with "-h"), wrongly printing usage
+## and refusing to run. The anchored `== "-h" || == "--help"` form must be used.
+## Assert the buggy substring appears in no usr/bin script.
+unanchored="$(grep -rlE '=~ \(-h\|--help\)' "${mw_bin}" 2>/dev/null || true)"
+if [ -z "${unanchored}" ]; then
+  pass "no usr/bin script uses the unanchored '=~ (-h|--help)' help check"
+else
+  fail "unanchored help check still present in: ${unanchored//$'\n'/ }"
+fi
+
+## ===========================================================================
 printf '%s\n' "=== SUMMARY ==="
 ## ===========================================================================
 printf '%s\n' "PASS=${PASS} FAIL=${FAIL}"
