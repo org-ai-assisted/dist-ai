@@ -173,8 +173,9 @@ test("per-heading share: first press clones the ONE proto, substitutes this head
     '<span class="code-select cs-wiki" data-code="ZZSHWIKIZZ">w</span>' +    // pre-stripped wikitext value
     '<span class="code-select cs-md" data-code="ZZSHMDZZ">m</span>' +
     '<span class="code-select cs-phpbb" data-code="ZZSHPHPBBZZ">b</span>' +
-    '<span class="share-social"><a class="share-icon"' +
-    ' href="https://soc.test/?u=ZZSHUZZ&amp;t=ZZSHTZZ" aria-label="Open in X: ZZSHARIAZZ">x</a></span>' +
+    '<span class="share-social"><button class="share-icon" popovertarget="ZZSHIDZZ-x" aria-label="Share on X">x</button>' +
+    '<div id="ZZSHIDZZ-x" popover class="share-open-panel">' +
+    '<a class="share-open" href="https://soc.test/?u=ZZSHUZZ&amp;t=ZZSHTZZ" aria-label="Open in X: ZZSHARIAZZ">o</a></div></span>' +
     "</template>");
   const tip = w.document.querySelector(".share-tooltip");
   // template content is inert: querySelectorAll does NOT descend into it, so only the permalink
@@ -186,7 +187,8 @@ test("per-heading share: first press clones the ONE proto, substitutes this head
   tip.dispatchEvent(new w.Event("pointerdown", { bubbles: true }));
   assert.equal(tip.getAttribute("data-sh-built"), "1", "built on first press");
   const menu = tip.querySelector(".menu");
-  assert.ok(menu.innerHTML.indexOf("ZZSH") === -1, "every one of the 7 sentinels is substituted");
+  assert.ok(menu.innerHTML.indexOf("ZZSH") === -1,
+    "every sentinel (7 per-context values + the popover id prefix) is substituted");
   const byCode = (sel) => menu.querySelector(sel).getAttribute("data-code");
   assert.equal(byCode(".cs-direct"), "https://x.test/wiki/Page#See_)_now",
     "the direct-link field copies the RAW url, literal ) intact -- JS does NOT url-encode");
@@ -196,11 +198,19 @@ test("per-heading share: first press clones the ONE proto, substitutes this head
   // percent-encoded link verbatim (%29, not ), NOT double-encoded), t is substituted, and the
   // proto's &amp; round-trips to a single & -- a substring check would miss a wrong origin / an
   // extra param / a longer u or t.
-  assert.equal(menu.querySelector("a.share-icon").getAttribute("href"),
+  assert.equal(menu.querySelector("a.share-open").getAttribute("href"),
     "https://soc.test/?u=https%3A%2F%2Fx.test%2Fwiki%2FPage%23See_%29_now&t=Sec",
     "the social url is built by pure 1:1 substitution -- no encoding, no extra params, origin intact");
-  assert.equal(menu.querySelector("a.share-icon").getAttribute("aria-label"), "Open in X: Introduction (2)",
+  assert.equal(menu.querySelector("a.share-open").getAttribute("aria-label"), "Open in X: Introduction (2)",
     "the social aria-label carries the disambiguated section name verbatim");
+  // the popover id prefix (ZZSHIDZZ) is rewritten to a per-heading-unique prefix, and the button's
+  // popovertarget still MATCHES its panel id -- a duplicate/left-as-sentinel id would break the popover.
+  const popBtn = menu.querySelector("button.share-icon");
+  const popPanel = menu.querySelector("[popover]");
+  assert.equal(popBtn.getAttribute("popovertarget"), popPanel.id,
+    "the button's popovertarget matches its [popover] panel id after substitution");
+  assert.ok(/^sh\d+-x$/.test(popPanel.id),
+    "the popover id sentinel is rewritten to a unique sh<N>- prefix (not left as ZZSHIDZZ)");
   assert.ok(menu.querySelector(".code-select").classList.contains("js-fully-loaded"),
     "the injected copy fields are wired");
   // idempotent: a second press is a no-op (the data-sh-built guard), no rebuild/duplication
