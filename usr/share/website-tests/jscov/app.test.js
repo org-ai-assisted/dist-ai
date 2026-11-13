@@ -310,24 +310,41 @@ test("per-heading share: no-op without data-sh-direct, without a proto, or witho
   assert.ok(!tip3.getAttribute("data-sh-built"), "no .menu -> not built");
 });
 
-test("hash navigation scrolls the target into view (content-visibility anchor fix)", () => {
-  const w = load('<section class="cv-section"><h2 id="Sec">Sec</h2><p>x</p></section>'
-    + '<section class="cv-section"><h2 id="Deep">Deep</h2><p>y</p></section>');
-  const el = w.document.getElementById("Deep");
-  let scrolled = 0;
-  el.scrollIntoView = () => { scrolled++; };          // spy (jsdom's is a no-op)
+test("hash navigation reveals + scrolls a closed-<details> target; a plain target needs no JS scroll", () => {
+  // Sections render in full now (no content-visibility estimate), so the browser's native #fragment
+  // scroll lands correctly on a visible target -- JS only steps in to reveal + re-scroll a target
+  // hidden inside a CLOSED <details>.
+  const w = load('<p><a id="Plain">plain</a></p>'
+    + '<details><summary>s</summary><h2 id="Deep">Deep</h2><p>y</p></details>');
+  const deep = w.document.getElementById("Deep");
+  let scrolled = 0; deep.scrollIntoView = () => { scrolled++; };   // spy (jsdom's is a no-op)
   try { w.history.replaceState(null, "", "#Deep"); } catch (e) { /* jsdom */ }
   w.dispatchEvent(new w.Event("hashchange"));
-  assert.equal(scrolled, 1, "a hash change scrolls the fragment target into view precisely");
-  // no hash -> no scroll (guarded)
-  const el2 = w.document.getElementById("Sec");
-  let s2 = 0; el2.scrollIntoView = () => { s2++; };
-  // w.location (NOT the bare test-realm `location`, which is undefined -> ReferenceError swallowed
-  // by the catch, leaving the hash at '#Deep' so this asserted vacuously). Clear the fragment so
-  // the hashchange genuinely exercises the no-fragment -> no-scroll path.
+  assert.equal(scrolled, 1, "a target in a closed <details> is revealed and scrolled to");
+  assert.ok(deep.closest("details").open, "the enclosing <details> is opened");
+  // re-fire with the <details> already open -> the (d && !d.open) guard skips: no second scroll
+  w.dispatchEvent(new w.Event("hashchange"));
+  assert.equal(scrolled, 1, "an already-open details target is not re-opened or re-scrolled");
+  // a plain target NOT inside a details -> no JS scroll (the native #fragment scroll lands right)
+  const plain = w.document.getElementById("Plain");
+  let s2 = 0; plain.scrollIntoView = () => { s2++; };
+  try { w.history.replaceState(null, "", "#Plain"); } catch (e) {}
+  w.dispatchEvent(new w.Event("hashchange"));
+  assert.equal(s2, 0, "a plain fragment target needs no JS scroll");
+  // w.location (NOT the bare realm `location`, undefined -> ReferenceError swallowed by the catch):
+  // clear the fragment so the hashchange genuinely exercises the no-fragment -> no-op path.
   try { w.history.replaceState(null, "", w.location.pathname); } catch (e) {}
   w.dispatchEvent(new w.Event("hashchange"));
   assert.equal(s2, 0, "no fragment -> no scroll");
+});
+
+test("a closed-<details> target without scrollIntoView is still revealed (scroll guard, no throw)", () => {
+  const w = load('<details><summary>s</summary><h2 id="D2">D2</h2></details>');
+  const el = w.document.getElementById("D2");
+  el.scrollIntoView = undefined;                       // exercise the `if (el.scrollIntoView)` false branch
+  try { w.history.replaceState(null, "", "#D2"); } catch (e) {}
+  w.dispatchEvent(new w.Event("hashchange"));
+  assert.ok(el.closest("details").open, "the box is still opened even when scrollIntoView is absent");
 });
 
 test("print button invokes window.print without throwing", () => {
