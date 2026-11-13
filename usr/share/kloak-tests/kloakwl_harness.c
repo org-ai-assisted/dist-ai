@@ -322,23 +322,24 @@ static void unit_abs_coord_invalid(void)
     }
 }
 
-/* open_wl_sock, when connect() to the compositor socket fails, is FATAL: it
- * err(1)-exits and sends the parent nothing. (Whether it should instead enter a
- * degraded mode -- report CTP_PACKET_WAYLAND_LOST and exit(0) so the parent
- * skips the grab and awaits the escape combo -- is tracked in Whonix/kloak#35;
- * it is not in the shipped source.) Run in a forked child so the fatal exit is
- * contained: it points send_write_fd at a pipe and calls open_wl_sock against a
- * WAYLAND_DISPLAY under an empty XDG_RUNTIME_DIR, so the socket cannot exist and
- * connect() fails with ENOENT deterministically. The parent asserts no packet
- * arrived and that open_wl_sock exited (did not return) with the err(1) code. */
-static void unit_open_wl_sock_connect_fatal(void)
+/* open_wl_sock, when connect() to the compositor socket fails, enters degraded
+ * mode: it reports CTP_PACKET_WAYLAND_LOST to the parent and exit(0)s, so the
+ * parent skips the grab and awaits the escape combo instead of aborting. (The
+ * KLOAK_EXIT_ON_WL_CONNECT_FAILURE opt-in turns this back into a fatal exit, but
+ * that decision lives in the parent; open_wl_sock itself always reports+exit(0)s.)
+ * Run in a forked child so the exit is contained: it points send_write_fd at a
+ * pipe and calls open_wl_sock against a WAYLAND_DISPLAY under an empty
+ * XDG_RUNTIME_DIR, so the socket cannot exist and connect() fails with ENOENT
+ * deterministically. The parent asserts the WAYLAND_LOST packet arrived and that
+ * open_wl_sock exited (did not return) cleanly. */
+static void unit_open_wl_sock_connect_degraded(void)
 {
     char runtime_dir[] = "/tmp/kloak_wlsock_XXXXXX";
     int pipe_fds[2];
     pid_t pid;
     int status = 0;
     enum ctp_packet_type pkt = CTP_PACKET_INIT_ACK;
-    ssize_t got;
+    ssize_t got = -1;
 
     assert(mkdtemp(runtime_dir) != NULL);
     assert(pipe(pipe_fds) == 0);
@@ -350,11 +351,11 @@ static void unit_open_wl_sock_connect_fatal(void)
         send_write_fd = pipe_fds[1];
         assert(setenv("XDG_RUNTIME_DIR", runtime_dir, 1) == 0);
         assert(setenv("WAYLAND_DISPLAY", "kloak-nonexistent-wl", 1) == 0);
-        /* The FATAL path writes to stderr; keep the test output clean. */
+        /* The degraded path warns to stderr; keep the test output clean. */
         (void)!freopen("/dev/null", "w", stderr);
         (void)open_wl_sock();
         /* open_wl_sock must NOT return on connect failure: it exits. A return
-         * here lands as exit 2, which the CH_EXIT1 assert below rejects. */
+         * here lands as exit 2, which the CH_EXIT0 assert below rejects. */
         _exit(2);
     }
     assert(close(pipe_fds[1]) == 0);
@@ -363,8 +364,9 @@ static void unit_open_wl_sock_connect_fatal(void)
     assert(waitpid(pid, &status, 0) == pid);
     assert(rmdir(runtime_dir) == 0);
 
-    CHECK(got == 0);
-    CHECK(classify_child(status) == CH_EXIT1);
+    CHECK(got == (ssize_t)sizeof(pkt));
+    CHECK(pkt == CTP_PACKET_WAYLAND_LOST);
+    CHECK(classify_child(status) == CH_EXIT0);
 }
 
 /* Mirror send_msg_to_peer()'s KLOAK button-event wire framing
@@ -595,7 +597,7 @@ int main(void)
     unit_cross_overlap_and_offset_global_space();
     unit_recalc_global_space_gap();
     unit_abs_coord_invalid();
-    unit_open_wl_sock_connect_fatal();
+    unit_open_wl_sock_connect_degraded();
     printf("kloakwl harness: all assertions passed (%d checks)\n", checks);
     return 0;
 }

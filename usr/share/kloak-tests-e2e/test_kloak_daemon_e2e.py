@@ -27,11 +27,15 @@ Two paths are covered:
     kloak must come up WITHOUT entering degraded mode, the kloakwl child must
     drop to the unprivileged kloakwl uid (the privsep guarantee), and injecting
     a keystroke must not crash it.
-  * connect-failure fatal (test_2): pointed at a nonexistent Wayland display,
-    the shipped daemon treats the failed compositor connect as FATAL -- kloak
-    exits non-zero rather than degrading. (A degraded fallback is Whonix/kloak#35
-    + the coupled #34; not in the shipped source.) The daemon-level complement to
-    the kloakwl/kloak harness regressions.
+  * connect-failure degraded (test_2): pointed at a nonexistent Wayland display,
+    the shipped daemon degrades instead of aborting -- the kloakwl child reports
+    CTP_PACKET_WAYLAND_LOST and exit(0)s, and the parent stays up WITHOUT grabbing
+    the devices, awaiting the escape combo (the Whonix/kloak#35 fallback, with the
+    coupled #34 dead-child-pipe spin avoided by dropping the child fd from the poll
+    set). Injecting the escape combo then exits it cleanly. The daemon-level
+    complement to the kloakwl/kloak harness regressions.
+  * connect-failure fatal opt-in (test_2b): with KLOAK_EXIT_ON_WL_CONNECT_FAILURE=1
+    the same connect failure is turned back into a non-zero fatal exit.
 
 DESTRUCTIVE + root-only: builds in the source tree, creates the kloakwl system
 user if absent, drives uinput, and runs a compositor. Authorized skip (euid !=
@@ -197,13 +201,17 @@ class KloakDaemonE2E(unittest.TestCase):
         if getattr(cls, '_compositor_log', None):
             cls._compositor_log.close()
 
-    def _run_kloak(self, runtime_dir, wayland_display, max_delay=0):
+    def _run_kloak(self, runtime_dir, wayland_display, max_delay=0,
+                   extra_env=None):
         """Start kloak with its own log; return (Popen, log_path). max_delay is
         kloak's -d (ms); 0 means no jitter (the fast connected/degraded checks),
-        a positive value is used by the delay-measurement test."""
+        a positive value is used by the delay-measurement test. extra_env merges
+        additional environment variables (e.g. KLOAK_EXIT_ON_WL_CONNECT_FAILURE)."""
         env = dict(os.environ)
         env['XDG_RUNTIME_DIR'] = runtime_dir
         env['WAYLAND_DISPLAY'] = wayland_display
+        if extra_env:
+            env.update(extra_env)
         log_path = os.path.join(self._work, 'kloak-%s.log' % wayland_display)
         log = open(log_path, 'wb')
         ## Register the close the instant the fd is acquired, so a raising Popen
@@ -257,32 +265,75 @@ class KloakDaemonE2E(unittest.TestCase):
                           'kloak crashed processing an injected key:\n%s'
                           % self._read(log_path))
 
-    def test_2_connect_failure_fatal(self):
+    def test_2_connect_failure_degraded(self):
         ## A private empty runtime dir so <dir>/<display> names no socket and the
-        ## Wayland connect fails deterministically. The shipped daemon treats a
-        ## failed compositor connect as FATAL: kloakwl err(1)-exits, the parent
-        ## reports the child aborted during early init, and kloak exits non-zero.
-        ## (A degraded fallback -- stay up awaiting the escape combo without
-        ## spinning the parent on the dead child pipe -- is Whonix/kloak#35 and
-        ## the coupled #34; it is not in the shipped source.)
+        ## Wayland connect fails deterministically. The shipped daemon degrades:
+        ## the kloakwl child reports CTP_PACKET_WAYLAND_LOST and exit(0)s, and the
+        ## parent stays up WITHOUT grabbing the devices, awaiting the escape combo
+        ## (Whonix/kloak#35; the coupled #34 dead-child-pipe spin is avoided by
+        ## dropping the child fd from the poll set). Injecting the escape combo
+        ## (KEY_RIGHTSHIFT + KEY_ESC, the DEFAULT_ESC_KEY_STR) then exits it clean.
         runtime_dir = os.path.join(self._work, 'degraded-xdg')
         os.makedirs(runtime_dir, exist_ok=True)
         os.chmod(runtime_dir, 0o700)
         proc, log_path = self._run_kloak(runtime_dir, 'kloak-nonexistent-wl')
+
+        ## It must stay up (degraded), not abort or spin.
+        time.sleep(4)
+        self.assertIsNone(
+            proc.poll(),
+            'kloak exited on a failed Wayland connect instead of degrading:\n%s'
+            % self._read(log_path))
+        log = self._read(log_path)
+        self.assertIn('await escape key combo', log,
+                      'kloak did not log the degraded-mode warning:\n%s' % log)
+        self.assertNotIn('FATAL', log,
+                         'kloak aborted on the degraded path:\n%s' % log)
+
+        ## The escape combo must bring the degraded daemon down cleanly (exit 0).
+        ecodes = self._evdev.ecodes
+        for key in (ecodes.KEY_RIGHTSHIFT, ecodes.KEY_ESC):
+            self._uinput.write(ecodes.EV_KEY, key, 1)
+        self._uinput.syn()
+        time.sleep(0.2)
+        for key in (ecodes.KEY_ESC, ecodes.KEY_RIGHTSHIFT):
+            self._uinput.write(ecodes.EV_KEY, key, 0)
+        self._uinput.syn()
         try:
             rc = proc.wait(timeout=15)
         except subprocess.TimeoutExpired:
             proc.kill()
-            self.fail('kloak did not exit on a failed Wayland connect '
+            self.fail('degraded kloak did not exit on the escape combo:\n%s'
+                      % self._read(log_path))
+        self.assertEqual(
+            rc, 0,
+            'degraded kloak should exit 0 on the escape combo:\n%s'
+            % self._read(log_path))
+        self.assertIn('Escape combo pressed', self._read(log_path))
+
+    def test_2b_connect_failure_fatal_optin(self):
+        ## KLOAK_EXIT_ON_WL_CONNECT_FAILURE=1 turns the degraded fallback back
+        ## into a non-zero fatal exit on a failed Wayland connect.
+        runtime_dir = os.path.join(self._work, 'fatal-xdg')
+        os.makedirs(runtime_dir, exist_ok=True)
+        os.chmod(runtime_dir, 0o700)
+        proc, log_path = self._run_kloak(
+            runtime_dir, 'kloak-nonexistent-wl',
+            extra_env={'KLOAK_EXIT_ON_WL_CONNECT_FAILURE': '1'})
+        try:
+            rc = proc.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            self.fail('kloak did not exit with the fatal opt-in set '
                       '(expected a fatal exit, not a hang):\n%s'
                       % self._read(log_path))
         self.assertNotEqual(
             rc, 0,
-            'kloak should exit non-zero on a failed Wayland connect:\n%s'
-            % self._read(log_path))
+            'kloak should exit non-zero with '
+            'KLOAK_EXIT_ON_WL_CONNECT_FAILURE=1:\n%s' % self._read(log_path))
         self.assertIn('Could not connect to Wayland compositor',
                       self._read(log_path),
-                      'kloak did not log the fatal connect error')
+                      'kloak did not log the connect failure')
 
     def test_3_keyboard_delay_measured(self):
         """End-to-end proof of kloak's reason to exist: inject real keystrokes
