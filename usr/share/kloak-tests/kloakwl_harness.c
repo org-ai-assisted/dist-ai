@@ -118,11 +118,10 @@ static void unit_random_between(void)
 static void unit_current_time_ms(void)
 {
     int64_t first, second;
-    start_time = 0;
-    first = current_time_ms();   /* first call seeds start_time, returns 0 */
-    CHECK(first == 0);
-    second = current_time_ms();  /* subsequent calls are a non-negative delta */
-    CHECK(second >= 0);
+    first = current_time_ms();   /* absolute CLOCK_MONOTONIC ms, non-negative */
+    CHECK(first >= 0);
+    second = current_time_ms();  /* monotonic: never goes backward */
+    CHECK(second >= first);
 }
 
 static void unit_coord_space(void)
@@ -143,20 +142,20 @@ static void unit_coord_space(void)
 
     /* a point on the second screen maps to that screen, local-origin relative */
     sl = abs_coord_to_screen_local_coord(2000, 50);
-    CHECK(sl.valid && sl.output_idx == 1 && sl.x == 80 && sl.y == 50);
+    CHECK(sl.output_idx == 1 && sl.x == 80 && sl.y == 50);
     /* round-trip back to absolute */
     ab = screen_local_coord_to_abs_coord(sl.x, sl.y, sl.output_idx, &ok);
     CHECK(ok && ab.x == 2000 && ab.y == 50);
 
     /* a point on the first screen */
     sl = abs_coord_to_screen_local_coord(10, 10);
-    CHECK(sl.valid && sl.output_idx == 0 && sl.x == 10 && sl.y == 10);
+    CHECK(sl.output_idx == 0 && sl.x == 10 && sl.y == 10);
 
     /* recalc_global_space works on the global 'state' output geometries set
      * above and writes its result back into 'state'. */
     CHECK(recalc_global_space());
-    CHECK(state.global_space_width == 3840);
-    CHECK(state.global_space_height == 1080);
+    CHECK(state.pointer_space_width == 3840);
+    CHECK(state.pointer_space_height == 1080);
     CHECK(state.pointer_space_x == 0 && state.pointer_space_y == 0);
 
     for (i = 0; i < MAX_SCREEN_COUNT; ++i) {
@@ -272,7 +271,7 @@ static void unit_cross_overlap_and_offset_global_space(void)
     state.output_geometries[0] = &off_a;
     state.output_geometries[1] = &off_b;
     CHECK(recalc_global_space());
-    CHECK(state.global_space_width == 3840);
+    CHECK(state.pointer_space_width == 3840);
     CHECK(state.pointer_space_x == 100);
 
     for (i = 0; i < MAX_SCREEN_COUNT; ++i) {
@@ -313,24 +312,23 @@ static void unit_abs_coord_invalid(void)
     state.output_geometries[0] = &g0;
 
     sl = abs_coord_to_screen_local_coord(5000, 5000);
-    CHECK(!sl.valid);
+    CHECK(sl.output_idx < 0);
 
     for (i = 0; i < MAX_SCREEN_COUNT; ++i) {
         state.output_geometries[i] = NULL;
     }
 }
 
-/* Regression for Whonix/kloak#35 (degraded mode on a failed Wayland connect).
- * open_wl_sock, when connect() to the compositor socket fails, must report the
- * connection as lost to the parent (CTP_PACKET_WAYLAND_LOST) and exit(0) -- so
- * the parent honors degraded mode (skip the grab, await the escape combo). The
- * old code exit(1)'d and sent nothing, which the parent saw as the child
- * aborting during early init. Run in a forked child: it points send_write_fd at
- * a pipe and calls open_wl_sock against a WAYLAND_DISPLAY under an empty
- * XDG_RUNTIME_DIR, so the socket cannot exist and connect() fails with ENOENT
- * deterministically. The parent asserts a lone WAYLAND_LOST header arrived and
- * the child exited 0. */
-static void unit_open_wl_sock_degraded(void)
+/* open_wl_sock, when connect() to the compositor socket fails, is FATAL: it
+ * err(1)-exits and sends the parent nothing. (Whether it should instead enter a
+ * degraded mode -- report CTP_PACKET_WAYLAND_LOST and exit(0) so the parent
+ * skips the grab and awaits the escape combo -- is tracked in Whonix/kloak#35;
+ * it is not in the shipped source.) Run in a forked child so the fatal exit is
+ * contained: it points send_write_fd at a pipe and calls open_wl_sock against a
+ * WAYLAND_DISPLAY under an empty XDG_RUNTIME_DIR, so the socket cannot exist and
+ * connect() fails with ENOENT deterministically. The parent asserts no packet
+ * arrived and that open_wl_sock exited (did not return) with the err(1) code. */
+static void unit_open_wl_sock_connect_fatal(void)
 {
     char runtime_dir[] = "/tmp/kloak_wlsock_XXXXXX";
     int pipe_fds[2];
@@ -349,10 +347,11 @@ static void unit_open_wl_sock_degraded(void)
         send_write_fd = pipe_fds[1];
         assert(setenv("XDG_RUNTIME_DIR", runtime_dir, 1) == 0);
         assert(setenv("WAYLAND_DISPLAY", "kloak-nonexistent-wl", 1) == 0);
-        /* The WARNING path writes to stderr; keep the test output clean. */
+        /* The FATAL path writes to stderr; keep the test output clean. */
         (void)!freopen("/dev/null", "w", stderr);
         (void)open_wl_sock();
-        /* Must not return in the degraded case: it exits. */
+        /* open_wl_sock must NOT return on connect failure: it exits. A return
+         * here lands as exit 2, which the CH_EXIT1 assert below rejects. */
         _exit(2);
     }
     assert(close(pipe_fds[1]) == 0);
@@ -361,9 +360,8 @@ static void unit_open_wl_sock_degraded(void)
     assert(waitpid(pid, &status, 0) == pid);
     assert(rmdir(runtime_dir) == 0);
 
-    CHECK(got == (ssize_t)sizeof(pkt));
-    CHECK(pkt == CTP_PACKET_WAYLAND_LOST);
-    CHECK(classify_child(status) == CH_EXIT0);
+    CHECK(got == 0);
+    CHECK(classify_child(status) == CH_EXIT1);
 }
 
 int main(void)
@@ -379,7 +377,7 @@ int main(void)
     unit_cross_overlap_and_offset_global_space();
     unit_recalc_global_space_gap();
     unit_abs_coord_invalid();
-    unit_open_wl_sock_degraded();
+    unit_open_wl_sock_connect_fatal();
     printf("kloakwl harness: all assertions passed (%d checks)\n", checks);
     return 0;
 }

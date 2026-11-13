@@ -11,11 +11,13 @@ anti-keystroke-fingerprinting daemon whose correctness under untrusted input
 (compositor screen geometry, libinput scroll values, the randomised release
 delay) is a threat-model target.
 
-Both drive the REAL src/kloak.c (resolved via KLOAK_REPO), reusing kloak's
-existing KLOAK_FUZZING seam (guards out main) -- NO kloak source change. kloak.c
-#includes wayland-scanner-generated protocol headers, so setUp generates them
-(client-header + private-code) with wayland-scanner into a work dir and symlinks
-the real kloak.c / kloak.h beside them (no source copy):
+Both drive the REAL src/kloak.c.in (resolved via KLOAK_REPO), rendered to kloak.c
+by the build's own scripts/src-transform, reusing kloak's existing KLOAK_FUZZING
+seam (guards out main) -- NO kloak source change. kloak.c #includes
+wayland-scanner-generated protocol headers, so setUp generates them (client-header
++ private-code) with wayland-scanner into a work dir, renders kloak.c / kloak.h
+there with src-transform, and symlinks the non-templated sources beside them (no
+source copy):
 
   * kloak_harness.c -- concrete unit tests (known values + edges for
     lookup_keycode, check_screen_touch, traverse_line, parse_uint31/32_arg,
@@ -128,10 +130,10 @@ class KloakVerification(unittest.TestCase):
         repo = _repo()
         cls.src_dir = os.path.join(repo, 'src')
         cls.protocol_dir = os.path.join(repo, 'protocol')
-        if not os.path.exists(os.path.join(cls.src_dir, 'kloak.c')):
+        if not os.path.exists(os.path.join(cls.src_dir, 'kloak.c.in')):
             ## style-ok: allow-skip: kloak source absent (not a --component run)
             raise unittest.SkipTest(
-                'kloak.c not found under %s -- set KLOAK_REPO or install the '
+                'kloak.c.in not found under %s -- set KLOAK_REPO or install the '
                 'kloak source' % cls.src_dir)
         cls.gcc = _require('gcc')
         cls.clang = _require('clang')
@@ -140,25 +142,33 @@ class KloakVerification(unittest.TestCase):
         cls.cflags = _pkg_config('--cflags')
         cls.libs = _pkg_config('--libs')
 
-        ## Work dir: generated protocol headers + marshalling code next to
-        ## symlinks of the real kloak.c / kloak.h, so kloak.c's quoted includes
-        ## resolve and both harnesses compile the actual source (no copy).
+        ## Work dir: generated protocol headers + marshalling code, plus kloak.c
+        ## / kloak.h rendered from their .in templates, next to symlinks of the
+        ## non-templated sources, so kloak.c's quoted includes resolve and both
+        ## harnesses compile the actual generated source (no copy of the subject).
         cls._work = tempfile.mkdtemp(prefix='kloak-cbmc-')
-        for name in ('kloak.c', 'kloakwl.c', 'kloakwl.h', 'kloak-shared.h'):
+        for name in ('kloakwl.c', 'kloakwl.h', 'kloak-shared.h'):
             os.symlink(os.path.join(cls.src_dir, name),
                        os.path.join(cls._work, name))
-        ## kloak.h is generated from kloak.h.in ('make' bakes the kloakwl path in
-        ## via sed), so there is no kloak.h to symlink. kloak.c's #include
-        ## "kloak.h" must still resolve, so render it with the production path --
-        ## the harnesses never exec kloakwl, the value just has to be a valid
-        ## string literal.
-        with open(os.path.join(cls.src_dir, 'kloak.h.in'),
-                  encoding='utf-8') as kloak_h_in:
-            kloak_h = kloak_h_in.read().replace(
-                '@KLOAKWL_PATH@', '/usr/bin/kloakwl')
-        with open(os.path.join(cls._work, 'kloak.h'), 'w',
-                  encoding='utf-8') as kloak_h_out:
-            kloak_h_out.write(kloak_h)
+        ## Render kloak.c (from kloak.c.in) and kloak.h (from kloak.h.in) with
+        ## the build's OWN scripts/src-transform -- the real generator, not a
+        ## reimplementation of its substitutions. It writes <template-without-.in>
+        ## beside the template, so copy each .in into the work dir and transform
+        ## it there: the generated kloak.c / kloak.h land in the work dir without
+        ## writing into the (possibly shared) checkout. kloak.h.in bakes in a
+        ## <bindir>/kloakwl path; the harnesses never exec kloakwl, so any valid
+        ## bindir works.
+        transform = os.path.join(repo, 'scripts', 'src-transform')
+        if not os.access(transform, os.X_OK):
+            print('FATAL: %r missing or not executable -- kloak restructured its '
+                  'build without it?' % transform, file=sys.stderr)
+            sys.exit(1)
+        for template, args in (('kloak.c.in', []), ('kloak.h.in', ['/usr/bin'])):
+            staged = os.path.join(cls._work, template)
+            shutil.copyfile(os.path.join(cls.src_dir, template), staged)
+            subprocess.run([transform, staged, *args],
+                           check=True, capture_output=True, text=True)
+            os.unlink(staged)
         cls.proto_sources = []
         for xml, stem in PROTOCOL_STEMS.items():
             xml_path = os.path.join(cls.protocol_dir, xml)

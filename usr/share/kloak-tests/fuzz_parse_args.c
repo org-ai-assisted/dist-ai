@@ -5,8 +5,9 @@
  * AI-Assisted
  *
  * libFuzzer harness for kloak's remaining untrusted command-line value parsers:
- * parse_uint31_arg / parse_uint32_arg (the --delay / --start-delay / --color
- * numeric arguments) and lookup_keycode (the key names in --escape-keys).
+ * parse_uint_arg (the --delay / --start-delay / --color numeric arguments, at
+ * both its INT32_MAX and UINT32_MAX caps) and lookup_keycode (the key names in
+ * --escape-keys).
  * parse_esc_key_str has its own harness; together these cover the CLI
  * string->value surface.
  *
@@ -34,8 +35,7 @@
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
   char *buf = NULL;
-  int32_t v31 = 0;
-  uint32_t v32 = 0;
+  uint32_t v = 0;
 
   buf = malloc(size + 1U);
   if (buf == NULL) {
@@ -44,10 +44,10 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
   memcpy(buf, data, size);
   buf[size] = '\0';
 
-  (void)parse_uint31_arg(buf, 10, &v31);
-  (void)parse_uint31_arg(buf, 16, &v31);
-  (void)parse_uint32_arg(buf, 10, &v32);
-  (void)parse_uint32_arg(buf, 16, &v32);
+  (void)parse_uint_arg(buf, 10, INT32_MAX, &v);
+  (void)parse_uint_arg(buf, 16, INT32_MAX, &v);
+  (void)parse_uint_arg(buf, 10, UINT32_MAX, &v);
+  (void)parse_uint_arg(buf, 16, UINT32_MAX, &v);
   (void)lookup_keycode(buf);
 
   free(buf);

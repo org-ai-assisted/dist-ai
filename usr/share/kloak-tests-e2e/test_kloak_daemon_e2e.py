@@ -27,10 +27,11 @@ Two paths are covered:
     kloak must come up WITHOUT entering degraded mode, the kloakwl child must
     drop to the unprivileged kloakwl uid (the privsep guarantee), and injecting
     a keystroke must not crash it.
-  * degraded (test_2): pointed at a nonexistent Wayland display, kloak must
-    honor degraded mode -- stay up awaiting the escape combo -- and NOT spin the
-    parent at 100% CPU on the dead child pipe (Whonix/kloak#35 + the coupled
-    #34). The daemon-level complement to the kloakwl/kloak harness regressions.
+  * connect-failure fatal (test_2): pointed at a nonexistent Wayland display,
+    the shipped daemon treats the failed compositor connect as FATAL -- kloak
+    exits non-zero rather than degrading. (A degraded fallback is Whonix/kloak#35
+    + the coupled #34; not in the shipped source.) The daemon-level complement to
+    the kloakwl/kloak harness regressions.
 
 DESTRUCTIVE + root-only: builds in the source tree, creates the kloakwl system
 user if absent, drives uinput, and runs a compositor. Authorized skip (euid !=
@@ -56,16 +57,6 @@ def _sh(*cmd, **kwargs):
     return subprocess.run(cmd, capture_output=True, text=True, **kwargs)
 
 
-def _proc_cpu_ticks(pid):
-    ## utime (field 14) + stime (field 15) from /proc/<pid>/stat, in clock
-    ## ticks. The comm field can contain spaces/parens, so split after the
-    ## trailing ')'.
-    with open('/proc/%d/stat' % pid, encoding='utf-8') as handle:
-        fields = handle.read().rpartition(')')[2].split()
-    ## after the ')' the first field is state, so utime/stime are indices 11/12
-    return int(fields[11]) + int(fields[12])
-
-
 def _kloakwl_procs_owned_by_user():
     ## pids of running 'kloakwl' processes whose owner is the kloakwl user --
     ## i.e. the sandbox child AFTER it dropped privileges.
@@ -89,10 +80,10 @@ class KloakDaemonE2E(unittest.TestCase):
         if os.geteuid() != 0:
             ## style-ok: allow-skip: e2e drives the real privsep sandbox + uinput, needs root
             raise unittest.SkipTest('needs root')
-        src = os.path.join(_repo(), 'src', 'kloak.c')
+        src = os.path.join(_repo(), 'src', 'kloak.c.in')
         if not os.path.exists(src):
             ## style-ok: allow-skip: kloak source absent (not a --component run)
-            raise unittest.SkipTest('kloak.c not found -- set KLOAK_REPO')
+            raise unittest.SkipTest('kloak.c.in not found -- set KLOAK_REPO')
         if not os.path.exists('/dev/uinput'):
             ## style-ok: allow-skip: no /dev/uinput -- cannot give the seat a keyboard
             raise unittest.SkipTest('/dev/uinput absent')
@@ -263,28 +254,32 @@ class KloakDaemonE2E(unittest.TestCase):
                           'kloak crashed processing an injected key:\n%s'
                           % self._read(log_path))
 
-    def test_2_degraded_mode(self):
+    def test_2_connect_failure_fatal(self):
         ## A private empty runtime dir so <dir>/<display> names no socket and the
-        ## Wayland connect fails deterministically.
+        ## Wayland connect fails deterministically. The shipped daemon treats a
+        ## failed compositor connect as FATAL: kloakwl err(1)-exits, the parent
+        ## reports the child aborted during early init, and kloak exits non-zero.
+        ## (A degraded fallback -- stay up awaiting the escape combo without
+        ## spinning the parent on the dead child pipe -- is Whonix/kloak#35 and
+        ## the coupled #34; it is not in the shipped source.)
         runtime_dir = os.path.join(self._work, 'degraded-xdg')
         os.makedirs(runtime_dir, exist_ok=True)
         os.chmod(runtime_dir, 0o700)
         proc, log_path = self._run_kloak(runtime_dir, 'kloak-nonexistent-wl')
-        time.sleep(2)
-        self.assertIsNone(proc.poll(),
-                          'kloak exited instead of entering degraded mode '
-                          '(the old #35 abort):\n%s' % self._read(log_path))
-        before = _proc_cpu_ticks(proc.pid)
-        time.sleep(3)
-        after = _proc_cpu_ticks(proc.pid)
-        self.assertIsNone(proc.poll(), 'kloak exited during the degraded idle')
-        ## A dead-pipe busy-loop (the coupled #34) burns ~100% CPU (~300 ticks
-        ## over 3s at 100 Hz); a correctly blocked poll burns almost none.
-        self.assertLess(after - before, 50,
-                        'kloak is busy-looping in degraded mode (#34): %d CPU '
-                        'ticks over 3s' % (after - before))
-        self.assertIn('await escape key combo', self._read(log_path),
-                      'kloak did not log the degraded-mode message')
+        try:
+            rc = proc.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            self.fail('kloak did not exit on a failed Wayland connect '
+                      '(expected a fatal exit, not a hang):\n%s'
+                      % self._read(log_path))
+        self.assertNotEqual(
+            rc, 0,
+            'kloak should exit non-zero on a failed Wayland connect:\n%s'
+            % self._read(log_path))
+        self.assertIn('Could not connect to Wayland compositor',
+                      self._read(log_path),
+                      'kloak did not log the fatal connect error')
 
 
 if __name__ == '__main__':

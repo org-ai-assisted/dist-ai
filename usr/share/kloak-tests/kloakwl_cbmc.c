@@ -112,7 +112,7 @@ void verify_abs_coord_to_screen_local_coord(void)
     }
     state.output_geometries[0] = &g;
     sl = abs_coord_to_screen_local_coord(x, y);
-    if (sl.valid) {
+    if (sl.output_idx >= 0) {
         __CPROVER_assert(sl.output_idx == 0, "valid hit is the only screen");
         __CPROVER_assert(sl.x >= 0 && sl.x < g.width, "local x inside screen");
         __CPROVER_assert(sl.y >= 0 && sl.y < g.height, "local y inside screen");
@@ -203,14 +203,15 @@ void verify_get_ticks_from_scroll_accum(void)
     (void)get_ticks_from_scroll_accum(&accum);
 }
 
-/* current_time_ms: a plausible monotonic clock yields a non-negative ms value
- * with no int64 overflow (clock_gettime modeled above). */
+/* current_time_ms: CLOCK_MONOTONIC (modeled above as a non-decreasing,
+ * normalised timespec) yields a non-negative absolute ms value that never
+ * decreases across calls, with no int64 overflow. */
 void verify_current_time_ms(void)
 {
-    start_time = 0;
-    /* First call seeds start_time and returns 0; later calls return a delta.
-     * Prove the documented non-negative property for both, not just absence of
-     * UB. */
-    __CPROVER_assert(current_time_ms() >= 0, "seed current_time_ms non-negative");
-    __CPROVER_assert(current_time_ms() >= 0, "delta current_time_ms non-negative");
+    int64_t first = 0;
+    int64_t second = 0;
+    first = current_time_ms();
+    second = current_time_ms();
+    __CPROVER_assert(first >= 0, "current_time_ms non-negative");
+    __CPROVER_assert(second >= first, "current_time_ms monotonic non-decreasing");
 }

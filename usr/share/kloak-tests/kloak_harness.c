@@ -26,14 +26,20 @@ IN_CREATE nor IN_DELETE).
 
 #include <setjmp.h>
 #include <stdlib.h>
+#include <err.h>
 
-/* Intercept kloak's fatal exit(): a rejection kloak handles by design (e.g. a
- * duplicate CLI option), not a crash. Defined AFTER <stdlib.h> (so exit's real
- * declaration is already parsed) and BEFORE kloak.c, whose guarded <stdlib.h>
- * re-include is a no-op -- so only kloak.c's exit() CALLS expand. The value
- * passed to longjmp is the exit code + 1 (longjmp cannot carry 0). */
+/* Intercept kloak's fatal exits: a rejection kloak handles by design (e.g. a
+ * duplicate CLI option), not a crash. kloak routes fatals both through exit()
+ * and through <err.h> (err()/errx()), whose libc exit() would otherwise escape
+ * an exit()-only macro -- so intercept all three. Defined AFTER the real
+ * declarations are parsed (<stdlib.h>, <err.h>) and BEFORE kloak.c, whose
+ * guarded re-includes are a no-op, so only kloak.c's CALLS expand. The value
+ * passed to longjmp is the exit code + 1 (longjmp cannot carry 0). warn()/
+ * warnx() are non-fatal and deliberately left alone. */
 static jmp_buf g_reject;
 #define exit(code) longjmp(g_reject, (code) + 1)
+#define err(code, ...) longjmp(g_reject, (code) + 1)
+#define errx(code, ...) longjmp(g_reject, (code) + 1)
 
 #include "kloak.c"
 
@@ -55,33 +61,37 @@ static void unit_lookup_keycode(void)
     CHECK(lookup_keycode("") == 0);
 }
 
+/* parse_uint_arg caps at an explicit max_val and writes a uint32_t. The suite
+ * covers both envelopes kloak uses it in: INT32_MAX (max_delay, startup delay)
+ * and UINT32_MAX (cursor color). */
 static void unit_parse_uint31(void)
 {
-    int32_t v = -1;
-    CHECK(parse_uint31_arg("0", 10, &v) && v == 0);
-    CHECK(parse_uint31_arg("2147483647", 10, &v) && v == INT32_MAX);
-    CHECK(parse_uint31_arg("ff", 16, &v) && v == 255);
-    /* > INT32_MAX rejected */
-    CHECK(!parse_uint31_arg("2147483648", 10, &v));
-    /* empty, trailing junk, and a negative (strtoul wraps huge) all rejected */
-    CHECK(!parse_uint31_arg("", 10, &v));
-    CHECK(!parse_uint31_arg("12x", 10, &v));
-    CHECK(!parse_uint31_arg("-1", 10, &v));
-    /* A leading '-' that strtoul wraps to a SMALL in-range value must still be
-     * rejected (bug: "-18446744073709551615" wraps to 1). */
-    CHECK(!parse_uint31_arg("-18446744073709551615", 10, &v));
+    uint32_t v = 0;
+    CHECK(parse_uint_arg("0", 10, INT32_MAX, &v) && v == 0);
+    CHECK(parse_uint_arg("2147483647", 10, INT32_MAX, &v)
+          && v == (uint32_t)INT32_MAX);
+    CHECK(parse_uint_arg("ff", 16, INT32_MAX, &v) && v == 255);
+    /* > max_val rejected */
+    CHECK(!parse_uint_arg("2147483648", 10, INT32_MAX, &v));
+    /* empty, trailing junk, and a negative all rejected */
+    CHECK(!parse_uint_arg("", 10, INT32_MAX, &v));
+    CHECK(!parse_uint_arg("12x", 10, INT32_MAX, &v));
+    CHECK(!parse_uint_arg("-1", 10, INT32_MAX, &v));
+    /* A leading '-' that strtoul would wrap to a SMALL in-range value must still
+     * be rejected (the explicit '-' guard, not the range check). */
+    CHECK(!parse_uint_arg("-18446744073709551615", 10, INT32_MAX, &v));
 }
 
 static void unit_parse_uint32(void)
 {
     uint32_t v = 0;
-    CHECK(parse_uint32_arg("0", 10, &v) && v == 0);
-    CHECK(parse_uint32_arg("4294967295", 10, &v) && v == UINT32_MAX);
-    /* > UINT32_MAX rejected */
-    CHECK(!parse_uint32_arg("4294967296", 10, &v));
-    CHECK(!parse_uint32_arg("", 10, &v));
-    CHECK(!parse_uint32_arg("x", 10, &v));
-    CHECK(!parse_uint32_arg("-18446744073709551615", 10, &v));
+    CHECK(parse_uint_arg("0", 10, UINT32_MAX, &v) && v == 0);
+    CHECK(parse_uint_arg("4294967295", 10, UINT32_MAX, &v) && v == UINT32_MAX);
+    /* > max_val rejected */
+    CHECK(!parse_uint_arg("4294967296", 10, UINT32_MAX, &v));
+    CHECK(!parse_uint_arg("", 10, UINT32_MAX, &v));
+    CHECK(!parse_uint_arg("x", 10, UINT32_MAX, &v));
+    CHECK(!parse_uint_arg("-18446744073709551615", 10, UINT32_MAX, &v));
 }
 
 /* parse_esc_key_str parses one -k/--escape-keys value: a comma separates escape

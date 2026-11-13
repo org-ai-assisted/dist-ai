@@ -36,9 +36,9 @@ export LC_ALL=C
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
 repo="${KLOAK_REPO:-}"
-src_c="${repo}/src/kloak.c"
+src_c="${repo}/src/kloak.c.in"
 if [ -z "${repo}" ] || [ ! -f "${src_c}" ]; then
-   printf '%s\n' "SKIP: kloak-tests-fuzz: kloak.c not found (set KLOAK_REPO)" >&2
+   printf '%s\n' "SKIP: kloak-tests-fuzz: kloak.c.in not found (set KLOAK_REPO)" >&2
    exit 77  ## style-ok: allow-skip: kloak source absent (not a --component run)
 fi
 
@@ -59,8 +59,9 @@ cleanup() {
 trap cleanup EXIT
 
 ## Throwaway kloak root: the build writes generated protocol code into src/ and
-## binaries into out/, so copy (never build inside KLOAK_REPO).
-for dir in src protocol fuzz ci; do
+## binaries into out/, so copy (never build inside KLOAK_REPO). scripts/ is
+## needed because cfuzz-build.sh renders src/kloak.{c,h} via scripts/src-transform.
+for dir in src protocol fuzz ci scripts; do
    cp -a -- "${repo}/${dir}" "${work}/${dir}"
 done
 
