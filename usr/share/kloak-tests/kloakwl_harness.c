@@ -464,10 +464,127 @@ static void unit_release_jitter(void)
     recv_read_fd = -1;
 }
 
+/* Mirror send_msg_to_peer()'s KLOAK cursor/scroll framing
+ * ([enum ptc_packet_type][double x][double y]) -- same drift guard as
+ * write_ptc_button_frame (the round-trip packet-type check below). */
+static void write_ptc_coord_frame(int fd, enum ptc_packet_type type,
+    double x, double y)
+{
+    unsigned char buf[sizeof(enum ptc_packet_type) + sizeof(double) * 2];
+    size_t pos = 0;
+
+    memcpy(buf + pos, &type, sizeof(type));
+    pos += sizeof(type);
+    memcpy(buf + pos, &x, sizeof(x));
+    pos += sizeof(x);
+    memcpy(buf + pos, &y, sizeof(y));
+    pos += sizeof(y);
+    CHECK(write(fd, buf, pos) == (ssize_t)(pos));
+}
+
+/* The same bounded-random-delay guarantee must hold for the POINTER paths
+ * (mouse movement, scroll), which reach the scheduler through
+ * update_virtual_cursor / update_mouse_scroll. Set up one screen + pointer
+ * space, then drive real CURSOR_REL and SCROLL events through the real
+ * process_parent_message and assert each produced MOUSEMOVE / MOUSESCROLL packet
+ * gets a delay in [0, max_delay] with real spread. (should_draw_cursor is off so
+ * no cursor layers are needed.) */
+static void unit_release_jitter_mouse(void)
+{
+    int pipe_fds[2];
+    int i;
+    int64_t t_before = 0;
+    int64_t t_after = 0;
+    int64_t min_delay = INT64_MAX;
+    int64_t max_seen_delay = -1;
+    struct output_geometry g0 = geom(0, 0, 1920, 1080);
+    struct input_packet *pkt = NULL;
+
+    init_fd_urandom();
+    init_msg_ring();
+    CHECK(pipe(pipe_fds) == 0);
+    recv_read_fd = pipe_fds[0];
+    max_delay = 1000;
+    TAILQ_INIT(&evq_head);
+
+    for (i = 0; i < MAX_SCREEN_COUNT; ++i) {
+        state.output_geometries[i] = NULL;
+    }
+    state.output_geometries[0] = &g0;
+    CHECK(recalc_global_space());
+    should_draw_cursor = false;
+    cursor_x = 100.0;
+    cursor_y = 100.0;
+    prev_cursor_x = 100.0;
+    prev_cursor_y = 100.0;
+
+    /* MOUSE MOVE: each event nudges the cursor 1px (staying on-screen), which
+     * produces a MOUSEMOVE packet; assert bounded delay + spread. */
+    for (i = 0; i < 500; ++i) {
+        prev_release_time = 0;
+        write_ptc_coord_frame(pipe_fds[1], PTC_PACKET_CURSOR_REL_EVENT,
+            (i & 1) ? 1.0 : -1.0, 0.0);
+        t_before = current_time_ms();
+        CHECK(process_parent_message());
+        t_after = current_time_ms();
+        pkt = TAILQ_LAST(&evq_head, tailhead_evq);
+        CHECK(pkt != NULL);
+        CHECK(pkt->packet_type == KLOAK_PACKET_TYPE_MOUSEMOVE);
+        CHECK(pkt->sched_time >= t_before);
+        CHECK(pkt->sched_time <= t_after + max_delay);
+        if (pkt->sched_time - t_before < min_delay) {
+            min_delay = pkt->sched_time - t_before;
+        }
+        if (pkt->sched_time - t_before > max_seen_delay) {
+            max_seen_delay = pkt->sched_time - t_before;
+        }
+        TAILQ_REMOVE(&evq_head, pkt, evq_entries);
+        free(pkt);
+    }
+    CHECK(max_seen_delay - min_delay > max_delay / 2);
+
+    /* MOUSE SCROLL: each event adds one full tick (SCROLL_UNITS_PER_TICK),
+     * producing a MOUSESCROLL packet; assert bounded delay + spread. */
+    min_delay = INT64_MAX;
+    max_seen_delay = -1;
+    vert_scroll_accum = 0.0;
+    horiz_scroll_accum = 0.0;
+    for (i = 0; i < 500; ++i) {
+        prev_release_time = 0;
+        write_ptc_coord_frame(pipe_fds[1], PTC_PACKET_SCROLL_EVENT,
+            0.0, (double)(SCROLL_UNITS_PER_TICK));
+        t_before = current_time_ms();
+        CHECK(process_parent_message());
+        t_after = current_time_ms();
+        pkt = TAILQ_LAST(&evq_head, tailhead_evq);
+        CHECK(pkt != NULL);
+        CHECK(pkt->packet_type == KLOAK_PACKET_TYPE_MOUSESCROLL);
+        CHECK(pkt->sched_time >= t_before);
+        CHECK(pkt->sched_time <= t_after + max_delay);
+        if (pkt->sched_time - t_before < min_delay) {
+            min_delay = pkt->sched_time - t_before;
+        }
+        if (pkt->sched_time - t_before > max_seen_delay) {
+            max_seen_delay = pkt->sched_time - t_before;
+        }
+        TAILQ_REMOVE(&evq_head, pkt, evq_entries);
+        free(pkt);
+    }
+    CHECK(max_seen_delay - min_delay > max_delay / 2);
+
+    for (i = 0; i < MAX_SCREEN_COUNT; ++i) {
+        state.output_geometries[i] = NULL;
+    }
+    CHECK(close(pipe_fds[0]) == 0);
+    CHECK(close(pipe_fds[1]) == 0);
+    recv_read_fd = -1;
+}
+
 int main(void)
 {
     unit_check_screen_touch();
     unit_release_jitter();
+    unit_release_jitter_mouse();
     unit_traverse_line();
     unit_get_ticks_from_scroll_accum();
     unit_random_between();
