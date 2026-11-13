@@ -40,6 +40,7 @@ unit-CI container reports the lane SKIP, never a false pass or a hard failure.
 """
 
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -196,8 +197,10 @@ class KloakDaemonE2E(unittest.TestCase):
         if getattr(cls, '_compositor_log', None):
             cls._compositor_log.close()
 
-    def _run_kloak(self, runtime_dir, wayland_display):
-        """Start kloak with its own log; return (Popen, log_path)."""
+    def _run_kloak(self, runtime_dir, wayland_display, max_delay=0):
+        """Start kloak with its own log; return (Popen, log_path). max_delay is
+        kloak's -d (ms); 0 means no jitter (the fast connected/degraded checks),
+        a positive value is used by the delay-measurement test."""
         env = dict(os.environ)
         env['XDG_RUNTIME_DIR'] = runtime_dir
         env['WAYLAND_DISPLAY'] = wayland_display
@@ -207,7 +210,7 @@ class KloakDaemonE2E(unittest.TestCase):
         ## cannot leak it.
         self.addCleanup(log.close)
         proc = subprocess.Popen(
-            [self.kloak_bin, '-d', '0'], env=env,
+            [self.kloak_bin, '-d', str(max_delay)], env=env,
             stdout=log, stderr=subprocess.STDOUT)
         self.addCleanup(self._kill, proc)
         return proc, log_path
@@ -280,6 +283,104 @@ class KloakDaemonE2E(unittest.TestCase):
         self.assertIn('Could not connect to Wayland compositor',
                       self._read(log_path),
                       'kloak did not log the fatal connect error')
+
+    def test_3_keyboard_delay_measured(self):
+        """End-to-end proof of kloak's reason to exist: inject real keystrokes
+        through the grabbed keyboard and verify each reaches a focused client
+        after a RANDOM delay bounded by max_delay, measured on the real
+        device -> kloak -> compositor -> client path. The released wl_keyboard
+        event's `time` (kloak's scheduled release time, CLOCK_MONOTONIC ms)
+        minus the injection time is the applied delay."""
+        wev = shutil.which('wev')
+        if wev is None:
+            ## style-ok: allow-skip: wev is an e2e-lane dependency for observing output
+            raise unittest.SkipTest('wev not installed (e2e dependency)')
+        max_delay = 200
+        ecodes = self._evdev.ecodes
+        key_a = ecodes.KEY_A
+        ## wl_keyboard.key reports the XKB keycode, which is the evdev code + 8
+        ## (the fixed historical X11 offset), so KEY_A (30) arrives as 38.
+        wl_keycode = key_a + 8
+
+        ## A focused Wayland client that logs every event with its `time`.
+        wev_log_path = os.path.join(self._work, 'wev.log')
+        wev_log = open(wev_log_path, 'wb')
+        self.addCleanup(wev_log.close)
+        env = dict(os.environ)
+        env['XDG_RUNTIME_DIR'] = self.runtime_dir
+        env['WAYLAND_DISPLAY'] = self.wayland_display
+        ## stdbuf -oL: wev's stdout is block-buffered when redirected to a file,
+        ## so without this the focus/event lines never reach the log until wev
+        ## exits. Line-buffer it so we can observe focus and events live.
+        wev_proc = subprocess.Popen(
+            ['stdbuf', '-oL', '-eL', wev], env=env, stdout=wev_log,
+            stderr=subprocess.STDOUT)
+        self.addCleanup(self._kill, wev_proc)
+
+        ## Wait for wev to receive keyboard focus, so an injected key is actually
+        ## delivered to it.
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            log = self._read(wev_log_path)
+            if 'wl_keyboard' in log and 'enter' in log:
+                break
+            time.sleep(0.2)
+        else:
+            self.fail('wev never got keyboard focus:\n%s'
+                      % self._read(wev_log_path))
+
+        ## kloak grabs the keyboard and re-injects each key after a random delay.
+        proc, log_path = self._run_kloak(
+            self.runtime_dir, self.wayland_display, max_delay=max_delay)
+        time.sleep(2)
+        self.assertIsNone(proc.poll(),
+                          'kloak exited before the delay test:\n%s'
+                          % self._read(log_path))
+
+        ## Inject N key presses spaced >= max_delay apart, so the per-event
+        ## prev_release clamp does not saturate the delay to max_delay -- we want
+        ## to observe the full random spread.
+        num_keys = 15
+        inject_ms = []
+        for _ in range(num_keys):
+            stamp = int(time.clock_gettime(time.CLOCK_MONOTONIC) * 1000)
+            self._uinput.write(ecodes.EV_KEY, key_a, 1)
+            self._uinput.write(ecodes.EV_KEY, key_a, 0)
+            self._uinput.syn()
+            inject_ms.append(stamp & 0xffffffff)
+            time.sleep((max_delay + 60) / 1000.0)
+        time.sleep((max_delay + 300) / 1000.0)
+
+        ## Collect the client-observed press events (state 1) for key_a.
+        presses = []
+        for line in self._read(wev_log_path).splitlines():
+            if 'wl_keyboard' not in line:
+                continue
+            match = re.search(r'time: (\d+); key: (\d+); state: (\d+)', line)
+            if (match is not None and int(match.group(2)) == wl_keycode
+                    and int(match.group(3)) == 1):
+                presses.append(int(match.group(1)))
+
+        self.assertEqual(
+            len(presses), num_keys,
+            'expected %d key presses at the client, got %d:\nwev:\n%s\nkloak:\n%s'
+            % (num_keys, len(presses), self._read(wev_log_path),
+               self._read(log_path)))
+
+        ## Applied delay = released time - injection time (uint32 ms), bounded by
+        ## max_delay plus a small processing-latency tolerance; and it must VARY.
+        tol = 80
+        delays = []
+        for inj, rel in zip(inject_ms, presses):
+            delay = (rel - inj) & 0xffffffff
+            self.assertLessEqual(
+                delay, max_delay + tol,
+                'released delay %d ms exceeds max_delay %d (+%d tol); delays=%r'
+                % (delay, max_delay, tol, delays))
+            delays.append(delay)
+        self.assertGreater(
+            max(delays) - min(delays), max_delay // 4,
+            'released delays show no spread (jitter not randomised): %r' % delays)
 
 
 if __name__ == '__main__':
