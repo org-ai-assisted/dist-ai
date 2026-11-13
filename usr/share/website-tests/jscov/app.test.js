@@ -281,6 +281,60 @@ test("per-heading share: tap/click toggles a persistent .share-open; outside pre
   assert.ok(!tip.classList.contains("share-open"), "Escape closes the menu");
 });
 
+test("per-heading share: a 2nd tap with the trigger FOCUSED closes it (blur releases :focus-within) + aria-expanded tracks", () => {
+  // The per-heading trigger is a <button>. On touch a tap leaves it focused, and .menu-wrapper is
+  // also revealed by :focus-within -- so dropping .share-open alone leaves the menu open. setOpen
+  // blurs the focused trigger on close so it actually hides (the reported "2nd tap does not close").
+  const w = load(
+    '<span class="share-tooltip" data-anchor="Sec" data-sh-direct="https://x.test/#Sec"' +
+    ' data-sh-wiki="[[P#Sec|Sec]]">' +
+    '<button type="button" class="headline-anchor" aria-expanded="false">s</button>' +
+    '<span class="menu-wrapper"><span class="menu">' +
+    '<span class="code-select" data-code="https://x.test/#Sec">p</span></span></span></span>' +
+    '<template class="share-proto"><span class="code-select" data-code="ZZSHDIRECTZZ">y</span></template>');
+  const tip = w.document.querySelector(".share-tooltip");
+  const btn = tip.querySelector(".headline-anchor");
+  const click = () => btn.dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true }));
+  btn.focus();
+  click();                                                     // open, trigger stays focused
+  assert.ok(tip.classList.contains("share-open"), "focused tap opens the menu");
+  assert.equal(btn.getAttribute("aria-expanded"), "true", "aria-expanded true when open");
+  assert.equal(w.document.activeElement, btn, "the trigger holds focus after opening");
+  click();                                                     // 2nd tap while still focused
+  assert.ok(!tip.classList.contains("share-open"), "2nd tap closes it despite :focus-within");
+  assert.notEqual(w.document.activeElement, btn, "the trigger is blurred on close so :focus-within releases");
+  assert.equal(btn.getAttribute("aria-expanded"), "false", "aria-expanded reset to false on close");
+});
+
+test("per-heading share: Escape closes even when focus moved INTO the menu (blur the focused child, not just the trigger)", () => {
+  // A keyboard user can open the menu then Tab to a social button inside it. Blurring only the
+  // trigger would be a no-op (it is not focused), so :focus-within -- held by the focused menu
+  // child -- would keep the menu open after .share-open drops. setOpen blurs document.activeElement.
+  const w = load(
+    '<span class="share-tooltip" data-anchor="Sec" data-sh-direct="https://x.test/#Sec"' +
+    ' data-sh-wiki="[[P#Sec|Sec]]">' +
+    '<button type="button" class="headline-anchor" aria-expanded="false">s</button>' +
+    '<span class="menu-wrapper"><span class="menu">' +
+    '<span class="code-select" data-code="https://x.test/#Sec">p</span></span></span></span>' +
+    '<template class="share-proto">' +
+    '<button type="button" class="share-icon" popovertarget="ZZSHIDZZ-x">x</button>' +
+    '<span class="code-select" data-code="ZZSHDIRECTZZ">y</span></template>');
+  const tip = w.document.querySelector(".share-tooltip");
+  const btn = tip.querySelector(".headline-anchor");
+  btn.focus();
+  btn.dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true }));  // open + build menu
+  assert.ok(tip.classList.contains("share-open"), "opened");
+  const menuBtn = tip.querySelector(".menu .share-icon");
+  assert.ok(menuBtn, "the menu has a focusable child after the proto is cloned in");
+  menuBtn.focus();                                             // keyboard Tab into the menu
+  assert.equal(w.document.activeElement, menuBtn, "focus moved into the menu, off the trigger");
+  w.document.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));  // closeAll(null)
+  assert.ok(!tip.classList.contains("share-open"), "Escape drops .share-open");
+  assert.notEqual(w.document.activeElement, menuBtn,
+    "the focused menu child is blurred so :focus-within releases and the menu hides");
+  assert.equal(btn.getAttribute("aria-expanded"), "false", "aria-expanded reset to false");
+});
+
 test("per-heading share: no-op without data-sh-direct, without a proto, or without a .menu", () => {
   // footer/authored menu: no data-sh-direct -> activate returns, the menu is untouched
   const w = load(
