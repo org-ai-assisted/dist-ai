@@ -16,8 +16,11 @@ out_success, not a (-1,-1) sentinel), get_ticks_from_scroll_accum,
 random_between over the REAL /dev/urandom, current_time_ms, the coordinate-space
 conversions (screen_local_coord_to_abs_coord now reports validity via
 out_is_valid), make_virtual_cursor_pos_sane, the kb_handle_keymap guards (no-NUL
-and the short-backing-fd SIGBUS guard), and the now-fixed cross-overlap and
-offset-global-space audit regressions.
+and the short-backing-fd SIGBUS guard), the now-fixed cross-overlap and
+offset-global-space audit regressions, and the release scheduler itself
+(unit_release_jitter drives the REAL process_parent_message: every event is
+released after a random delay bounded by max_delay, and release times never
+decrease -- kloak's reason to exist).
 */
 #define KLOAK_FUZZING
 #include "kloakwl.c"
@@ -364,9 +367,107 @@ static void unit_open_wl_sock_connect_fatal(void)
     CHECK(classify_child(status) == CH_EXIT1);
 }
 
+/* Mirror send_msg_to_peer()'s KLOAK button-event wire framing
+ * ([enum ptc_packet_type][uint32 button_code][uint8 is_pressed]) and write one
+ * frame to fd. The parent's send_msg_to_peer is compiled out of this (KLOAKWL)
+ * TU, so the frame is built here; the round-trip assert in unit_release_jitter
+ * (the REAL get_msg_from_peer must parse back the exact button_code) fails loud
+ * if this layout ever drifts from the parser. */
+static void write_ptc_button_frame(int fd, enum ptc_packet_type type,
+    uint32_t button_code, bool is_pressed)
+{
+    unsigned char buf[sizeof(enum ptc_packet_type) + sizeof(uint32_t)
+        + sizeof(uint8_t)];
+    size_t pos = 0;
+    uint8_t pressed = is_pressed ? 1 : 0;
+
+    memcpy(buf + pos, &type, sizeof(type));
+    pos += sizeof(type);
+    memcpy(buf + pos, &button_code, sizeof(button_code));
+    pos += sizeof(button_code);
+    memcpy(buf + pos, &pressed, sizeof(pressed));
+    pos += sizeof(pressed);
+    CHECK(write(fd, buf, pos) == (ssize_t)(pos));
+}
+
+/* kloak's reason to exist: every input event is RELEASED after a RANDOM delay
+ * bounded by max_delay, and release times never decrease (jitter must not
+ * reorder events). Drive the REAL scheduler in process_parent_message by
+ * feeding button-event frames through a pipe exactly as the parent would; the
+ * KB/CLICK paths need no Wayland state. Assert the two functional properties on
+ * the real sched_time, not wall-clock release (deterministic, no compositor). */
+static void unit_release_jitter(void)
+{
+    int pipe_fds[2];
+    int i;
+    int64_t t_before = 0;
+    int64_t t_after = 0;
+    int64_t prev_sched = -1;
+    int64_t min_delay = INT64_MAX;
+    int64_t max_seen_delay = -1;
+    struct input_packet *pkt = NULL;
+
+    init_fd_urandom();
+    init_msg_ring();
+    CHECK(pipe(pipe_fds) == 0);
+    recv_read_fd = pipe_fds[0];
+    max_delay = 1000;
+    TAILQ_INIT(&evq_head);
+
+    /* Bounded + random: reset prev_release_time each call so lower_bound == 0
+     * and the full [0, max_delay] range is drawn. Each delay lands in range and
+     * the sample spans a real spread (not a constant). */
+    for (i = 0; i < 500; ++i) {
+        prev_release_time = 0;
+        write_ptc_button_frame(pipe_fds[1], PTC_PACKET_KB_EVENT,
+            (uint32_t)(i), (i & 1) != 0);
+        t_before = current_time_ms();
+        CHECK(process_parent_message());
+        t_after = current_time_ms();
+        pkt = TAILQ_LAST(&evq_head, tailhead_evq);
+        CHECK(pkt != NULL);
+        /* round-trip: the REAL get_msg_from_peer parsed our frame */
+        CHECK(pkt->packet_type == KLOAK_PACKET_TYPE_KB);
+        CHECK(pkt->data.button_data.button_code == (uint32_t)(i));
+        /* bounded: t_before <= sched_time <= t_after + max_delay */
+        CHECK(pkt->sched_time >= t_before);
+        CHECK(pkt->sched_time <= t_after + max_delay);
+        if (pkt->sched_time - t_before < min_delay) {
+            min_delay = pkt->sched_time - t_before;
+        }
+        if (pkt->sched_time - t_before > max_seen_delay) {
+            max_seen_delay = pkt->sched_time - t_before;
+        }
+        TAILQ_REMOVE(&evq_head, pkt, evq_entries);
+        free(pkt);
+    }
+    CHECK(max_seen_delay - min_delay > max_delay / 2);
+
+    /* Monotonic release (no reorder): prev_release_time NOT reset, events queued
+     * back-to-back; the clamp keeps sched_time non-decreasing. */
+    prev_release_time = 0;
+    prev_sched = -1;
+    for (i = 0; i < 500; ++i) {
+        write_ptc_button_frame(pipe_fds[1], PTC_PACKET_CLICK_EVENT, 272u, true);
+        CHECK(process_parent_message());
+        pkt = TAILQ_LAST(&evq_head, tailhead_evq);
+        CHECK(pkt != NULL);
+        CHECK(pkt->packet_type == KLOAK_PACKET_TYPE_CLICK);
+        CHECK(pkt->sched_time >= prev_sched);
+        prev_sched = pkt->sched_time;
+        TAILQ_REMOVE(&evq_head, pkt, evq_entries);
+        free(pkt);
+    }
+
+    CHECK(close(pipe_fds[0]) == 0);
+    CHECK(close(pipe_fds[1]) == 0);
+    recv_read_fd = -1;
+}
+
 int main(void)
 {
     unit_check_screen_touch();
+    unit_release_jitter();
     unit_traverse_line();
     unit_get_ticks_from_scroll_accum();
     unit_random_between();
