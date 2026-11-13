@@ -245,12 +245,18 @@ printf '%s\n' "=== help-flag detection: no unanchored '=~ (-h|--help)' ==="
 ## matches any argument merely CONTAINING "-h" (a path like
 ## /home/.../-home-user/... , or a filename with "-h"), wrongly printing usage
 ## and refusing to run. The anchored `== "-h" || == "--help"` form must be used.
-## Assert the buggy substring appears in no usr/bin script.
-unanchored="$(grep -rlE '=~ \(-h\|--help\)' "${mw_bin}" 2>/dev/null || true)"
-if [ -z "${unanchored}" ]; then
-  pass "no usr/bin script uses the unanchored '=~ (-h|--help)' help check"
-else
+## Assert the buggy substring appears in no usr/bin script. grep rc: 0 = offender(s)
+## found, 1 = clean (no match), >=2 = scan error (e.g. unreadable dir) -- a scan error
+## must FAIL, never silently pass, so distinguish rc 1 from rc >=2 (a bare '|| true'
+## would mask the error into a false green).
+grep_rc=0
+unanchored="$(grep -rlE '=~ \(-h\|--help\)' "${mw_bin}")" || grep_rc=$?
+if [ "${grep_rc}" -ge 2 ]; then
+  fail "help-flag scan errored (grep rc=${grep_rc}); cannot confirm anchoring in '${mw_bin}'"
+elif [ -n "${unanchored}" ]; then
   fail "unanchored help check still present in: ${unanchored//$'\n'/ }"
+else
+  pass "no usr/bin script uses the unanchored '=~ (-h|--help)' help check"
 fi
 
 ## ===========================================================================
