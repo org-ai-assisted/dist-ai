@@ -1130,3 +1130,33 @@ def test_start_vbox_backend_propagates_serial_up_rc_and_tears_down(monkeypatch,
     assert exc.value.code == m.FAIL
     ## the half-built VM was torn down (serial-down ran).
     assert any("serial-down" in c for c in calls), calls
+
+
+def test_no_root_shell_diagnostic_login_prompt_names_smbios_reader():
+    ## A --test-console boot that lands on a normal login getty means the GRUB SMBIOS
+    ## cmdline reader never engaged (image built WITHOUT the reader). The diagnostic
+    ## must say THAT and point at the --smbios-reader build flag, so a healthy arm64/amd64
+    ## boot is not mistaken for a boot failure or a guest-arch bug.
+    ## CANARY: the pre-fix code logged only the generic "never came up" string, so this
+    ## assertion (login prompt -> actionable --smbios-reader message) FAILS on it.
+    m = _load_dm_image_test()
+    transcript = (
+        "Welcome to Kicksecure (TM)!\n"
+        "Default username: user\n"
+        "localhost login: printf 'DM<>%s<>\\n' DMRDY123\n"
+        "faillock: Error no such user: printf 'DM<>%s<>'\n"
+        "Password: \n"
+    )
+    msg = m.no_root_shell_diagnostic(transcript)
+    assert "LOGIN PROMPT" in msg
+    assert "--smbios-reader true" in msg
+    assert "dist_build_smbios_reader" in msg
+
+
+def test_no_root_shell_diagnostic_silent_is_generic():
+    ## No login prompt (a genuinely silent/stuck console) keeps the generic message --
+    ## we must not misattribute an actual no-boot to the reader flag.
+    m = _load_dm_image_test()
+    msg = m.no_root_shell_diagnostic("UEFI firmware\nBdsDxe: starting Boot0001\n")
+    assert msg == "root serial shell (--test-console) never came up"
+    assert "smbios" not in msg.lower()
