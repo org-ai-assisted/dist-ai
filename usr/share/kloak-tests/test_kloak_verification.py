@@ -19,16 +19,21 @@ wayland-scanner-generated protocol headers, so setUp generates them (client-head
 there with src-transform, and symlinks the non-templated sources beside them (no
 source copy):
 
-  * kloak_harness.c -- concrete unit tests (known values + edges for
-    lookup_keycode, check_screen_touch, traverse_line, parse_uint31/32_arg,
-    get_ticks_from_scroll_accum, the coordinate-space conversions, the evdev
-    node-name regex) plus a randomized bound check of random_between over the
-    REAL /dev/urandom, forked-child regressions for the keymap guards
-    (kb_handle_keymap) and the escape-combo release-underflow clamp
-    (register_esc_combo_key), and regressions pinning the now-fixed cross-overlap
-    and offset-global-space audit bugs. gcc-compiled and linked with the protocol
-    code + the wayland/libinput/libevdev/xkbcommon libraries exactly as kloak
-    links; no compositor is needed (the handlers are driven over a plain fd).
+  * kloak_harness.c / kloakwl_harness.c -- concrete unit tests (known values +
+    edges). The proxy harness covers lookup_keycode, parse_uint_arg at both caps
+    (signed-wrap AND strtoul ERANGE rejection), the escape-key parser and its
+    malformed-value rejections, register_esc_combo_event (the teardown trigger:
+    combo activation, release-underflow clamp, all-combos-held exit), the getopt
+    dup-option guard, calc_next_led_state, fill_with_rand_alphabetic's [A-Za-z]
+    invariant, the evdev node-name regex, and parse_inotify_events
+    (IN_CREATE/IN_DELETE/IN_Q_OVERFLOW). The adapter harness covers
+    check_screen_touch, traverse_line, the coordinate-space conversions,
+    get_ticks_from_scroll_accum, a randomized bound check of random_between over
+    the REAL /dev/urandom, the keymap guards (kb_handle_keymap), and regressions
+    pinning the now-fixed cross-overlap and offset-global-space audit bugs.
+    gcc-compiled and linked with the protocol code + the
+    wayland/libinput/libevdev/xkbcommon libraries exactly as kloak links; no
+    compositor is needed (the handlers are driven over a plain fd).
   * kloak_cbmc.c -- CBMC proofs that every verify_* is free of ALL standard UB
     (CBMC 6.x enables signed/unsigned/pointer/float overflow, conversion, nan,
     bounds, pointer, div-by-zero by default) for EVERY input in kloak's real

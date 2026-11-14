@@ -9,13 +9,15 @@ Concrete unit tests for the pure/testable functions in kloak's libinput proxy
 src/kloak.c (via the KLOAK_FUZZING seam -- no kloak source change). The Wayland
 adapter's functions live in src/kloakwl.c and are tested in kloakwl_harness.c.
 
-Covers: lookup_keycode, the uint31/uint32 CLI parsers (including the signed-wrap
-rejection), the escape-key parser across both separators, the getopt dup-option
-guard (a repeated option is rejected, not leaked to a single-use parser),
-calc_next_led_state's num/caps-lock 4-state cycle, the evdev node-name regex, and
-parse_inotify_events (the assert-free, fuzzable record walk, incl. the
-zero-length IN_Q_OVERFLOW skip and the skip of a matching node carrying neither
-IN_CREATE nor IN_DELETE).
+Covers: lookup_keycode, the uint31/uint32 CLI parsers (signed-wrap AND strtoul
+ERANGE rejection), the escape-key parser across both separators and its malformed
+-value rejections, register_esc_combo_event (the teardown trigger: combo
+activation, the underflow clamp, and the all-combos-held exit), the getopt
+dup-option guard (a repeated option is rejected, not leaked to a single-use
+parser), calc_next_led_state's num/caps-lock 4-state cycle, fill_with_rand_alphabetic's
+[A-Za-z] invariant, the evdev node-name regex, and parse_inotify_events (the
+assert-free, fuzzable record walk: the IN_CREATE/IN_DELETE attach flag, the
+IN_Q_OVERFLOW signal, and the bail on a matching node carrying neither).
 */
 #define KLOAK_FUZZING
 
@@ -80,6 +82,10 @@ static void unit_parse_uint31(void)
     /* A leading '-' that strtoul would wrap to a SMALL in-range value must still
      * be rejected (the explicit '-' guard, not the range check). */
     CHECK(!parse_uint_arg("-18446744073709551615", 10, INT32_MAX, &v));
+    /* A positive value exceeding ULONG_MAX makes strtoul set ERANGE; the
+     * errno==ERANGE guard (AGENTS.md) must reject it on its own, reached before
+     * any max_val range check. */
+    CHECK(!parse_uint_arg("99999999999999999999999999", 10, INT32_MAX, &v));
 }
 
 static void unit_parse_uint32(void)
@@ -92,6 +98,8 @@ static void unit_parse_uint32(void)
     CHECK(!parse_uint_arg("", 10, UINT32_MAX, &v));
     CHECK(!parse_uint_arg("x", 10, UINT32_MAX, &v));
     CHECK(!parse_uint_arg("-18446744073709551615", 10, UINT32_MAX, &v));
+    /* strtoul ERANGE (value > ULONG_MAX) rejected even at the widest cap. */
+    CHECK(!parse_uint_arg("99999999999999999999999999", 10, UINT32_MAX, &v));
 }
 
 /* parse_esc_key_str parses one -k/--escape-keys value: a comma separates escape
@@ -113,6 +121,37 @@ static void unit_parse_esc_key_str(void)
     CHECK(esc_key_sublist_len[1] == 2);
     CHECK(esc_key_list[1][0] == KEY_RIGHTSHIFT);
     CHECK(esc_key_list[1][1] == KEY_B);
+}
+
+/* Each malformed -k/--escape-keys value must be rejected by errx(1) (arriving
+ * here as g_reject code 2), not silently accepted: an empty combo, an empty key
+ * within a combo, and an unrecognized key name. */
+static void expect_esc_reject(const char *spec)
+{
+    esc_key_list = NULL;
+    esc_key_sublist_len = NULL;
+    active_esc_key_list = NULL;
+    esc_key_list_len = 0;
+
+    switch (setjmp(g_reject)) {
+    case 0:
+        parse_esc_key_str(spec);
+        CHECK(0);   /* accepted a malformed spec */
+        break;
+    case 2:
+        break;      /* errx(1) -> code 2: rejected as expected */
+    default:
+        CHECK(0);   /* rejected with an unexpected code */
+        break;
+    }
+}
+
+static void unit_parse_esc_key_str_errors(void)
+{
+    expect_esc_reject("");                 /* empty root token */
+    expect_esc_reject("KEY_A,");           /* trailing empty root token */
+    expect_esc_reject("KEY_RIGHTSHIFT|");  /* empty sub-token within a combo */
+    expect_esc_reject("KEY_BOGUS");        /* unrecognized key name */
 }
 
 /* kloak's option parsers assume each option is passed at most once, so the
@@ -197,6 +236,51 @@ static void unit_calc_next_led_state(void)
     CHECK(!(calc_next_led_state(be(KEY_A, true)) & LIBINPUT_LED_NUM_LOCK));
 }
 
+/* register_esc_combo_event is kloak's teardown trigger: it counts how many keys
+ * of each escape combo are currently held and exits(0) once EVERY combo has at
+ * least one key down. A release with no matching press must clamp the per-combo
+ * count to 0 (warn, not go negative), and a key in no combo is ignored. */
+static void unit_register_esc_combo(void)
+{
+    esc_key_list = NULL;
+    esc_key_sublist_len = NULL;
+    active_esc_key_list = NULL;
+    esc_key_list_len = 0;
+    /* combo 0 = [KEY_A]; combo 1 = chord [KEY_RIGHTSHIFT | KEY_B]. */
+    parse_esc_key_str("KEY_A,KEY_RIGHTSHIFT|KEY_B");
+
+    /* a lone combo-0 press activates only combo 0 -- not every combo, no exit */
+    register_esc_combo_event(be(KEY_A, true));
+    CHECK(active_esc_key_list[0] == 1);
+    CHECK(active_esc_key_list[1] == 0);
+
+    /* release clears combo 0 ... */
+    register_esc_combo_event(be(KEY_A, false));
+    CHECK(active_esc_key_list[0] == 0);
+    /* ... and an extra (unmatched) release clamps to 0, never negative */
+    register_esc_combo_event(be(KEY_A, false));
+    CHECK(active_esc_key_list[0] == 0);
+
+    /* a key belonging to no combo is ignored */
+    register_esc_combo_event(be(KEY_C, true));
+    CHECK(active_esc_key_list[0] == 0 && active_esc_key_list[1] == 0);
+
+    /* with combo 0 held, activating combo 1 makes EVERY combo active ->
+     * errx(0) -> g_reject code 1 (the escape-combo teardown). */
+    register_esc_combo_event(be(KEY_A, true));
+    switch (setjmp(g_reject)) {
+    case 0:
+        register_esc_combo_event(be(KEY_RIGHTSHIFT, true));
+        CHECK(0);   /* did not exit with every combo held down */
+        break;
+    case 1:
+        break;      /* errx(0) -> code 1: escape combo fired */
+    default:
+        CHECK(0);   /* exited with an unexpected code */
+        break;
+    }
+}
+
 /* Append one inotify_event record (kernel-padded name) to buf, return the new
  * end offset. */
 static ssize_t put_inotify(char *buf, ssize_t off, uint32_t mask,
@@ -262,6 +346,63 @@ static void unit_parse_inotify_unknown_mask_bails(void)
     CHECK(name == NULL && pos == -1 && !overflow);
 }
 
+/* An IN_Q_OVERFLOW record (the kernel dropped events) must set *overflow and
+ * stop the walk with NULL so the caller can rescan /dev/input from scratch. */
+static void unit_parse_inotify_overflow(void)
+{
+    char buf[256];
+    ssize_t len = 0;
+    ssize_t pos = 0;
+    bool do_attach = false;
+    bool overflow = false;
+    char *name = NULL;
+
+    memset(buf, 0, sizeof(buf));
+    applayer_regex_init();
+    len = put_inotify(buf, len, IN_Q_OVERFLOW, "");
+
+    name = parse_inotify_events(buf, len, &pos, &do_attach, &overflow);
+    CHECK(name == NULL && overflow);
+}
+
+/* A canonical event<N> node that was REMOVED (IN_DELETE) returns its name with
+ * do_attach cleared, so the caller detaches the grab rather than re-grabbing. */
+static void unit_parse_inotify_delete(void)
+{
+    char buf[256];
+    ssize_t len = 0;
+    ssize_t pos = 0;
+    bool do_attach = true;    /* start true so the clear to false is observable */
+    bool overflow = false;
+    char *name = NULL;
+
+    memset(buf, 0, sizeof(buf));
+    applayer_regex_init();
+    len = put_inotify(buf, len, IN_DELETE, "event6");
+
+    name = parse_inotify_events(buf, len, &pos, &do_attach, &overflow);
+    CHECK(name != NULL && strcmp(name, "event6") == 0 && !do_attach
+          && !overflow);
+}
+
+/* fill_with_rand_alphabetic's modulo-bias normalization (subtle signed-char
+ * arithmetic, see kloak-shared.h) must only ever emit ASCII letters. Drive the
+ * REAL /dev/urandom path and assert every byte is [A-Za-z]. */
+static void unit_fill_with_rand_alphabetic(void)
+{
+    char buf[64];
+    ssize_t i = 0;
+    unsigned char c = 0;
+
+    init_fd_urandom();
+    memset(buf, 0, sizeof(buf));
+    fill_with_rand_alphabetic(buf, (ssize_t)(sizeof(buf)));
+    for (i = 0; i < (ssize_t)(sizeof(buf)); i++) {
+        c = (unsigned char)(buf[i]);
+        CHECK((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'));
+    }
+}
+
 /* Regression for Whonix/kloak#34 (the busy-loop coupled to the #35 degraded
  * path). applayer_poll_init must stop watching the child pipe (ev_fds[2]) when
  * the Wayland connect failed: in degraded mode the child has already exited, so
@@ -321,11 +462,16 @@ int main(void)
     unit_parse_uint31();
     unit_parse_uint32();
     unit_parse_esc_key_str();
+    unit_parse_esc_key_str_errors();
+    unit_register_esc_combo();
     unit_dup_option_rejected();
     unit_evdev_regex();
     unit_calc_next_led_state();
     unit_parse_inotify_events();
     unit_parse_inotify_unknown_mask_bails();
+    unit_parse_inotify_overflow();
+    unit_parse_inotify_delete();
+    unit_fill_with_rand_alphabetic();
     unit_degraded_poll_skips_dead_pipe();
     unit_li_open_restricted_missing_returns_errno();
     printf("kloak harness: all assertions passed (%d checks)\n", checks);
