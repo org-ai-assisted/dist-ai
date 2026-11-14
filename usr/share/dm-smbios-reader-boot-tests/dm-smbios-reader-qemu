@@ -467,7 +467,9 @@ if [ -n "${disk}" ] && [ -z "${disk_format}" ]; then
    disk_format="$(printf '%s\n' "${disk_info}" | sed -n -e 's/^file format: //p')"
    [ -n "${disk_format}" ] || { printf '%s\n' "dm-smbios-reader-qemu: could not auto-detect the format of ${disk}; pass --disk-format" >&2; exit 2; }
 fi
-if [ -n "${screendump}" ]; then
+## ImageMagick is a RUNTIME dependency of the capture loop, not of building the argv, so skip it
+## under --emit-argv (build-only, never boots or captures) -- same rule as the qemu-img exemption.
+if [ -n "${screendump}" ] && [ "${emit_argv}" != 'true' ]; then
    if ! command -v identify >/dev/null || ! command -v compare >/dev/null; then
       printf '%s\n' "dm-smbios-reader-qemu: ImageMagick (identify + compare) not installed (needed for --screendump)" >&2
       exit 2
@@ -513,7 +515,19 @@ esac
 ## default one under the screendump dir when the caller did not pass --qmp.
 if [ -n "${screendump}" ]; then
    mkdir --parents -- "${screendump}"
-   qemu_opts=(-machine "${machine}" "${accel_opts[@]}" -m "${memory}" -smp "${smp}" -display none -vga std -no-reboot)
+   ## The guest's MACHINE must actually instantiate a display device, or QMP screendump captures
+   ## a permanently blank framebuffer the watcher never latches. '-vga std' is x86-only: the arm64
+   ## 'virt' board IGNORES it ("No VGA device has been created"). Use the paravirtual
+   ## virtio-gpu-pci on arm64 (the guest binds a DRM/KMS device, so a desktop greeter renders and
+   ## QMP screendump captures scanout); std VGA stays on x86, the proven path.
+   case "${arch}" in
+      arm64)
+         qemu_opts=(-machine "${machine}" "${accel_opts[@]}" -m "${memory}" -smp "${smp}" -display none -vga none -device virtio-gpu-pci -no-reboot)
+         ;;
+      *)
+         qemu_opts=(-machine "${machine}" "${accel_opts[@]}" -m "${memory}" -smp "${smp}" -display none -vga std -no-reboot)
+         ;;
+   esac
    [ -n "${qmp}" ] || qmp="${screendump}/qmp.sock"
 else
    ## '-nodefaults' drops qemu's default empty IDE CD-ROM (q35 'ide2-cd0'): the ISO
