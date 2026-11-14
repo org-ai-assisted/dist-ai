@@ -31,6 +31,7 @@
 
 #define _GNU_SOURCE
 
+#include <assert.h>
 #include <setjmp.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -67,13 +68,12 @@ static void fuzz_setup_once(void) {
   fuzz_ready = true;
 }
 
-/* A CTP frame exactly as the child's send_msg_to_peer writes it
+/* Build a CTP frame exactly as the child's send_msg_to_peer writes it
  * (kloak-shared.h:669-696): [enum ctp_packet_type], and for POINTER_SPACE_DATA
- * two int32 coordinates. A drift in this layout vs the parser fails the fuzzer
- * loudly. coord == NULL writes a payload-less frame. */
-static void write_ctp_frame(int fd, enum ctp_packet_type type,
+ * two int32 coordinates. coord == NULL builds a payload-less frame. Returns the
+ * length. A drift in this layout vs the parser fails the fuzzer loudly. */
+static size_t build_ctp_frame(unsigned char *buf, enum ctp_packet_type type,
     const int32_t *coord) {
-  unsigned char buf[sizeof(enum ctp_packet_type) + sizeof(int32_t) * 2];
   size_t pos = 0;
   memcpy(buf + pos, &type, sizeof(type));
   pos += sizeof(type);
@@ -83,7 +83,11 @@ static void write_ctp_frame(int fd, enum ctp_packet_type type,
     memcpy(buf + pos, &coord[1], sizeof(int32_t));
     pos += sizeof(int32_t);
   }
-  if (write(fd, buf, pos) != (ssize_t)(pos)) {
+  return pos;
+}
+
+static void pipe_write(int fd, const unsigned char *buf, size_t len) {
+  if (len > 0 && write(fd, buf, len) != (ssize_t)(len)) {
     _exit(1);
   }
 }
@@ -104,6 +108,9 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     enum ctp_packet_type type = CTP_PACKET_INIT_ACK;
     const int32_t *coord_arg = NULL;
     int32_t coord[2] = { 0, 0 };
+    unsigned char frame[sizeof(enum ctp_packet_type) + sizeof(int32_t) * 2];
+    size_t frame_len = 0;
+    bool split = ((selector >> 2) & 1u) != 0u;
 
     switch (selector % 3u) {
     case 0:
@@ -127,9 +134,33 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
       break;
     }
 
-    write_ctp_frame(fuzz_pipe[1], type, coord_arg);
-    if (setjmp(g_reject) == 0) {
-      process_child_message();
+    frame_len = build_ctp_frame(frame, type, coord_arg);
+    if (split && frame_len > sizeof(enum ctp_packet_type)) {
+      /* Write the type first, pop (the parser must return NULL on the
+       * incomplete payload -- the short-payload branch, kloak-shared.h:735/751),
+       * then the payload, and pop again to complete. */
+      pipe_write(fuzz_pipe[1], frame, sizeof(enum ctp_packet_type));
+      if (setjmp(g_reject) == 0) {
+        process_child_message();
+      }
+      pipe_write(fuzz_pipe[1], frame + sizeof(enum ctp_packet_type),
+        frame_len - sizeof(enum ctp_packet_type));
+      if (setjmp(g_reject) == 0) {
+        process_child_message();
+      }
+    } else {
+      pipe_write(fuzz_pipe[1], frame, frame_len);
+      if (setjmp(g_reject) == 0) {
+        process_child_message();
+      }
+    }
+
+    /* Decode-correctness oracle (not just crash-freedom): a POINTER_SPACE_DATA
+     * frame must have decoded into pointer_space_data exactly (kloak.c.in:836).
+     * A broken/dropped decode makes the fuzzer fire here. */
+    if (type == CTP_PACKET_POINTER_SPACE_DATA) {
+      assert(pointer_space_data.x == coord[0]
+        && pointer_space_data.y == coord[1]);
     }
   }
 

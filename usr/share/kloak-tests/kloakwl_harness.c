@@ -1001,12 +1001,61 @@ static void unit_negative_origin_global_space(void)
     }
 }
 
+/* applayer_config_init decodes the parent's PTC_PACKET_MAX_DELAY_CONFIG and
+ * PTC_PACKET_CURSOR_COLOR_CONFIG and, for a fully-transparent cursor (alpha 0),
+ * clears should_draw_cursor (kloakwl.c:2129-2146). None of that was tested. It
+ * reads from fd 0, so point fd 0 at a pipe pre-loaded with both config frames. */
+static void unit_applayer_config_decode(void)
+{
+    int pipe_fds[2];
+    int saved_stdin;
+    enum ptc_packet_type mt;
+    int32_t delay_val = 250;
+    uint32_t color_val = 0x00000000;   /* transparent -> drawing disabled */
+    unsigned char buf[64];
+    size_t pos = 0;
+
+    CHECK(pipe(pipe_fds) == 0);
+    mt = PTC_PACKET_MAX_DELAY_CONFIG;
+    memcpy(buf + pos, &mt, sizeof(mt));
+    pos += sizeof(mt);
+    memcpy(buf + pos, &delay_val, sizeof(delay_val));
+    pos += sizeof(delay_val);
+    mt = PTC_PACKET_CURSOR_COLOR_CONFIG;
+    memcpy(buf + pos, &mt, sizeof(mt));
+    pos += sizeof(mt);
+    memcpy(buf + pos, &color_val, sizeof(color_val));
+    pos += sizeof(color_val);
+    CHECK(write(pipe_fds[1], buf, pos) == (ssize_t)(pos));
+
+    parse_ring_read_loc = 0;
+    parse_ring_data_len = 0;
+    saved_stdin = dup(0);
+    CHECK(saved_stdin >= 0);
+    CHECK(dup2(pipe_fds[0], 0) >= 0);
+    max_delay = -1;
+    cursor_color = 0xdeadbeef;
+    should_draw_cursor = true;
+    applayer_config_init();               /* reads both frames, then returns */
+    CHECK(dup2(saved_stdin, 0) >= 0);
+    CHECK(close(saved_stdin) == 0);
+
+    CHECK(max_delay == 250);
+    CHECK(cursor_color == 0x00000000);
+    CHECK(should_draw_cursor == false);   /* alpha 0 cleared it */
+
+    CHECK(close(pipe_fds[0]) == 0);
+    CHECK(close(pipe_fds[1]) == 0);
+    recv_read_fd = -1;
+}
+
 int main(void)
 {
     unit_check_screen_touch();
     unit_find_merge_target_packet();
     unit_coalesce_write_back();
     unit_negative_origin_global_space();
+    unit_applayer_config_decode();
     unit_release_jitter();
     unit_release_jitter_mouse();
     unit_release_jitter_abs();

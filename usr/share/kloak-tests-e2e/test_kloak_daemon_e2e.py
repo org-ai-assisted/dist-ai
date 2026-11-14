@@ -197,7 +197,8 @@ class KloakDaemonE2E(unittest.TestCase):
         ## focused client sees is kloak's output, not the raw device.
         from evdev import UInput, ecodes
         cap = {
-            ecodes.EV_REL: [ecodes.REL_X, ecodes.REL_Y, ecodes.REL_WHEEL],
+            ecodes.EV_REL: [ecodes.REL_X, ecodes.REL_Y, ecodes.REL_WHEEL,
+                            ecodes.REL_HWHEEL],
             ecodes.EV_KEY: [ecodes.BTN_LEFT, ecodes.BTN_RIGHT],
         }
         cls._uinput_mouse = UInput(cap, name='kloak-e2e-mouse')
@@ -1029,6 +1030,50 @@ class KloakDaemonE2E(unittest.TestCase):
             wev_log_path, inject_scroll, _axis_stamp, num_scrolls, max_delay)
         self._assert_delays(stamp_delays, real_delays, max_delay, 'scroll')
 
+    def test_6b_pointer_hscroll_delay_measured(self):
+        """Same proof as test_6 for the HORIZONTAL scroll axis (REL_HWHEEL) --
+        a separate arm of kloak's scroll handling from the vertical wheel. Inject
+        ONLY horizontal ticks and verify each reaches the focused client as a
+        delayed wl_pointer axis event (since only horizontal is injected, every
+        matched axis event is horizontal, so a broken horizontal arm times out)."""
+        max_delay = 200
+        ecodes = self._evdev.ecodes
+        wev_log_path = self._start_wev()
+        if not self._wait_for_focus(wev_log_path, 'wl_keyboard'):
+            self.fail('wev never got keyboard focus:\n%s'
+                      % self._read(wev_log_path))
+        proc, log_path = self._run_kloak(
+            self.runtime_dir, self.wayland_display, max_delay=max_delay)
+        time.sleep(2)
+        self.assertIsNone(proc.poll(),
+                          'kloak exited before the hscroll test:\n%s'
+                          % self._read(log_path))
+        if not self._establish_pointer_focus(wev_log_path):
+            self.fail('wev never got pointer focus (cursor did not reach the '
+                      'surface):\nwev:\n%s\nkloak:\n%s'
+                      % (self._read(wev_log_path), self._read(log_path)))
+        time.sleep((max_delay + 500) / 1000.0)
+
+        def _axis_stamp(line):
+            if 'wl_pointer' not in line or 'axis' not in line:
+                return None
+            t_match = re.search(r'time:\s*(-?\d+)', line)
+            if t_match is not None:
+                return int(t_match.group(1)) & 0xffffffff
+            return None
+
+        hscroll_idx = [0]
+
+        def inject_hscroll():
+            direction = 1 if hscroll_idx[0] % 2 == 0 else -1
+            hscroll_idx[0] += 1
+            self._uinput_mouse.write(ecodes.EV_REL, ecodes.REL_HWHEEL, direction)
+            self._uinput_mouse.syn()
+
+        num_scrolls = 12
+        stamp_delays, real_delays = self._measure_delays(
+            wev_log_path, inject_hscroll, _axis_stamp, num_scrolls, max_delay)
+        self._assert_delays(stamp_delays, real_delays, max_delay, 'hscroll')
 
     def test_9_device_hotplug_grabbed(self):
         """A device appearing AFTER kloak started must be grabbed via the inotify
