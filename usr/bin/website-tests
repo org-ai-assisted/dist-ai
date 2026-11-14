@@ -257,6 +257,11 @@ run_required_unit_test check_footer_test.py
 ## stdlib, no site checkout; a failure is a real logic regression.
 run_required_unit_test check_seo_test.py
 
+## Canary for check_og_image's social-preview gate (every served page carries an og:image that
+## resolves in the built tree, a generated card also carries its width/height; redirect stubs +
+## the results plane exempt) + its wiki-policy main() wiring. Pure stdlib, no site checkout.
+run_required_unit_test check_og_image_test.py
+
 ## Regression for site-generate's write-safety guards (dirty fail-closed,
 ## symlink refusal). Uses git in a tempdir; no site checkout. A failure is a
 ## real logic regression.

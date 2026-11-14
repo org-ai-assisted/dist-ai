@@ -2428,6 +2428,11 @@ def run():
                 '<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">'
                 '<meta name="theme-color" content="#16181b" media="(prefers-color-scheme: dark)">'
                 '<meta name="twitter:card" content="summary">'
+                # social-preview card so the wiki battery's check_og_image passes (the card file
+                # is written by _build_wiki); a generated card must carry its width+height.
+                '<meta property="og:image" content="/media/cards/og.jpg">'
+                '<meta property="og:image:width" content="1200">'
+                '<meta property="og:image:height" content="630">'
                 '</head><body>'
                 '<a class="skip-link" href="#main-content">Skip to main content</a>%s'
                 '<main id="main-content"><div class="%s"><h1>%s</h1>'
@@ -2440,6 +2445,8 @@ def run():
         # wiki generator emits -- so check_seo_current (part of the wiki battery) passes.
         _write(root, 'index.html', _wiki_page('Home', '', csp, mw))
         _write(root, 'wiki/ISO.html', _wiki_page('ISO', 'wiki/ISO', csp, mw))
+        # the generated social-preview card every _wiki_page's og:image points at
+        _write(root, 'media/cards/og.jpg', 'JPEGBYTES')
         host = 'wiki.example'
         _write(root, 'sitemap.xml', check_site.render_sitemap(root, host))
         _write(root, 'robots.txt',

@@ -3858,6 +3858,88 @@ def check_wiki_conformance(root, failures, pages=None):
                 'tabindex="0"/"-1")' % (rel, audit.positive_tabindex))
 
 
+class _OgImageAudit(html.parser.HTMLParser):
+    """Collect, for ONE page: whether it is a redirect stub (<meta http-equiv=refresh> naming a
+    target), the FIRST og:image content, and whether og:image:width/height metas are present.
+    Head-only: a <meta> appearing after <body> (a code sample, a stray tag) is ignored, so only a
+    real head element satisfies the check. FIRST value of a duplicated attribute wins (browser)."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.is_redirect = False
+        self.og_image = None
+        self.og_width = False
+        self.og_height = False
+        self._in_head = True
+
+    def handle_starttag(self, tag, attrs):
+        if tag == 'body':
+            self._in_head = False
+            return
+        if tag != 'meta' or not self._in_head:
+            return
+        attr: dict[str, str] = {}
+        for name, value in attrs:
+            attr.setdefault(name, value or '')
+        if (attr.get('http-equiv', '').lower() == 'refresh'
+                and _META_REFRESH_URL_RE.search(attr.get('content', ''))):
+            self.is_redirect = True
+        prop = attr.get('property', '').lower()
+        if prop == 'og:image' and self.og_image is None:
+            self.og_image = attr.get('content', '')
+        elif prop == 'og:image:width':
+            self.og_width = True
+        elif prop == 'og:image:height':
+            self.og_height = True
+
+
+def _og_image_target(og_url, page_rel):
+    """The tree-relative file path an og:image URL points at, '..'-clamped so it can never escape
+    the checkout. Absolute (scheme://host/path) and root-absolute (/path) URLs map to the root;
+    a relative URL resolves against the page's own directory. Query/fragment are stripped."""
+    parsed = urllib.parse.urlsplit(og_url.strip())
+    path = parsed.path
+    if not (parsed.scheme or parsed.netloc or path.startswith('/')):
+        # page-relative -> resolve against the page's directory
+        path = posixpath.normpath(posixpath.join(posixpath.dirname('/' + page_rel), path))
+    return _clamp(path.lstrip('/'))
+
+
+def check_og_image(root, failures):
+    """Every served page carries a social-preview og:image whose file RESOLVES in the built tree;
+    a generated card (/media/cards/) must additionally carry og:image:width/height. Full-tree
+    (regular + Special:* + File:* -- every navigable .html), with redirect stubs and the ephemeral
+    results plane exempt. Wiki policy: the generator gives a regular article a generated card, a
+    special/File: page its own og:image -- this locks in that NO page ships preview-less (special
+    and File: pages regressed here: noindex special pages shipped no card at all)."""
+    for page in html_files(root):
+        rel = os.path.relpath(page, root).replace(os.sep, '/')
+        if rel == RESULTS_SUBDIR or rel.startswith(RESULTS_SUBDIR + '/'):
+            continue
+        audit = _OgImageAudit()
+        with open(page, encoding='utf-8', errors='replace') as handle:
+            audit.feed(handle.read())
+        # A redirect stub carries a deliberately minimal head and forwards to the real page (which
+        # DOES carry the full set); never flag it. Mirrors check_wiki_conformance's stub handling.
+        if audit.is_redirect:
+            continue
+        if not audit.og_image:
+            failures.append('%s: missing <meta property="og:image"> (social preview)' % rel)
+            continue
+        target = _og_image_target(audit.og_image, rel)
+        if not os.path.isfile(os.path.join(root, target)):
+            failures.append('%s: og:image does not resolve to a file in the tree: %s'
+                            % (rel, audit.og_image))
+            continue
+        # A generated text card has no intrinsic aspect a scraper can infer -> it MUST advertise
+        # og:image:width/height (large-preview rendering). A File: page's own image is self-
+        # describing, so dims are recommended but not required here.
+        if '/media/cards/' in ('/' + target) and not (audit.og_width and audit.og_height):
+            failures.append(
+                '%s: generated og:image card without og:image:width/height '
+                '(needed for a large social preview): %s' % (rel, audit.og_image))
+
+
 def main():
     from dist_ai.webcheck import cli
     argv_roots = sys.argv[1:]
@@ -3984,6 +4066,9 @@ def main():
         # curated real pages only -- redirect stubs are not in the audit set.
         if policy == 'wiki':
             check_wiki_conformance(root, failures, pages)
+            # og:image social-preview coverage over the WHOLE tree (regular + Special:* + File:*),
+            # not just the curated audit set -- a special/File: page missing its preview must fail.
+            check_og_image(root, failures)
         # Suppress accepted pre-existing findings (broken on production too) listed in this
         # site's baseline, so a GENERIC check runs on every policy without re-reporting them.
         baseline = _load_webcheck_baseline(root)
