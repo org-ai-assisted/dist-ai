@@ -648,16 +648,67 @@ test("search: unchecking the magnifier toggle hides AND clears the results dropd
   assert.equal(results.querySelector("li a"), null, "results are cleared on close");
 });
 
-test("search: checking the magnifier toggle focuses the field so the user can type", () => {
+function searchBox() {
   const w = load(
     '<span class="site-search"><input type="checkbox" id="search-toggle"><input id="search-input"></span>',
     { searchIndex: [] });
-  const toggle = w.document.getElementById("search-toggle");
-  const input = w.document.getElementById("search-input");
+  return { w: w, toggle: w.document.getElementById("search-toggle"), input: w.document.getElementById("search-input") };
+}
+
+test("search: on a precise-pointer (mouse) device, opening the magnifier focuses the field", () => {
+  const { w, toggle, input } = searchBox();
+  w.matchMedia = () => ({ matches: true });   // (hover:hover) and (pointer:fine) -> desktop/mouse
   toggle.checked = true;
   toggle.dispatchEvent(new w.Event("change"));
   assert.equal(w.document.activeElement, input,
-    "the search field is focused the moment the magnifier opens it");
+    "the search field is focused the moment the magnifier opens it on a mouse device");
+});
+
+test("search: on a touch device (coarse pointer) opening the magnifier does NOT auto-focus", () => {
+  const { w, toggle, input } = searchBox();
+  w.matchMedia = () => ({ matches: false });   // not (hover:hover and pointer:fine) -> touch
+  toggle.checked = true;
+  toggle.dispatchEvent(new w.Event("change"));
+  assert.notEqual(w.document.activeElement, input,
+    "no auto-focus on touch, so the soft keyboard never pops + shifts the page on open/collapse");
+});
+
+test("search: focus retries across frames until the reveal transition settles", () => {
+  const { w, toggle, input } = searchBox();
+  w.matchMedia = () => ({ matches: true });
+  w.requestAnimationFrame = (cb) => { cb(0); return 0; };   // run the retries inline
+  // the field is not focusable mid-reveal: focus() no-ops for the first two calls, then works
+  let n = 0;
+  const realFocus = input.focus.bind(input);
+  input.focus = () => { if (n++ >= 2) realFocus(); };
+  toggle.checked = true;
+  toggle.dispatchEvent(new w.Event("change"));
+  assert.equal(w.document.activeElement, input, "retry eventually focuses once the field is focusable");
+  assert.ok(n >= 3, "focus was retried across frames: " + n);
+});
+
+test("search: focus retry is capped (~20 frames) so a never-focusable field cannot loop forever", () => {
+  const { w, toggle, input } = searchBox();
+  w.matchMedia = () => ({ matches: true });
+  w.requestAnimationFrame = (cb) => { cb(0); return 0; };
+  let n = 0;
+  input.focus = () => { n++; };   // never actually focuses
+  toggle.checked = true;
+  toggle.dispatchEvent(new w.Event("change"));
+  assert.ok(n >= 20 && n <= 22, "capped at ~20 attempts then stops, no hang: " + n);
+  assert.notEqual(w.document.activeElement, input, "still not focused (focus() was a no-op)");
+});
+
+test("search: a focus retry short-circuits if the box is re-closed before it lands", () => {
+  const { w, toggle, input } = searchBox();
+  w.matchMedia = () => ({ matches: true });
+  w.requestAnimationFrame = (cb) => { cb(0); return 0; };
+  let n = 0;
+  input.focus = () => { n++; toggle.checked = false; };   // user closes the box after the 1st attempt
+  toggle.checked = true;
+  toggle.dispatchEvent(new w.Event("change"));
+  assert.equal(n, 1, "only one focus attempt: the reclose short-circuits the retry");
+  assert.notEqual(w.document.activeElement, input);
 });
 
 test("search hides namespaced (n:1) pages unless the query is namespace-qualified", async () => {
@@ -2777,6 +2828,66 @@ test("download modal: a tampered javascript: href is not navigated (nav sink dro
     "navSafe(href,true) false -> handler returns before building/driving the modal");
   assert.equal(ev.defaultPrevented, false,
     "the click is NOT intercepted (no preventDefault), so app.js never auto-drives the javascript: target");
+});
+
+// ---- image warm-ahead (below-fold lazy images) -------------------------------------------
+// Capturing IntersectionObserver: records each instance so a test can fire its callback with
+// synthetic entries (observe() still never auto-invokes, matching the real browser's deferral).
+function captureIO(w) {
+  w.__ios = [];
+  w.IntersectionObserver = class {
+    constructor(cb, opts) { this.cb = cb; this.opts = opts || {}; this.seen = []; w.__ios.push(this); }
+    observe(t) { this.seen.push(t); }
+    unobserve(t) { this.seen = this.seen.filter((x) => x !== t); }
+    disconnect() {}
+  };
+}
+const warmIO = (w) => w.__ios && w.__ios.find((o) => o.opts.rootMargin === "150% 0px");
+
+test("warm-ahead: an intersecting lazy image is promoted to eager + low priority + decoded; others untouched", async () => {
+  const w = load(
+    '<img id="a" loading="lazy" src="/a.webp"><img id="b" loading="lazy" src="/b.webp">' +
+    '<img id="c" loading="lazy" src="/c.webp"><img id="d" loading="lazy" src="/d.webp">',
+    { preEval: (w) => {        // connection explicitly undefined -> exercises the `c &&` FALSE branch
+      captureIO(w);
+      Object.defineProperty(w.navigator, "connection", { value: undefined, configurable: true });
+    } });
+  const io = warmIO(w);
+  assert.ok(io, "warm-ahead constructed its observer");
+  assert.equal(io.seen.length, 4, "all four lazy images observed");
+  const $ = (id) => w.document.getElementById(id);
+  $("a").decode = () => Promise.resolve();                 // decode present, resolves
+  $("b").decode = () => Promise.reject(new Error("x"));    // decode present, rejects -> .catch() runs
+  $("c").decode = undefined;                               // decode absent -> not called
+  io.cb([
+    { isIntersecting: true, target: $("a") },
+    { isIntersecting: true, target: $("b") },
+    { isIntersecting: true, target: $("c") },
+    { isIntersecting: false, target: $("d") },
+  ]);
+  await tick();   // let the rejected decode() settle into its .catch()
+  assert.equal($("a").loading, "eager");                 // the property app.js sets (jsdom may not mirror to the attr)
+  assert.equal($("a").getAttribute("fetchpriority"), "low");
+  assert.equal($("c").loading, "eager", "warmed even without decode()");
+  assert.equal($("d").getAttribute("loading"), "lazy", "non-intersecting image is left alone");
+});
+
+test("warm-ahead: no-op when IntersectionObserver is unavailable", () => {
+  const w = load('<img id="a" loading="lazy" src="/a.webp">',
+    { preEval: (w) => { w.IntersectionObserver = undefined; } });
+  assert.equal(w.document.getElementById("a").getAttribute("loading"), "lazy");
+});
+
+test("warm-ahead: skipped on Save-Data / 2g links, runs on an ordinary connection", () => {
+  const mk = (conn) => load('<img id="a" loading="lazy" src="/a.webp">', {
+    preEval: (w) => {
+      captureIO(w);
+      Object.defineProperty(w.navigator, "connection", { value: conn, configurable: true });
+    },
+  });
+  assert.equal(!!warmIO(mk({ saveData: true })), false, "Save-Data: no warm-ahead observer");
+  assert.equal(!!warmIO(mk({ saveData: false, effectiveType: "2g" })), false, "2g: no warm-ahead observer");
+  assert.equal(!!warmIO(mk({ saveData: false })), true, "ordinary link (no effectiveType): warm-ahead runs");
 });
 
 // ---- image warm-ahead (below-fold lazy images) -------------------------------------------
