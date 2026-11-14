@@ -85,6 +85,22 @@ def _geometry_seed():
     return seed
 
 
+def _geometry_many_seed():
+    ## MAX_SCREEN_COUNT (128) contiguous 100x100 screens tiled along x, so
+    ## recalc_global_space ACCEPTS the layout and its O(n^2) connectivity scan +
+    ## the global-space transform run at the full count -- the high-screen-count
+    ## path the default max_len truncates away. Values are the pre-image through
+    ## the harness's bounded_coord (raw % 200001 - 100000) and bounded_extent
+    ## (raw % 100001), giving x=i*100, y=0, width=height=100.
+    count = 128
+    ## harness: count = data[0] % MAX_SCREEN_COUNT + 1, so data[0] = count - 1.
+    seed = bytes([count - 1])
+    for i in range(count):
+        seed += struct.pack('<IIII', i * 100 + 100000, 100000, 100, 100)
+    seed += struct.pack('<ii', 150, 50)
+    return seed
+
+
 def main():
     if len(sys.argv) != 2:
         sys.stderr.write('usage: kloak-fuzz-seeds.py <out-dir>\n')
@@ -115,7 +131,16 @@ def main():
            _inotify_record(IN_CREATE, 'event12'))
     _write(root, 'fuzz_kloakwl_input_sequence', 'kb_move_scroll',
            _input_sequence_seed())
+    ## selector 34: type %5==4 (KB), batch bit (>>5)&1 set -> two frames written
+    ## back-to-back then popped one at a time (multi-frame-per-read reassembly).
+    _write(root, 'fuzz_kloakwl_input_sequence', 'batched_kb',
+           bytes([34]) + struct.pack('<I', 30) + bytes([1]))
     _write(root, 'fuzz_kloakwl_geometry', 'two_screens', _geometry_seed())
+    _write(root, 'fuzz_kloakwl_geometry', 'many_screens', _geometry_many_seed())
+    ## Parent-side CTP decode: selector 2 -> POINTER_SPACE_DATA (selector % 3),
+    ## then two non-negative int32 coordinates (the harness masks them >= 0).
+    _write(root, 'fuzz_kloak_child_msg', 'pointer_space',
+           bytes([2]) + struct.pack('<ii', 1920, 1080))
     return 0
 
 

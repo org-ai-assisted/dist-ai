@@ -107,10 +107,21 @@ for binary in "${out}"/fuzz_*; do
    ## seeds) with the shared dictionary; the corpus dir is writable + throwaway.
    corpus="${seed_root}/${name}"
    mkdir -p -- "${corpus}"
+   ## Per-harness max input length. Geometry needs room for MAX_SCREEN_COUNT=128
+   ## outputs (1 count byte + 128*16 geom bytes + an 8-byte query = 2057); the
+   ## default 256 caps it at ~15 screens, so the high-count O(n^2) connectivity
+   ## scan + the 128-slot stack arrays (the surface AGENTS mandates fuzzing to
+   ## MAX_SCREEN_COUNT) would never be reached.
+   max_len=256
+   case "${name}" in
+      fuzz_kloakwl_geometry)
+         max_len=4096
+         ;;
+   esac
    ## Capture output so a crash's sanitizer report + libFuzzer reproduction
    ## (the failing input) survive into the CI log, not just the binary name.
    log="${work}/${name}.log"
-   if "${binary}" -runs="${runs}" -max_len=256 -dict="${fuzz_dict}" \
+   if "${binary}" -runs="${runs}" -max_len="${max_len}" -dict="${fuzz_dict}" \
       "${corpus}" >"${log}" 2>&1; then
       printf '%s\n' "PASS: ${name} (${runs} runs, no crash)"
       pass=$(( pass + 1 ))

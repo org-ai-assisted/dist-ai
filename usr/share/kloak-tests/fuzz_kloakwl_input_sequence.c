@@ -19,6 +19,13 @@ delayed RELEASE path (release_scheduled_input_events) is NOT driven: it emits ov
 a live wl_proxy, so the queue is drained instead -- the arithmetic/state crash
 surface for an event SEQUENCE is the ingestion path here.
 
+Frames are fed in fuzzer-controlled SHAPES, not one-whole-frame-per-read: a frame
+may be split across several writes (so get_msg_from_peer sees a partial frame and
+pop_ring_buffer_msg must return NULL and resume), and several frames may be
+batched into the pipe before being popped one at a time. This exercises the ring
+reassembly / continuity logic (short-payload NULL branches, multi-frame reads,
+and the magic-ring wrap) that a one-frame-per-call harness never reaches.
+
 Payloads are kept in the realistic envelope the parent actually sends (finite,
 integer-valued coordinates; positive screen geometry) so the fuzzer explores
 event ORDERINGS and accumulation, not kloak's by-design defensive asserts on
@@ -33,14 +40,14 @@ and the fuzzer defines via -fwrapv), so it surfaces real memory-safety bugs.
 #include <string.h>
 #include <unistd.h>
 
-/* PTC wire frames, mirroring send_msg_to_peer (which is compiled out of this
- * KLOAKWL TU): button events are [type][uint32 code][uint8 pressed]; cursor and
- * scroll events are [type][double x][double y]. The real get_msg_from_peer must
- * parse these back, so a drift in the layout fails the fuzzer loudly. */
-static void write_button_frame(int fd, enum ptc_packet_type type,
+/* A built PTC wire frame, mirroring send_msg_to_peer (which is compiled out of
+ * this KLOAKWL TU): button events are [type][uint32 code][uint8 pressed]; cursor
+ * and scroll events are [type][double x][double y]. The real get_msg_from_peer
+ * must parse these back, so a drift in the layout fails the fuzzer loudly. */
+#define FRAME_CAP (sizeof(enum ptc_packet_type) + sizeof(double) * 2)
+
+static size_t build_button_frame(unsigned char *buf, enum ptc_packet_type type,
     uint32_t button_code, uint8_t pressed) {
-  unsigned char buf[sizeof(enum ptc_packet_type) + sizeof(uint32_t)
-    + sizeof(uint8_t)];
   size_t pos = 0;
   memcpy(buf + pos, &type, sizeof(type));
   pos += sizeof(type);
@@ -48,14 +55,11 @@ static void write_button_frame(int fd, enum ptc_packet_type type,
   pos += sizeof(button_code);
   memcpy(buf + pos, &pressed, sizeof(pressed));
   pos += sizeof(pressed);
-  if (write(fd, buf, pos) != (ssize_t)(pos)) {
-    _exit(1);
-  }
+  return pos;
 }
 
-static void write_coord_frame(int fd, enum ptc_packet_type type,
+static size_t build_coord_frame(unsigned char *buf, enum ptc_packet_type type,
     double x, double y) {
-  unsigned char buf[sizeof(enum ptc_packet_type) + sizeof(double) * 2];
   size_t pos = 0;
   memcpy(buf + pos, &type, sizeof(type));
   pos += sizeof(type);
@@ -63,9 +67,7 @@ static void write_coord_frame(int fd, enum ptc_packet_type type,
   pos += sizeof(x);
   memcpy(buf + pos, &y, sizeof(y));
   pos += sizeof(y);
-  if (write(fd, buf, pos) != (ssize_t)(pos)) {
-    _exit(1);
-  }
+  return pos;
 }
 
 /* Two horizontally adjacent 1920x1080 screens: a valid global space whose shared
@@ -114,6 +116,42 @@ static void drain_queue(void) {
   }
 }
 
+static void pipe_write(const unsigned char *buf, size_t len) {
+  if (len > 0 && write(fuzz_pipe[1], buf, len) != (ssize_t)(len)) {
+    _exit(1);
+  }
+}
+
+/* Feed a built frame to the pipe in `chunks` writes, popping after each write.
+ * A write that leaves the frame incomplete makes get_msg_from_peer see a partial
+ * frame (pop returns NULL, nothing queued); the completing write then yields the
+ * event -- the short-payload / cross-read reassembly path. chunks == 1 is the
+ * whole-frame-in-one-read case. */
+static void feed_frame(const unsigned char *buf, size_t len, unsigned chunks) {
+  size_t off = 0;
+  unsigned c = 0;
+  if (chunks < 1u) {
+    chunks = 1u;
+  }
+  for (c = 0; c < chunks; c++) {
+    size_t remaining = len - off;
+    size_t left_chunks = chunks - c;
+    size_t take = (c + 1u == chunks) ? remaining : (remaining / left_chunks);
+    pipe_write(buf + off, take);
+    off += take;
+    if (process_parent_message()) {
+      drain_queue();
+    }
+  }
+  /* Any trailing bytes (when len did not divide evenly) plus a final pop. */
+  if (off < len) {
+    pipe_write(buf + off, len - off);
+  }
+  while (process_parent_message()) {
+    drain_queue();
+  }
+}
+
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
   size_t off = 0;
 
@@ -130,11 +168,18 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
   horiz_scroll_accum = 0.0;
   drain_queue();
 
-  /* Each step: 1 selector byte picks the event type; the payload is pulled from
-   * the following bytes, kept finite and in the realistic envelope. Stop when a
-   * whole step no longer fits. */
+  /* Each step: 1 selector byte picks the event type AND the feed shape. The
+   * payload is pulled from the following bytes, kept finite and in the realistic
+   * envelope. Stop when a whole step no longer fits. */
   while (off < size) {
     uint8_t selector = data[off++];
+    unsigned char frame[FRAME_CAP];
+    size_t frame_len = 0;
+    /* High bits of the selector choose how the frame is fed: 1-3 chunks (split
+     * frame -> partial-read reassembly) and whether to batch a second frame
+     * into the pipe before popping (multi-frame-per-read). */
+    unsigned chunks = ((selector >> 3) & 3u) + 1u;
+    bool batch = ((selector >> 5) & 1u) != 0u;
 
     switch (selector % 5u) {
     case 0: /* relative pointer motion */
@@ -158,7 +203,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
       /* int16 -> double: always finite, integer-valued, and small enough that
        * repeated relative accumulation stays well inside the isfinite/INT32
        * asserts over any realistic input length. */
-      write_coord_frame(fuzz_pipe[1], type, (double)(raw_x), (double)(raw_y));
+      frame_len = build_coord_frame(frame, type, (double)(raw_x),
+        (double)(raw_y));
       break;
     }
     case 3: /* mouse click */
@@ -173,18 +219,28 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
       memcpy(&code, data + off, sizeof(code));
       off += sizeof(code);
       pressed = data[off++] & 1u;
-      write_button_frame(fuzz_pipe[1], type, code, pressed);
+      frame_len = build_button_frame(frame, type, code, pressed);
       break;
     }
     default:
       break;
     }
 
-    if (!process_parent_message()) {
-      /* A frame that did not parse into an event: nothing queued, keep going. */
+    if (frame_len == 0) {
       continue;
     }
-    drain_queue();
+    if (batch) {
+      /* Two identical frames written back-to-back, then popped one at a time:
+       * get_msg_from_peer reads both in one go and pop_ring_buffer_msg must
+       * yield exactly two events across successive calls. */
+      pipe_write(frame, frame_len);
+      pipe_write(frame, frame_len);
+      while (process_parent_message()) {
+        drain_queue();
+      }
+    } else {
+      feed_frame(frame, frame_len, chunks);
+    }
   }
 
   return 0;
