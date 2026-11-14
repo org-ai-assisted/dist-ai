@@ -77,17 +77,27 @@ int clock_gettime(clockid_t clk_id, struct timespec *tp)
 /* ---- proofs ---- */
 
 #define COORD_MAX (1 << 29) /* far above any real display extent; keeps every
-                             * int32 coordinate sum well inside INT32_MAX */
+                             * int32 coordinate sum well inside INT32_MAX even
+                             * with a negative origin (|sum| < 2^30) */
+
+/* Screen origins and query points are signed: a monitor placed left of / above
+ * the primary has a NEGATIVE logical position (xdg_output_handle_logical_position
+ * sets output_geometry.x/.y straight from the compositor, unclamped), which flows
+ * into global-space coordinate math. So the origin/point envelope spans
+ * (-COORD_MAX, COORD_MAX); extents (width/height) stay non-negative. Only the
+ * adversarial INT32 extremes are excluded (settled -ftrapv WONTFIX). */
 
 /* check_screen_touch: for in-envelope geometries the touch test is UB-free (the
  * +1/+2 grows and the axis-aligned overlap sums cannot overflow). */
 void verify_check_screen_touch(void)
 {
     struct output_geometry a, b;
-    __CPROVER_assume(a.x >= 0 && a.x < COORD_MAX && a.y >= 0 && a.y < COORD_MAX);
+    __CPROVER_assume(a.x > -COORD_MAX && a.x < COORD_MAX
+                     && a.y > -COORD_MAX && a.y < COORD_MAX);
     __CPROVER_assume(a.width >= 0 && a.width < COORD_MAX);
     __CPROVER_assume(a.height >= 0 && a.height < COORD_MAX);
-    __CPROVER_assume(b.x >= 0 && b.x < COORD_MAX && b.y >= 0 && b.y < COORD_MAX);
+    __CPROVER_assume(b.x > -COORD_MAX && b.x < COORD_MAX
+                     && b.y > -COORD_MAX && b.y < COORD_MAX);
     __CPROVER_assume(b.width >= 0 && b.width < COORD_MAX);
     __CPROVER_assume(b.height >= 0 && b.height < COORD_MAX);
     (void)check_screen_touch(a, b);
@@ -103,10 +113,12 @@ void verify_abs_coord_to_screen_local_coord(void)
     int32_t x, y;
     struct screen_local_coord sl;
     ssize_t i;
-    __CPROVER_assume(g.x >= 0 && g.x < COORD_MAX && g.y >= 0 && g.y < COORD_MAX);
+    __CPROVER_assume(g.x > -COORD_MAX && g.x < COORD_MAX
+                     && g.y > -COORD_MAX && g.y < COORD_MAX);
     __CPROVER_assume(g.width >= 0 && g.width < COORD_MAX);
     __CPROVER_assume(g.height >= 0 && g.height < COORD_MAX);
-    __CPROVER_assume(x >= 0 && x < COORD_MAX && y >= 0 && y < COORD_MAX);
+    __CPROVER_assume(x > -COORD_MAX && x < COORD_MAX
+                     && y > -COORD_MAX && y < COORD_MAX);
     for (i = 0; i < MAX_SCREEN_COUNT; i++) {
         state.output_geometries[i] = NULL;
     }
@@ -133,10 +145,12 @@ void verify_screen_local_coord_to_abs_coord(void)
     struct coord c;
     bool is_valid;
     ssize_t i;
-    __CPROVER_assume(g.x >= 0 && g.x < COORD_MAX && g.y >= 0 && g.y < COORD_MAX);
+    __CPROVER_assume(g.x > -COORD_MAX && g.x < COORD_MAX
+                     && g.y > -COORD_MAX && g.y < COORD_MAX);
     __CPROVER_assume(g.width >= 0 && g.width < COORD_MAX);
     __CPROVER_assume(g.height >= 0 && g.height < COORD_MAX);
-    __CPROVER_assume(x >= 0 && x < COORD_MAX && y >= 0 && y < COORD_MAX);
+    __CPROVER_assume(x > -COORD_MAX && x < COORD_MAX
+                     && y > -COORD_MAX && y < COORD_MAX);
     __CPROVER_assume(idx >= 0 && idx < MAX_SCREEN_COUNT);
     for (i = 0; i < MAX_SCREEN_COUNT; i++) {
         state.output_geometries[i] = NULL;
@@ -173,12 +187,23 @@ void verify_random_between(void)
 
 /* traverse_line: for in-envelope endpoints and a forward step the Bresenham
  * walk is UB-free (the error-term and coordinate adds stay in range). Success is
- * now reported through out_success (the (-1,-1) end-of-line sentinel is gone). */
+ * now reported through out_success (the (-1,-1) end-of-line sentinel is gone).
+ * The walk runs under --unwind 8 --no-unwinding-assertions, i.e. an 8-step
+ * PREFIX, not the full line: every iteration performs the SAME int32 arithmetic
+ * (err_val +/- the deltas, one coordinate step) over operands already bounded to
+ * the COORD_MAX envelope, so if no iteration overflows in the first 8 none can in
+ * the rest -- the UB surface is iteration-homogeneous. (A full unwind would be
+ * ~COORD_MAX iterations and is unnecessary; adversarial extremes are the settled
+ * -ftrapv WONTFIX.) */
 void verify_traverse_line(void)
 {
     struct coord start, end;
     int32_t pos;
     bool out_success;
+    /* Non-negative endpoints: the Bresenham error term doubles (err_val * 2),
+     * so a delta up to 2*COORD_MAX (negative-to-positive span) would push it past
+     * INT32_MAX. That raw int32 overflow is the settled -ftrapv WONTFIX (AGENTS),
+     * not a clamp to add -- so the proof envelope keeps |delta| < COORD_MAX. */
     __CPROVER_assume(start.x >= 0 && start.x < COORD_MAX);
     __CPROVER_assume(start.y >= 0 && start.y < COORD_MAX);
     __CPROVER_assume(end.x >= 0 && end.x < COORD_MAX);

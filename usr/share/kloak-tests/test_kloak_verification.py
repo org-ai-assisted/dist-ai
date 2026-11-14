@@ -69,6 +69,15 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 CBMC_FUNCTIONS = {
     'verify_sleep_ms': ('kloak_cbmc.c',
                         ['--unwind', '2', '--no-unwinding-assertions']),
+    ## fill_with_rand_alphabetic: outer loop over len=4; the inner rejection
+    ## loop only reduces modulo bias (the domain is fixed unconditionally after
+    ## it), so a prefix unwind is sound -- --no-unwinding-assertions.
+    'verify_fill_with_rand_alphabetic': ('kloak_cbmc.c',
+                        ['--unwind', '5', '--no-unwinding-assertions']),
+    ## parse_inotify_events: the walk consumes >= sizeof(struct inotify_event)
+    ## (16) per step over a 64-byte buffer, so <= 4 steps; --unwind 6 covers
+    ## every step EXHAUSTIVELY (unwinding assertions ON, no prefix).
+    'verify_parse_inotify_events': ('kloak_cbmc.c', ['--unwind', '6']),
     'verify_check_screen_touch': ('kloakwl_cbmc.c', []),
     'verify_abs_coord_to_screen_local_coord': ('kloakwl_cbmc.c',
                                                ['--unwind', '129']),
