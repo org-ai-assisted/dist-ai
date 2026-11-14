@@ -933,10 +933,23 @@ class KloakDaemonE2E(unittest.TestCase):
 
     def test_9_device_hotplug_grabbed(self):
         """A device appearing AFTER kloak started must be grabbed via the inotify
-        hotplug path and its input delayed to the client; removing it must not
-        crash kloak. Exercises the runtime attach/detach the startup scan can't."""
+        hotplug path and its input WITHHELD by the random delay before reaching
+        the client; removing it must not crash kloak. Exercises the runtime
+        attach/detach the startup scan can't.
+
+        Soundness: merely seeing the injected key at the client does NOT prove a
+        grab. An UNGRABBED device is delivered straight to the focused client by
+        the compositor, immediately and undelayed; kloak grabs EXCLUSIVELY
+        (EVIOCGRAB) and re-emits only after the random delay, so ONLY a genuine
+        grab makes the key arrive ~max_delay late. So this measures the arrival
+        delay (as the other input lanes do) and asserts the delay is actually
+        enforced -- a broken hotplug-grab path yields immediate, zero-spread
+        arrivals and fails. An existence-only check passes either way (silent
+        green)."""
         from evdev import UInput, ecodes
-        max_delay = 150
+        max_delay = 200
+        ## KEY_B (48) -> wl_keyboard keycode 56 (evdev + 8).
+        wl_keycode = ecodes.KEY_B + 8
         wev_log_path = self._start_wev()
         if not self._wait_for_focus(wev_log_path, 'wl_keyboard'):
             self.fail('wev never got keyboard focus:\n%s'
@@ -953,23 +966,29 @@ class KloakDaemonE2E(unittest.TestCase):
         self.addCleanup(hot.close)
         time.sleep(2)   ## inotify IN_CREATE + grab settle
 
-        ## Inject through the NEW device; if kloak grabbed it the key reaches the
-        ## client (delayed). KEY_B (48) -> wl_keyboard keycode 56 (evdev + 8).
-        before = len(self._read(wev_log_path))
-        for _ in range(3):
+        def _b_stamp(line, want_state):
+            if 'wl_keyboard' not in line:
+                return None
+            match = re.search(r'time: (-?\d+); key: (\d+); state: (\d+)', line)
+            if (match is not None and int(match.group(2)) == wl_keycode
+                    and int(match.group(3)) == want_state):
+                return int(match.group(1)) & 0xffffffff
+            return None
+
+        def inject_b():
             hot.write(ecodes.EV_KEY, ecodes.KEY_B, 1)
             hot.write(ecodes.EV_KEY, ecodes.KEY_B, 0)
             hot.syn()
-            time.sleep((max_delay + 120) / 1000.0)
-        time.sleep((max_delay + 300) / 1000.0)
 
-        got = [line for line in self._read(wev_log_path)[before:].splitlines()
-               if 'wl_keyboard' in line and 'key: 56' in line]
-        self.assertTrue(
-            got,
-            'the hot-plugged device was not grabbed -- its key never reached the '
-            'client:\nwev:\n%s\nkloak:\n%s'
-            % (self._read(wev_log_path), self._read(log_path)))
+        ## Inject through the NEW device and prove it was GRABBED: each key must
+        ## arrive withheld by the bounded random delay (never immediately), which
+        ## only an exclusive grab + delayed re-emit produces.
+        num = 15
+        stamp_delays, real_delays = self._measure_delays(
+            wev_log_path, inject_b, lambda line: _b_stamp(line, 1),
+            num, max_delay)
+        self._assert_delays(stamp_delays, real_delays, max_delay,
+                            'hot-plugged key press')
 
         ## Removing the device must not crash kloak.
         hot.close()
