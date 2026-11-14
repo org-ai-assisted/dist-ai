@@ -473,9 +473,13 @@ class KloakDaemonE2E(unittest.TestCase):
         ## Require the BULK of events to be genuinely delayed: the median applied
         ## delay (stamp AND real) must be a substantial fraction of max_delay
         ## (uniform[0,max_delay] has median ~max_delay/2, robust to one outlier),
-        ## which a mostly-bypassed stream cannot reach.
+        ## which a mostly-bypassed stream (median ~0) cannot reach. Threshold is
+        ## max_delay//8, NOT //4: //4 is the 0.25 quantile, so the sample median
+        ## of a genuinely-correct uniform stream falls below it ~2% of the time
+        ## at these sample counts -- a false-red flake. //8 keeps a huge margin
+        ## over a bypassed stream's ~0 median while making that flake negligible.
         self.assertGreaterEqual(
-            statistics.median(stamp_delays), max_delay // 4,
+            statistics.median(stamp_delays), max_delay // 8,
             '%s median scheduled delay too small -- most events are NOT delayed '
             '(a lone outlier establishes the spread; cloaking bypassed?): %r'
             % (what, stamp_delays))
@@ -503,7 +507,7 @@ class KloakDaemonE2E(unittest.TestCase):
                 '-- event withheld too long: %r'
                 % (what, real, max_delay, real_tol, real_delays))
         self.assertGreaterEqual(
-            statistics.median(real_delays), max_delay // 4,
+            statistics.median(real_delays), max_delay // 8,
             '%s median REAL delay too small -- most events arrive immediately, '
             'so the bulk of the stream is NOT actually withheld (cloaking '
             'bypassed for all but an outlier): %r' % (what, real_delays))
@@ -652,6 +656,13 @@ class KloakDaemonE2E(unittest.TestCase):
             proc.poll(),
             'kloak exited before the escape combo on the connected path:\n%s'
             % self._read(log_path))
+        ## Prove this is the CONNECTED path, not degraded: the escape handler
+        ## also runs in degraded mode, so without this the exit-0 + "Escape combo
+        ## pressed" assertions would pass even if kloak had silently degraded.
+        self.assertNotIn(
+            'await escape key combo', self._read(log_path),
+            'test_2c must exercise the connected escape path but kloak '
+            'degraded:\n%s' % self._read(log_path))
         ecodes = self._evdev.ecodes
         for key in (ecodes.KEY_RIGHTSHIFT, ecodes.KEY_ESC):
             self._uinput.write(ecodes.EV_KEY, key, 1)

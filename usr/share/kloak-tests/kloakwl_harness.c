@@ -205,7 +205,10 @@ static void unit_make_virtual_cursor_pos_sane(void)
     state.output_geometries[0] = &va;
     state.output_geometries[1] = &vb;
     make_virtual_cursor_pos_sane(75.0, 50.0, &vx, &vy);
-    CHECK(vx == 75.0 && vy < 100.0);   /* clamped before the void, not 150 */
+    /* The exact last-on-screen pixel before the void: stops at y=99 (A spans
+     * y[0,100)), not the raw end (75,150) in the void, and not the start (75,50)
+     * a "give up, return previous position" regression would leave. */
+    CHECK(vx == 75.0 && vy == 99.0);
     res = abs_coord_to_screen_local_coord((int32_t)(vx), (int32_t)(vy));
     CHECK(res.output_idx >= 0);        /* lands on a screen, never in the void */
 
@@ -917,10 +920,93 @@ static void unit_find_merge_target_packet(void)
     }
 }
 
+/* find_merge_target_packet only locates the packet; the actual coalescing is the
+ * WRITE-BACK in update_virtual_cursor (kloakwl.c:1806-1807). unit_find_merge_...
+ * above never drives that, so removing the write-back ships green. Drive the
+ * REAL path: two relative moves with NO drain between them must collapse into a
+ * single queued MOUSEMOVE whose coordinate advanced by the second move. */
+static void unit_coalesce_write_back(void)
+{
+    int pipe_fds[2];
+    struct output_geometry g0 = geom(0, 0, 1920, 1080);
+    struct input_packet *pkt = NULL;
+    int32_t x_after_first = 0;
+    ssize_t i;
+
+    init_fd_urandom();
+    init_msg_ring();
+    CHECK(pipe(pipe_fds) == 0);
+    recv_read_fd = pipe_fds[0];
+    max_delay = 1000;   /* keep the first packet queued (unreleased) */
+    TAILQ_INIT(&evq_head);
+    for (i = 0; i < MAX_SCREEN_COUNT; ++i) {
+        state.output_geometries[i] = NULL;
+    }
+    state.output_geometries[0] = &g0;
+    CHECK(recalc_global_space());
+    should_draw_cursor = false;
+    cursor_x = 100.0;
+    cursor_y = 100.0;
+    prev_cursor_x = 100.0;
+    prev_cursor_y = 100.0;
+    prev_release_time = 0;
+
+    /* First relative move -> a NEW MOUSEMOVE packet, alone in the queue. */
+    write_ptc_coord_frame(pipe_fds[1], PTC_PACKET_CURSOR_REL_EVENT, 5.0, 0.0);
+    CHECK(process_parent_message());
+    pkt = TAILQ_FIRST(&evq_head);
+    CHECK(pkt != NULL && pkt->packet_type == KLOAK_PACKET_TYPE_MOUSEMOVE);
+    CHECK(TAILQ_NEXT(pkt, evq_entries) == NULL);
+    x_after_first = pkt->data.coord_data.x;
+
+    /* Second relative move WITHOUT draining -> must COALESCE into that same
+     * packet (still exactly one) with its x written forward by the move. */
+    write_ptc_coord_frame(pipe_fds[1], PTC_PACKET_CURSOR_REL_EVENT, 7.0, 0.0);
+    (void)process_parent_message();
+    pkt = TAILQ_FIRST(&evq_head);
+    CHECK(pkt != NULL);
+    CHECK(TAILQ_NEXT(pkt, evq_entries) == NULL);   /* coalesced, not a 2nd pkt */
+    CHECK(pkt->data.coord_data.x != x_after_first); /* write-back applied */
+
+    while ((pkt = TAILQ_FIRST(&evq_head)) != NULL) {
+        TAILQ_REMOVE(&evq_head, pkt, evq_entries);
+        free(pkt);
+    }
+    CHECK(close(pipe_fds[0]) == 0);
+    CHECK(close(pipe_fds[1]) == 0);
+    recv_read_fd = -1;
+}
+
+/* recalc_global_space over a monitor placed LEFT of the primary: the global-
+ * space origin is NEGATIVE. Only a positive-origin layout was pinned, so a
+ * clamp-the-origin-up-to-0 regression would ship green. */
+static void unit_negative_origin_global_space(void)
+{
+    struct output_geometry a = geom(-1920, 0, 1920, 1080);
+    struct output_geometry b = geom(0, 0, 1920, 1080);
+    ssize_t i;
+
+    for (i = 0; i < MAX_SCREEN_COUNT; ++i) {
+        state.output_geometries[i] = NULL;
+    }
+    state.output_geometries[0] = &a;
+    state.output_geometries[1] = &b;
+    CHECK(recalc_global_space());
+    CHECK(state.pointer_space_x == -1920);   /* NOT clamped up to 0 */
+    CHECK(state.pointer_space_width == 3840);
+    CHECK(state.pointer_space_y == 0);
+    CHECK(state.pointer_space_height == 1080);
+    for (i = 0; i < MAX_SCREEN_COUNT; ++i) {
+        state.output_geometries[i] = NULL;
+    }
+}
+
 int main(void)
 {
     unit_check_screen_touch();
     unit_find_merge_target_packet();
+    unit_coalesce_write_back();
+    unit_negative_origin_global_space();
     unit_release_jitter();
     unit_release_jitter_mouse();
     unit_release_jitter_abs();
