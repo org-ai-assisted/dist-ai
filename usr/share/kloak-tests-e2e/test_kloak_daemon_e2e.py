@@ -66,6 +66,7 @@ unit-CI container reports the lane SKIP, never a false pass or a hard failure.
 import os
 import re
 import shutil
+import statistics
 import subprocess
 import tempfile
 import time
@@ -108,11 +109,13 @@ def _kloakwl_pids():
 
 class KloakDaemonE2E(unittest.TestCase):
     _created_user = False
-    _compositor = None
-    _uinput = None
-    _work = None
-    ## Set in setUpClass (a classmethod), so declare here for the type checker:
-    ## the evdev module and the virtual-mouse UInput the delay tests drive.
+    ## Set in setUpClass/_start_* (classmethods); typed Any so the type checker
+    ## (mypy --check-untyped-defs) does not infer a None-only attribute and then
+    ## flag every real use (.write/.poll/os.path.join) as a None operation.
+    _compositor: Any = None
+    _compositor_log: Any = None
+    _uinput: Any = None
+    _work: Any = None
     _uinput_mouse: Any = None
     _evdev: Any = None
     kloak_bin: str
@@ -397,8 +400,8 @@ class KloakDaemonE2E(unittest.TestCase):
         plus the arrival-gated spacing yield reliable end-to-end runs in
         practice. Do NOT replace it with a proc.poll()-only check (that only
         proves kloak has not exited, not that it has grabbed the device)."""
-        stamp_delays = []
-        real_delays = []
+        stamp_delays: list = []
+        real_delays: list = []
         ## Baseline past any already-released events (e.g. focus-establishing
         ## motions), so the first measured arrival is our first injected event.
         seen = len(self._count_releases(wev_log_path, is_release_line))
@@ -425,6 +428,9 @@ class KloakDaemonE2E(unittest.TestCase):
                     '(released %d of %d so far):\nwev:\n%s'
                     % (max_delay + 2000, len(stamp_delays), num,
                        self._read(wev_log_path)))
+            ## arrival_mono is set together with rel_stamp above, so the
+            ## rel_stamp guard proves it is not None here (mypy cannot see that).
+            assert arrival_mono is not None
             stamp_delays.append((rel_stamp - inj_stamp) & 0xffffffff)
             real_delays.append((arrival_mono - inj_mono) * 1000.0)
         ## Exactly num new releases for num injections. The per-poll `seen`
@@ -461,6 +467,18 @@ class KloakDaemonE2E(unittest.TestCase):
             max(stamp_delays) - min(stamp_delays), max_delay // 4,
             '%s scheduled delays show no spread (jitter not randomised): %r'
             % (what, stamp_delays))
+        ## Spread ALONE is fooled by a single delayed outlier among otherwise
+        ## undelayed (bypassed) events -- one 51 ms sample with the rest ~0
+        ## satisfies max-min > max_delay//4 while most keystrokes bypass cloaking.
+        ## Require the BULK of events to be genuinely delayed: the median applied
+        ## delay (stamp AND real) must be a substantial fraction of max_delay
+        ## (uniform[0,max_delay] has median ~max_delay/2, robust to one outlier),
+        ## which a mostly-bypassed stream cannot reach.
+        self.assertGreaterEqual(
+            statistics.median(stamp_delays), max_delay // 4,
+            '%s median scheduled delay too small -- most events are NOT delayed '
+            '(a lone outlier establishes the spread; cloaking bypassed?): %r'
+            % (what, stamp_delays))
         ## Real-time enforcement (Whonix/kloak anti-deanon guarantee): the event
         ## must not arrive at the client appreciably EARLIER than its scheduled
         ## release. real >= stamp structurally on correct code (arrival fires
@@ -484,6 +502,11 @@ class KloakDaemonE2E(unittest.TestCase):
                 '%s real release latency %.0f ms exceeds max_delay %d (+%d tol) '
                 '-- event withheld too long: %r'
                 % (what, real, max_delay, real_tol, real_delays))
+        self.assertGreaterEqual(
+            statistics.median(real_delays), max_delay // 4,
+            '%s median REAL delay too small -- most events arrive immediately, '
+            'so the bulk of the stream is NOT actually withheld (cloaking '
+            'bypassed for all but an outlier): %r' % (what, real_delays))
 
     def test_1_connected_privsep(self):
         proc, log_path = self._run_kloak(self.runtime_dir, self.wayland_display)
@@ -538,6 +561,40 @@ class KloakDaemonE2E(unittest.TestCase):
         self.assertNotIn('FATAL', log,
                          'kloak aborted on the degraded path:\n%s' % log)
 
+        ## Negative control for the degraded contract: it stays up WITHOUT
+        ## grabbing the devices (docstring above). Nothing asserted that before --
+        ## and register_esc_combo_event runs regardless of connect state
+        ## (kloak.c.in:643 before the :647 gate), so a regression that wrongly
+        ## grabbed in degraded mode (swallowing all input, no re-emit path) would
+        ## still pass every other assertion here. Prove no grab by taking an
+        ## EXCLUSIVE grab OURSELVES: EVIOCGRAB succeeds only if kloak holds none
+        ## (an open without a grab does not block it); if degraded mode wrongly
+        ## grabbed, this raises EBUSY.
+        import evdev
+        kbd_node = None
+        for path in evdev.list_devices():
+            dev = evdev.InputDevice(path)
+            dev_name = dev.name
+            dev.close()
+            if dev_name == 'kloak-e2e-kbd':
+                kbd_node = path
+                break
+        self.assertIsNotNone(
+            kbd_node, 'could not find the virtual keyboard evdev node to probe '
+            'the degraded-mode grab state')
+        probe = evdev.InputDevice(kbd_node)
+        try:
+            try:
+                probe.grab()
+            except OSError as exc:
+                self.fail(
+                    'degraded kloak holds an EXCLUSIVE grab on the keyboard '
+                    '(EVIOCGRAB -> %s) -- it must NOT grab in degraded mode or it '
+                    'silently swallows all input' % exc)
+            probe.ungrab()
+        finally:
+            probe.close()
+
         ## The escape combo must bring the degraded daemon down cleanly (exit 0).
         ecodes = self._evdev.ecodes
         for key in (ecodes.KEY_RIGHTSHIFT, ecodes.KEY_ESC):
@@ -582,6 +639,38 @@ class KloakDaemonE2E(unittest.TestCase):
         self.assertIn('Could not connect to Wayland compositor',
                       self._read(log_path),
                       'kloak did not log the connect failure')
+
+    def test_2c_escape_combo_connected(self):
+        ## The escape combo must bring kloak down cleanly while it is CONNECTED
+        ## and actively grabbing -- the real "quit to regain control" path.
+        ## register_esc_combo_event runs BEFORE the wl_connect_success gate
+        ## (kloak.c.in:643 vs :647), so the connected daemon honors it too; only
+        ## the degraded test_2 exercised it before.
+        proc, log_path = self._run_kloak(self.runtime_dir, self.wayland_display)
+        time.sleep(3)
+        self.assertIsNone(
+            proc.poll(),
+            'kloak exited before the escape combo on the connected path:\n%s'
+            % self._read(log_path))
+        ecodes = self._evdev.ecodes
+        for key in (ecodes.KEY_RIGHTSHIFT, ecodes.KEY_ESC):
+            self._uinput.write(ecodes.EV_KEY, key, 1)
+        self._uinput.syn()
+        time.sleep(0.2)
+        for key in (ecodes.KEY_ESC, ecodes.KEY_RIGHTSHIFT):
+            self._uinput.write(ecodes.EV_KEY, key, 0)
+        self._uinput.syn()
+        try:
+            rc = proc.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            self.fail('connected kloak did not exit on the escape combo:\n%s'
+                      % self._read(log_path))
+        self.assertEqual(
+            rc, 0,
+            'connected kloak should exit 0 on the escape combo:\n%s'
+            % self._read(log_path))
+        self.assertIn('Escape combo pressed', self._read(log_path))
 
     def test_3_keyboard_delay_measured(self):
         """End-to-end proof of kloak's reason to exist: inject real keystrokes
@@ -844,37 +933,36 @@ class KloakDaemonE2E(unittest.TestCase):
 
     def test_8_multi_screen_connects(self):
         """kloak must handle a real MULTI-OUTPUT compositor: recalc_global_space
-        runs over 2 outputs, not the shared fixture's 1. Either it comes up
-        connected (layout accepted) and processes input, or it aborts cleanly on
-        a gapped/invalid layout -- but it must never crash with a signal or hang
-        degraded-silently."""
+        runs over 2 contiguous outputs, not the shared fixture's 1. It must come
+        up CONNECTED (layout accepted), not degrade, abort, or crash, and must
+        process input over the 2-output global space."""
         comp, rdir, display = self._spawn_compositor(outputs='2')
         proc, log_path = self._run_kloak(rdir, display)
         time.sleep(4)
-        rc = proc.poll()
         log = self._read(log_path)
-        if rc is None:
-            ## Up: must be the connected path (not degraded), and injecting input
-            ## over the 2-output global space must not crash it.
-            self.assertNotIn(
-                'await escape key combo', log,
-                'kloak degraded against a 2-output compositor:\n%s' % log)
-            ecodes = self._evdev.ecodes
-            self._uinput.write(ecodes.EV_KEY, ecodes.KEY_A, 1)
-            self._uinput.write(ecodes.EV_KEY, ecodes.KEY_A, 0)
-            self._uinput.syn()
-            time.sleep(1)
-            self.assertIsNone(
-                proc.poll(),
-                'kloak crashed processing input with 2 outputs:\n%s'
-                % self._read(log_path))
-        else:
-            ## Exited: acceptable only as a clean abort (rc >= 0), never a crash
-            ## signal (negative rc from Popen).
-            self.assertGreaterEqual(
-                rc, 0,
-                'kloak crashed (signal %d) on a 2-output layout:\n%s'
-                % (-rc, log))
+        ## labwc arranges the two headless outputs contiguously, so
+        ## recalc_global_space must ACCEPT the layout and kloak must come up. The
+        ## old shape accepted "any rc >= 0" as a pass, which masked exactly the
+        ## regression that matters here -- recalc_global_space wrongly reporting a
+        ## gap on a valid layout aborts (errx 1, "gaps are present between them")
+        ## -- as well as any unrelated fatal. Require the connected outcome.
+        self.assertIsNone(
+            proc.poll(),
+            'kloak did not come up against a valid 2-output compositor -- a '
+            'spurious gap abort or other fatal (recalc_global_space regression?):'
+            '\n%s' % log)
+        self.assertNotIn(
+            'await escape key combo', log,
+            'kloak degraded against a 2-output compositor:\n%s' % log)
+        ecodes = self._evdev.ecodes
+        self._uinput.write(ecodes.EV_KEY, ecodes.KEY_A, 1)
+        self._uinput.write(ecodes.EV_KEY, ecodes.KEY_A, 0)
+        self._uinput.syn()
+        time.sleep(1)
+        self.assertIsNone(
+            proc.poll(),
+            'kloak crashed processing input with 2 outputs:\n%s'
+            % self._read(log_path))
 
     def test_6_pointer_scroll_delay_measured(self):
         """Same proof as test_3, for SCROLL: inject real wheel ticks through the
@@ -997,6 +1085,128 @@ class KloakDaemonE2E(unittest.TestCase):
                           'kloak crashed on device removal:\n%s'
                           % self._read(log_path))
 
+    def test_flood_order_and_bound(self):
+        """Under a BURST that piles events in the queue, releases must stay
+        FIFO-ordered and bounded -- the prev_release_time clamp
+        (kloakwl.c:1933-1938) at work. The per-event delay lanes deliberately
+        space each injection past the previous arrival, so lower_bound stays 0
+        and the clamp path is never exercised there. Inject many keys back-to-
+        back and assert: exactly N releases, their scheduled `time` stamps
+        non-decreasing in arrival order (without the clamp each event draws an
+        INDEPENDENT delay, so a later event can carry an earlier scheduled time),
+        and the whole burst stays within one max_delay window (delays do not grow
+        unbounded under load)."""
+        max_delay = 200
+        ecodes = self._evdev.ecodes
+        key_a = ecodes.KEY_A
+        wl_keycode = key_a + 8
+        wev_log_path = self._start_wev()
+        if not self._wait_for_focus(wev_log_path, 'wl_keyboard'):
+            self.fail('wev never got keyboard focus:\n%s'
+                      % self._read(wev_log_path))
+        proc, log_path = self._run_kloak(
+            self.runtime_dir, self.wayland_display, max_delay=max_delay)
+        time.sleep(2)
+        self.assertIsNone(proc.poll(),
+                          'kloak exited before the flood test:\n%s'
+                          % self._read(log_path))
+
+        def _press_stamps():
+            stamps = []
+            for line in self._read(wev_log_path).splitlines():
+                if 'wl_keyboard' not in line:
+                    continue
+                match = re.search(
+                    r'time: (-?\d+); key: (\d+); state: (\d+)', line)
+                if (match is not None and int(match.group(2)) == wl_keycode
+                        and int(match.group(3)) == 1):
+                    stamps.append(int(match.group(1)) & 0xffffffff)
+            return stamps
+
+        baseline = len(_press_stamps())
+        num = 40
+        inj_mono = time.monotonic()
+        for _ in range(num):
+            self._uinput.write(ecodes.EV_KEY, key_a, 1)
+            self._uinput.write(ecodes.EV_KEY, key_a, 0)
+            self._uinput.syn()
+        ## Drain: the last queued event can be scheduled up to max_delay out.
+        deadline = inj_mono + (max_delay + 3000) / 1000.0
+        while time.monotonic() < deadline:
+            if len(_press_stamps()) - baseline >= num:
+                break
+            time.sleep(0.01)
+        stamps = _press_stamps()[baseline:]
+        self.assertEqual(
+            len(stamps), num,
+            'expected exactly %d flood releases, got %d (dropped or duplicated '
+            'under load):\nwev:\n%s'
+            % (num, len(stamps), self._read(wev_log_path)))
+        ## FIFO + clamp: scheduled stamps non-decreasing in arrival order.
+        for earlier, later in zip(stamps, stamps[1:]):
+            self.assertGreaterEqual(
+                later, earlier,
+                'flood releases are NOT monotonically scheduled -- a later event '
+                'carries an earlier scheduled time (the prev_release_time clamp '
+                'is not enforced; events bunch/reorder under load): %r' % stamps)
+        ## Bounded: the whole burst fits in one max_delay window.
+        self.assertLessEqual(
+            max(stamps) - min(stamps), max_delay + 80,
+            'flood scheduled delays span more than max_delay (%d): %r'
+            % (max_delay, stamps))
+
+    def test_apparmor_profiles_load(self):
+        """The shipped AppArmor profiles must stay valid + loadable and the proxy
+        profile must keep the privsep confinement handoff (a Px transition to the
+        kloakwl profile). This lane runs the proxy from the build tree, not
+        /usr/bin, and AppArmor attaches BY PATH, so the profiles do not auto-
+        confine the test binary -- full runtime path-attachment is the installed
+        package's job. What regresses in practice is a profile that stops
+        COMPILING or drops the transition, which apparmor_parser (compile + policy
+        validation, no kernel load) and a rule check catch here."""
+        parser = shutil.which('apparmor_parser')
+        if parser is None:
+            ## style-ok: allow-skip: apparmor_parser absent -- cannot validate the profiles
+            self.skipTest('apparmor_parser not installed (AppArmor lane)')
+        prof_dir = os.path.join(_repo(), 'etc', 'apparmor.d')
+        if not os.path.isdir(prof_dir):
+            ## style-ok: allow-skip: shipped AppArmor profiles absent in this checkout
+            self.skipTest('no etc/apparmor.d in the kloak source')
+        profiles = ['usr.bin.kloak', 'usr.bin.kloakwl',
+                    'usr.libexec.kloak.find_wl_compositor']
+        ## The profiles hard-include <tunables/global> and <local/NAME>; build a
+        ## base dir resolving those (system tunables/abstractions + empty local
+        ## overrides, as the package install creates) so the compile reflects the
+        ## real policy. -Q skips the kernel load and -K the cache, so nothing
+        ## touches shared AppArmor state.
+        base = tempfile.mkdtemp(prefix='kloak-aa-')
+        self.addCleanup(lambda: shutil.rmtree(base, ignore_errors=True))
+        for shared in ('tunables', 'abstractions'):
+            os.symlink(os.path.join('/etc/apparmor.d', shared),
+                       os.path.join(base, shared))
+        os.mkdir(os.path.join(base, 'local'))
+        for name in profiles:
+            self.assertTrue(
+                os.path.exists(os.path.join(prof_dir, name)),
+                'shipped AppArmor profile %s missing' % name)
+            with open(os.path.join(base, 'local', name), 'w'):
+                pass
+        for name in profiles:
+            res = _sh(parser, '-Q', '-K', '-b', base,
+                      os.path.join(prof_dir, name))
+            self.assertEqual(
+                res.returncode, 0,
+                'AppArmor profile %s failed to compile/validate:\n%s'
+                % (name, res.stderr))
+        ## Privsep handoff: the proxy profile must transition the child to the
+        ## kloakwl profile under its own confinement. Dropping this silently runs
+        ## the sandboxed child unconfined.
+        kloak_prof = self._read(os.path.join(prof_dir, 'usr.bin.kloak'))
+        self.assertRegex(
+            kloak_prof, r'/usr/bin/kloakwl\s+\S*Px\b',
+            'kloak AppArmor profile lost the Px transition to the kloakwl '
+            'profile -- the privsep child would run unconfined')
+
     def test_seccomp_filter_runtime(self):
         """kloak must start under its SHIPPED SystemCallFilter without tripping a
         SIGSYS -- the arm64 group-based-filter regression manifests only under the
@@ -1050,13 +1260,14 @@ class KloakDaemonE2E(unittest.TestCase):
         ## A NEW kloakwl-owned process appears ONLY if the whole fork + sandbox +
         ## setuid path ran under the filter without a blocked syscall -- the
         ## positive proof the filter covers kloak's real privsep path.
-        dropped = False
+        new_pids: set = set()
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
-            if _kloakwl_pids() - before:
-                dropped = True
+            new_pids = _kloakwl_pids() - before
+            if new_pids:
                 break
             time.sleep(0.3)
+        dropped = bool(new_pids)
         out = self._read(log_path)
         self.assertNotIn(
             'Bad system call', out,
@@ -1082,6 +1293,35 @@ class KloakDaemonE2E(unittest.TestCase):
                 'kloak did not complete the privsep uid drop under its shipped '
                 'SystemCallFilter -- a needed syscall is blocked (SIGSYS in the '
                 'sandbox child; the arm64 group-filter regression):\n%s' % out)
+
+        ## ENFORCEMENT, not just compatibility. The child dropping proves the
+        ## filter is COMPATIBLE, but the drop succeeds with or without any filter
+        ## actually installed -- so a filter that silently failed to apply
+        ## (systemd property drift, a kernel without seccomp, a -p rejected)
+        ## leaves "no SIGSYS + a new pid" green while the protection is ABSENT.
+        ## /proc/<pid>/status reports the live seccomp mode on the child:
+        ## Seccomp == 2 is SECCOMP_MODE_FILTER. This turns the compatibility probe
+        ## into a proof the shipped SystemCallFilter is genuinely enforced.
+        child_pid = sorted(new_pids)[0]
+        status = self._read('/proc/%s/status' % child_pid)
+        fields = {}
+        for line in status.splitlines():
+            if ':' in line:
+                key, _, val = line.partition(':')
+                fields[key.strip()] = val.strip()
+        self.assertEqual(
+            fields.get('Seccomp'), '2',
+            'privsep child is NOT under a seccomp filter (Seccomp=%r) -- the '
+            'shipped SystemCallFilter did not actually apply even though the uid '
+            'drop succeeded (compatibility, not enforcement):\n%s'
+            % (fields.get('Seccomp'), status))
+        ## Seccomp_filters (filter count) exists on recent kernels only; assert it
+        ## when present, so the proof strengthens without breaking older kernels.
+        if 'Seccomp_filters' in fields:
+            self.assertGreaterEqual(
+                int(fields['Seccomp_filters']), 1,
+                'privsep child reports zero installed seccomp filters:\n%s'
+                % status)
 
 
 if __name__ == '__main__':
