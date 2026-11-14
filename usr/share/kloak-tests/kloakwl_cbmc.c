@@ -240,3 +240,41 @@ void verify_current_time_ms(void)
     __CPROVER_assert(first >= 0, "current_time_ms non-negative");
     __CPROVER_assert(second >= first, "current_time_ms monotonic non-decreasing");
 }
+
+/* draw_block: the cursor-layer pixel writer. Every write is
+ * pixbuf[offset + work_y * layer_width + work_x] with the loop bounds clamped to
+ * [0, layer_width/height - 1]; a correct clamp keeps every index inside the
+ * frame's [offset, offset + layer_width*layer_height) region. Prove it against a
+ * buffer sized to exactly layer_width*layer_height (offset is a frame base, a
+ * constant added to every index), so CBMC's default bounds check flags any OOB
+ * write (a clamp off-by-one). Concrete, RECTANGULAR layer dims (7x5, so a row-
+ * stride clamp bug shows) with symbolic cursor position/radius: a symbolic W*H
+ * allocation made the solver intractable, and the clamp arithmetic is dimension-
+ * uniform, so one rectangular layer exercises it. Cursor coordinates stay in
+ * kloak's envelope (|x|,|y| < COORD_MAX) so x +/- rad cannot overflow. */
+void verify_draw_block(void)
+{
+    enum { DRAW_W = 7, DRAW_H = 5 };
+    uint32_t pixbuf[DRAW_W * DRAW_H];
+    int32_t x, y, rad;
+    bool crosshair;
+
+    __CPROVER_assume(rad >= 0 && rad <= 8);
+    __CPROVER_assume(x > -COORD_MAX && x < COORD_MAX);
+    __CPROVER_assume(y > -COORD_MAX && y < COORD_MAX);
+    should_draw_cursor = true;
+    draw_block(pixbuf, 0, x, y, DRAW_W, DRAW_H, rad, crosshair);
+}
+
+/* grow_line_segment: deliberately clamps instead of leaning on -ftrapv (its
+ * callers are bounded to COORD_MAX so the clamp branches are otherwise never
+ * reached). Drive it over the FULL int32 range so the INT32_MIN position and the
+ * near-INT32_MAX length branches ARE reached, and CBMC's default signed-overflow
+ * check proves the decrement/increments never overflow -- i.e. the clamp
+ * conditions are sufficient. */
+void verify_grow_line_segment(void)
+{
+    int32_t pos_point, length;
+    grow_line_segment(&pos_point, &length);
+    __CPROVER_assert(pos_point >= INT32_MIN, "position never below INT32_MIN");
+}

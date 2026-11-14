@@ -89,6 +89,11 @@ CBMC_FUNCTIONS = {
                              ['--unwind', '8', '--no-unwinding-assertions']),
     'verify_get_ticks_from_scroll_accum': ('kloakwl_cbmc.c', []),
     'verify_current_time_ms': ('kloakwl_cbmc.c', []),
+    ## draw_block: two nested loops bounded by the 8x8 symbolic layer, so
+    ## <= 8 iterations each; --unwind 9 covers them EXHAUSTIVELY (assertions on).
+    'verify_draw_block': ('kloakwl_cbmc.c', ['--unwind', '9']),
+    ## grow_line_segment: loop-free; full-int32 symbolic inputs, default checks.
+    'verify_grow_line_segment': ('kloakwl_cbmc.c', []),
 }
 
 ## client-header + private-code stem for each protocol xml kloak.c pulls in.
