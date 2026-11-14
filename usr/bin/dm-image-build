@@ -96,34 +96,48 @@ release_leaked_build_loops() {
    done
 }
 
+require_value() {
+   ## A value-taking option needs a following operand. $1 = option name, $2 = current $#.
+   ## Without this, reading "$2" under `set -o nounset` aborts with an opaque
+   ## "$2: unbound variable" (exit 1) instead of a clean usage error (exit 2).
+   [ "$2" -ge 2 ] || { printf '%s\n' "${me}: ERROR: $1 requires a value" >&2; exit 2; }
+}
+
 main() {
    while [ "$#" -ge 1 ]; do
       case "$1" in
          --flavor)
+            require_value "$1" "$#"
             flavor="$2"
             shift 2
             ;;
          --target)
+            require_value "$1" "$#"
             target="$2"
             shift 2
             ;;
          --arch)
+            require_value "$1" "$#"
             arch="$2"
             shift 2
             ;;
          --multi-target)
+            require_value "$1" "$#"
             multi_target="$2"
             shift 2
             ;;
          --freshness)
+            require_value "$1" "$#"
             freshness="$2"
             shift 2
             ;;
          --freedom)
+            require_value "$1" "$#"
             freedom="$2"
             shift 2
             ;;
          --dry-run)
+            require_value "$1" "$#"
             case "$2" in
                true | false)
                   dry_run="$2"
@@ -136,6 +150,7 @@ main() {
             shift 2
             ;;
          --smbios-reader)
+            require_value "$1" "$#"
             case "$2" in
                true | false)
                   smbios_reader="$2"
@@ -148,6 +163,7 @@ main() {
             shift 2
             ;;
          --dir)
+            require_value "$1" "$#"
             dir="$2"
             shift 2
             ;;
@@ -213,10 +229,15 @@ main() {
    ## default; a value overrides it (e.g. 'virtualbox' forces the OVA even where the arch default
    ## omits it).
    export dist_build_multi_target_list="${multi_target}"
-   ## Bake in the GRUB SMBIOS cmdline reader when requested (build-steps 3500/4310 key off this
-   ## env var; it is on env-vars-keep so it crosses into the chroot). Off by default -- an
+   ## Bake in the GRUB SMBIOS cmdline reader when requested. --smbios-reader is a DANGEROUS
+   ## build option (it lets anyone with SMBIOS control inject the kernel cmdline), so route it
+   ## exactly as CI does: unlock dangerous options here and pass '--smbios-reader true' as a
+   ## build arg below, so parse-cmd's error_dangerous_option_maybe gate RUNS and is satisfied.
+   ## A bare 'export dist_build_smbios_reader=true' would SKIP that gate. Off by default -- an
    ## injectable image is for boot-testing only, never a production artifact.
-   export dist_build_smbios_reader="${smbios_reader}"
+   if [ "${smbios_reader}" = "true" ]; then
+      export dist_build_unlock_dangerous_options=true
+   fi
    ## Per-user cowbuilder base so two users building concurrently do not collide on the shared
    ## default /var/cache/pbuilder base.cow (one build would clobber the other's chroot). Set the
    ## cache dir explicitly (honored verbatim by variables.d/70_cowbuilder.bsh) -- NOT --build-slot,
@@ -252,6 +273,10 @@ main() {
    fi
    ## Forward --dry-run only when true, so the default real-build invocation stays byte-identical.
    [ "${dry_run}" != "true" ] || build_args+=(--dry-run true)
+   ## Route --smbios-reader through the build's dangerous-option gate (see the unlock above).
+   ## A global image property -> forward regardless of --multi-target (unlike the top-level
+   ## --target, which must not leak into a per-flavor VM build).
+   [ "${smbios_reader}" != "true" ] || build_args+=(--smbios-reader true)
 
    local build_rc=0
    {

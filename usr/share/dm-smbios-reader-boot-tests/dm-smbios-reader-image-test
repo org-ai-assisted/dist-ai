@@ -554,18 +554,22 @@ def no_root_shell_diagnostic(transcript):
 
     The root debug-shell binds only when the GRUB SMBIOS cmdline reader applied the
     injected cmdline (systemd.debug_shell + serial-getty mask). A normal login prompt
-    in the transcript instead means the reader did NOT engage -- almost always an image
-    built WITHOUT the reader (dm-image-build --smbios-reader true / dist_build_smbios_reader,
-    as CI does). Name that cause so a healthy boot is not mistaken for a boot failure or a
-    guest-architecture bug (the login prompt proves the kernel + init came up fine)."""
+    in the transcript instead means the reader did NOT apply it. Two causes produce this,
+    both arch-independent, so a healthy boot is not mistaken for a boot failure or a
+    guest-architecture bug (the login prompt proves the kernel + init came up fine):
+    (1) the image was built WITHOUT the reader; or (2) the reader IS baked in but did not
+    engage because the SMBIOS type-1 manufacturer is not "QEMU" (etc/grub.d/01_smbios-reader
+    only injects under a "QEMU" vendor -- a VirtualBox / other-vendor boot will not)."""
     if "login:" in transcript:
         return ("the guest reached a normal LOGIN PROMPT, not the injected root serial"
-                " shell -- the GRUB SMBIOS cmdline reader did not engage, so the"
-                " session/debug-shell injection had no effect. The image was almost"
-                " certainly built WITHOUT the reader; rebuild it with"
-                " 'dm-image-build --smbios-reader true' (dist_build_smbios_reader=true, as"
-                " CI's '--smbios-reader true' does). A production image carries no reader by"
-                " design. (The login prompt confirms the kernel and init booted fine.)")
+                " shell -- the GRUB SMBIOS cmdline reader did not apply the injected cmdline."
+                " Two causes, both arch-independent: (1) the image was built WITHOUT the"
+                " reader -- rebuild with 'dm-image-build --smbios-reader true' (as CI does);"
+                " or (2) the reader IS baked in but the SMBIOS type-1 manufacturer is not"
+                " 'QEMU', so 01_smbios-reader did not engage (it injects ONLY under a QEMU"
+                " vendor; a VirtualBox/other-vendor boot will not). A production image carries"
+                " no reader by design. (The login prompt confirms the kernel and init booted"
+                " fine.)")
     return "root serial shell (--test-console) never came up"
 
 

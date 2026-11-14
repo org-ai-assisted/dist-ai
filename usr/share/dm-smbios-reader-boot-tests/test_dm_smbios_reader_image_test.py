@@ -1134,11 +1134,14 @@ def test_start_vbox_backend_propagates_serial_up_rc_and_tears_down(monkeypatch,
 
 def test_no_root_shell_diagnostic_login_prompt_names_smbios_reader():
     ## A --test-console boot that lands on a normal login getty means the GRUB SMBIOS
-    ## cmdline reader never engaged (image built WITHOUT the reader). The diagnostic
-    ## must say THAT and point at the --smbios-reader build flag, so a healthy arm64/amd64
-    ## boot is not mistaken for a boot failure or a guest-arch bug.
-    ## CANARY: the pre-fix code logged only the generic "never came up" string, so this
-    ## assertion (login prompt -> actionable --smbios-reader message) FAILS on it.
+    ## cmdline reader did not apply the injected cmdline. The diagnostic must name BOTH
+    ## arch-independent causes -- (1) image built WITHOUT the reader (point at the
+    ## --smbios-reader build flag) and (2) reader present but SMBIOS manufacturer != "QEMU"
+    ## (01_smbios-reader only injects under a QEMU vendor) -- so a healthy arm64/amd64 boot
+    ## is not mistaken for a boot failure, a guest-arch bug, OR a missing reader when the real
+    ## cause is a non-QEMU vendor (e.g. a VirtualBox boot).
+    ## CANARY: the pre-fix code logged only the generic "never came up" string, so these
+    ## assertions (login prompt -> actionable two-cause message) FAIL on it.
     m = _load_dm_image_test()
     transcript = (
         "Welcome to Kicksecure (TM)!\n"
@@ -1150,7 +1153,8 @@ def test_no_root_shell_diagnostic_login_prompt_names_smbios_reader():
     msg = m.no_root_shell_diagnostic(transcript)
     assert "LOGIN PROMPT" in msg
     assert "--smbios-reader true" in msg
-    assert "dist_build_smbios_reader" in msg
+    assert "QEMU" in msg
+    assert "manufacturer" in msg
 
 
 def test_no_root_shell_diagnostic_silent_is_generic():
