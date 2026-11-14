@@ -70,6 +70,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from typing import Any
 
 KLOAKWL_USER = 'kloakwl'
 
@@ -96,6 +97,10 @@ class KloakDaemonE2E(unittest.TestCase):
     _compositor = None
     _uinput = None
     _work = None
+    ## Set in setUpClass (a classmethod), so declare here for the type checker:
+    ## the evdev module and the virtual-mouse UInput the delay tests drive.
+    _uinput_mouse: Any = None
+    _evdev: Any = None
     kloak_bin: str
     runtime_dir: str
     wayland_display: str
