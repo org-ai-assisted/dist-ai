@@ -510,8 +510,60 @@ else
   fails=$(( fails + 1 ))
 fi
 
+## SECONDARY RATE LIMIT + a caller's own -o: dist-ai#850. dm-boot-local downloads with
+## 'github-api GET .../zip -L -o artifact.zip'. curl honors only the FIRST output, so the
+## wrapper's buffering --output must not compete: it must lift the caller's -o out of the
+## forwarded args, buffer every attempt itself for classification, and deliver the final body
+## to the caller file. This fake models curl 8.14.1 (FIRST of -o/--output wins) and returns a
+## secondary-limit 403 with NO Retry-After (so detection depends on the buffered BODY, the path
+## the -o bug breaks), then a 200. A GET -o must RETRY and land the 200 body in the caller file,
+## never the 403 body. On the pre-fix code the caller's -o won the buffer: detection saw an empty
+## body, did not retry, and the 403 error landed in the caller file -- this check went red.
+rlo_bin="${tmp}/rlobin"
+mkdir -p -- "${rlo_bin}"
+cat > "${rlo_bin}/curl" <<'RLO_CURL'
+#!/bin/bash
+cat >/dev/null   # consume the --config document on stdin
+out=""; hdr=""; prev=""
+for a in "$@"; do
+  ## FIRST output destination wins, as curl 8.14.1 does with two -o/--output.
+  case "${prev}" in
+    -o | --output) [ -z "${out}" ] && out="$a" ;;
+    --dump-header) hdr="$a" ;;
+  esac
+  prev="$a"
+done
+n=0; [ -r "${RLO_CTR}" ] && n="$(cat "${RLO_CTR}")"; n=$(( n + 1 )); printf '%s' "${n}" > "${RLO_CTR}"
+if [ "${n}" -lt "${RLO_OK_ON}" ]; then
+  [ -n "${out}" ] && printf '%s' '{"message":"You have exceeded a secondary rate limit"}' > "${out}"
+  [ -n "${hdr}" ] && printf 'HTTP/2 403\r\n\r\n' > "${hdr}"
+  printf '403'
+else
+  [ -n "${out}" ] && printf '%s' 'RLO_OK_BODY' > "${out}"
+  [ -n "${hdr}" ] && printf 'HTTP/2 200\r\n\r\n' > "${hdr}"
+  printf '200'
+fi
+RLO_CURL
+chmod 0755 -- "${rlo_bin}/curl"
+cp -- "${rlo_bin}/curl" "${rlo_bin}/scurl"
+rlo_ctr="${tmp}/rlo_ctr"; true > "${rlo_ctr}"
+rlo_out="${tmp}/rlo_artifact.bin"
+rm -f -- "${rlo_out}"
+PATH="${rlo_bin}:${PATH}" GITHUB_TOKEN_FILE="${tmp}/token" \
+  RLO_CTR="${rlo_ctr}" RLO_OK_ON=2 \
+  GH_SECONDARY_RL_ATTEMPTS=4 GH_SECONDARY_RL_WAIT_CAP=0 GH_SECONDARY_RL_BACKOFF=0 \
+  "${git_api}" GET /repos/x/y/actions/artifacts/1/zip -L -o "${rlo_out}" >/dev/null 2>&1 || true
+rlo_calls="$(cat "${rlo_ctr}")"
+rlo_body="$(cat -- "${rlo_out}" 2>/dev/null || true)"
+if [ "${rlo_calls}" = "2" ] && [ "${rlo_body}" = "RLO_OK_BODY" ]; then
+  printf '%s\n' 'ok   GET with caller -o buffers for secondary-RL, retries, and writes the 200 body to the caller file'
+else
+  printf '%s\n' "FAIL: caller -o secondary-RL not handled: calls=${rlo_calls} body=[${rlo_body}]" >&2
+  fails=$(( fails + 1 ))
+fi
+
 if (( fails > 0 )); then
   printf '%s\n' "github-api-tests: ${fails} check(s) FAILED" >&2
   exit 1
 fi
-printf '%s\n' 'github-api-tests: PASSED (25 checks, 0 failed, 0 skipped)'
+printf '%s\n' 'github-api-tests: PASSED (26 checks, 0 failed, 0 skipped)'

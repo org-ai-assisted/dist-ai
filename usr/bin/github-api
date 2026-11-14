@@ -178,7 +178,11 @@ fi
 ## bytes it already wrote for a FAILED attempt, so retrying straight to stdout would
 ## append the complete response to the partial one (invalid output). With --output curl
 ## truncates+rewrites the file on each attempt, so the file holds exactly the final
-## attempt; emit it only after a CLEAN curl exit, and discard curl's own stdout.
+## attempt; emit it only after a CLEAN curl exit, and discard curl's own stdout. This
+## buffering also underpins body-based secondary-RL detection, so a caller's own
+## -o/--output is lifted out of the forwarded args (it would otherwise win -- curl honors
+## only the FIRST output -- leaving the buffer empty); the final body is delivered to that
+## destination after classification instead.
 ##
 ## GitHub SECONDARY rate limits return 403 -- and curl treats a 403 as a SUCCESSFUL transfer
 ## (exit 0), so neither --retry nor --retry-all-errors covers it. They carry a Retry-After
@@ -189,11 +193,46 @@ fi
 retry_args=()
 response_file=''
 hdr_file=''
+caller_out=''
+fwd_args=()
 case "${method^^}" in
   GET|HEAD)
     response_file="$(mktemp)"
     hdr_file="$(mktemp)"
     retry_args=(--retry 5 --retry-all-errors --retry-delay 1)
+    ## A caller may pass its own -o/--output to save the body to a file (e.g. dm-boot-local
+    ## downloading an artifact zip). curl honors only the FIRST output destination, so our
+    ## buffering --output must not compete with it: lift the caller's output flag out of the
+    ## forwarded args into caller_out, buffer every attempt to response_file for secondary-RL
+    ## classification + retry, then deliver the final body to caller_out (below). Simple match
+    ## on the real/common curl forms only -- no short-cluster parser (e.g. -sLo); no caller
+    ## uses one, and -O/--remote-name/--output-dir are likewise unused and forwarded as-is.
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -o | --output)
+          if [ "$#" -ge 2 ]; then
+            caller_out="$2"
+            shift 2
+          else
+            fwd_args+=("$1")
+            shift
+          fi
+          ;;
+        --output=*)
+          caller_out="${1#--output=}"
+          shift
+          ;;
+        -o?*)
+          caller_out="${1#-o}"
+          shift
+          ;;
+        *)
+          fwd_args+=("$1")
+          shift
+          ;;
+      esac
+    done
+    set -- "${fwd_args[@]}"
     ;;
 esac
 
@@ -269,12 +308,19 @@ if [ -n "${response_file}" ]; then
     fi
     break
   done
-  ## Emit the buffered body ONLY on a clean curl exit. On a hard failure (every retry cut)
-  ## the file holds the last attempt's PARTIAL body; a caller keying on the exit status
-  ## already fails closed, and emitting nothing keeps a caller that ignores the status from
-  ## ever parsing a partial response as though it were whole.
+  ## Emit the buffered body ONLY on a clean curl exit, to the caller's file when one was
+  ## requested (-o/--output), else to stdout. On a hard failure (every retry cut) the file
+  ## holds the last attempt's PARTIAL body; a caller keying on the exit status already fails
+  ## closed, so we write nothing -- leaving the caller's file untouched -- which also keeps a
+  ## caller that ignores the status from parsing a partial response as though it were whole.
+  ## The redirect follows a symlink exactly as curl -o did, so a caller's own fresh-dir
+  ## symlink mitigation (dm-boot-local) is unchanged.
   if [ "${rc}" -eq 0 ]; then
-    cat -- "${response_file}"
+    if [ -n "${caller_out}" ]; then
+      cat -- "${response_file}" > "${caller_out}"
+    else
+      cat -- "${response_file}"
+    fi
   fi
   exit "${rc}"
 fi
