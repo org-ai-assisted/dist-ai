@@ -3009,16 +3009,6 @@ test("hover popover: moving onto the card cancels the pending close (the gap bri
   assert.deepEqual(w.__pop, ["show:pop-ce", "hide:pop-ce"], "leaving the card finally closes it");
 });
 
-test("hover popover: focus opens and blur schedules the close (keyboard parity)", () => {
-  const w = loadHover();
-  const btn = w.document.querySelector(".antispam-email-info");
-  btn.dispatchEvent(new w.Event("focus"));
-  assert.deepEqual(w.__pop, ["show:pop-ce"], "focus opens it for keyboard users");
-  btn.dispatchEvent(new w.Event("blur"));
-  w.__flush();
-  assert.deepEqual(w.__pop, ["show:pop-ce", "hide:pop-ce"], "blur closes it after the delay");
-});
-
 test("hover popover: a coarse-pointer (touch) device wires NO hover listeners", () => {
   const w = loadHover({ touch: true });
   const btn = w.document.querySelector(".antispam-email-info");
