@@ -264,31 +264,36 @@ printf '%s\n' "=== mw-file-to-web-archive: memento location detection ==="
 ## ===========================================================================
 ## Drives the REAL archive_save / archive_check (sourced via the script's sourced-guard) with a
 ## stubbed network layer -- no live wiki/archive.org. A snapshot is detected from a web.archive.org
-## memento 'location:' header, NOT from the final HTTP status: curl --head --location replays the
-## CAPTURED page, so the final status mirrors that page's own code (200, 301, 404, 500, ...) and a
-## non-200 memento is still a real archive (verified live: web.archive.org/.../httpstat.us/500
-## returns a memento location and a final 500). Verifies:
+## memento 'location:' header, checked BEFORE the HTTP status: curl --head --location replays the
+## CAPTURED page, so the final status mirrors that page's own code (200, 403, 404, 500, ...) and a
+## memento with a replayed non-200 status is still a real archive (verified live:
+## web.archive.org/.../httpstat.us/500 returns a memento location and a final 500). The terminal
+## status codes are the save/timegate endpoint's OWN control responses, which carry no memento.
+## Verifies:
 ##  - 'location:' is matched case-insensitively (HTTP field names are case-insensitive, RFC 9110).
-##  - a memento with a replayed non-200 status is still recorded as archived (no status gate).
-##  - the memento match is ANCHORED: a location that merely CONTAINS the snapshot URL (e.g. an
-##    open-redirect target) is not accepted.
+##  - the memento is honored even when the replayed status is a code the endpoint also uses as a
+##    control response (403/404) -- the memento takes precedence over the status gate.
+##  - a genuine control response (no memento): 429 is retryable (rc 1, nothing cached), 403 is
+##    excluded, 404 is not-yet-archived -- preserved by the memento-first ordering.
+##  - the memento match is ANCHORED: a location that merely CONTAINS the snapshot URL (open-redirect
+##    style) or a look-alike host (web.archive.org.evil...) is not accepted.
 ##  - a bare non-memento redirect (final 302 without a snapshot location) is NOT recorded.
 ## archive_save reaches the net via curl_run; archive_check via the ${curl} command. Stub both;
-## the driven function calls only one. Outcome: 'archived' = the input URL AND the memento link are
-## in already-archived.txt; 'archived-nolink' = the URL was recorded without the memento link (a
-## record not tied to the parsed header); 'unknown' = archive_save's unknown-case log; 'none' =
-## nothing recorded.
+## the driven function calls only one.
+url='https://example.com/x'
 snap='https://web.archive.org/web/20260101000000/https://example.com/x'
 run_archive_case() {
-  ## run_archive_case FUNC HEADER_LINE STATUS -> prints archived|archived-nolink|unknown|none
-  local func="$1" header_line="$2" status="$3" outcome tmp
+  ## run_archive_case FUNC HEADER_LINE STATUS -> prints "<category> <rc>", category being which
+  ## already-* file recorded the input URL, rc the function's exit status (controls the caller's
+  ## save/retry loop). Categories: archived (URL line AND memento link in already-archived.txt),
+  ## archived-nolink (URL recorded without the memento link -- a record not tied to the parsed
+  ## header), down, excluded, unknown-error, unknown-case, none (URL in NO already-* file).
+  local func="$1" header_line="$2" status="$3" outcome rc f arch tmp
   (
     tmp="$(mktemp -d)"
     export MEDIAWIKI_SHELL_COMMON="${mw_common}"
     export TMPFOLDER="${tmp}"
     mkdir -p -- "${TMPFOLDER}/webarchive"
-    touch -- "${TMPFOLDER}/webarchive/already-archived.txt" \
-             "${TMPFOLDER}/webarchive/already-unknown-case-error.txt"
     # shellcheck disable=SC1090,SC1091  # real subject resolved at runtime; sourced-guard skips main
     source "${mw_bin}/mw-file-to-web-archive"
     # shellcheck disable=SC2317  # called indirectly via curl_run / ${curl}, not statically visible
@@ -304,46 +309,100 @@ run_archive_case() {
     curl=stub_curl_cmd
     # shellcheck disable=SC2034  # expanded by the sourced function's curl_run/${curl} call (nounset)
     curl_web_archive_opts=( "--head" )   # value irrelevant; the stub ignores them
-    "${func}" "https://example.com/x" >/dev/null 2>&1 || true
-    if grep --quiet -- 'example.com' "${TMPFOLDER}/webarchive/already-archived.txt"; then
-      ## A real archive record carries the parsed memento link, not just the input URL -- so an
-      ## impl that records the URL without reading the header is distinguishable (archived-nolink).
-      if grep --quiet -F -- "${snap}" "${TMPFOLDER}/webarchive/already-archived.txt"; then
-        outcome='archived'
-      else
-        outcome='archived-nolink'
-      fi
-    elif grep --quiet -- 'example.com' "${TMPFOLDER}/webarchive/already-unknown-case-error.txt"; then
-      outcome='unknown'
+    # shellcheck disable=SC2034  # read by archive_save's 429 branch (nounset); main sets it in production
+    wait_if_too_many_requests=0
+    rc=0
+    "${func}" "${url}" >/dev/null 2>&1 || rc=$?
+    ## Classify by which already-* file holds the input URL, so 'none' means truly nothing cached
+    ## anywhere (not just absent from one or two files).
+    outcome='none'
+    arch="${TMPFOLDER}/webarchive/already-archived.txt"
+    if [ -f "${arch}" ] && grep --fixed-strings --line-regexp --quiet -- "${url}" "${arch}"; then
+      ## A real archive record carries the parsed memento link as its own line, not just the URL --
+      ## so an impl that records the URL without reading the header is distinguishable.
+      if grep --fixed-strings --line-regexp --quiet -- "${snap}" "${arch}"; then outcome='archived'; else outcome='archived-nolink'; fi
     else
-      outcome='none'
+      for f in "${TMPFOLDER}"/webarchive/already-*; do
+        [ -f "${f}" ] || continue
+        [ "${f}" = "${arch}" ] && continue
+        if grep --fixed-strings --quiet -- "${url}" "${f}"; then
+          case "${f##*/}" in
+            already-known-down.txt)
+              outcome='down'
+              ;;
+            already-known-excluded.txt)
+              outcome='excluded'
+              ;;
+            already-known-unknown-error.txt)
+              outcome='unknown-error'
+              ;;
+            already-unknown-case-error.txt)
+              outcome='unknown-case'
+              ;;
+            *)
+              outcome="other:${f##*/}"
+              ;;
+          esac
+          break
+        fi
+      done
     fi
     safe-rm --recursive --force -- "${tmp}"
-    printf '%s' "${outcome}"
+    printf '%s' "${outcome} ${rc}"
   )
 }
 
 ## A location that merely CONTAINS the snapshot URL (open-redirect style), not anchored to it.
 evil="https://evil.example/redir?u=${snap}"
+## A look-alike host that contains the string 'web.archive.org' but is not the memento host.
+lookalike='https://web.archive.org.evil.example/web/20260101000000/https://example.com/x'
+## A look-alike host where a '.' position holds a different char -- catches a matcher that uses
+## an unescaped regex dot (which would match 'webxarchive.org' as 'web.archive.org').
+dotwild='https://webxarchive.org/web/20260101000000/https://example.com/x'
+## A 'Link:' header carrying a DIFFERENT memento (real Wayback responses include one, with a
+## trailing '>;'), ahead of the real 'location:' memento. The recorded link must come from the
+## 'location:' header, not the first web.archive.org URL anywhere in the dump.
+linkhdr=$'link: <https://web.archive.org/web/19990101000000/https://example.com/x>; rel="memento"\nlocation: '"${snap}"
 ## A non-memento redirect target (for the bare-302 case).
 plain='https://example.com/elsewhere'
+## A multi-hop redirect chain whose memento is a LATER hop (the first hop is a relative /
+## normalization redirect), to guard against reading only the first 'location:' header.
+multihop=$'location: /web/20201027215555/https://example.com/x\nlocation: '"${snap}"
 
 assert_eq "archive_save: lowercase memento + 200 -> archived" \
-  "archived" "$(run_archive_case archive_save "location: ${snap}" 200)"
+  "archived 0" "$(run_archive_case archive_save "location: ${snap}" 200)"
 assert_eq "archive_save: uppercase 'Location:' memento + 200 -> archived (case-insensitive)" \
-  "archived" "$(run_archive_case archive_save "Location: ${snap}" 200)"
-assert_eq "archive_save: memento + replayed non-200 (500) -> archived (status is not a gate)" \
-  "archived" "$(run_archive_case archive_save "location: ${snap}" 500)"
+  "archived 0" "$(run_archive_case archive_save "Location: ${snap}" 200)"
+assert_eq "archive_save: memento + replayed 403 -> archived (memento precedes status gate)" \
+  "archived 0" "$(run_archive_case archive_save "location: ${snap}" 403)"
+assert_eq "archive_save: no memento + 429 -> retryable, nothing cached" \
+  "none 1" "$(run_archive_case archive_save "location: ${plain}" 429)"
+assert_eq "archive_save: no memento + 403 -> excluded" \
+  "excluded 0" "$(run_archive_case archive_save "location: ${plain}" 403)"
 assert_eq "archive_save: location only CONTAINS snapshot URL + 200 -> not archived (anchored)" \
-  "unknown" "$(run_archive_case archive_save "location: ${evil}" 200)"
+  "unknown-case 0" "$(run_archive_case archive_save "location: ${evil}" 200)"
+assert_eq "archive_save: web.archive.org look-alike host + 200 -> not archived (anchored)" \
+  "unknown-case 0" "$(run_archive_case archive_save "location: ${lookalike}" 200)"
+assert_eq "archive_save: unescaped-dot look-alike host (webxarchive.org) + 200 -> not archived" \
+  "unknown-case 0" "$(run_archive_case archive_save "location: ${dotwild}" 200)"
+assert_eq "archive_save: Link: header memento ignored; records the location: memento" \
+  "archived 0" "$(run_archive_case archive_save "${linkhdr}" 200)"
 assert_eq "archive_save: bare non-memento redirect (302) -> not archived" \
-  "unknown" "$(run_archive_case archive_save "location: ${plain}" 302)"
+  "unknown-case 0" "$(run_archive_case archive_save "location: ${plain}" 302)"
+assert_eq "archive_save: memento on a later redirect hop -> archived (scans all hops)" \
+  "archived 0" "$(run_archive_case archive_save "${multihop}" 200)"
 assert_eq "archive_check: uppercase 'Location:' memento + 200 -> archived (case-insensitive)" \
-  "archived" "$(run_archive_case archive_check "Location: ${snap}" 200)"
-assert_eq "archive_check: memento + replayed non-200 (500) -> archived (status is not a gate)" \
-  "archived" "$(run_archive_case archive_check "location: ${snap}" 500)"
+  "archived 0" "$(run_archive_case archive_check "Location: ${snap}" 200)"
+assert_eq "archive_check: memento + replayed 404 -> archived (memento precedes status gate)" \
+  "archived 0" "$(run_archive_case archive_check "location: ${snap}" 404)"
+assert_eq "archive_check: no memento + 404 -> not archived, retryable" \
+  "none 1" "$(run_archive_case archive_check "location: ${plain}" 404)"
 assert_eq "archive_check: location only CONTAINS snapshot URL + 200 -> not archived (anchored)" \
-  "none" "$(run_archive_case archive_check "location: ${evil}" 200)"
+  "none 1" "$(run_archive_case archive_check "location: ${evil}" 200)"
+assert_eq "archive_check: unescaped-dot look-alike host (webxarchive.org) + 200 -> not archived" \
+  "none 1" "$(run_archive_case archive_check "location: ${dotwild}" 200)"
+assert_eq "archive_check: memento on a later redirect hop -> archived (scans all hops)" \
+  "archived 0" "$(run_archive_case archive_check "${multihop}" 200)"
 
 ## ===========================================================================
 printf '%s\n' "=== SUMMARY ==="
