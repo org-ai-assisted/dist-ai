@@ -1137,8 +1137,7 @@ function stubTableGeom(doc, el, scrollWidth, clientWidth, railLog) {
 test("wide tables: one ResizeObserver batches all reads before any style write (no reflow thrash)", async () => {
   const w = load('<div class="wiki-content">' +
     '<table id="wide"><tbody><tr><td>x</td></tr></tbody></table>' +
-    '<table id="fits"><tbody><tr><td>y</td></tr></tbody></table></div>',
-    { preEval: syncRaf });   // the RO callback coalesces into one rAF/frame; run that frame inline
+    '<table id="fits"><tbody><tr><td>y</td></tr></tbody></table></div>');
   // Batched design: a SINGLE shared observer over every table (the old code made one per
   // table, each interleaving read->write->read -> the ~83ms forced synchronous layout).
   assert.equal(w.__resizeObservers.length, 1, "one shared ResizeObserver for all tables");
@@ -1968,8 +1967,7 @@ test("wide tables: without ResizeObserver, build via sync() and re-sync on a coa
 });
 
 test("wide tables: the top rail and the table mirror each other's scrollLeft (re-entrancy guarded)", async () => {
-  const w = load('<div class="wiki-content"><table id="wide"><tbody><tr><td>x</td></tr></tbody></table></div>',
-    { preEval: syncRaf });   // RO callback coalesces into one rAF/frame; run that frame inline
+  const w = load('<div class="wiki-content"><table id="wide"><tbody><tr><td>x</td></tr></tbody></table></div>');
   const wide = w.document.getElementById("wide");
   stubTableGeom(w.document, wide, 400, 200);
   w.__resizeObservers[0].cb();   // build the rail (coalesced into the next frame)
@@ -1993,8 +1991,7 @@ test("wide tables: the top rail and the table mirror each other's scrollLeft (re
 });
 
 test("wide tables: a rail-bearing table that later fits is hidden again", async () => {
-  const w = load('<div class="wiki-content"><table id="wide"><tbody><tr><td>x</td></tr></tbody></table></div>',
-    { preEval: syncRaf });   // RO callback coalesces into one rAF/frame; run that frame inline
+  const w = load('<div class="wiki-content"><table id="wide"><tbody><tr><td>x</td></tr></tbody></table></div>');
   const wide = w.document.getElementById("wide");
   const geom = { sw: 400, cw: 200 };
   Object.defineProperty(wide, "scrollWidth", { configurable: true, get() { return geom.sw; } });
