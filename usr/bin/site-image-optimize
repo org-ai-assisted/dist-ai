@@ -14,10 +14,10 @@ Layers on top of the generic `image-optimize`: it knows the site policy that the
 generic tool deliberately does not.
 
   - CONTENT images (referenced by <img>/<source>/<a href>/CSS url()) -> converted
-    to webp via `image-optimize --webp` (the PNG/JPEG is deleted), and every
-    reference to them in *.html / *.css is rewritten to the .webp name.
+    to avif via `image-optimize --avif` (the PNG/JPEG is deleted), and every
+    reference to them in *.html / *.css is rewritten to the .avif name.
   - og:image / twitter:image and favicon / apple-touch-icon targets -> lossless
-    minimize IN PLACE, format kept (webp is still spotty in social scrapers, and
+    minimize IN PLACE, format kept (avif is still spotty in social scrapers, and
     favicons must stay what the <link> declares).
   - Rasters referenced by NOTHING in the site -> minimize in place, format kept
     and name unchanged (they may be consumed externally, e.g. an org avatar; the
@@ -207,7 +207,7 @@ def collect_refs(site_root, site_host):
 ## The reference corpus to rewrite -- kept in step with check_site's
 ## _REF_TEXT_EXTS so a converted image leaves NO stale .png/.jpg mention anywhere
 ## the orphaned-asset gate looks (a shots/README.md that still names copy-warning.png
-## after it became copy-warning.webp).
+## after it became copy-warning.avif).
 REWRITE_EXTS = (
     ".html", ".htm", ".css", ".js", ".mjs", ".md", ".markdown", ".json",
     ".webmanifest", ".svg", ".xml", ".txt", ".yml", ".yaml",
@@ -227,7 +227,7 @@ def rewrite_references(site_root, renames):
     ## allowed), not followed by a name char / dash.
     ## Not followed by a name char / dash, and not by '.<word>' -- so
     ## "logo.png.zip" (a different file) is left alone, not corrupted to
-    ## "logo.webp.zip".
+    ## "logo.avif.zip".
     pattern = re.compile(
         r"(?<![\w.-])(" + "|".join(keys) + r")(?![\w-])(?!\.\w)")
     changed = 0
@@ -353,16 +353,16 @@ def main():
         return os.path.relpath(path, site_root)
 
     ## Basename uniqueness does not stop foo.png and foo.jpg from both producing
-    ## foo.webp -- image-optimize replaces its derived destination, so the second
+    ## foo.avif -- image-optimize replaces its derived destination, so the second
     ## conversion would destroy the first. Refuse a stem collision up front.
     stems: dict[str, list[str]] = {}
     for path in to_convert:
-        stem = os.path.splitext(path)[0] + ".webp"
+        stem = os.path.splitext(path)[0] + ".avif"
         stems.setdefault(stem, []).append(path)
     collisions = {s: p for s, p in stems.items() if len(p) > 1}
     if collisions:
         sys.stderr.write("site-image-optimize: refusing -- multiple images would "
-                         "convert to the same webp:\n")
+                         "convert to the same avif:\n")
         for dest, paths in sorted(collisions.items()):
             sys.stderr.write("  %s <- %s\n"
                              % (rel(dest), ", ".join(rel(x) for x in paths)))
@@ -370,7 +370,7 @@ def main():
 
     if check:
         print("site-image-optimize (dry run): %s" % site_root)
-        print("  content -> webp (%d):" % len(to_convert))
+        print("  content -> avif (%d):" % len(to_convert))
         for path in to_convert:
             print("    %s" % rel(path))
         print("  keep format, minimize (%d): og:image/favicon + unreferenced"
@@ -393,7 +393,7 @@ def main():
 
     ## Convert the content set; capture OLD<TAB>NEW to drive the rewrite.
     for path in to_convert:
-        result = run_optimize(tool, ["--webp", "--quiet", "--", path])
+        result = run_optimize(tool, ["--avif", "--quiet", "--", path])
         if result.returncode != 0:
             sys.stderr.write("site-image-optimize: image-optimize failed for "
                              "%s:\n%s" % (rel(path), result.stderr))
@@ -406,17 +406,17 @@ def main():
         if new_path and new_path != old_path:
             renames[os.path.basename(old_path)] = os.path.basename(new_path)
         else:
-            ## webp was not smaller: a content raster stays as an optimized
+            ## avif was not smaller: a content raster stays as an optimized
             ## PNG/JPEG. Report it -- check_site's format gate needs it in the
             ## static-image allowlist, a deliberate, human-reviewed exception.
-            sys.stderr.write("site-image-optimize: NOTE: webp not smaller, kept "
+            sys.stderr.write("site-image-optimize: NOTE: avif not smaller, kept "
                              "as %s: %s (add to check_site STATIC_IMAGE_ALLOWLIST)\n"
                              % (os.path.splitext(rel(path))[1], rel(path)))
 
     changed = rewrite_references(site_root, renames)
 
     print("site-image-optimize: %s" % site_root)
-    print("  converted %d image(s) to webp; rewrote refs in %d file(s)"
+    print("  converted %d image(s) to avif; rewrote refs in %d file(s)"
           % (len(renames), changed))
     print("  minimized %d kept-format image(s) (%d card/icon, %d unreferenced)"
           % (len(to_minimize), len(protected), len(unreferenced)))

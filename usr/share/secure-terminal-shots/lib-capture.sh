@@ -75,7 +75,7 @@ shots_random_seed=0
 ## striped board. Override for a probe with the env var; the default is the shipped geometry.
 : "${ST_BOARD_COLS:=118}"
 
-## image-optimize (lossless PNG->webp) is a bundled dist-ai tool at usr/bin/image-optimize,
+## image-optimize (lossless PNG->avif) is a bundled dist-ai tool at usr/bin/image-optimize,
 ## a FIXED location relative to THIS file (usr/share/secure-terminal-shots/lib-capture.sh) in
 ## both the installed tree and a source checkout. Resolve it by that path: a DIRECT
 ## comparison-capture.sh run has no wrapper to prime PATH, so a bare
@@ -420,7 +420,7 @@ SHOTS_EMULATOR_SKIP_CASES=' notify art gradient unicode cr-deception '
 ## than publish black, so a discarded shot leaves no file. Enumerating the gaps lets the net
 ## re-shoot exactly them, so a full reshoot never omits a shot (no manual per-emulator re-run).
 ## Expected = (each given emulator) x (each given case except SHOTS_EMULATOR_SKIP_CASES). A shot
-## counts present if EITHER the .png (pre-merge) or the .webp (post-merge) exists. The caller
+## counts present if EITHER the .png (pre-merge) or the .avif (post-merge) exists. The caller
 ## passes only INSTALLED emulators, so an authorized skip (absent emulator) has no expected shot
 ## and is never chased.
 shots_missing_emulator_shots() {  ## $1=out-dir  $2=emulators (space-sep)  $3=cases (space-sep)
@@ -437,7 +437,7 @@ shots_missing_emulator_shots() {  ## $1=out-dir  $2=emulators (space-sep)  $3=ca
    for e in "${_emus_arr[@]}"; do
       for c in "${_cases_arr[@]}"; do
          case "${SHOTS_EMULATOR_SKIP_CASES}" in *" ${c} "*) continue ;; esac
-         [ -f "${out_dir}/${e}.${c}.png" ] || [ -f "${out_dir}/${e}.${c}.webp" ] \
+         [ -f "${out_dir}/${e}.${c}.png" ] || [ -f "${out_dir}/${e}.${c}.avif" ] \
             || printf '%s\n' "${e} ${c}"
       done
    done
@@ -470,16 +470,16 @@ shots_install_icon_theme() {  ## $1 = XDG_DATA_HOME target dir
    fi
 }
 
-shots_optimize_to_webp() {  ## $@=produced PNG shots -> convert each to webp in place
-   ## Match the site's webp image references: a freshly captured PNG is losslessly
-   ## converted to <name>.webp (the PNG removed) via image-optimize, so a regenerated shot
+shots_optimize_to_avif() {  ## $@=produced PNG shots -> convert each to avif in place
+   ## Match the site's avif image references: a freshly captured PNG is losslessly
+   ## converted to <name>.avif (the PNG removed) via image-optimize, so a regenerated shot
    ## lands optimized rather than being caught later by the pre-commit image gate.
    ## image-optimize is a REQUIRED, BUNDLED dist-ai sibling (${shots_image_optimize}); no
    ## fallback -- an absent one is a broken checkout, and this fails loudly.
    local shot
    for shot in "$@"; do
       [ -f "${shot}" ] || continue
-      "${shots_image_optimize}" --webp --quiet -- "${shot}" >/dev/null
+      "${shots_image_optimize}" --avif --quiet -- "${shot}" >/dev/null
    done
 }
 

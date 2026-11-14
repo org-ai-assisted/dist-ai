@@ -10,9 +10,11 @@
 ## - default: lossless-minimize each file IN PLACE -- optipng (PNG) / jpegoptim
 ##   (JPEG), both stripping all metadata. Keeps the SMALLER of before/after, so a
 ##   file is never grown.
-## - --webp: additionally emit the best webp and REPLACE the source when the webp
-##   is strictly smaller. PNG source -> LOSSLESS webp (screenshots/line-art would
-##   fringe under lossy). JPEG source -> lossy q82, lossless fallback; smaller wins.
+## - --avif: additionally emit the best avif and REPLACE the source when the avif
+##   is strictly smaller. PNG source -> visually-lossless lossy avif (q90, full-
+##   quality alpha): lossless avif is far BIGGER than the PNG, and q90 is
+##   indistinguishable on text/line-art while ~25-45% smaller. JPEG source -> lossy
+##   q60, lossless fallback; smaller wins. A source that only grows is kept as-is.
 ##   Prints one "<input-path><TAB><result-path>" line per input (result == input
 ##   when not converted), so a caller can rewrite references.
 ## - --check: NON-mutating gate. Exit 1 (naming the file + reclaimable bytes) if a
@@ -20,11 +22,17 @@
 ##   This is the deterministic property the pre-commit image gate enforces.
 ##
 ## Self-contained by design: dist-ai is PUBLIC and must not depend on any private
-## repo, so the optipng/jpegoptim/cwebp pipeline is implemented here directly. The
+## repo, so the optipng/jpegoptim/avifenc pipeline is implemented here directly. The
 ## floor is defined by optipng/jpegoptim alone (deterministic, idempotent -- they
 ## always run last), which is what makes --check stable across environments; no
 ## re-encoding metadata stripper (mat2) is used, as -strip already removes
 ## metadata and a re-encode would make the floor version-dependent.
+##
+## CANONICAL AVIF encode flags (avif_*) are the single source of the avifenc
+## invocation for every consumer (wiki media.py, journal-maker, the results plane);
+## mirror these, do not fork a second flag set. `-j 1` makes the bytes deterministic
+## regardless of the host core count (parallelism is across images, not within one
+## encode), so a pre-commit encode is byte-identical on every contributor machine.
 
 set -o errexit
 set -o nounset
@@ -32,8 +40,19 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 me="${0##*/}"
+
+## CANONICAL AVIF encode knobs -- keep in sync across all consumers (see header).
+## PNG/line-art: q90 + full-quality alpha (visually lossless). JPEG/photographic:
+## q60. `-s` speed is shared. `-j 1` pins byte-output regardless of host cores.
+avif_codec='aom'
+avif_speed='6'
+avif_q_png='90'
+avif_qalpha_png='100'
+avif_q_photo='60'
+avif_qalpha_photo='60'
 
 ## Guard the source so a missing helper-scripts yields a DISTINCT environment
 ## exit code (3), never 1 -- the pre-commit image gate reads exit 1 as "not
@@ -45,7 +64,7 @@ if ! source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/strings.bsh 2>
 fi
 
 mode_check='false'
-mode_webp='false'
+mode_avif='false'
 quiet='false'
 ## A file is flagged by --check only when it can shed MORE than max(tol_floor,
 ## tol_pct% of its size). Real screenshot bloat is tens of percent; this margin
@@ -54,7 +73,7 @@ tol_pct='1'
 tol_floor='32'
 
 usage() {
-   printf '%s\n' "Usage: ${me} [--webp] [--check] [--quiet] [--tolerance-pct N] [--tolerance-bytes N] -- FILE..."
+   printf '%s\n' "Usage: ${me} [--avif] [--check] [--quiet] [--tolerance-pct N] [--tolerance-bytes N] -- FILE..."
 }
 
 log() {
@@ -76,8 +95,8 @@ while [ "$#" -gt 0 ]; do
          mode_check='true'
          shift
          ;;
-      --webp)
-         mode_webp='true'
+      --avif)
+         mode_avif='true'
          shift
          ;;
       --quiet)
@@ -132,7 +151,7 @@ if ! [[ "${tol_pct}" =~ ^[0-9]+$ ]] || ! [[ "${tol_floor}" =~ ^[0-9]+$ ]]; then
 fi
 
 ## Precondition checks: the minimizers are needed in every mode (--check also
-## minimizes into a temp copy); cwebp only when converting.
+## minimizes into a temp copy); avifenc only when converting.
 if ! type -P optipng >/dev/null; then
    err "required tool not found: optipng"
    exit 3
@@ -145,8 +164,8 @@ if ! type -P stat >/dev/null; then
    err "required tool not found: stat"
    exit 3
 fi
-if [ "${mode_webp}" = 'true' ] && ! type -P cwebp >/dev/null; then
-   err "required tool not found: cwebp"
+if [ "${mode_avif}" = 'true' ] && ! type -P avifenc >/dev/null; then
+   err "required tool not found: avifenc (libavif-bin)"
    exit 3
 fi
 
@@ -156,7 +175,7 @@ lc() {
 
 ## Absolute path (dir canonicalized, basename kept verbatim). Guarantees the path
 ## never begins with '-', so it is safe as a positional arg to optipng / jpegoptim
-## / cwebp (cwebp has no '--' end-of-options marker).
+## / avifenc (avifenc takes bare positional input/output paths, no '--' marker).
 abspath() {
    local input="$1" dir base
    if ! dir="$(dirname -- "${input}")"; then
@@ -224,32 +243,47 @@ make_minimized() {
    printf '%s' "${work}"
 }
 
-## Produce the best webp for the already-minimized source $1 and print its temp
+## avifenc writes progress to stdout; this function must print ONLY the candidate
+## path, so every avifenc call redirects its own output away.
+run_avifenc_png() {
+   avifenc -c "${avif_codec}" -s "${avif_speed}" -q "${avif_q_png}" --qalpha "${avif_qalpha_png}" -j 1 "$1" "$2" >/dev/null 2>&1
+}
+run_avifenc_photo() {
+   avifenc -c "${avif_codec}" -s "${avif_speed}" -q "${avif_q_photo}" --qalpha "${avif_qalpha_photo}" -j 1 "$1" "$2" >/dev/null 2>&1
+}
+run_avifenc_lossless() {
+   avifenc -c "${avif_codec}" -s "${avif_speed}" -j 1 --lossless "$1" "$2" >/dev/null 2>&1
+}
+
+## Produce the best avif for the already-minimized source $1 and print its temp
 ## path IF strictly smaller than the source; otherwise print nothing (and clean
-## up). Return 1 on a hard cwebp failure.
-make_webp() {
+## up). Return 1 on a hard avifenc failure.
+make_avif() {
    local src="$1" dir kind cand size_src size_cand
    dir="$(dirname -- "${src}")"
    kind="$(img_kind "${src}")"
    size_src="$(stat -c %s -- "${src}")"
-   if ! cand="$(mktemp --tmpdir="${dir}" --suffix='.webp' imgopt.XXXXXX)"; then
+   if ! cand="$(mktemp --tmpdir="${dir}" --suffix='.avif' imgopt.XXXXXX)"; then
       return 1
    fi
    if [ "${kind}" = 'png' ]; then
-      if ! cwebp -mt -quiet -lossless -z 9 "${src}" -o "${cand}"; then
+      ## PNG/line-art/screenshots: q90 + full-quality alpha. Visually lossless on
+      ## text/edges (verified at 4x zoom) while far smaller than a lossless avif,
+      ## which for a screenshot is bigger than the source PNG itself.
+      if ! run_avifenc_png "${src}" "${cand}"; then
          safe-rm -- "${cand}"
          return 1
       fi
    else
       ## JPEG (photographic): lossy first, fall back to lossless when lossy did
       ## not beat the source.
-      if ! cwebp -mt -quiet -q 82 "${src}" -o "${cand}"; then
+      if ! run_avifenc_photo "${src}" "${cand}"; then
          safe-rm -- "${cand}"
          return 1
       fi
       size_cand="$(stat -c %s -- "${cand}")"
       if [ "${size_cand}" -ge "${size_src}" ]; then
-         if ! cwebp -mt -quiet -lossless -z 9 "${src}" -o "${cand}"; then
+         if ! run_avifenc_lossless "${src}" "${cand}"; then
             safe-rm -- "${cand}"
             return 1
          fi
@@ -263,10 +297,10 @@ make_webp() {
    fi
 }
 
-## Mutating path: minimize in place, then (in --webp mode) replace with webp when
+## Mutating path: minimize in place, then (in --avif mode) replace with avif when
 ## smaller. Returns non-zero on a per-file error without aborting the batch.
 process_one() {
-   local input="$1" src base kind size_old size_new work cand webp_path
+   local input="$1" src base kind size_old size_new work cand avif_path
    if ! src="$(abspath "${input}")"; then
       err "cannot resolve path: ${input}"
       return 1
@@ -281,7 +315,7 @@ process_one() {
    fi
    ## 'stat -c %s' does NOT dereference a symlink (it reports the link's own path
    ## length, not the target's size), so a symlinked image reads as tiny and is
-   ## silently judged "already minimal" -- or, in --webp mode, the link is replaced
+   ## silently judged "already minimal" -- or, in --avif mode, the link is replaced
    ## by a regular file. Refuse it; the caller should optimize the real target.
    if [ -L "${src}" ]; then
       err "refusing to optimize a symlink (optimize its target instead): ${input}"
@@ -295,22 +329,22 @@ process_one() {
    kind="$(img_kind "${src}")"
    if [ "${kind}" = 'skip' ]; then
       log "skip (unsupported type): ${input}"
-      if [ "${mode_webp}" = 'true' ]; then
+      if [ "${mode_avif}" = 'true' ]; then
          printf '%s\n' "${src}"$'\t'"${src}"
       fi
       return 0
    fi
 
-   ## In --webp mode the source is REPLACED by "${stem}.webp". If that target already
+   ## In --avif mode the source is REPLACED by "${stem}.avif". If that target already
    ## exists, refuse NOW -- before make_minimized rewrites the source in place -- so a
    ## refused conversion never mutates or loses the source. Two inputs sharing a stem
-   ## (foo.png then foo.jpg) both map to foo.webp: the second must abort untouched, and a
-   ## pre-existing unrelated foo.webp must never be clobbered. The identical check remains
+   ## (foo.png then foo.jpg) both map to foo.avif: the second must abort untouched, and a
+   ## pre-existing unrelated foo.avif must never be clobbered. The identical check remains
    ## before the final mv, closing a create-after-this-check race on the target.
-   if [ "${mode_webp}" = 'true' ]; then
-      webp_path="${src%.*}.webp"
-      if [ -e "${webp_path}" ]; then
-         err "webp target already exists: ${webp_path##*/} (from ${input}); refusing to overwrite it and delete the source"
+   if [ "${mode_avif}" = 'true' ]; then
+      avif_path="${src%.*}.avif"
+      if [ -e "${avif_path}" ]; then
+         err "avif target already exists: ${avif_path##*/} (from ${input}); refusing to overwrite it and delete the source"
          return 1
       fi
    fi
@@ -339,48 +373,48 @@ process_one() {
       log "already minimal: ${input} (${size_old} bytes)"
    fi
 
-   if [ "${mode_webp}" != 'true' ]; then
+   if [ "${mode_avif}" != 'true' ]; then
       return 0
    fi
 
-   ## A hard cwebp failure (make_webp returns non-zero) is a real error, not
-   ## "webp was not smaller" (which prints nothing and returns 0).
+   ## A hard avifenc failure (make_avif returns non-zero) is a real error, not
+   ## "avif was not smaller" (which prints nothing and returns 0).
    cand=''
-   if ! cand="$(make_webp "${src}")"; then
-      err "webp conversion failed: ${input}"
+   if ! cand="$(make_avif "${src}")"; then
+      err "avif conversion failed: ${input}"
       return 1
    fi
    if [ -n "${cand}" ]; then
-      webp_path="${src%.*}.webp"
-      ## Move the webp into place ATOMICALLY without overwriting, then delete the source
+      avif_path="${src%.*}.avif"
+      ## Move the avif into place ATOMICALLY without overwriting, then delete the source
       ## only after that succeeds. 'mv -n' is a no-clobber rename (renameat2 /
       ## RENAME_NOREPLACE on coreutils 9+), so it never overwrites an existing
-      ## "${stem}.webp" -- a pre-existing target, a same-stem batch (foo.png then
-      ## foo.jpg both map to foo.webp), or a CONCURRENT writer racing between a check and
+      ## "${stem}.avif" -- a pre-existing target, a same-stem batch (foo.png then
+      ## foo.jpg both map to foo.avif), or a CONCURRENT writer racing between a check and
       ## the move. On a name clash mv -n SKIPS, leaving cand in place; detect that and
       ## refuse rather than destroy data. errexit is suppressed inside process_one (the
       ## batch calls it '... || rc=1'), so every step is checked explicitly.
       if ! chmod --reference="${src}" -- "${cand}"; then
-         err "webp chmod failed: ${input}"
+         err "avif chmod failed: ${input}"
          safe-rm -- "${cand}"
          return 1
       fi
-      if ! mv -n -- "${cand}" "${webp_path}"; then
-         err "webp move failed: ${input}"
+      if ! mv -n -- "${cand}" "${avif_path}"; then
+         err "avif move failed: ${input}"
          safe-rm -- "${cand}"
          return 1
       fi
       if [ -e "${cand}" ]; then
          ## mv -n left cand in place -> the target already existed (or appeared concurrently).
-         err "webp target already exists: ${webp_path##*/} (from ${input}); refusing to overwrite it and delete the source"
+         err "avif target already exists: ${avif_path##*/} (from ${input}); refusing to overwrite it and delete the source"
          safe-rm -- "${cand}"
          return 1
       fi
       safe-rm -- "${src}"
-      log "webp: ${input} -> ${webp_path##*/} ($(stat -c %s -- "${webp_path}") bytes)"
-      printf '%s\n' "${src}"$'\t'"${webp_path}"
+      log "avif: ${input} -> ${avif_path##*/} ($(stat -c %s -- "${avif_path}") bytes)"
+      printf '%s\n' "${src}"$'\t'"${avif_path}"
    else
-      log "webp not smaller, kept original: ${input}"
+      log "avif not smaller, kept original: ${input}"
       printf '%s\n' "${src}"$'\t'"${src}"
    fi
    return 0

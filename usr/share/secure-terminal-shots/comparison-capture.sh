@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bash -e
 
 ## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
 ## See the file COPYING for copying conditions.
@@ -47,7 +47,7 @@
 ## Needs: labwc (its own headless Wayland compositor, WLR_BACKENDS=headless + pixman,
 ## plus the bundled Xwayland for the X11-only trio xterm/urxvt/st), wlr-randr (HiDPI
 ## output scale), grim (capture), wtype (key injection), ImageMagick (trim), and
-## optipng/jpegoptim/cwebp for the webp encode. Installs NOTHING itself (supply-chain
+## optipng/jpegoptim/cavif for the avif encode. Installs NOTHING itself (supply-chain
 ## hygiene); in the sandbox `sandbox provision shots` installs the whole set, and
 ## secure-terminal-shots-sandbox preflights it.
 ##
@@ -426,7 +426,7 @@ tighten_deadspace() {  ## $1=png-path
 ## coordinates. hero-slider-compose.py keeps the title bars aligned at the top, inserts a white band
 ## above the shallower-chrome terminal's text so both text tops line up (secure-terminal carries a
 ## toolbar + tab strip + a bottom notice a plain terminal lacks), then pads both to one shared canvas.
-## Runs at the END of a single-lane run, from the two .png shots before webp optimization; a no-op
+## Runs at the END of a single-lane run, from the two .png shots before avif optimization; a no-op
 ## (logged) if either is absent (e.g. an emulator-only or --jobs lane). gnome-terminal is the
 ## traditional side: it HONOURS the OSC-0 title hijack (the spoofed title shows in its title bar)
 ## where konsole resets it, and -- captured with secure-terminal's own Hack font at 72 DPI (see
@@ -443,11 +443,11 @@ compose_hero_slider() {  ## $1=out-dir
    "${here}/hero-slider-compose.py" "${sec}" "${trad}" "${out}/hero-secure.png" "${out}/hero-traditional.png"
    ## Drop the raw per-terminal hero-compare shots: only the composed pair is referenced by the
    ## site, so leaving the sources behind would land them in comparison/shots/ (the driver pulls
-   ## every .webp) as ORPHANS that website-tests rejects. Removing them here keeps the site green on
+   ## every .avif) as ORPHANS that website-tests rejects. Removing them here keeps the site green on
    ## every regeneration with no step to remember. The honest per-terminal captures still exist
    ## mid-run; only the composed hero-secure/hero-traditional are published.
-   safe-rm -f -- "${out}"/*.hero-compare.png "${out}"/*.hero-compare.webp \
-      "${out}/secure-terminal.hero-compare-show.png" "${out}/secure-terminal.hero-compare-show.webp" 2>/dev/null || true
+   safe-rm -f -- "${out}"/*.hero-compare.png "${out}"/*.hero-compare.avif \
+      "${out}/secure-terminal.hero-compare-show.png" "${out}/secure-terminal.hero-compare-show.avif" 2>/dev/null || true
    printf '%s\n' 'composed hero slider pair: hero-secure.png, hero-traditional.png (raw hero-compare shots dropped)'
 }
 
@@ -481,7 +481,7 @@ capture_settled() {  ## $1=output-path  $2=window-id  [$3='skip-tighten']
       printf '%s\n' "warn: $(basename -- "${dest}") blank (attempt ${tries}); waiting to re-grab"
       sleep 2
    done
-   ## Still blank: DISCARD it rather than emit a black shot. A missing PNG is not webp'd or
+   ## Still blank: DISCARD it rather than emit a black shot. A missing PNG is not avif'd or
    ## pulled, so a previously-good published shot is left intact instead of being overwritten
    ## with black. The caller warns.
    safe-rm --force -- "${dest}" 2>/dev/null || true
@@ -1522,7 +1522,7 @@ shoot() {  ## $1=emulator  $2=case
    ## it -- but skip the whole capture loop and fail loud rather than shoot a guaranteed-empty grab.
    if [ -z "${inj_cmd}" ]; then
       printf '%s\n' "warn ${e}.${case}: no payload command for this case (unrecognized) -- discarded, not published" >&2
-      safe-rm --force -- "${out}/${e}.${case}.png" "${out}/${e}.${case}.webp" 2>/dev/null || true
+      safe-rm --force -- "${out}/${e}.${case}.png" "${out}/${e}.${case}.avif" 2>/dev/null || true
       content_verify_failed=1
    else
    while [ "${verify_tries}" -lt 3 ]; do
@@ -1562,10 +1562,10 @@ shoot() {  ## $1=emulator  $2=case
       safe-rm --force -- "${out}/${e}.${case}.png" 2>/dev/null || true
    done
    if [ -z "${shot_ok}" ]; then
-      ## Never publish the shell-error shot: discard any lingering PNG AND any stale prior .webp for
-      ## this shot (else the re-capture net's missing-check counts the old webp as present and the
+      ## Never publish the shell-error shot: discard any lingering PNG AND any stale prior .avif for
+      ## this shot (else the re-capture net's missing-check counts the old avif as present and the
       ## orchestrator exits 0 with a stale artifact), then flag the run.
-      safe-rm --force -- "${out}/${e}.${case}.png" "${out}/${e}.${case}.webp" 2>/dev/null || true
+      safe-rm --force -- "${out}/${e}.${case}.png" "${out}/${e}.${case}.avif" 2>/dev/null || true
       printf '%s\n' "warn ${e}.${case}: content-verify failed after ${verify_tries} attempt(s) -- discarded, not published"
       content_verify_failed=1
    fi
@@ -1655,7 +1655,7 @@ out="${here}/shots"
 mkdir --parents -- "${out}"
 
 
-## Fail BEFORE the expensive capture if the bundled webp optimizer is missing -- a direct
+## Fail BEFORE the expensive capture if the bundled avif optimizer is missing -- a direct
 ## run (not via the secure-terminal-shots wrapper) resolves it checkout-relative, not by PATH.
 shots_require_image_optimize || exit 1
 
@@ -1694,7 +1694,7 @@ trap cleanup EXIT
 ## reaped and the loop continues, so a wedged terminal cannot stall the whole grid.
 SHOT_DEADLINE="${SHOT_DEADLINE:-90}"
 
-## HiDPI capture: render every shot at SHOT_SCALE x device resolution so the published webp
+## HiDPI capture: render every shot at SHOT_SCALE x device resolution so the published avif
 ## stays crisp when a browser upscales it on a HiDPI/Retina display (a 1x shot was blurry
 ## both on-page and opened fullscreen). The whole SITE already follows the 2x-source /
 ## display-1x convention (logo/icons/badges); the shots were the one 1x exception. It is applied
@@ -1795,7 +1795,7 @@ compat_filter=()
 ## --jobs N (N>1): orchestrator mode -- partition the grid across N concurrent lanes, each with
 ## its OWN private headless labwc compositor (no host X; the per-lane bringup is flock-serialized
 ## in wl_headless_start so the shared Xwayland dir does not race), then optimize once. --no-st
-## skips the secure-terminal pass (for an emulator-only lane); --optimize-only just webp-converts
+## skips the secure-terminal pass (for an emulator-only lane); --optimize-only just avif-converts
 ## existing PNGs (the orchestrator's final merge step); --no-optimize leaves PNGs for that merge.
 jobs=1
 no_st=''
@@ -1915,12 +1915,12 @@ if [ -n "${zoom_live}" ] && [ "${jobs}" -gt 1 ]; then
    exit 2
 fi
 
-## --optimize-only: webp-convert the PNGs already in ${out} and stop (the orchestrator's
+## --optimize-only: avif-convert the PNGs already in ${out} and stop (the orchestrator's
 ## single final merge, after its --no-optimize lanes finished). No capture, no runtime dir.
 if [ -n "${optimize_only}" ]; then
    safe-rm --recursive --force -- "${runtime_dir}" 2>/dev/null || true
-   shots_optimize_to_webp "${out}"/*.png
-   printf '%s\n' "optimized; webp in ${out}"
+   shots_optimize_to_avif "${out}"/*.png
+   printf '%s\n' "optimized; avif in ${out}"
    exit 0
 fi
 
@@ -1928,7 +1928,7 @@ fi
 ## comparison-capture.sh run over a scope subset in its OWN private headless labwc compositor (no
 ## host X; the bringup + Xwayland-socket discovery is flock-serialized in wl_headless_start, so
 ## concurrent lanes do not race the shared X socket dir). The capture code is reused UNCHANGED;
-## only the work is split. A final --optimize-only pass webp-converts
+## only the work is split. A final --optimize-only pass avif-converts
 ## once, so concurrent lanes never race on the shared shots dir's optimize step.
 if [ "${jobs}" -gt 1 ]; then
    self="${here}/comparison-capture.sh"
@@ -2658,17 +2658,17 @@ fi
 
 ## Homepage hero slider: pad the secure-terminal + gnome-terminal hero-compare shots to one shared
 ## canvas so the site's CSS resize slider overlays them at identical dimensions. Before optimize, so
-## the produced PNGs are webp-converted with the rest. Only when hero-compare was actually captured.
+## the produced PNGs are avif-converted with the rest. Only when hero-compare was actually captured.
 case " ${CASES} " in
    *' hero-compare '*)
       compose_hero_slider "${out}"
       ;;
 esac
 
-## Convert the captured PNGs to webp (the site references them as .webp). A lane run with
+## Convert the captured PNGs to avif (the site references them as .avif). A lane run with
 ## --no-optimize leaves the PNGs for the orchestrator's single final --optimize-only merge.
 if [ -z "${no_optimize}" ]; then
-   shots_optimize_to_webp "${out}"/*.png
+   shots_optimize_to_avif "${out}"/*.png
 fi
 
 ## A wrapped colour board is a HARD failure of the run, not a warn: the striped shot was
