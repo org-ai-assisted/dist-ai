@@ -38,13 +38,24 @@ Two paths are covered:
     the same connect failure is turned back into a non-zero fatal exit.
 
 Plus the random-delay lanes -- kloak's reason to exist -- each injecting real input
-through the grabbed device and measuring, at a focused wev client, that the released
-event arrives after a RANDOM delay bounded by -d max_delay (the released event's
-`time` is kloak's scheduled release, CLOCK_MONOTONIC ms; delay = that minus the
-injection time), asserting both the bound and that the delays VARY:
+through the grabbed device and measuring, at a focused wev client, TWO delays per
+event:
 
-  * keyboard keys (test_3), mouse button clicks (test_4), and mouse motion (test_5)
-    -- the three input classes kloak delays, all on the one release scheduler.
+  * the scheduled delay: the released event's `time` field (kloak's scheduled
+    release, CLOCK_MONOTONIC ms) minus the injection time -- asserts the schedule
+    is bounded by -d max_delay and that it VARIES (randomised jitter).
+  * the real delay: wall-clock elapsed between injecting and the released line
+    appearing at the client -- asserts the event is actually WITHHELD that long
+    and never arrives appreciably before its scheduled time. A regression that
+    flushes the queue immediately while still stamping a future `sched_time`
+    keeps a perfect scheduled delay but a near-zero real delay, so the scheduled
+    delay alone cannot catch it.
+
+  * keyboard keys (test_3), mouse button clicks (test_4), mouse motion (test_5),
+    and scroll wheel (test_6) -- the input classes kloak delays, all on the one
+    release scheduler. test_3/test_4 also assert each press is matched by a
+    RELEASE at the client (no stuck keys/buttons), and test_4 that the button
+    code survives the proxy.
 
 DESTRUCTIVE + root-only: builds in the source tree, creates the kloakwl system
 user if absent, drives uinput, and runs a compositor. Authorized skip (euid !=
@@ -333,6 +344,101 @@ class KloakDaemonE2E(unittest.TestCase):
             time.sleep(0.3)
         return False
 
+    def _count_releases(self, wev_log_path, is_release_line):
+        ## The `time` stamp of every released line matching is_release_line, in
+        ## log order. is_release_line(line) returns the uint32 ms stamp for a
+        ## measured release event (e.g. a wl_keyboard press of our key), else None.
+        return [stamp for stamp in
+                (is_release_line(line)
+                 for line in self._read(wev_log_path).splitlines())
+                if stamp is not None]
+
+    def _measure_delays(self, wev_log_path, inject_one, is_release_line, num,
+                        max_delay):
+        """Inject num events one at a time and, for EACH, capture both:
+
+          * stamp delay = the released event's `time` field (kloak's scheduled
+            release, CLOCK_MONOTONIC ms) minus the injection time. Proves the
+            SCHEDULE is bounded and random.
+          * real delay  = wall-clock (CLOCK_MONOTONIC) elapsed between injecting
+            the event and its released line first appearing at the wev client.
+            Proves the event is actually WITHHELD that long -- a regression that
+            flushes the queue immediately while still stamping a future
+            `sched_time` keeps a perfect stamp delay but a near-zero real delay,
+            so the stamp delay ALONE cannot see it.
+
+        Injects the next event only after the current one has arrived, so the
+        spacing exceeds the applied delay and the per-event prev_release clamp
+        never saturates the random range. Returns (stamp_delays_ms,
+        real_delays_ms), both length num."""
+        stamp_delays = []
+        real_delays = []
+        ## Baseline past any already-released events (e.g. focus-establishing
+        ## motions), so the first measured arrival is our first injected event.
+        seen = len(self._count_releases(wev_log_path, is_release_line))
+        for _ in range(num):
+            inj_mono = time.monotonic()
+            inj_stamp = int(
+                time.clock_gettime(time.CLOCK_MONOTONIC) * 1000) & 0xffffffff
+            inject_one()
+            deadline = inj_mono + (max_delay + 2000) / 1000.0
+            arrival_mono = None
+            rel_stamp = None
+            while time.monotonic() < deadline:
+                stamps = self._count_releases(wev_log_path, is_release_line)
+                if len(stamps) > seen:
+                    arrival_mono = time.monotonic()
+                    rel_stamp = stamps[seen]
+                    seen = len(stamps)
+                    break
+                time.sleep(0.004)
+            if rel_stamp is None:
+                self.fail(
+                    'a released event never reached the client within %d ms '
+                    '(released %d of %d so far):\nwev:\n%s'
+                    % (max_delay + 2000, len(stamp_delays), num,
+                       self._read(wev_log_path)))
+            stamp_delays.append((rel_stamp - inj_stamp) & 0xffffffff)
+            real_delays.append((arrival_mono - inj_mono) * 1000.0)
+        return stamp_delays, real_delays
+
+    def _assert_delays(self, stamp_delays, real_delays, max_delay, what):
+        ## Shared assertions for the three delay lanes.
+        ## stamp bound + spread: the SCHEDULE is bounded by max_delay and random.
+        tol = 80
+        for delay in stamp_delays:
+            self.assertLessEqual(
+                delay, max_delay + tol,
+                'released %s scheduled delay %d ms exceeds max_delay %d (+%d '
+                'tol); delays=%r' % (what, delay, max_delay, tol, stamp_delays))
+        self.assertGreater(
+            max(stamp_delays) - min(stamp_delays), max_delay // 4,
+            '%s scheduled delays show no spread (jitter not randomised): %r'
+            % (what, stamp_delays))
+        ## Real-time enforcement (Whonix/kloak anti-deanon guarantee): the event
+        ## must not arrive at the client appreciably EARLIER than its scheduled
+        ## release. real >= stamp structurally on correct code (arrival fires
+        ## only once current_time >= sched_time); early_tol only absorbs
+        ## measurement slack. A queue flushed immediately (real ~ constant small
+        ## latency while stamp is a large random delay) fails this -- the gap the
+        ## stamp-only check cannot catch.
+        early_tol = 60
+        for stamp, real in zip(stamp_delays, real_delays):
+            self.assertGreaterEqual(
+                real, stamp - early_tol,
+                '%s arrived %.0f ms after injection but was scheduled for %d ms '
+                '-- released EARLY, the random delay is not actually enforced '
+                '(flushed immediately?): real=%r stamp=%r'
+                % (what, real, stamp, real_delays, stamp_delays))
+        ## And it must not sit in the queue far longer than scheduled.
+        real_tol = 400
+        for real in real_delays:
+            self.assertLessEqual(
+                real, max_delay + real_tol,
+                '%s real release latency %.0f ms exceeds max_delay %d (+%d tol) '
+                '-- event withheld too long: %r'
+                % (what, real, max_delay, real_tol, real_delays))
+
     def test_1_connected_privsep(self):
         proc, log_path = self._run_kloak(self.runtime_dir, self.wayland_display)
         time.sleep(4)
@@ -460,54 +566,40 @@ class KloakDaemonE2E(unittest.TestCase):
                           'kloak exited before the delay test:\n%s'
                           % self._read(log_path))
 
-        ## Inject N key presses spaced >= max_delay apart, so the per-event
-        ## prev_release clamp does not saturate the delay to max_delay -- we want
-        ## to observe the full random spread.
-        num_keys = 15
-        inject_ms = []
-        for _ in range(num_keys):
-            stamp = int(time.clock_gettime(time.CLOCK_MONOTONIC) * 1000)
+        ## wev prints `time` with %d on a uint32_t, so a value >= 0x80000000
+        ## (~24.9d monotonic uptime) can print negative; accept an optional minus
+        ## and mask to 32 bits so the stamp matches kloak's uint32 ms domain.
+        def _kb_stamp(line, want_state):
+            if 'wl_keyboard' not in line:
+                return None
+            match = re.search(r'time: (-?\d+); key: (\d+); state: (\d+)', line)
+            if (match is not None and int(match.group(2)) == wl_keycode
+                    and int(match.group(3)) == want_state):
+                return int(match.group(1)) & 0xffffffff
+            return None
+
+        def inject_key():
             self._uinput.write(ecodes.EV_KEY, key_a, 1)
             self._uinput.write(ecodes.EV_KEY, key_a, 0)
             self._uinput.syn()
-            inject_ms.append(stamp & 0xffffffff)
-            time.sleep((max_delay + 60) / 1000.0)
-        time.sleep((max_delay + 300) / 1000.0)
 
-        ## Collect the client-observed press events (state 1) for key_a.
-        presses = []
-        for line in self._read(wev_log_path).splitlines():
-            if 'wl_keyboard' not in line:
-                continue
-            ## wev prints `time` with %d on a uint32_t, so a value >= 0x80000000
-            ## (~24.9d monotonic uptime) can print negative; accept an optional minus
-            ## and mask to 32 bits (matches the inject_ms masking) so the press is not
-            ## dropped, failing the count assertion.
-            match = re.search(r'time: (-?\d+); key: (\d+); state: (\d+)', line)
-            if (match is not None and int(match.group(2)) == wl_keycode
-                    and int(match.group(3)) == 1):
-                presses.append(int(match.group(1)) & 0xffffffff)
+        num_keys = 15
+        stamp_delays, real_delays = self._measure_delays(
+            wev_log_path, inject_key, lambda line: _kb_stamp(line, 1),
+            num_keys, max_delay)
+        self._assert_delays(stamp_delays, real_delays, max_delay, 'key press')
 
-        self.assertEqual(
-            len(presses), num_keys,
-            'expected %d key presses at the client, got %d:\nwev:\n%s\nkloak:\n%s'
-            % (num_keys, len(presses), self._read(wev_log_path),
-               self._read(log_path)))
-
-        ## Applied delay = released time - injection time (uint32 ms), bounded by
-        ## max_delay plus a small processing-latency tolerance; and it must VARY.
-        tol = 80
-        delays = []
-        for inj, rel in zip(inject_ms, presses):
-            delay = (rel - inj) & 0xffffffff
-            self.assertLessEqual(
-                delay, max_delay + tol,
-                'released delay %d ms exceeds max_delay %d (+%d tol); delays=%r'
-                % (delay, max_delay, tol, delays))
-            delays.append(delay)
-        self.assertGreater(
-            max(delays) - min(delays), max_delay // 4,
-            'released delays show no spread (jitter not randomised): %r' % delays)
+        ## Every press must be matched by a RELEASE at the client -- a daemon
+        ## that dropped key-ups would leave keys stuck down. Drain the last
+        ## scheduled releases first.
+        time.sleep((max_delay + 500) / 1000.0)
+        releases = self._count_releases(
+            wev_log_path, lambda line: _kb_stamp(line, 0))
+        self.assertGreaterEqual(
+            len(releases), num_keys,
+            'expected >= %d key releases (state 0) at the client, got %d -- '
+            'releases dropped, keys would stick down:\nwev:\n%s'
+            % (num_keys, len(releases), self._read(wev_log_path)))
 
     def test_4_pointer_click_delay_measured(self):
         """Same proof as test_3, for mouse CLICKS: inject real BTN_LEFT clicks
@@ -539,56 +631,52 @@ class KloakDaemonE2E(unittest.TestCase):
                       'surface):\nwev:\n%s\nkloak:\n%s'
                       % (self._read(wev_log_path), self._read(log_path)))
         ## Drain every delayed focus-establishing motion (each <= max_delay) so
-        ## only the measured clicks appear past this offset.
+        ## the measurement baseline is stable before the clicks.
         time.sleep((max_delay + 500) / 1000.0)
-        offset = len(self._read(wev_log_path))
 
-        ## Inject clicks spaced >= max_delay apart so the prev_release clamp does
-        ## not saturate the delay -- we want the full random spread.
-        num_clicks = 12
-        inject_ms = []
-        for _ in range(num_clicks):
-            stamp = int(time.clock_gettime(time.CLOCK_MONOTONIC) * 1000)
+        ## BTN_LEFT reaches wl_pointer as button code 272. Requiring the code in
+        ## the matcher also proves the button value survives the proxy (M4): a
+        ## wrong code would miscount and fail.
+        wl_btn_left = 272
+
+        def _btn_stamp(line, want_state):
+            if 'wl_pointer' not in line or 'button' not in line:
+                return None
+            t_match = re.search(r'time:\s*(-?\d+)', line)
+            b_match = re.search(r'button:\s*(\d+)', line)
+            s_match = re.search(r'state:\s*(\d+)', line)
+            if (t_match is not None and b_match is not None
+                    and s_match is not None
+                    and int(b_match.group(1)) == wl_btn_left
+                    and int(s_match.group(1)) == want_state):
+                return int(t_match.group(1)) & 0xffffffff
+            return None
+
+        def inject_click():
             ## Press and release in SEPARATE syn frames (a zero-duration click in
-            ## one frame can be dropped). Measure the press.
+            ## one frame can be dropped).
             self._uinput_mouse.write(ecodes.EV_KEY, ecodes.BTN_LEFT, 1)
             self._uinput_mouse.syn()
             time.sleep(0.02)
             self._uinput_mouse.write(ecodes.EV_KEY, ecodes.BTN_LEFT, 0)
             self._uinput_mouse.syn()
-            inject_ms.append(stamp & 0xffffffff)
-            time.sleep((max_delay + 60) / 1000.0)
-        time.sleep((max_delay + 300) / 1000.0)
 
-        ## Client-observed button PRESS events (state 1), parsed from the new tail.
-        presses = []
-        for line in self._read(wev_log_path)[offset:].splitlines():
-            if 'wl_pointer' not in line or 'button' not in line:
-                continue
-            t_match = re.search(r'time:\s*(-?\d+)', line)
-            s_match = re.search(r'state:\s*(\d+)', line)
-            if (t_match is not None and s_match is not None
-                    and int(s_match.group(1)) == 1):
-                presses.append(int(t_match.group(1)) & 0xffffffff)
+        num_clicks = 12
+        stamp_delays, real_delays = self._measure_delays(
+            wev_log_path, inject_click, lambda line: _btn_stamp(line, 1),
+            num_clicks, max_delay)
+        self._assert_delays(stamp_delays, real_delays, max_delay, 'button press')
 
-        self.assertEqual(
-            len(presses), num_clicks,
-            'expected %d button presses at the client, got %d:\nwev:\n%s\n'
-            'kloak:\n%s' % (num_clicks, len(presses),
-                            self._read(wev_log_path), self._read(log_path)))
-
-        tol = 80
-        delays = []
-        for inj, rel in zip(inject_ms, presses):
-            delay = (rel - inj) & 0xffffffff
-            self.assertLessEqual(
-                delay, max_delay + tol,
-                'released click delay %d ms exceeds max_delay %d (+%d tol); '
-                'delays=%r' % (delay, max_delay, tol, delays))
-            delays.append(delay)
-        self.assertGreater(
-            max(delays) - min(delays), max_delay // 4,
-            'click delays show no spread (jitter not randomised): %r' % delays)
+        ## Every press must be matched by a button RELEASE (state 0) at the
+        ## client -- a dropped button-up would leave the button stuck down (E2).
+        time.sleep((max_delay + 500) / 1000.0)
+        releases = self._count_releases(
+            wev_log_path, lambda line: _btn_stamp(line, 0))
+        self.assertGreaterEqual(
+            len(releases), num_clicks,
+            'expected >= %d button releases (state 0) at the client, got %d -- '
+            'releases dropped, button would stick down:\nwev:\n%s'
+            % (num_clicks, len(releases), self._read(wev_log_path)))
 
     def test_5_pointer_motion_delay_measured(self):
         """Same proof as test_3, for mouse MOTION: inject real relative moves
@@ -615,50 +703,86 @@ class KloakDaemonE2E(unittest.TestCase):
             self.fail('wev never got pointer focus (cursor did not reach the '
                       'surface):\nwev:\n%s\nkloak:\n%s'
                       % (self._read(wev_log_path), self._read(log_path)))
+        ## Stabilise the baseline past the delayed focus-establishing motions.
         time.sleep((max_delay + 500) / 1000.0)
-        offset = len(self._read(wev_log_path))
 
-        ## Alternate the move direction so the cursor oscillates in place and
-        ## stays over the surface (no drift off-screen), each move spaced
-        ## >= max_delay apart for the full random spread.
-        num_moves = 15
-        inject_ms = []
-        for i in range(num_moves):
-            dx = 15 if i % 2 == 0 else -15
-            stamp = int(time.clock_gettime(time.CLOCK_MONOTONIC) * 1000)
-            self._uinput_mouse.write(ecodes.EV_REL, ecodes.REL_X, dx)
-            self._uinput_mouse.syn()
-            inject_ms.append(stamp & 0xffffffff)
-            time.sleep((max_delay + 60) / 1000.0)
-        time.sleep((max_delay + 300) / 1000.0)
-
-        ## Client-observed motion events, parsed from the new tail.
-        motions = []
-        for line in self._read(wev_log_path)[offset:].splitlines():
+        def _motion_stamp(line):
             if 'wl_pointer' not in line or 'motion' not in line:
-                continue
+                return None
             t_match = re.search(r'time:\s*(-?\d+)', line)
             if t_match is not None:
-                motions.append(int(t_match.group(1)) & 0xffffffff)
+                return int(t_match.group(1)) & 0xffffffff
+            return None
 
-        self.assertEqual(
-            len(motions), num_moves,
-            'expected %d motion events at the client, got %d:\nwev:\n%s\n'
-            'kloak:\n%s' % (num_moves, len(motions),
-                            self._read(wev_log_path), self._read(log_path)))
+        ## Alternate the move direction so the cursor oscillates in place and
+        ## stays over the surface (no drift off-screen). One integer-position
+        ## change per move -> exactly one delayed motion at the client.
+        move_idx = [0]
 
-        tol = 80
-        delays = []
-        for inj, rel in zip(inject_ms, motions):
-            delay = (rel - inj) & 0xffffffff
-            self.assertLessEqual(
-                delay, max_delay + tol,
-                'released motion delay %d ms exceeds max_delay %d (+%d tol); '
-                'delays=%r' % (delay, max_delay, tol, delays))
-            delays.append(delay)
-        self.assertGreater(
-            max(delays) - min(delays), max_delay // 4,
-            'motion delays show no spread (jitter not randomised): %r' % delays)
+        def inject_move():
+            dx = 15 if move_idx[0] % 2 == 0 else -15
+            move_idx[0] += 1
+            self._uinput_mouse.write(ecodes.EV_REL, ecodes.REL_X, dx)
+            self._uinput_mouse.syn()
+
+        num_moves = 15
+        stamp_delays, real_delays = self._measure_delays(
+            wev_log_path, inject_move, _motion_stamp, num_moves, max_delay)
+        self._assert_delays(stamp_delays, real_delays, max_delay, 'motion')
+
+    def test_6_pointer_scroll_delay_measured(self):
+        """Same proof as test_3, for SCROLL: inject real wheel ticks through the
+        grabbed mouse and verify each wl_pointer axis event reaches a focused
+        client after a RANDOM delay bounded by max_delay, measured in real
+        wall-clock time. Scroll rides the same release scheduler as keys/clicks/
+        motion, so an immediate flush would be caught here too."""
+        max_delay = 200
+        ecodes = self._evdev.ecodes
+        wev_log_path = self._start_wev()
+        if not self._wait_for_focus(wev_log_path, 'wl_keyboard'):
+            self.fail('wev never got keyboard focus:\n%s'
+                      % self._read(wev_log_path))
+
+        proc, log_path = self._run_kloak(
+            self.runtime_dir, self.wayland_display, max_delay=max_delay)
+        time.sleep(2)
+        self.assertIsNone(proc.poll(),
+                          'kloak exited before the scroll test:\n%s'
+                          % self._read(log_path))
+
+        ## Axis events are delivered to the focused pointer surface, so the
+        ## cursor must be over the wev surface first.
+        if not self._establish_pointer_focus(wev_log_path):
+            self.fail('wev never got pointer focus (cursor did not reach the '
+                      'surface):\nwev:\n%s\nkloak:\n%s'
+                      % (self._read(wev_log_path), self._read(log_path)))
+        time.sleep((max_delay + 500) / 1000.0)
+
+        ## The continuous wl_pointer.axis event carries `time:`; axis_discrete /
+        ## axis_source / frame do not, so a `time:`-bearing axis line is exactly
+        ## one released scroll tick.
+        def _axis_stamp(line):
+            if 'wl_pointer' not in line or 'axis' not in line:
+                return None
+            t_match = re.search(r'time:\s*(-?\d+)', line)
+            if t_match is not None:
+                return int(t_match.group(1)) & 0xffffffff
+            return None
+
+        ## Alternate wheel direction so the accumulator does not drift; one tick
+        ## per injection -> one released axis event.
+        scroll_idx = [0]
+
+        def inject_scroll():
+            direction = 1 if scroll_idx[0] % 2 == 0 else -1
+            scroll_idx[0] += 1
+            self._uinput_mouse.write(ecodes.EV_REL, ecodes.REL_WHEEL, direction)
+            self._uinput_mouse.syn()
+
+        num_scrolls = 12
+        stamp_delays, real_delays = self._measure_delays(
+            wev_log_path, inject_scroll, _axis_stamp, num_scrolls, max_delay)
+        self._assert_delays(stamp_delays, real_delays, max_delay, 'scroll')
 
 
 if __name__ == '__main__':
