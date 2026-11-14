@@ -364,6 +364,30 @@ test("per-heading share: no-op without data-sh-direct, without a proto, or witho
   assert.ok(!tip3.getAttribute("data-sh-built"), "no .menu -> not built");
 });
 
+test("per-heading share: the visible (x) in .menu-wrapper closes the menu (setOpen false)", () => {
+  // The (x) is the discoverable, mobile-friendly close -- a tap outside / a 2nd tap on the trigger
+  // also close, but neither is obvious on touch. It is a SIBLING of .menu (survives the proto clone).
+  const w = load(
+    '<span class="share-tooltip share-open" data-anchor="Sec">' +
+    '<button type="button" class="headline-anchor" aria-expanded="true">s</button>' +
+    '<span class="menu-wrapper">' +
+    '<button type="button" class="menu-close" aria-label="Close"><i>x</i></button>' +
+    '<span class="menu"><span class="code-select" data-code="X">p</span></span></span></span>');
+  const tip = w.document.querySelector(".share-tooltip");
+  assert.ok(tip.classList.contains("share-open"), "starts open");
+  // click the <i> inside the (x): closest(".menu-close") still resolves to the button, then its
+  // .share-tooltip -> setOpen(tip,false) drops .share-open and resets aria-expanded.
+  tip.querySelector(".menu-close i")
+    .dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true }));
+  assert.ok(!tip.classList.contains("share-open"), "the (x) drops .share-open");
+  assert.equal(tip.querySelector(".headline-anchor").getAttribute("aria-expanded"), "false",
+    "aria-expanded reset on close");
+  // a stray .menu-close outside any .share-tooltip -> tip is null -> no-op, never throws
+  const w2 = load('<button type="button" class="menu-close">x</button>');
+  assert.doesNotThrow(() => w2.document.querySelector(".menu-close")
+    .dispatchEvent(new w2.MouseEvent("click", { bubbles: true, cancelable: true })));
+});
+
 test("hash navigation reveals + scrolls a closed-<details> target; a plain target needs no JS scroll", () => {
   // Sections render in full now (no content-visibility estimate), so the browser's native #fragment
   // scroll lands correctly on a visible target -- JS only steps in to reveal + re-scroll a target
@@ -2842,7 +2866,14 @@ function captureIO(w) {
     disconnect() {}
   };
 }
-const warmIO = (w) => w.__ios && w.__ios.find((o) => o.opts.rootMargin === "150% 0px");
+// The warm-ahead observer is app.js's only IntersectionObserver; match it by its vertical
+// rootMargin and expose the lead in viewports so a test can pin it. Regression: a 1.5-viewport
+// margin only warmed the image about to enter view on Firefox/Safari (their native lazy-load uses
+// a tiny margin), so below-fold images still popped in on scroll -- warm-ahead must lead by
+// several viewports to actually finish the fetch+decode first.
+const WARM_MARGIN_RE = /^(\d+)% 0px$/;
+const warmIO = (w) => w.__ios && w.__ios.find((o) => WARM_MARGIN_RE.test(o.opts.rootMargin || ""));
+const warmViewports = (io) => Number(WARM_MARGIN_RE.exec(io.opts.rootMargin)[1]) / 100;
 
 test("warm-ahead: an intersecting lazy image is promoted to eager + low priority + decoded; others untouched", async () => {
   const w = load(
@@ -2854,9 +2885,11 @@ test("warm-ahead: an intersecting lazy image is promoted to eager + low priority
     } });
   const io = warmIO(w);
   assert.ok(io, "warm-ahead constructed its observer");
+  assert.ok(warmViewports(io) >= 3, "warms at least ~3 viewports ahead (not the too-small 1.5)");
   assert.equal(io.seen.length, 4, "all four lazy images observed");
   const $ = (id) => w.document.getElementById(id);
-  $("a").decode = () => Promise.resolve();                 // decode present, resolves
+  let aDecoded = 0;
+  $("a").decode = () => { aDecoded++; return Promise.resolve(); };  // decode present, resolves
   $("b").decode = () => Promise.reject(new Error("x"));    // decode present, rejects -> .catch() runs
   $("c").decode = undefined;                               // decode absent -> not called
   io.cb([
@@ -2868,66 +2901,7 @@ test("warm-ahead: an intersecting lazy image is promoted to eager + low priority
   await tick();   // let the rejected decode() settle into its .catch()
   assert.equal($("a").loading, "eager");                 // the property app.js sets (jsdom may not mirror to the attr)
   assert.equal($("a").getAttribute("fetchpriority"), "low");
-  assert.equal($("c").loading, "eager", "warmed even without decode()");
-  assert.equal($("d").getAttribute("loading"), "lazy", "non-intersecting image is left alone");
-});
-
-test("warm-ahead: no-op when IntersectionObserver is unavailable", () => {
-  const w = load('<img id="a" loading="lazy" src="/a.webp">',
-    { preEval: (w) => { w.IntersectionObserver = undefined; } });
-  assert.equal(w.document.getElementById("a").getAttribute("loading"), "lazy");
-});
-
-test("warm-ahead: skipped on Save-Data / 2g links, runs on an ordinary connection", () => {
-  const mk = (conn) => load('<img id="a" loading="lazy" src="/a.webp">', {
-    preEval: (w) => {
-      captureIO(w);
-      Object.defineProperty(w.navigator, "connection", { value: conn, configurable: true });
-    },
-  });
-  assert.equal(!!warmIO(mk({ saveData: true })), false, "Save-Data: no warm-ahead observer");
-  assert.equal(!!warmIO(mk({ saveData: false, effectiveType: "2g" })), false, "2g: no warm-ahead observer");
-  assert.equal(!!warmIO(mk({ saveData: false })), true, "ordinary link (no effectiveType): warm-ahead runs");
-});
-
-// ---- image warm-ahead (below-fold lazy images) -------------------------------------------
-// Capturing IntersectionObserver: records each instance so a test can fire its callback with
-// synthetic entries (observe() still never auto-invokes, matching the real browser's deferral).
-function captureIO(w) {
-  w.__ios = [];
-  w.IntersectionObserver = class {
-    constructor(cb, opts) { this.cb = cb; this.opts = opts || {}; this.seen = []; w.__ios.push(this); }
-    observe(t) { this.seen.push(t); }
-    unobserve(t) { this.seen = this.seen.filter((x) => x !== t); }
-    disconnect() {}
-  };
-}
-const warmIO = (w) => w.__ios && w.__ios.find((o) => o.opts.rootMargin === "150% 0px");
-
-test("warm-ahead: an intersecting lazy image is promoted to eager + low priority + decoded; others untouched", async () => {
-  const w = load(
-    '<img id="a" loading="lazy" src="/a.webp"><img id="b" loading="lazy" src="/b.webp">' +
-    '<img id="c" loading="lazy" src="/c.webp"><img id="d" loading="lazy" src="/d.webp">',
-    { preEval: (w) => {        // connection explicitly undefined -> exercises the `c &&` FALSE branch
-      captureIO(w);
-      Object.defineProperty(w.navigator, "connection", { value: undefined, configurable: true });
-    } });
-  const io = warmIO(w);
-  assert.ok(io, "warm-ahead constructed its observer");
-  assert.equal(io.seen.length, 4, "all four lazy images observed");
-  const $ = (id) => w.document.getElementById(id);
-  $("a").decode = () => Promise.resolve();                 // decode present, resolves
-  $("b").decode = () => Promise.reject(new Error("x"));    // decode present, rejects -> .catch() runs
-  $("c").decode = undefined;                               // decode absent -> not called
-  io.cb([
-    { isIntersecting: true, target: $("a") },
-    { isIntersecting: true, target: $("b") },
-    { isIntersecting: true, target: $("c") },
-    { isIntersecting: false, target: $("d") },
-  ]);
-  await tick();   // let the rejected decode() settle into its .catch()
-  assert.equal($("a").loading, "eager");                 // the property app.js sets (jsdom may not mirror to the attr)
-  assert.equal($("a").getAttribute("fetchpriority"), "low");
+  assert.equal(aDecoded, 1, "a warmed image's decode() is called to pre-fetch+decode it");
   assert.equal($("c").loading, "eager", "warmed even without decode()");
   assert.equal($("d").getAttribute("loading"), "lazy", "non-intersecting image is left alone");
 });
