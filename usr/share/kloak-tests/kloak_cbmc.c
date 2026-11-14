@@ -95,8 +95,12 @@ void verify_fill_with_rand_alphabetic(void)
 void verify_parse_inotify_events(void)
 {
     char buf[64];
-    ssize_t buf_len = 0;
-    ssize_t pos = 0;
+    /* Nondeterministic: uninitialized locals so CBMC explores every buf_len and
+     * start offset in range (an explicit = 0 would pin the proof to an empty
+     * buffer at offset zero -- __CPROVER_assume filters values, it does not
+     * generate them). buf itself is an uninitialized (symbolic) byte array. */
+    ssize_t buf_len;
+    ssize_t pos;
     bool do_attach = false;
     bool overflow = false;
     __CPROVER_assume(buf_len >= 0 && buf_len <= (ssize_t)(sizeof(buf)));

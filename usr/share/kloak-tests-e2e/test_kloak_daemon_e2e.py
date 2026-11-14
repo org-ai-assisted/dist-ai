@@ -389,12 +389,20 @@ class KloakDaemonE2E(unittest.TestCase):
         Injects the next event only after the current one has arrived, so the
         spacing exceeds the applied delay and the per-event prev_release clamp
         never saturates the random range. Returns (stamp_delays_ms,
-        real_delays_ms), both length num."""
+        real_delays_ms), both length num.
+
+        The per-test fixed startup wait (time.sleep before the first injection)
+        is a DELIBERATE tradeoff, not a missing readiness poll: the harness has
+        no cheap observable keyboard-grab readiness signal, and the fixed wait
+        plus the arrival-gated spacing yield reliable end-to-end runs in
+        practice. Do NOT replace it with a proc.poll()-only check (that only
+        proves kloak has not exited, not that it has grabbed the device)."""
         stamp_delays = []
         real_delays = []
         ## Baseline past any already-released events (e.g. focus-establishing
         ## motions), so the first measured arrival is our first injected event.
         seen = len(self._count_releases(wev_log_path, is_release_line))
+        baseline = seen
         for _ in range(num):
             inj_mono = time.monotonic()
             inj_stamp = int(
@@ -419,6 +427,17 @@ class KloakDaemonE2E(unittest.TestCase):
                        self._read(wev_log_path)))
             stamp_delays.append((rel_stamp - inj_stamp) & 0xffffffff)
             real_delays.append((arrival_mono - inj_mono) * 1000.0)
+        ## Exactly num new releases for num injections. The per-poll `seen`
+        ## baseline advances past EVERY new event in a poll, so if one injection
+        ## produced two releases (a duplicate-emitting bug) the extra would be
+        ## silently absorbed and still pass every delay assertion. The final count
+        ## catches that -- and a late duplicate arriving after the last injection.
+        final = len(self._count_releases(wev_log_path, is_release_line))
+        self.assertEqual(
+            final - baseline, num,
+            'expected exactly %d released events for %d injections but saw %d '
+            '(duplicate or dropped releases):\nwev:\n%s'
+            % (num, num, final - baseline, self._read(wev_log_path)))
         return stamp_delays, real_delays
 
     def _assert_delays(self, stamp_delays, real_delays, max_delay, what):

@@ -676,6 +676,10 @@ static void unit_calc_poll_timeout(void)
     struct input_packet p_past;
     struct input_packet p_farfuture;
     int timeout = 0;
+    int64_t before_ms = 0;
+    int64_t after_ms = 0;
+    int64_t rem_lo = 0;
+    int64_t rem_hi = 0;
 
     TAILQ_INIT(&evq_head);
     parse_ring_data_len = 0;
@@ -687,12 +691,22 @@ static void unit_calc_poll_timeout(void)
     CHECK(calc_poll_timeout() == 0);
     parse_ring_data_len = 0;
 
-    /* a packet due in the future -> a positive, bounded wait */
+    /* a packet due in the future -> a wait that tracks the REMAINING delay, not
+     * merely any positive value: a stub returning 1 for every future wait would
+     * busy-spin yet pass a bare `> 0 && <= 100000` check. calc_poll_timeout reads
+     * the clock once internally, between our before/after reads, so the true
+     * remaining delay it computes lies in [sched_time - after, sched_time - before]. */
     memset(&p_future, 0, sizeof(p_future));
     p_future.sched_time = current_time_ms() + 100000;
     TAILQ_INSERT_TAIL(&evq_head, &p_future, evq_entries);
+    before_ms = current_time_ms();
     timeout = calc_poll_timeout();
-    CHECK(timeout > 0 && timeout <= 100000);
+    after_ms = current_time_ms();
+    rem_lo = p_future.sched_time - after_ms;  /* clock latest -> smallest remaining */
+    rem_hi = p_future.sched_time - before_ms; /* clock earliest -> largest remaining */
+    if (rem_lo < 0) rem_lo = 0;
+    if (rem_hi < 0) rem_hi = 0;
+    CHECK((int64_t)timeout >= rem_lo && (int64_t)timeout <= rem_hi);
     TAILQ_REMOVE(&evq_head, &p_future, evq_entries);
 
     /* a packet already past its sched_time -> release immediately (0) */
