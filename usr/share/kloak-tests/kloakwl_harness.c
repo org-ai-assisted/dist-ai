@@ -582,6 +582,121 @@ static void unit_release_jitter_mouse(void)
     recv_read_fd = -1;
 }
 
+/* Regression (Whonix/kloak#41): the identical-keymap early return in
+ * kb_handle_keymap must close the compositor-provided fd. Pre-fix it munmap'd
+ * the mapping but leaked the fd, so a compositor re-sending the same keymap
+ * leaked one fd per event until shm_open/allocate_shm failed fatally. The child
+ * asserts the fd is closed on return. */
+static enum child_outcome run_keymap_leak_child(void)
+{
+    char tmpl[] = "/tmp/kloak_kmleak_XXXXXX";
+    int fd = mkstemp(tmpl);
+    pid_t pid;
+    int status = 0;
+
+    assert(fd >= 0);
+    assert(unlink(tmpl) == 0);
+    assert(write(fd, "xkb", 4) == 4);   /* "xkb\0" */
+
+    pid = fork();
+    assert(pid >= 0);
+    if (pid == 0) {
+        /* Previously-seen map identical to the incoming one -> early return. */
+        state.old_kb_map_shm = (char *)"xkb";
+        state.old_kb_map_shm_size = 4;
+        (void)!freopen("/dev/null", "w", stderr);
+        kb_handle_keymap(NULL, NULL, WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1, fd, 4);
+        /* The identical-map path must have closed fd; still open -> leak. */
+        if (fcntl(fd, F_GETFD) != -1) {
+            _exit(2);
+        }
+        _exit(errno == EBADF ? 0 : 3);
+    }
+    assert(close(fd) == 0);
+    assert(waitpid(pid, &status, 0) == pid);
+    return classify_child(status);
+}
+
+static void unit_kb_handle_keymap_identical_closes_fd(void)
+{
+    CHECK(run_keymap_leak_child() == CH_EXIT0);
+}
+
+/* Regression (Whonix/kloak#41): update_virtual_cursor must not abort when the
+ * only non-NULL output geometry is 0x0. labwc emits wl_output::done before the
+ * xdg-output logical size, and display_sync_maybe records a 0x0 geometry until
+ * the size arrives; with the cursor homeless, the relocation loop hit
+ * assert(sane_location_valid) and aborted. It must skip the unusable geometry
+ * and return NULL when no screen is usable. */
+static enum child_outcome run_cursor_zero_geom_child(void)
+{
+    static struct output_geometry zero_geom = { .x = 0, .y = 0,
+        .width = 0, .height = 0 };
+    pid_t pid;
+    int status = 0;
+
+    pid = fork();
+    assert(pid >= 0);
+    if (pid == 0) {
+        struct input_packet *pkt = NULL;
+        ssize_t i;
+        (void)!freopen("/dev/null", "w", stderr);
+        for (i = 0; i < MAX_SCREEN_COUNT; i++) {
+            state.output_geometries[i] = NULL;
+        }
+        state.output_geometries[0] = &zero_geom;
+        prev_cursor_x = 0.0;
+        prev_cursor_y = 0.0;
+        cursor_x = 0.0;
+        cursor_y = 0.0;
+        pkt = update_virtual_cursor();
+        /* No usable screen -> must return NULL, not abort. */
+        _exit(pkt == NULL ? 0 : 1);
+    }
+    assert(waitpid(pid, &status, 0) == pid);
+    return classify_child(status);
+}
+
+static void unit_update_virtual_cursor_zero_geometry(void)
+{
+    CHECK(run_cursor_zero_geom_child() == CH_EXIT0);
+}
+
+/* Regression (Whonix/kloak#41): applayer_config_init must not busy-spin at 100%
+ * CPU (while it still holds capabilities) if the parent dies before sending
+ * config. read_peer_data_to_ring_buffer returns on FIONREAD==0 without read()ing,
+ * so it never observes EOF by itself; the config loop must poll and exit on
+ * hangup. The child's write end is closed everywhere -> POLLHUP; alarm bounds a
+ * pre-fix spin so the canary fails fast rather than hanging the suite. */
+static enum child_outcome run_config_init_hangup_child(void)
+{
+    int pfd[2];
+    pid_t pid;
+    int status = 0;
+
+    assert(pipe(pfd) == 0);
+    pid = fork();
+    assert(pid >= 0);
+    if (pid == 0) {
+        (void)!freopen("/dev/null", "w", stderr);
+        assert(dup2(pfd[0], 0) == 0);   /* applayer_config_init reads fd 0 */
+        assert(close(pfd[0]) == 0);
+        assert(close(pfd[1]) == 0);     /* no writer remains -> POLLHUP */
+        alarm(10);                      /* a pre-fix spin is killed by SIGALRM */
+        applayer_config_init();         /* must exit via POLLHUP, not spin */
+        _exit(0);
+    }
+    assert(close(pfd[0]) == 0);
+    assert(close(pfd[1]) == 0);
+    assert(waitpid(pid, &status, 0) == pid);
+    return classify_child(status);
+}
+
+static void unit_applayer_config_init_exits_on_hangup(void)
+{
+    CHECK(run_config_init_hangup_child() == CH_EXIT0);
+}
+
 int main(void)
 {
     unit_check_screen_touch();
@@ -598,6 +713,9 @@ int main(void)
     unit_recalc_global_space_gap();
     unit_abs_coord_invalid();
     unit_open_wl_sock_connect_degraded();
+    unit_kb_handle_keymap_identical_closes_fd();
+    unit_update_virtual_cursor_zero_geometry();
+    unit_applayer_config_init_exits_on_hangup();
     printf("kloakwl harness: all assertions passed (%d checks)\n", checks);
     return 0;
 }

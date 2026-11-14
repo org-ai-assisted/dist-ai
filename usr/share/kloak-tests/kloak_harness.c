@@ -294,6 +294,27 @@ static void unit_degraded_poll_skips_dead_pipe(void)
     li = NULL;
 }
 
+/* Regression (Whonix/kloak#41): li_open_restricted must honor libinput's
+ * open_restricted contract -- return -errno on a device it cannot open, not
+ * fatally exit. A device vanishing between inotify IN_CREATE and
+ * attach_input_device would otherwise tear kloak down and release every device
+ * grab, de-anonymizing input. The pre-fix fatal safe_open arrives here as a
+ * reject (exit code + 1 via the g_reject longjmp). */
+static void unit_li_open_restricted_missing_returns_errno(void)
+{
+    int r = 0;
+    switch (setjmp(g_reject)) {
+    case 0:
+        wl_connect_success = false;
+        r = li_open_restricted("/nonexistent/kloak/device", O_RDONLY, NULL);
+        CHECK(r == -ENOENT);   /* returned the contract error, did not exit */
+        break;
+    default:
+        CHECK(0);              /* fatally exited on a missing device -- the bug */
+        break;
+    }
+}
+
 int main(void)
 {
     unit_lookup_keycode();
@@ -306,6 +327,7 @@ int main(void)
     unit_parse_inotify_events();
     unit_parse_inotify_unknown_mask_bails();
     unit_degraded_poll_skips_dead_pipe();
+    unit_li_open_restricted_missing_returns_errno();
     printf("kloak harness: all assertions passed (%d checks)\n", checks);
     return 0;
 }
