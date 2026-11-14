@@ -1526,11 +1526,15 @@ def _page_css_texts(root, page_path, html_text):
     for href in collector.hrefs:
         if _url_norm(href).startswith(('http:', 'https:', '//', 'data:')):
             continue                         # cross-origin / inline-data sheet: not on disk
-        # Resolve the on-disk path from the RAW href: strip query/fragment, then percent-decode,
-        # preserving case. _url_norm is for the scheme test ONLY -- it lowercases and does NOT
-        # unquote, so a mixed-case or %20-encoded stylesheet name would resolve to the wrong
-        # (absent) file and false-fail the VT check.
-        clean = href.split('?', 1)[0].split('#', 1)[0]
+        # Resolve the on-disk path the way a browser does BEFORE splitting: normalize URL
+        # whitespace (ASCII tab/newline/CR removed from anywhere, leading/trailing C0 controls +
+        # space trimmed -- the same _URL_STRIP/_URL_TRIM as _url_norm but WITHOUT its lowercasing),
+        # then strip query/fragment and percent-decode, preserving filename case. _url_norm is for
+        # the scheme test ONLY (it lowercases and does NOT unquote); using the raw href here would
+        # resolve ` /style.css ` (or a %20-encoded / mixed-case name) to the wrong (absent) file
+        # and false-fail the VT check.
+        clean = href.translate(_URL_STRIP).strip(_URL_TRIM)
+        clean = clean.split('?', 1)[0].split('#', 1)[0]
         clean = urllib.parse.unquote(clean)
         if not clean:
             continue

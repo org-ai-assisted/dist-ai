@@ -486,7 +486,10 @@ async def _vt_cssom_canary() -> int:
     ]
     overall = 0
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch()
+        try:
+            browser = await pw.chromium.launch()
+        except Exception as exc:  # noqa: BLE001 -- engine binary not installed
+            _skip('chromium engine unavailable: %s' % exc)  # SKIP (77), like check()
         try:
             for css, expected, msg in cases:
                 page = await browser.new_page()
@@ -500,7 +503,10 @@ async def _vt_cssom_canary() -> int:
             if overall == 0:
                 print('ok   vt-cssom-canary          media applicability honored', flush=True)
         finally:
-            await browser.close()
+            try:
+                await browser.close()
+            except Exception:  # noqa: BLE001 -- best-effort teardown
+                pass
     return overall
 
 

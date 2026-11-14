@@ -244,6 +244,14 @@ def run() -> int:
         site.check_view_transition(eroot, f, [os.path.join(eroot, 'index.html')])
         ck(f == [], "percent-encoded + mixed-case stylesheet href resolves (got %r)" % f)
 
+        # Canary: a browser trims leading/trailing whitespace (and inner tab/newline) from a URL
+        # before resolving, so ` /style.css ` must still resolve to /style.css -- the raw href
+        # would mis-resolve and false-fail the VT check.
+        root, pages = _write_site(tmp + '/f', _page(css_href=' /style.css '))
+        f = []
+        site.check_view_transition(root, f, pages)
+        ck(f == [], "whitespace-padded stylesheet href resolves (got %r)" % f)
+
     sys.stdout.write("check_webplatform_test: %d pass, %d fail, 0 skip\n"
                      % (stats["pass"], stats["fail"]))
     return 1 if stats["fail"] else 0
