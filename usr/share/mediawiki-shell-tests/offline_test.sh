@@ -321,6 +321,15 @@ run_archive_case() {
       ## A real archive record carries the parsed memento link as its own line, not just the URL --
       ## so an impl that records the URL without reading the header is distinguishable.
       if grep --fixed-strings --line-regexp --quiet -- "${snap}" "${arch}"; then outcome='archived'; else outcome='archived-nolink'; fi
+      ## Independent negative check (Whonix/dist-ai#849): a correct archive records the URL
+      ## ONLY to already-archived.txt. already-archived.txt is matched first, so an impl that
+      ## ALSO recorded the URL to already-unknown-case-error.txt would be masked as 'archived'.
+      ## Surface it unconditionally (not gated on the archived match) so the archived assertions
+      ## reject that impl.
+      if [ -f "${TMPFOLDER}/webarchive/already-unknown-case-error.txt" ] \
+        && grep --fixed-strings --quiet -- "${url}" "${TMPFOLDER}/webarchive/already-unknown-case-error.txt"; then
+        outcome="${outcome}+unknown-case"
+      fi
     else
       for f in "${TMPFOLDER}"/webarchive/already-*; do
         [ -f "${f}" ] || continue
