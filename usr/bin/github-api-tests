@@ -434,8 +434,84 @@ else
   fails=$(( fails + 1 ))
 fi
 
+## SECONDARY RATE LIMIT: GitHub returns a 403 (curl sees exit 0, so --retry misses it) with a
+## Retry-After header or a "secondary rate limit" body. A GET must back off and retry, not hand
+## the caller the error body. The fake returns the 403 on the first attempt, then a 200 on the
+## next; github-api must surface the 200 body. Waits are driven to 0 via the env knobs.
+rl_bin="${tmp}/rlbin"
+mkdir -p -- "${rl_bin}"
+cat > "${rl_bin}/curl" <<'RL_CURL'
+#!/bin/bash
+cat >/dev/null   # consume the --config document on stdin
+out=""; hdr=""; prev=""
+for a in "$@"; do
+  case "${prev}" in --output) out="$a" ;; --dump-header) hdr="$a" ;; esac
+  prev="$a"
+done
+n=0; [ -r "${RL_CTR}" ] && n="$(cat "${RL_CTR}")"; n=$(( n + 1 )); printf '%s' "${n}" > "${RL_CTR}"
+if [ "${n}" -lt "${RL_OK_ON}" ]; then
+  [ -n "${out}" ] && printf '%s' '{"message":"You have exceeded a secondary rate limit"}' > "${out}"
+  [ -n "${hdr}" ] && printf 'HTTP/2 403\r\nRetry-After: 0\r\n\r\n' > "${hdr}"
+  printf '403'
+else
+  [ -n "${out}" ] && printf '%s' 'RL_OK_BODY' > "${out}"
+  [ -n "${hdr}" ] && printf 'HTTP/2 200\r\n\r\n' > "${hdr}"
+  printf '200'
+fi
+RL_CURL
+chmod 0755 -- "${rl_bin}/curl"
+cp -- "${rl_bin}/curl" "${rl_bin}/scurl"
+rl_ctr="${tmp}/rl_ctr"; true > "${rl_ctr}"
+rl_out="$(PATH="${rl_bin}:${PATH}" GITHUB_TOKEN_FILE="${tmp}/token" \
+  RL_CTR="${rl_ctr}" RL_OK_ON=2 \
+  GH_SECONDARY_RL_ATTEMPTS=4 GH_SECONDARY_RL_WAIT_CAP=0 GH_SECONDARY_RL_BACKOFF=0 \
+  "${git_api}" GET /rate_limit 2>/dev/null)" || rl_out="<rc $?>"
+if [ "${rl_out}" = "RL_OK_BODY" ]; then
+  printf '%s\n' 'ok   GET backs off a secondary-rate-limit 403 (Retry-After) and retries to success'
+else
+  printf '%s\n' "FAIL: secondary-RL 403 not retried to success: [${rl_out}]" >&2
+  fails=$(( fails + 1 ))
+fi
+
+## A PERMISSION 403 (no Retry-After, body not a secondary limit) must NOT be retried -- it is
+## emitted once, unchanged. Guards the backoff from swallowing a genuine permanent 403.
+perm_bin="${tmp}/permbin"
+mkdir -p -- "${perm_bin}"
+cat > "${perm_bin}/curl" <<'PERM_CURL'
+#!/bin/bash
+cat >/dev/null
+out=""; hdr=""; prev=""
+for a in "$@"; do
+  case "${prev}" in --output) out="$a" ;; --dump-header) hdr="$a" ;; esac
+  prev="$a"
+done
+n=0; [ -r "${PERM_CTR}" ] && n="$(cat "${PERM_CTR}")"; n=$(( n + 1 )); printf '%s' "${n}" > "${PERM_CTR}"
+[ -n "${out}" ] && printf '%s' '{"message":"Resource not accessible by integration"}' > "${out}"
+[ -n "${hdr}" ] && printf 'HTTP/2 403\r\n\r\n' > "${hdr}"
+printf '403'
+PERM_CURL
+chmod 0755 -- "${perm_bin}/curl"
+cp -- "${perm_bin}/curl" "${perm_bin}/scurl"
+perm_ctr="${tmp}/perm_ctr"; true > "${perm_ctr}"
+perm_out="$(PATH="${perm_bin}:${PATH}" GITHUB_TOKEN_FILE="${tmp}/token" \
+  PERM_CTR="${perm_ctr}" GH_SECONDARY_RL_ATTEMPTS=4 GH_SECONDARY_RL_WAIT_CAP=0 GH_SECONDARY_RL_BACKOFF=0 \
+  "${git_api}" GET /rate_limit 2>/dev/null)" || perm_out="<rc $?>"
+perm_calls="$(cat "${perm_ctr}")"
+perm_match=0
+case "${perm_out}" in
+  *'Resource not accessible'*)
+    perm_match=1
+    ;;
+esac
+if [ "${perm_calls}" = "1" ] && [ "${perm_match}" -eq 1 ]; then
+  printf '%s\n' 'ok   permission 403 (no Retry-After / not secondary) is NOT retried -- emitted once'
+else
+  printf '%s\n' "FAIL: permission 403 mis-handled: calls=${perm_calls} out=[${perm_out}]" >&2
+  fails=$(( fails + 1 ))
+fi
+
 if (( fails > 0 )); then
   printf '%s\n' "github-api-tests: ${fails} check(s) FAILED" >&2
   exit 1
 fi
-printf '%s\n' 'github-api-tests: PASSED (23 checks, 0 failed, 0 skipped)'
+printf '%s\n' 'github-api-tests: PASSED (25 checks, 0 failed, 0 skipped)'

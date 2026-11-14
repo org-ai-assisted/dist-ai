@@ -179,31 +179,96 @@ fi
 ## append the complete response to the partial one (invalid output). With --output curl
 ## truncates+rewrites the file on each attempt, so the file holds exactly the final
 ## attempt; emit it only after a CLEAN curl exit, and discard curl's own stdout.
+##
+## GitHub SECONDARY rate limits return 403 -- and curl treats a 403 as a SUCCESSFUL transfer
+## (exit 0), so neither --retry nor --retry-all-errors covers it. They carry a Retry-After
+## header or a body naming a "secondary rate limit": transient, so wait the requested time
+## (capped) and retry. A PERMISSION 403 and a PRIMARY-quota 403 ("API rate limit exceeded",
+## whose reset can be an hour away) carry NEITHER signal, so they fall through to the caller
+## unchanged, never slept on. GET/HEAD only (idempotent); 429 is already retried by curl.
 retry_args=()
 response_file=''
+hdr_file=''
 case "${method^^}" in
   GET|HEAD)
     response_file="$(mktemp)"
-    retry_args=(--retry 5 --retry-all-errors --retry-delay 1 \
-      --output "${response_file}")
+    hdr_file="$(mktemp)"
+    retry_args=(--retry 5 --retry-all-errors --retry-delay 1)
     ;;
 esac
 
 cleanup_response_file() {
   ## style-ok: no-safe-rm -- github-api also runs in a bare CI container where
-  ## safe-rm (a workstation helper) does not exist; this removes our own temp file.
-  [ -n "${response_file}" ] && rm -f -- "${response_file}"
+  ## safe-rm (a workstation helper) does not exist; these are our own temp files.
+  [ -n "${response_file}" ] && rm -f -- "${response_file}" "${hdr_file}"
   return 0
+}
+
+## Secondary-rate-limit backoff bounds. Env-injectable so the suite drives 0s waits.
+[ -v GH_SECONDARY_RL_ATTEMPTS ] || GH_SECONDARY_RL_ATTEMPTS=4
+[ -v GH_SECONDARY_RL_WAIT_CAP ] || GH_SECONDARY_RL_WAIT_CAP=60
+[ -v GH_SECONDARY_RL_BACKOFF ] || GH_SECONDARY_RL_BACKOFF=10
+
+## Print the seconds to wait for a secondary-rate-limit response (rc 0), or return 1 when this
+## is NOT a secondary limit (so the caller stops retrying). Prefer the server's Retry-After
+## (capped); else, only when the body NAMES a secondary limit, a bounded linear backoff; a
+## primary-quota or permission 403 matches neither and returns 1 (fail fast, no sleep).
+secondary_rl_wait() {
+  local code="$1" hdr="$2" body="$3" attempt="$4" ra w cap
+  case "${code}" in
+    403 | 429) ;;
+    *)
+      return 1
+      ;;
+  esac
+  cap="$(( 10#${GH_SECONDARY_RL_WAIT_CAP} ))"
+  ra="$(grep --ignore-case --max-count=1 '^retry-after:' "${hdr}" 2>/dev/null \
+        | tr --delete '\r' | sed 's/^[^:]*:[[:space:]]*//')" || ra=''
+  case "${ra}" in
+    '' | *[!0-9]*)
+      ra=''
+      ;;
+  esac
+  if [ -n "${ra}" ]; then
+    w="$(( 10#${ra} ))"
+    [ "${w}" -le "${cap}" ] || w="${cap}"
+    printf '%s' "${w}"
+    return 0
+  fi
+  if grep --quiet --ignore-case 'secondary rate limit' "${body}" 2>/dev/null; then
+    w="$(( 10#${attempt} * 10#${GH_SECONDARY_RL_BACKOFF} ))"
+    [ "${w}" -le "${cap}" ] || w="${cap}"
+    printf '%s' "${w}"
+    return 0
+  fi
+  return 1
 }
 
 if [ -n "${response_file}" ]; then
   trap cleanup_response_file EXIT
   rc=0
-  printf '%s\n' "${config_document}" \
-    | "${curl_program}" "${curl_args[@]}" "${retry_args[@]}" \
-        --silent --show-error --config - --request "${method}" "$@" "${url}" \
-        >/dev/null \
-    || rc="$?"
+  attempt=1
+  http_code=''
+  while :; do
+    ## curl truncates --dump-header's target itself each attempt, so no pre-clear is needed.
+    rc=0
+    http_code="$(printf '%s\n' "${config_document}" \
+      | "${curl_program}" "${curl_args[@]}" "${retry_args[@]}" \
+          --silent --show-error --config - --request "${method}" "$@" \
+          --dump-header "${hdr_file}" --output "${response_file}" \
+          --write-out '%{http_code}' "${url}")" \
+      || rc="$?"
+    ## Transport error (curl non-zero): curl's own --retry already exhausted -- do not loop.
+    [ "${rc}" -ne 0 ] && break
+    ## Secondary rate limit -> wait (bounded) and retry the whole request; anything else -> done.
+    if wait_s="$(secondary_rl_wait "${http_code}" "${hdr_file}" "${response_file}" "${attempt}")" \
+       && [ "${attempt}" -lt "$(( 10#${GH_SECONDARY_RL_ATTEMPTS} ))" ]; then
+      [ "$(( 10#${wait_s} ))" -gt 0 ] && sleep "$(( 10#${wait_s} ))"
+      attempt=$(( attempt + 1 ))
+      continue
+    fi
+    break
+  done
   ## Emit the buffered body ONLY on a clean curl exit. On a hard failure (every retry cut)
   ## the file holds the last attempt's PARTIAL body; a caller keying on the exit status
   ## already fails closed, and emitting nothing keeps a caller that ignores the status from
