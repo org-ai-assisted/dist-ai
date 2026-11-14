@@ -407,8 +407,35 @@ case "${out}" in
     ;;
 esac
 
+## HARD-FAILURE BUFFERING: when every retry is cut (curl exits non-zero), the --output file
+## holds only a PARTIAL body. github-api must emit NOTHING and exit non-zero -- never hand a
+## caller a partial response that ignoring the exit status could parse as though it were whole.
+fail_bin="${tmp}/failbin"
+mkdir -p -- "${fail_bin}"
+cat > "${fail_bin}/curl" <<'FAIL_CURL'
+#!/bin/bash
+cat >/dev/null   # consume the --config document on stdin
+out=""; prev=""
+for a in "$@"; do [ "${prev}" = "--output" ] && out="$a"; prev="$a"; done
+[ -n "${out}" ] && printf PARTIAL > "${out}"
+exit 56
+FAIL_CURL
+chmod 0755 -- "${fail_bin}/curl"
+cp -- "${fail_bin}/curl" "${fail_bin}/scurl"
+## errexit is on: a non-zero github-api (the point of this case) would abort the suite via the
+## assignment, so capture the status through '|| hard_rc=$?' instead of a bare '$?'.
+hard_rc=0
+hard_out="$(PATH="${fail_bin}:${PATH}" GITHUB_TOKEN_FILE="${tmp}/token" \
+  "${git_api}" GET /rate_limit 2>/dev/null)" || hard_rc="$?"
+if [ -z "${hard_out}" ] && [ "${hard_rc}" -ne 0 ]; then
+  printf '%s\n' 'ok   GET hard failure emits nothing and exits non-zero (no partial body)'
+else
+  printf '%s\n' "FAIL: GET hard failure leaked output or exited zero: rc=${hard_rc} out=[${hard_out}]" >&2
+  fails=$(( fails + 1 ))
+fi
+
 if (( fails > 0 )); then
   printf '%s\n' "github-api-tests: ${fails} check(s) FAILED" >&2
   exit 1
 fi
-printf '%s\n' 'github-api-tests: PASSED (22 checks, 0 failed, 0 skipped)'
+printf '%s\n' 'github-api-tests: PASSED (23 checks, 0 failed, 0 skipped)'
