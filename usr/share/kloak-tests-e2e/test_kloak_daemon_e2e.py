@@ -37,6 +37,15 @@ Two paths are covered:
   * connect-failure fatal opt-in (test_2b): with KLOAK_EXIT_ON_WL_CONNECT_FAILURE=1
     the same connect failure is turned back into a non-zero fatal exit.
 
+Plus the random-delay lanes -- kloak's reason to exist -- each injecting real input
+through the grabbed device and measuring, at a focused wev client, that the released
+event arrives after a RANDOM delay bounded by -d max_delay (the released event's
+`time` is kloak's scheduled release, CLOCK_MONOTONIC ms; delay = that minus the
+injection time), asserting both the bound and that the delays VARY:
+
+  * keyboard keys (test_3), mouse button clicks (test_4), and mouse motion (test_5)
+    -- the three input classes kloak delays, all on the one release scheduler.
+
 DESTRUCTIVE + root-only: builds in the source tree, creates the kloakwl system
 user if absent, drives uinput, and runs a compositor. Authorized skip (euid !=
 0, no /dev/uinput, or labwc/python3-evdev/the kloak source absent), so a plain
@@ -124,6 +133,7 @@ class KloakDaemonE2E(unittest.TestCase):
         os.chmod(cls.runtime_dir, 0o700)
 
         cls._start_uinput_keyboard()
+        cls._start_uinput_pointer()
         cls._start_compositor()
 
     @classmethod
@@ -143,6 +153,22 @@ class KloakDaemonE2E(unittest.TestCase):
         cls._uinput = UInput({ecodes.EV_KEY: keys}, name='kloak-e2e-kbd')
         cls._evdev = evdev
         cls.addClassCleanup(cls._uinput.close)
+        time.sleep(1)
+
+    @classmethod
+    def _start_uinput_pointer(cls):
+        ## A virtual MOUSE (relative motion + buttons + wheel) alongside the
+        ## keyboard, created before the compositor so libinput enumerates it and
+        ## the seat advertises a pointer capability. kloak grabs it and drives the
+        ## compositor only through its own delayed virtual pointer, so what a
+        ## focused client sees is kloak's output, not the raw device.
+        from evdev import UInput, ecodes
+        cap = {
+            ecodes.EV_REL: [ecodes.REL_X, ecodes.REL_Y, ecodes.REL_WHEEL],
+            ecodes.EV_KEY: [ecodes.BTN_LEFT, ecodes.BTN_RIGHT],
+        }
+        cls._uinput_mouse = UInput(cap, name='kloak-e2e-mouse')
+        cls.addClassCleanup(cls._uinput_mouse.close)
         time.sleep(1)
 
     @classmethod
@@ -236,6 +262,76 @@ class KloakDaemonE2E(unittest.TestCase):
     def _read(path):
         with open(path, encoding='utf-8', errors='replace') as handle:
             return handle.read()
+
+    def _start_wev(self):
+        ## A focused Wayland client (wev) that logs every seat event with its
+        ## `time`. Returns its log path; the process is cleaned up automatically.
+        wev = shutil.which('wev')
+        if wev is None:
+            ## style-ok: allow-skip: wev is an e2e-lane dependency for observing output
+            raise unittest.SkipTest('wev not installed (e2e dependency)')
+        wev_log_path = os.path.join(
+            self._work, 'wev-%s.log' % os.urandom(4).hex())
+        wev_log = open(wev_log_path, 'wb')
+        self.addCleanup(wev_log.close)
+        env = dict(os.environ)
+        env['XDG_RUNTIME_DIR'] = self.runtime_dir
+        env['WAYLAND_DISPLAY'] = self.wayland_display
+        ## stdbuf -oL: wev block-buffers stdout to a file, so without this the
+        ## focus/event lines never reach the log until wev exits. Line-buffer it
+        ## so focus and events are observable live.
+        wev_proc = subprocess.Popen(
+            ['stdbuf', '-oL', '-eL', wev], env=env, stdout=wev_log,
+            stderr=subprocess.STDOUT)
+        self.addCleanup(self._kill, wev_proc)
+        return wev_log_path
+
+    def _wait_for_focus(self, wev_log_path, iface, timeout=10):
+        ## Wait until wev logs an <iface> 'enter' (keyboard or pointer focus) on a
+        ## single line, so an injected event is actually delivered to it. Matching
+        ## iface AND 'enter' on the SAME line avoids a false hit from the seat
+        ## capability announcement (which names wl_pointer before any enter).
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            for line in self._read(wev_log_path).splitlines():
+                if iface in line and 'enter' in line:
+                    return True
+            time.sleep(0.2)
+        return False
+
+    @staticmethod
+    def _pointer_focus_state(log):
+        ## The last wl_pointer enter/leave in the log == current focus. Overshooting
+        ## the surface walks the cursor back off (enter THEN leave), so a bare
+        ## "an enter appeared" is not enough -- the LAST focus event must be enter.
+        state = None
+        for line in log.splitlines():
+            if 'wl_pointer' not in line:
+                continue
+            if 'enter' in line:
+                state = 'enter'
+            elif 'leave' in line:
+                state = 'leave'
+        return state
+
+    def _establish_pointer_focus(self, wev_log_path, timeout=20):
+        ## kloak's virtual cursor starts at (0, 0); walk it to roughly the middle
+        ## of the default 640x480 wev surface and STOP. Overshooting would carry
+        ## it back off the surface (wl_pointer leave), so move a bounded total
+        ## (~300, ~230) rather than nudging until an enter is seen, then wait for
+        ## the kloak-delayed moves to flush and focus to settle on enter.
+        ecodes = self._evdev.ecodes
+        for _ in range(10):
+            self._uinput_mouse.write(ecodes.EV_REL, ecodes.REL_X, 30)
+            self._uinput_mouse.write(ecodes.EV_REL, ecodes.REL_Y, 23)
+            self._uinput_mouse.syn()
+            time.sleep(0.03)
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self._pointer_focus_state(self._read(wev_log_path)) == 'enter':
+                return True
+            time.sleep(0.3)
+        return False
 
     def test_1_connected_privsep(self):
         proc, log_path = self._run_kloak(self.runtime_dir, self.wayland_display)
@@ -342,10 +438,6 @@ class KloakDaemonE2E(unittest.TestCase):
         device -> kloak -> compositor -> client path. The released wl_keyboard
         event's `time` (kloak's scheduled release time, CLOCK_MONOTONIC ms)
         minus the injection time is the applied delay."""
-        wev = shutil.which('wev')
-        if wev is None:
-            ## style-ok: allow-skip: wev is an e2e-lane dependency for observing output
-            raise unittest.SkipTest('wev not installed (e2e dependency)')
         max_delay = 200
         ecodes = self._evdev.ecodes
         key_a = ecodes.KEY_A
@@ -353,30 +445,10 @@ class KloakDaemonE2E(unittest.TestCase):
         ## (the fixed historical X11 offset), so KEY_A (30) arrives as 38.
         wl_keycode = key_a + 8
 
-        ## A focused Wayland client that logs every event with its `time`.
-        wev_log_path = os.path.join(self._work, 'wev.log')
-        wev_log = open(wev_log_path, 'wb')
-        self.addCleanup(wev_log.close)
-        env = dict(os.environ)
-        env['XDG_RUNTIME_DIR'] = self.runtime_dir
-        env['WAYLAND_DISPLAY'] = self.wayland_display
-        ## stdbuf -oL: wev's stdout is block-buffered when redirected to a file,
-        ## so without this the focus/event lines never reach the log until wev
-        ## exits. Line-buffer it so we can observe focus and events live.
-        wev_proc = subprocess.Popen(
-            ['stdbuf', '-oL', '-eL', wev], env=env, stdout=wev_log,
-            stderr=subprocess.STDOUT)
-        self.addCleanup(self._kill, wev_proc)
-
+        wev_log_path = self._start_wev()
         ## Wait for wev to receive keyboard focus, so an injected key is actually
         ## delivered to it.
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline:
-            log = self._read(wev_log_path)
-            if 'wl_keyboard' in log and 'enter' in log:
-                break
-            time.sleep(0.2)
-        else:
+        if not self._wait_for_focus(wev_log_path, 'wl_keyboard'):
             self.fail('wev never got keyboard focus:\n%s'
                       % self._read(wev_log_path))
 
@@ -432,6 +504,157 @@ class KloakDaemonE2E(unittest.TestCase):
         self.assertGreater(
             max(delays) - min(delays), max_delay // 4,
             'released delays show no spread (jitter not randomised): %r' % delays)
+
+    def test_4_pointer_click_delay_measured(self):
+        """Same proof as test_3, for mouse CLICKS: inject real BTN_LEFT clicks
+        through the grabbed mouse and verify each wl_pointer button event reaches
+        a focused client after a RANDOM delay bounded by max_delay. The child
+        schedules clicks on the same release scheduler as keys, so the button
+        event's `time` (its scheduled release, CLOCK_MONOTONIC ms) minus the
+        injection time is the applied delay."""
+        max_delay = 200
+        ecodes = self._evdev.ecodes
+        wev_log_path = self._start_wev()
+        ## Keyboard focus confirms wev is up and the seat is live before kloak
+        ## grabs the devices.
+        if not self._wait_for_focus(wev_log_path, 'wl_keyboard'):
+            self.fail('wev never got keyboard focus:\n%s'
+                      % self._read(wev_log_path))
+
+        proc, log_path = self._run_kloak(
+            self.runtime_dir, self.wayland_display, max_delay=max_delay)
+        time.sleep(2)
+        self.assertIsNone(proc.poll(),
+                          'kloak exited before the click test:\n%s'
+                          % self._read(log_path))
+
+        ## Move the (grabbed, kloak-driven) cursor onto the wev surface so button
+        ## events are delivered there.
+        if not self._establish_pointer_focus(wev_log_path):
+            self.fail('wev never got pointer focus (cursor did not reach the '
+                      'surface):\nwev:\n%s\nkloak:\n%s'
+                      % (self._read(wev_log_path), self._read(log_path)))
+        ## Drain every delayed focus-establishing motion (each <= max_delay) so
+        ## only the measured clicks appear past this offset.
+        time.sleep((max_delay + 500) / 1000.0)
+        offset = len(self._read(wev_log_path))
+
+        ## Inject clicks spaced >= max_delay apart so the prev_release clamp does
+        ## not saturate the delay -- we want the full random spread.
+        num_clicks = 12
+        inject_ms = []
+        for _ in range(num_clicks):
+            stamp = int(time.clock_gettime(time.CLOCK_MONOTONIC) * 1000)
+            ## Press and release in SEPARATE syn frames (a zero-duration click in
+            ## one frame can be dropped). Measure the press.
+            self._uinput_mouse.write(ecodes.EV_KEY, ecodes.BTN_LEFT, 1)
+            self._uinput_mouse.syn()
+            time.sleep(0.02)
+            self._uinput_mouse.write(ecodes.EV_KEY, ecodes.BTN_LEFT, 0)
+            self._uinput_mouse.syn()
+            inject_ms.append(stamp & 0xffffffff)
+            time.sleep((max_delay + 60) / 1000.0)
+        time.sleep((max_delay + 300) / 1000.0)
+
+        ## Client-observed button PRESS events (state 1), parsed from the new tail.
+        presses = []
+        for line in self._read(wev_log_path)[offset:].splitlines():
+            if 'wl_pointer' not in line or 'button' not in line:
+                continue
+            t_match = re.search(r'time:\s*(\d+)', line)
+            s_match = re.search(r'state:\s*(\d+)', line)
+            if (t_match is not None and s_match is not None
+                    and int(s_match.group(1)) == 1):
+                presses.append(int(t_match.group(1)))
+
+        self.assertEqual(
+            len(presses), num_clicks,
+            'expected %d button presses at the client, got %d:\nwev:\n%s\n'
+            'kloak:\n%s' % (num_clicks, len(presses),
+                            self._read(wev_log_path), self._read(log_path)))
+
+        tol = 80
+        delays = []
+        for inj, rel in zip(inject_ms, presses):
+            delay = (rel - inj) & 0xffffffff
+            self.assertLessEqual(
+                delay, max_delay + tol,
+                'released click delay %d ms exceeds max_delay %d (+%d tol); '
+                'delays=%r' % (delay, max_delay, tol, delays))
+            delays.append(delay)
+        self.assertGreater(
+            max(delays) - min(delays), max_delay // 4,
+            'click delays show no spread (jitter not randomised): %r' % delays)
+
+    def test_5_pointer_motion_delay_measured(self):
+        """Same proof as test_3, for mouse MOTION: inject real relative moves
+        through the grabbed mouse and verify each wl_pointer motion event reaches
+        a focused client after a RANDOM delay bounded by max_delay. Each injected
+        move changes the integer cursor position, so the child emits exactly one
+        delayed motion_absolute per move; its `time` minus the injection time is
+        the applied delay."""
+        max_delay = 200
+        ecodes = self._evdev.ecodes
+        wev_log_path = self._start_wev()
+        if not self._wait_for_focus(wev_log_path, 'wl_keyboard'):
+            self.fail('wev never got keyboard focus:\n%s'
+                      % self._read(wev_log_path))
+
+        proc, log_path = self._run_kloak(
+            self.runtime_dir, self.wayland_display, max_delay=max_delay)
+        time.sleep(2)
+        self.assertIsNone(proc.poll(),
+                          'kloak exited before the motion test:\n%s'
+                          % self._read(log_path))
+
+        if not self._establish_pointer_focus(wev_log_path):
+            self.fail('wev never got pointer focus (cursor did not reach the '
+                      'surface):\nwev:\n%s\nkloak:\n%s'
+                      % (self._read(wev_log_path), self._read(log_path)))
+        time.sleep((max_delay + 500) / 1000.0)
+        offset = len(self._read(wev_log_path))
+
+        ## Alternate the move direction so the cursor oscillates in place and
+        ## stays over the surface (no drift off-screen), each move spaced
+        ## >= max_delay apart for the full random spread.
+        num_moves = 15
+        inject_ms = []
+        for i in range(num_moves):
+            dx = 15 if i % 2 == 0 else -15
+            stamp = int(time.clock_gettime(time.CLOCK_MONOTONIC) * 1000)
+            self._uinput_mouse.write(ecodes.EV_REL, ecodes.REL_X, dx)
+            self._uinput_mouse.syn()
+            inject_ms.append(stamp & 0xffffffff)
+            time.sleep((max_delay + 60) / 1000.0)
+        time.sleep((max_delay + 300) / 1000.0)
+
+        ## Client-observed motion events, parsed from the new tail.
+        motions = []
+        for line in self._read(wev_log_path)[offset:].splitlines():
+            if 'wl_pointer' not in line or 'motion' not in line:
+                continue
+            t_match = re.search(r'time:\s*(\d+)', line)
+            if t_match is not None:
+                motions.append(int(t_match.group(1)))
+
+        self.assertEqual(
+            len(motions), num_moves,
+            'expected %d motion events at the client, got %d:\nwev:\n%s\n'
+            'kloak:\n%s' % (num_moves, len(motions),
+                            self._read(wev_log_path), self._read(log_path)))
+
+        tol = 80
+        delays = []
+        for inj, rel in zip(inject_ms, motions):
+            delay = (rel - inj) & 0xffffffff
+            self.assertLessEqual(
+                delay, max_delay + tol,
+                'released motion delay %d ms exceeds max_delay %d (+%d tol); '
+                'delays=%r' % (delay, max_delay, tol, delays))
+            delays.append(delay)
+        self.assertGreater(
+            max(delays) - min(delays), max_delay // 4,
+            'motion delays show no spread (jitter not randomised): %r' % delays)
 
 
 if __name__ == '__main__':
