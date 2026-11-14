@@ -549,6 +549,26 @@ def report_release_summary(args, results, log):
         " not this headless no-network serial leg" % delegated)
 
 
+def no_root_shell_diagnostic(transcript):
+    """Message for a --test-console boot that never yielded the root serial shell.
+
+    The root debug-shell binds only when the GRUB SMBIOS cmdline reader applied the
+    injected cmdline (systemd.debug_shell + serial-getty mask). A normal login prompt
+    in the transcript instead means the reader did NOT engage -- almost always an image
+    built WITHOUT the reader (dm-image-build --smbios-reader true / dist_build_smbios_reader,
+    as CI does). Name that cause so a healthy boot is not mistaken for a boot failure or a
+    guest-architecture bug (the login prompt proves the kernel + init came up fine)."""
+    if "login:" in transcript:
+        return ("the guest reached a normal LOGIN PROMPT, not the injected root serial"
+                " shell -- the GRUB SMBIOS cmdline reader did not engage, so the"
+                " session/debug-shell injection had no effect. The image was almost"
+                " certainly built WITHOUT the reader; rebuild it with"
+                " 'dm-image-build --smbios-reader true' (dist_build_smbios_reader=true, as"
+                " CI's '--smbios-reader true' does). A production image carries no reader by"
+                " design. (The login prompt confirms the kernel and init booted fine.)")
+    return "root serial shell (--test-console) never came up"
+
+
 def run_checks(child, args, log):
     """Run the checks over the login-free ROOT serial shell that dm-smbios-reader-qemu
     --test-console binds to the console (systemd debug-shell, login getty masked).
@@ -611,7 +631,7 @@ def run_checks(child, args, log):
             shell_live = True
             break
     if not shell_live:
-        log("dm-smbios-reader-image-test: root serial shell (--test-console) never came up")
+        log("dm-smbios-reader-image-test: " + no_root_shell_diagnostic(accum[0]))
         return FAIL
 
     ## 2) Boot barrier: wait until the system finishes coming up so checks see a

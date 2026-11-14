@@ -36,6 +36,18 @@ me="${0##*/}"
 
 flavor="kicksecure-lxqt"
 target="iso"
+## Empty = the build host's native architecture (dpkg --print-architecture),
+## resolved in main(). '--arch arm64' CROSS-builds (e.g. an arm64 image on an
+## amd64 host). A non-native arch is a REAL cross-build here: CI=true forces
+## cross-builds to --dry-run in help-steps/parse-cmd (except flavor
+## kicksecure-cli), but this entry point runs non-CI.
+arch=""
+## VM-image target set (dist_build_multi_target_list), space-separated, e.g.
+## 'virtualbox' or 'virtualbox qcow2'. Empty (default) = the per-arch default in
+## help-steps/dm-build-official-one. AUTHORITATIVE for every step, so
+## '--multi-target virtualbox' builds the OVA even where the arch default omits
+## it (arm64 VirtualBox is otherwise disabled in dm-build-official-one).
+multi_target=""
 freshness="current"
 ## amd64 ISO builds REQUIRE an explicit firmware choice (help-steps/parse-cmd: no default).
 ## false = include non-free firmware -> broadly bootable (real HW + VBox), the right default for
@@ -45,15 +57,27 @@ freedom="false"
 ## ~35 min) -- the fast validation of the ref-landing + submodule + build spine before a ~1 h
 ## real build. Independent of the upload axis (which stays SIMULATED; --upload is never passed).
 dry_run="false"
+## Bake the GRUB SMBIOS kernel-cmdline reader into the image (dist_build_smbios_reader).
+## Default false: the reader lets anyone with SMBIOS control inject kernel parameters, so a
+## production image must NOT carry it. Set true ONLY to build an image for the
+## dm-smbios-reader boot-test harness (which injects session/serial via SMBIOS type-1 field 7);
+## without it the harness cannot reach its root serial shell. Mirrors CI's '--smbios-reader true'.
+smbios_reader="false"
 dir="${DM_IMAGE_BUILD_DIR:-${HOME}/derivative-maker}"
 
 usage() {
-   printf '%s\n' "usage: ${me} [--flavor F] [--target T] [--freshness frozen|current] [--freedom true|false] [--dry-run true|false] [--dir DIR]
+   printf '%s\n' "usage: ${me} [--flavor F] [--target T] [--arch A] [--multi-target LIST] [--freshness frozen|current] [--freedom true|false] [--smbios-reader true|false] [--dry-run true|false] [--dir DIR]
 
 Build a derivative-maker image on the OVH host, NO docker, from DIR (default
 \${HOME}/derivative-maker). Defaults: --flavor kicksecure-lxqt --target iso
---freshness current --freedom false --dry-run false. --dry-run true builds dummy
-images (fast pipeline check). Run as a sudo-capable NON-root user."
+--arch <native> --multi-target <arch default> --freshness current --freedom false
+--smbios-reader false --dry-run false. --arch arm64 cross-builds on an amd64 host.
+--multi-target sets the VM-image target set (space-separated, e.g. 'virtualbox'); it
+overrides the per-arch default, so '--multi-target virtualbox' forces the OVA even for
+arm64. --smbios-reader true bakes in the GRUB SMBIOS kernel-cmdline reader (REQUIRED for
+the dm-smbios-reader boot-test harness; keep false for any production/shipping image).
+--dry-run true builds dummy images (fast pipeline check). Run as a sudo-capable
+NON-root user."
 }
 
 ## Release loop/kpartx devices THIS user's own prior failed build leaked: grml-debootstrap's
@@ -83,6 +107,14 @@ main() {
             target="$2"
             shift 2
             ;;
+         --arch)
+            arch="$2"
+            shift 2
+            ;;
+         --multi-target)
+            multi_target="$2"
+            shift 2
+            ;;
          --freshness)
             freshness="$2"
             shift 2
@@ -98,6 +130,18 @@ main() {
                   ;;
                *)
                   printf '%s\n' "${me}: ERROR: --dry-run must be true or false (got '$2')" >&2
+                  exit 2
+                  ;;
+            esac
+            shift 2
+            ;;
+         --smbios-reader)
+            case "$2" in
+               true | false)
+                  smbios_reader="$2"
+                  ;;
+               *)
+                  printf '%s\n' "${me}: ERROR: --smbios-reader must be true or false (got '$2')" >&2
                   exit 2
                   ;;
             esac
@@ -155,15 +199,24 @@ main() {
    printf '%s\n' "${me}: tree status (expect empty):"
    git status --porcelain=v1 | head
 
-   ## --- build: DIRECT (no docker), NATIVE arch (so a non-CI native build is a real image) ---
-   local native_arch
-   native_arch="$(dpkg --print-architecture)"
-   printf '%s\n' "${me}: build: flavor=${flavor} target=${target} freshness=${freshness} freedom=${freedom} dry-run=${dry_run} arch=${native_arch} (direct, no docker, non-CI)"
+   ## --- build: DIRECT (no docker). NATIVE arch is a real image; a non-native --arch is a real
+   ## cross-build here (non-CI). ---
+   ## Empty --arch -> native. A non-native arch cross-builds (e.g. arm64 on amd64), slow because
+   ## the arm64 chroot's binaries run under binfmt/qemu-user TCG.
+   [ -n "${arch}" ] || arch="$(dpkg --print-architecture)"
+   printf '%s\n' "${me}: build: flavor=${flavor} target=${target} arch=${arch} multi-target='${multi_target}' freshness=${freshness} freedom=${freedom} dry-run=${dry_run} (direct, no docker, non-CI)"
    unset CI || true
    export dist_build_sign_and_tag=true
-   export dist_build_target_arch="${native_arch}"
+   export dist_build_target_arch="${arch}"
    export flavors_list="${flavor}"
-   export dist_build_multi_target_list=""
+   ## AUTHORITATIVE VM-target set for every step (dm-build-official-one). Empty = the per-arch
+   ## default; a value overrides it (e.g. 'virtualbox' forces the OVA even where the arch default
+   ## omits it).
+   export dist_build_multi_target_list="${multi_target}"
+   ## Bake in the GRUB SMBIOS cmdline reader when requested (build-steps 3500/4310 key off this
+   ## env var; it is on env-vars-keep so it crosses into the chroot). Off by default -- an
+   ## injectable image is for boot-testing only, never a production artifact.
+   export dist_build_smbios_reader="${smbios_reader}"
    ## Per-user cowbuilder base so two users building concurrently do not collide on the shared
    ## default /var/cache/pbuilder base.cow (one build would clobber the other's chroot). Set the
    ## cache dir explicitly (honored verbatim by variables.d/70_cowbuilder.bsh) -- NOT --build-slot,
@@ -187,8 +240,17 @@ main() {
    ## so the upload code is exercised yet nothing is sent to the release server. No
    ## credential is needed.
 
+   ## Top-level args forwarded to dm-build-official (and on, as "$@", to every build step).
+   ## Forward the top-level --target ONLY for the default (empty --multi-target) build. With a
+   ## --multi-target VM set, dm-build-official-one supplies each step's own --target (the
+   ## canonical CI invocation forwards NONE), and a leaked top-level '--target iso' would make the
+   ## per-flavor VM build (e.g. the kicksecure-cli OVA) ALSO build an ISO. Mirror CI: env +
+   ## --freshness/--freedom only.
+   local -a build_args=(--freshness "${freshness}" --freedom "${freedom}")
+   if [ -z "${multi_target}" ]; then
+      build_args=(--target "${target}" "${build_args[@]}")
+   fi
    ## Forward --dry-run only when true, so the default real-build invocation stays byte-identical.
-   local -a build_args=(--target "${target}" --freshness "${freshness}" --freedom "${freedom}")
    [ "${dry_run}" != "true" ] || build_args+=(--dry-run true)
 
    local build_rc=0
@@ -200,8 +262,22 @@ main() {
 
    printf '%s\n' "${me}: build finished rc=${build_rc} $(date -u +%Y-%m-%dT%H:%M:%SZ)"
    printf '%s\n' "${me}: resulting images (newest first):"
-   # shellcheck disable=SC2012  ## display-only newest-first listing; build-controlled filenames
-   ls -t "${HOME}/derivative-binary/"*/*.iso 2>/dev/null | head -5 || printf '%s\n' "${me}: (no .iso found -- inspect the log)"
+   ## List every image kind, not just .iso: a --multi-target / non-ISO build (virtualbox .ova,
+   ## qcow2) produces no .iso, so an .iso-only listing would wrongly read as "nothing built".
+   ## nullglob so an absent image kind DROPS OUT of the brace glob: without it an unmatched
+   ## pattern (always >=1, since a build produces only a subset) reaches `ls` as a literal arg,
+   ## `ls` exits nonzero, and under pipefail that prints a false "no image found" even when
+   ## another kind matched. Collect into an array, then list / report on the count.
+   local -a built_images
+   shopt -s nullglob
+   built_images=( "${HOME}/derivative-binary/"*/*.{iso,ova,qcow2,img,raw} )
+   shopt -u nullglob
+   if [ "${#built_images[@]}" -gt 0 ]; then
+      # shellcheck disable=SC2012  ## display-only newest-first listing; build-controlled filenames
+      ls -t -- "${built_images[@]}" | head -10 || true
+   else
+      printf '%s\n' "${me}: (no image found -- inspect the log)"
+   fi
    printf '%s\n' "DM-IMAGE-BUILD-DONE rc=${build_rc}"
    exit "${build_rc}"
 }
