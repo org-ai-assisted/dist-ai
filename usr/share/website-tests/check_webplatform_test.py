@@ -82,6 +82,10 @@ def run() -> int:
     ck(wp.speculation_block_bodies(
         '<script type="speculationrules" src="/rules.json"></script>') == [],
        "external (src=) ruleset is not an inline body")
+    ck(wp.speculation_block_bodies(
+        '<script type="speculationrules" data-src="x">%s</script>' % wp.SPECULATION_RULES_JSON)
+       == [wp.SPECULATION_RULES_JSON],
+       "data-src does NOT mark an inline block external (canary)")
     ck(len(wp.speculation_block_bodies(
         wp.SPECULATION_RULES_SCRIPT + wp.SPECULATION_RULES_SCRIPT)) == 2,
        "two blocks both found")
@@ -123,6 +127,20 @@ def run() -> int:
         '{ navigation: auto; } } */') is False, "commented-out VT rejected (canary)")
     ck(wp.view_transition_css_ok('html{scroll-behavior:smooth}') is False,
        "no VT rule rejected (canary)")
+    ck(wp.view_transition_css_ok(
+        '@media (prefers-reduced-motion: no-preference) { html{scroll-behavior:smooth} }\n'
+        + wp.VIEW_TRANSITION_CSS) is True,
+       "VT rule in a LATER no-preference block still accepted (first-only false-fail canary)")
+    _nbsp = chr(0xa0)  # NBSP via chr() -- keep this source file ASCII-only
+    ck(wp.speculation_json_ok(_nbsp + wp.SPECULATION_RULES_JSON + _nbsp)[0] is False,
+       "U+00A0-padded body rejected (not JSON whitespace)")
+    ck(wp.view_transition_css_ok(
+        '@media (prefers-reduced-motion: no-preference) { html{scroll-behavior:smooth} }\n'
+        + wp.VIEW_TRANSITION_CSS) is True,
+       "VT rule in a LATER no-preference block still accepted (first-only false-fail canary)")
+    _nbsp = chr(0xa0)  # NBSP via chr() -- keep this source file ASCII-only
+    ck(wp.speculation_json_ok(_nbsp + wp.SPECULATION_RULES_JSON + _nbsp)[0] is False,
+       "U+00A0-padded body rejected (not JSON whitespace)")
 
     # --- CDP event classifiers ------------------------------------------------------------- #
     accepted_ev = [{"ruleSet": {"sourceText": wp.SPECULATION_RULES_JSON}}]
@@ -181,6 +199,18 @@ def run() -> int:
         site.check_speculation_rules(
             rroot, f, [os.path.join(res_dir, 'index.html')])
         ck(f == [], "results-plane page exempt from the speculation-block requirement")
+
+        # Canary: a percent-encoded + mixed-case stylesheet href must still resolve to the file
+        # (the on-disk path is case-sensitive and %20-decoded, not lowercased).
+        eroot = os.path.join(tmp, 'e', 'site')
+        os.makedirs(eroot, exist_ok=True)
+        with open(os.path.join(eroot, 'index.html'), 'w', encoding='utf-8') as fh:
+            fh.write(_page(css_href='/My%20Style.css'))
+        with open(os.path.join(eroot, 'My Style.css'), 'w', encoding='utf-8') as fh:
+            fh.write(wp.VIEW_TRANSITION_CSS)
+        f = []
+        site.check_view_transition(eroot, f, [os.path.join(eroot, 'index.html')])
+        ck(f == [], "percent-encoded + mixed-case stylesheet href resolves (got %r)" % f)
 
     sys.stdout.write("check_webplatform_test: %d pass, %d fail, 0 skip\n"
                      % (stats["pass"], stats["fail"]))

@@ -1186,7 +1186,10 @@ def check_csr_csp(root, failures):
     # script-src or Chromium blocks it, and that one hash is NOT a loosening (it pins exact
     # bytes, admits no arbitrary inline script). Any OTHER token, a missing hash, or a missing
     # 'self' fails -- so neither a dropped feature nor a smuggled extra source slips through.
-    want = ["'self'", webplatform.SPEC_RULES_CSP_SOURCE]
+    # CSP keywords ('self', 'unsafe-inline', ...) are CASE-INSENSITIVE, so the keyword checks
+    # fold case; the sha256 base64 is case-SENSITIVE, so the hash is matched by its (case-folding)
+    # source regex as a SHAPE here -- check_speculation_rules verifies the exact digest against
+    # the inline block. script-src must be EXACTLY 'self' + one hash source, nothing else.
     for page in html_files(root):
         rel = os.path.relpath(page, root)
         with open(page, encoding='utf-8') as handle:
@@ -1194,17 +1197,23 @@ def check_csr_csp(root, failures):
         metas = _enforced_csp_contents(content)
         if not metas:
             continue              # a missing CSP meta is already a check_csp failure
-        # Case kept for the hash token (base64 is case-sensitive); directive names fold anyway.
         directives = _csp_directives(metas[-1])
         script_src = directives.get('script-src')
-        if script_src is None or sorted(script_src) != sorted(want):
+        if script_src is None:
+            failures.append("%s: CSR CSP has no script-src" % rel)
+            continue
+        hashes = [t for t in script_src if _CSP_HASH_RE.match(t)]
+        other = [t for t in script_src if t.lower() != "'self'" and not _CSP_HASH_RE.match(t)]
+        if "'self'" not in [t.lower() for t in script_src] or len(hashes) != 1 or other:
             failures.append("%s: CSR CSP script-src must be exactly 'self' + the "
                             "speculationrules hash %s (got %s)"
-                            % (rel, webplatform.SPEC_RULES_HASH, script_src))
+                            % (rel, webplatform.SPEC_RULES_CSP_SOURCE, script_src))
         for name, toks in directives.items():
-            if "'unsafe-inline'" in toks or "'unsafe-eval'" in toks:
+            low = [t.lower() for t in toks]
+            if "'unsafe-inline'" in low or "'unsafe-eval'" in low:
                 failures.append("%s: CSR CSP %s permits unsafe-inline/unsafe-eval" % (rel, name))
-        if "'script'" not in directives.get('require-trusted-types-for', []):
+        if "'script'" not in _csp_directives(metas[-1].lower()).get(
+                'require-trusted-types-for', []):
             failures.append("%s: CSR CSP missing require-trusted-types-for 'script'" % rel)
 
 
@@ -1515,10 +1524,14 @@ def _page_css_texts(root, page_path, html_text):
     texts = list(collector.inline)
     page_dir = os.path.dirname(page_path)
     for href in collector.hrefs:
-        norm = _url_norm(href)
-        if norm.startswith(('http:', 'https:', '//', 'data:')):
+        if _url_norm(href).startswith(('http:', 'https:', '//', 'data:')):
             continue                         # cross-origin / inline-data sheet: not on disk
-        clean = norm.split('?', 1)[0].split('#', 1)[0]
+        # Resolve the on-disk path from the RAW href: strip query/fragment, then percent-decode,
+        # preserving case. _url_norm is for the scheme test ONLY -- it lowercases and does NOT
+        # unquote, so a mixed-case or %20-encoded stylesheet name would resolve to the wrong
+        # (absent) file and false-fail the VT check.
+        clean = href.split('?', 1)[0].split('#', 1)[0]
+        clean = urllib.parse.unquote(clean)
         if not clean:
             continue
         if clean.startswith('/'):
@@ -1526,6 +1539,11 @@ def _page_css_texts(root, page_path, html_text):
         else:
             target = os.path.join(page_dir, clean)
         target = os.path.normpath(target)
+        # Clamp to the site tree: a `..` in the href must not read a file outside root (a static
+        # origin would not serve it either). os.path.normpath has already folded the `..`.
+        root_abs = os.path.normpath(root)
+        if target != root_abs and not target.startswith(root_abs + os.sep):
+            continue
         if os.path.isfile(target):
             try:
                 texts.append(_read_css_text(target))

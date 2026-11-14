@@ -100,13 +100,21 @@ _SPEC_SCRIPT_RE = re.compile(
 
 def speculation_block_bodies(html_text: str) -> list[str]:
     """Every inline speculationrules script body in the document, in order. A src= (external)
-    ruleset carries no inline body and is not returned (it would need its own validation)."""
+    ruleset carries no inline body and is not returned (it would need its own validation).
+
+    Scope: this validates OUR generators' canonical output + reviewed hand-authored pages. A
+    crafted evasion (an entity-encoded `type`, a block inside an HTML comment, a non-exact inert
+    type) is out of scope -- the browser-facing SECURITY gates (check_csp / check_no_inline_script
+    in site.py, which use a real HTML parser + the CSP intersection) own that boundary; this is a
+    presence/correctness check on trusted markup."""
     bodies = []
     for match in _SPEC_SCRIPT_RE.finditer(html_text):
         # Skip an external ruleset: <script type=speculationrules src=...> has an (ignored)
-        # body a browser never reads. Re-check the opening tag for a src attribute.
+        # body a browser never reads. Match the REAL src attribute only -- the negative
+        # lookbehind for a word char or hyphen keeps `data-src=` / `xlink:src=` (not the src
+        # attribute) from being mistaken for an external ruleset and wrongly dropping the body.
         opening = html_text[match.start():match.start(1)]
-        if re.search(r'\bsrc\s*=', opening, re.IGNORECASE):
+        if re.search(r'(?<![\w-])src\s*=', opening, re.IGNORECASE):
             continue
         bodies.append(match.group(1))
     return bodies
@@ -117,7 +125,10 @@ def speculation_json_ok(body: str) -> tuple[bool, str]:
     every site: byte-exact to SPECULATION_RULES_JSON after whitespace is stripped (a browser
     parses the JSON, so insignificant surrounding whitespace is allowed, but the rule shape is
     fixed). A semantic re-check backs the byte compare so the failure message is specific."""
-    stripped = body.strip()
+    # Strip only ASCII JSON whitespace -- NOT str.strip()'s full Unicode set: a U+00A0-padded
+    # body would then compare equal to the canonical bytes here yet hash differently (and
+    # JSON.parse rejects a leading U+00A0), so fold only what JSON itself treats as whitespace.
+    stripped = body.strip(' \t\r\n')
     if not stripped:
         return False, 'empty speculationrules body'
     try:
@@ -165,16 +176,19 @@ def view_transition_css_ok(css_text: str) -> bool:
     """True iff the CSS opts into cross-document View Transitions the canonical way: an
     `@view-transition { navigation: auto }` rule nested INSIDE a `prefers-reduced-motion:
     no-preference` media block -- so reduced-motion users get the instant swap. A top-level
-    @view-transition outside that guard, or inside a `reduce` block, does NOT satisfy it."""
+    @view-transition outside that guard, or inside a `reduce` block, does NOT satisfy it.
+
+    Scoped to OUR generators' canonical block shape; a crafted sheet (a `not`-negated or
+    comma-OR media query, a `/*` inside a string literal) is out of scope -- this is a
+    presence check on trusted generated/reviewed output, not an adversarial CSS parser."""
     text = _CSS_COMMENT_RE.sub(' ', css_text)
-    media = _VT_MEDIA_RE.search(text)
-    if not media:
-        return False
-    # Scan from the media block's opening brace to its matching close, and require the VT rule
-    # within. Brace-match so a rule after the block (still prefers-reduced-motion:no-preference
-    # scoped? no -- after the block it is unguarded) does not count.
-    body = _brace_block(text, media.end() - 1)
-    return bool(body is not None and _VT_RULE_RE.search(body))
+    # Check EVERY no-preference media block, not just the first: a page may carry more than one,
+    # and the rule living in a later one is still valid (the first-only scan false-failed it).
+    for media in _VT_MEDIA_RE.finditer(text):
+        body = _brace_block(text, media.end() - 1)
+        if body is not None and _VT_RULE_RE.search(body):
+            return True
+    return False
 
 
 def _brace_block(text: str, open_brace_idx: int) -> str | None:

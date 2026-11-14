@@ -2794,6 +2794,15 @@ def run():
         check_site.check_csr_csp(root, failures)
         check('check_csr_csp flags script-src missing the speculationrules hash',
               any('speculationrules hash' in f for f in failures), repr(failures))
+    with tempfile.TemporaryDirectory() as root:
+        # Canary: CSP keywords are case-insensitive -- a mixed-case 'Self' must still pass (the
+        # hash base64 stays case-sensitive and is matched by shape).
+        _write(root, 'index.html', _csp_page(
+            _jcsp_ok.replace("script-src 'self'", "script-src 'Self'")))
+        failures = []
+        check_site.check_csr_csp(root, failures)
+        check('check_csr_csp accepts a case-insensitive self keyword', failures == [],
+              repr(failures))
 
     # Pure-predicate unit tests: these functions were reachable only through fixtures, so a
     # regression in the math/parsing silently mis-gated. Drive them directly on known values.
