@@ -230,11 +230,21 @@ main() {
    ## omits it).
    export dist_build_multi_target_list="${multi_target}"
    ## Bake in the GRUB SMBIOS cmdline reader when requested. --smbios-reader is a DANGEROUS
-   ## build option (it lets anyone with SMBIOS control inject the kernel cmdline), so route it
-   ## exactly as CI does: unlock dangerous options here and pass '--smbios-reader true' as a
-   ## build arg below, so parse-cmd's error_dangerous_option_maybe gate RUNS and is satisfied.
-   ## A bare 'export dist_build_smbios_reader=true' would SKIP that gate. Off by default -- an
-   ## injectable image is for boot-testing only, never a production artifact.
+   ## build option (it lets anyone with SMBIOS control inject the kernel cmdline), so when true
+   ## route it exactly as CI does: unlock dangerous options here and pass '--smbios-reader true'
+   ## as a build arg below, so parse-cmd's error_dangerous_option_maybe gate RUNS and is satisfied
+   ## (a bare unlock+export WITHOUT the forwarded arg would SKIP that gate).
+   ## ALWAYS export dist_build_smbios_reader explicitly from the flag (default false), because it
+   ## is on dm's env-keep list (variables.d/95_env-vars-keep.bsh) and 10_misc.bsh only
+   ## default_if_empty's it -- so an inherited dist_build_smbios_reader=true from the CALLER's
+   ## environment would otherwise SURVIVE into the build with the reader baked in AND the
+   ## dangerous-option gate skipped (the off path forwards no --smbios-reader arg, so the gate
+   ## never runs). The explicit export clobbers any inherited value; on the true path the gate
+   ## still runs via the forwarded arg. Forwarding '--smbios-reader false' instead is NOT an
+   ## option: error_dangerous_option_maybe fires before the true/false check, so it would demand
+   ## the dangerous-options unlock for an ordinary off build. Off by default -- an injectable
+   ## image is for boot-testing only, never a production artifact.
+   export dist_build_smbios_reader="${smbios_reader}"
    if [ "${smbios_reader}" = "true" ]; then
       export dist_build_unlock_dangerous_options=true
    fi

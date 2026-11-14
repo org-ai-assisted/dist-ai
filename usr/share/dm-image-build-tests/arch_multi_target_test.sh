@@ -15,9 +15,13 @@
 ##   - --arch bogus does NOT crash the parser (dm/parse-cmd validates the arch itself)
 ##   - --smbios-reader true -> '--smbios-reader true' forwarded to dm-build-official AND
 ##     dist_build_unlock_dangerous_options=true exported, i.e. routed through the build's
-##     dangerous-option gate exactly as CI does (NOT a bare dist_build_smbios_reader export,
-##     which would SKIP error_dangerous_option_maybe); false/absent -> neither (the reader
-##     defaults off downstream); a non-boolean errors (exit 2) and never reaches the build spine
+##     dangerous-option gate exactly as CI does (unlock alone WITHOUT the forwarded arg would
+##     SKIP error_dangerous_option_maybe); false/absent -> neither
+##   - dist_build_smbios_reader is ALWAYS exported from the flag (default false): the var is on
+##     dm's env-keep list and 10_misc.bsh only default_if_empty's it, so an inherited
+##     dist_build_smbios_reader=true from the caller MUST be clobbered or it would bake the reader
+##     in with the gate skipped. A non-boolean --smbios-reader errors (exit 2), never reaching the
+##     build spine
 ## Drives the REAL main() (sourced define-only), with the build spine as a recorder stub that
 ## captures the EXPORTED env (not just argv), in a fake checkout. No VM, no root, no git repo.
 ## CANARY: pre-change dm-image-build has none of these flags, so `--arch arm64` / `--multi-target X`
@@ -58,6 +62,7 @@ mkdir -p -- "${fakedir}/.git" "${fakedir}/help-steps"
 export DMBO_ARCH="${work}/dmbo.arch"
 export DMBO_MULTI="${work}/dmbo.multi"
 export DMBO_UNLOCK="${work}/dmbo.unlock"
+export DMBO_SMBIOS="${work}/dmbo.smbios"
 export DMBO_ARGV="${work}/dmbo.argv"
 printf '%s\n' '#!/bin/bash' 'exit 0' > "${fakedir}/help-steps/signing-key-create"
 printf '%s\n' '#!/bin/bash' 'exit 0' > "${fakedir}/help-steps/sign-and-tag"
@@ -66,6 +71,7 @@ printf '%s\n' '#!/bin/bash' \
    'printf "%s" "${dist_build_target_arch:-UNSET}" > "${DMBO_ARCH}"' \
    'printf "%s" "${dist_build_multi_target_list-UNSET}" > "${DMBO_MULTI}"' \
    'printf "%s" "${dist_build_unlock_dangerous_options-UNSET}" > "${DMBO_UNLOCK}"' \
+   'printf "%s" "${dist_build_smbios_reader-UNSET}" > "${DMBO_SMBIOS}"' \
    'printf "%s\n" "$*" > "${DMBO_ARGV}"' \
    'exit 0' > "${fakedir}/help-steps/dm-build-official"
 chmod +x -- "${fakedir}/help-steps/"*
@@ -92,11 +98,28 @@ run_main() {
    true > "${DMBO_ARCH}"
    true > "${DMBO_MULTI}"
    true > "${DMBO_UNLOCK}"
+   true > "${DMBO_SMBIOS}"
    true > "${DMBO_ARGV}"
    MAIN_RC=0
    ( main --dir "${fakedir}" "$@" ) >/dev/null 2>&1 || MAIN_RC=$?
 }
 has() { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac }
+
+## run_main_env NAME=VAL ... -- ARGS...: run main() with the given vars EXPORTED in the caller
+## environment (the subshell inherits them), to prove dm-image-build clobbers an inherited
+## dist_build_smbios_reader instead of letting it survive into the build.
+run_main_env() {
+   local -a env_assign=()
+   while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do env_assign+=("$1"); shift; done
+   shift  ## drop the "--"
+   true > "${DMBO_ARCH}"
+   true > "${DMBO_MULTI}"
+   true > "${DMBO_UNLOCK}"
+   true > "${DMBO_SMBIOS}"
+   true > "${DMBO_ARGV}"
+   MAIN_RC=0
+   ( export "${env_assign[@]}"; main --dir "${fakedir}" "$@" ) >/dev/null 2>&1 || MAIN_RC=$?
+}
 
 ## --- default: native arch, empty multi-target (byte-identical to pre-flag behavior) -----------
 run_main
@@ -112,6 +135,9 @@ rc=0; if has '--smbios-reader' "$(cat -- "${DMBO_ARGV}")"; then rc=1; fi
 check 'default -> no --smbios-reader forwarded (reader off by default)' "${rc}"
 rc=0; [ "$(cat -- "${DMBO_UNLOCK}")" != "true" ] || rc=1
 check 'default -> dangerous options NOT unlocked' "${rc}"
+## Default MUST export dist_build_smbios_reader=false explicitly (clobber any inherited value).
+rc=0; [ "$(cat -- "${DMBO_SMBIOS}")" = "false" ] || rc=1
+check 'default -> dist_build_smbios_reader exported false (not UNSET)' "${rc}"
 
 ## --- --arch arm64: cross-build arch forwarded -------------------------------------------------
 run_main --arch arm64
@@ -146,7 +172,8 @@ check '--arch <any> forwarded verbatim (parse-cmd validates, not dm-image-build)
 ## --- --smbios-reader true: bakes in the GRUB SMBIOS cmdline reader (boot-test images only) ------
 run_main --smbios-reader true
 rc=0; [ "${MAIN_RC}" -eq 0 ] && has '--smbios-reader true' "$(cat -- "${DMBO_ARGV}")" \
-   && [ "$(cat -- "${DMBO_UNLOCK}")" = "true" ] || rc=1
+   && [ "$(cat -- "${DMBO_UNLOCK}")" = "true" ] \
+   && [ "$(cat -- "${DMBO_SMBIOS}")" = "true" ] || rc=1
 check '--smbios-reader true -> forwarded as build arg + dangerous options unlocked' "${rc}"
 
 ## --- --smbios-reader false: explicit off is honored (same as default) -------------------------
@@ -154,6 +181,7 @@ run_main --smbios-reader false
 rc=0
 [ "${MAIN_RC}" -eq 0 ] || rc=1
 [ "$(cat -- "${DMBO_UNLOCK}")" != "true" ] || rc=1
+[ "$(cat -- "${DMBO_SMBIOS}")" = "false" ] || rc=1
 if has '--smbios-reader' "$(cat -- "${DMBO_ARGV}")"; then rc=1; fi
 check '--smbios-reader false -> not forwarded, dangerous options not unlocked' "${rc}"
 
@@ -169,6 +197,35 @@ rc=0; [ "$(cat -- "${DMBO_ARCH}")" = "arm64" ] \
    && has '--smbios-reader true' "$(cat -- "${DMBO_ARGV}")" \
    && [ "$(cat -- "${DMBO_UNLOCK}")" = "true" ] || rc=1
 check 'arm64 + virtualbox + smbios-reader together -> arch/multi env + reader arg + unlock' "${rc}"
+
+## --- CANARY: an inherited dist_build_smbios_reader=true must NOT survive when the flag is off ---
+## dist_build_smbios_reader is on dm's env-keep list (95_env-vars-keep.bsh) and 10_misc.bsh only
+## default_if_empty's it, so without an explicit export the caller's inherited `true` would cross
+## into the build and bake the GRUB SMBIOS reader in -- with the dangerous-option gate SKIPPED,
+## since the off path forwards no --smbios-reader arg for parse-cmd to gate on. dm-image-build must
+## clobber the inherited value to the flag default (false). FAILS on code that only unlocks-on-true.
+run_main_env dist_build_smbios_reader=true --
+rc=0
+[ "$(cat -- "${DMBO_SMBIOS}")" = "false" ] || rc=1
+if has '--smbios-reader' "$(cat -- "${DMBO_ARGV}")"; then rc=1; fi
+[ "$(cat -- "${DMBO_UNLOCK}")" != "true" ] || rc=1
+check 'inherited dist_build_smbios_reader=true + flag OFF -> clobbered false, no arg, no unlock' "${rc}"
+
+run_main_env dist_build_smbios_reader=true -- --smbios-reader false
+rc=0
+[ "$(cat -- "${DMBO_SMBIOS}")" = "false" ] || rc=1
+if has '--smbios-reader' "$(cat -- "${DMBO_ARGV}")"; then rc=1; fi
+[ "$(cat -- "${DMBO_UNLOCK}")" != "true" ] || rc=1
+check 'inherited dist_build_smbios_reader=true + --smbios-reader false -> clobbered false' "${rc}"
+
+## An inherited false must not block an explicit --smbios-reader true: the gate still runs via the
+## forwarded arg, the reader is enabled, dangerous options unlocked.
+run_main_env dist_build_smbios_reader=false -- --smbios-reader true
+rc=0
+[ "$(cat -- "${DMBO_SMBIOS}")" = "true" ] || rc=1
+has '--smbios-reader true' "$(cat -- "${DMBO_ARGV}")" || rc=1
+[ "$(cat -- "${DMBO_UNLOCK}")" = "true" ] || rc=1
+check 'inherited dist_build_smbios_reader=false + --smbios-reader true -> true, arg forwarded, unlock' "${rc}"
 
 printf '%s\n' "" "$(basename -- "$0"): ${pass} pass, ${fail} fail"
 [ "${fail}" -eq 0 ] || exit 1
