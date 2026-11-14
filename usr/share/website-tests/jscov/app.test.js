@@ -2904,6 +2904,10 @@ test("warm-ahead: an intersecting lazy image is promoted to eager + low priority
   assert.equal(aDecoded, 1, "a warmed image's decode() is called to pre-fetch+decode it");
   assert.equal($("c").loading, "eager", "warmed even without decode()");
   assert.equal($("d").getAttribute("loading"), "lazy", "non-intersecting image is left alone");
+  // Guard the property too: a jsdom build that does not reflect `loading` to the attribute
+  // would let a regression setting d.loading = "eager" slip past the attribute check above.
+  assert.notEqual($("d").loading, "eager", "non-intersecting image is not promoted");
+  assert.equal($("d").getAttribute("fetchpriority"), null, "non-intersecting image gets no fetch priority");
 });
 
 test("warm-ahead: no-op when IntersectionObserver is unavailable", () => {
