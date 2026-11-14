@@ -17,10 +17,13 @@ random_between over the REAL /dev/urandom, current_time_ms, the coordinate-space
 conversions (screen_local_coord_to_abs_coord now reports validity via
 out_is_valid), make_virtual_cursor_pos_sane, the kb_handle_keymap guards (no-NUL
 and the short-backing-fd SIGBUS guard), the now-fixed cross-overlap and
-offset-global-space audit regressions, and the release scheduler itself
-(unit_release_jitter drives the REAL process_parent_message: every event is
-released after a random delay bounded by max_delay, and release times never
-decrease -- kloak's reason to exist).
+offset-global-space audit regressions, calc_poll_timeout (the main-loop sleep
+that enforces the delay: empty/buffered/future/past/INT_MAX-clamp), and the
+release scheduler itself (unit_release_jitter[_mouse/_abs] drive the REAL
+process_parent_message: every event -- key, click, relative + ABSOLUTE pointer
+motion, scroll -- is released after a random delay bounded by max_delay with real
+spread, release times never decrease, and the absolute-pointer path carries the
+pointer_space offset on its coordinate -- kloak's reason to exist).
 */
 #define KLOAK_FUZZING
 #include "kloakwl.c"
@@ -582,6 +585,131 @@ static void unit_release_jitter_mouse(void)
     recv_read_fd = -1;
 }
 
+/* The bounded-random-delay guarantee must ALSO hold for the ABSOLUTE pointer
+ * (touchscreen / VM mouse integration), which reaches the scheduler through
+ * PTC_PACKET_CURSOR_ABS_EVENT -> cursor = abs + pointer_space -> update_virtual_cursor.
+ * Use an offset-origin two-screen layout (pointer_space_x == 100) so the global
+ * offset is observable, then assert each released MOUSEMOVE packet (a) carries
+ * the pointer_space offset on its coordinate and (b) gets a delay in
+ * [0, max_delay] with real spread. */
+static void unit_release_jitter_abs(void)
+{
+    int pipe_fds[2];
+    int i;
+    int64_t t_before = 0;
+    int64_t t_after = 0;
+    int64_t min_delay = INT64_MAX;
+    int64_t max_seen_delay = -1;
+    struct output_geometry off_a = geom(100, 0, 1920, 1080);
+    struct output_geometry off_b = geom(2020, 0, 1920, 1080);
+    struct input_packet *pkt = NULL;
+    double ax = 0.0;
+
+    init_fd_urandom();
+    init_msg_ring();
+    CHECK(pipe(pipe_fds) == 0);
+    recv_read_fd = pipe_fds[0];
+    max_delay = 1000;
+    TAILQ_INIT(&evq_head);
+
+    for (i = 0; i < MAX_SCREEN_COUNT; ++i) {
+        state.output_geometries[i] = NULL;
+    }
+    state.output_geometries[0] = &off_a;
+    state.output_geometries[1] = &off_b;
+    CHECK(recalc_global_space());
+    CHECK(state.pointer_space_x == 100);   /* the offset is non-zero + observable */
+    should_draw_cursor = false;
+    cursor_x = 600.0;
+    cursor_y = 200.0;
+    prev_cursor_x = 600.0;
+    prev_cursor_y = 200.0;
+
+    /* Alternate the abs x between two on-screen values so every event changes the
+     * integer cursor position and update_virtual_cursor emits exactly one
+     * MOUSEMOVE (a point staying on-screen is not moved by the glide clamp). */
+    for (i = 0; i < 500; ++i) {
+        prev_release_time = 0;
+        ax = (i & 1) ? 500.0 : 600.0;
+        write_ptc_coord_frame(pipe_fds[1], PTC_PACKET_CURSOR_ABS_EVENT,
+            ax, 200.0);
+        t_before = current_time_ms();
+        CHECK(process_parent_message());
+        t_after = current_time_ms();
+        pkt = TAILQ_LAST(&evq_head, tailhead_evq);
+        CHECK(pkt != NULL);
+        CHECK(pkt->packet_type == KLOAK_PACKET_TYPE_MOUSEMOVE);
+        /* global coord = abs + pointer_space (the ABS-specific transform) */
+        CHECK(pkt->data.coord_data.x == (int32_t)(ax) + state.pointer_space_x);
+        CHECK(pkt->data.coord_data.y == 200 + state.pointer_space_y);
+        /* bounded random delay */
+        CHECK(pkt->sched_time >= t_before);
+        CHECK(pkt->sched_time <= t_after + max_delay);
+        if (pkt->sched_time - t_before < min_delay) {
+            min_delay = pkt->sched_time - t_before;
+        }
+        if (pkt->sched_time - t_before > max_seen_delay) {
+            max_seen_delay = pkt->sched_time - t_before;
+        }
+        TAILQ_REMOVE(&evq_head, pkt, evq_entries);
+        free(pkt);
+    }
+    CHECK(max_seen_delay - min_delay > max_delay / 2);
+
+    for (i = 0; i < MAX_SCREEN_COUNT; ++i) {
+        state.output_geometries[i] = NULL;
+    }
+    CHECK(close(pipe_fds[0]) == 0);
+    CHECK(close(pipe_fds[1]) == 0);
+    recv_read_fd = -1;
+}
+
+/* calc_poll_timeout gates how long the main loop sleeps before the next release,
+ * so it must: block indefinitely (-1) on an empty queue, return 0 when parent
+ * data is already buffered OR the head packet is already due, return the
+ * remaining delay for a future packet, and clamp a far-future wait to INT_MAX. A
+ * bug returning 0 here (busy-spin) or a too-large value (late release) would
+ * respectively waste CPU or break the delay bound. */
+static void unit_calc_poll_timeout(void)
+{
+    struct input_packet p_future;
+    struct input_packet p_past;
+    struct input_packet p_farfuture;
+    int timeout = 0;
+
+    TAILQ_INIT(&evq_head);
+    parse_ring_data_len = 0;
+    /* empty queue, no buffered data -> block indefinitely */
+    CHECK(calc_poll_timeout() == -1);
+
+    /* buffered parent data -> service it now, no wait */
+    parse_ring_data_len = 1;
+    CHECK(calc_poll_timeout() == 0);
+    parse_ring_data_len = 0;
+
+    /* a packet due in the future -> a positive, bounded wait */
+    memset(&p_future, 0, sizeof(p_future));
+    p_future.sched_time = current_time_ms() + 100000;
+    TAILQ_INSERT_TAIL(&evq_head, &p_future, evq_entries);
+    timeout = calc_poll_timeout();
+    CHECK(timeout > 0 && timeout <= 100000);
+    TAILQ_REMOVE(&evq_head, &p_future, evq_entries);
+
+    /* a packet already past its sched_time -> release immediately (0) */
+    memset(&p_past, 0, sizeof(p_past));
+    p_past.sched_time = current_time_ms() - 10;
+    TAILQ_INSERT_TAIL(&evq_head, &p_past, evq_entries);
+    CHECK(calc_poll_timeout() == 0);
+    TAILQ_REMOVE(&evq_head, &p_past, evq_entries);
+
+    /* a wait exceeding INT_MAX ms clamps to INT_MAX (poll's int timeout) */
+    memset(&p_farfuture, 0, sizeof(p_farfuture));
+    p_farfuture.sched_time = current_time_ms() + (int64_t)(INT_MAX) + 100000;
+    TAILQ_INSERT_TAIL(&evq_head, &p_farfuture, evq_entries);
+    CHECK(calc_poll_timeout() == INT_MAX);
+    TAILQ_REMOVE(&evq_head, &p_farfuture, evq_entries);
+}
+
 /* Regression (Whonix/kloak#41): the identical-keymap early return in
  * kb_handle_keymap must close the compositor-provided fd. Pre-fix it munmap'd
  * the mapping but leaked the fd, so a compositor re-sending the same keymap
@@ -702,6 +830,8 @@ int main(void)
     unit_check_screen_touch();
     unit_release_jitter();
     unit_release_jitter_mouse();
+    unit_release_jitter_abs();
+    unit_calc_poll_timeout();
     unit_traverse_line();
     unit_get_ticks_from_scroll_accum();
     unit_random_between();
