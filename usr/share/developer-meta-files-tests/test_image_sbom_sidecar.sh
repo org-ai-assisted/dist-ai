@@ -16,7 +16,7 @@
 ##
 ## dm-prepare-release sources help-steps/pre + variables at load, so it cannot
 ## be sourced whole; dm-build-step-fn extracts just this function. The test
-## defines it with sign_and_verify_all stubbed (recording), against tmpdir
+## defines it with sign_and_verify_signify stubbed (recording), against tmpdir
 ## fixtures. No root, no network, no build.
 
 set -o errexit
@@ -80,7 +80,7 @@ exists() { if [ -e "$1" ]; then printf '%s' yes; else printf '%s' no; fi; }
 ## Stub the signer: record the file it is asked to sign.
 signed_rec="${work}/signed.list"
 printf '%s' "" > "${signed_rec}"
-sign_and_verify_all() { printf '%s\n' "$1" >> "${signed_rec}"; }
+sign_and_verify_signify() { printf '%s\n' "$1" >> "${signed_rec}"; }
 signed_with() { grep --quiet --fixed-strings --line-regexp -- "$1" "${signed_rec}"; }
 yn() { if "$@"; then printf '%s' yes; else printf '%s' no; fi; }
 
