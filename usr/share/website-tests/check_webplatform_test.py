@@ -89,6 +89,8 @@ def run() -> int:
     ck(len(wp.speculation_block_bodies(
         wp.SPECULATION_RULES_SCRIPT + wp.SPECULATION_RULES_SCRIPT)) == 2,
        "two blocks both found")
+    ck(wp.speculation_block_bodies('<!-- ' + wp.SPECULATION_RULES_SCRIPT + ' -->') == [],
+       "commented-out block is not an active ruleset -> not returned (canary)")
 
     # --- speculation_json_ok --------------------------------------------------------------- #
     ck(wp.speculation_json_ok(wp.SPECULATION_RULES_JSON)[0] is True, "canonical JSON accepted")
@@ -125,6 +127,10 @@ def run() -> int:
     ck(wp.view_transition_css_ok(
         '/* @media (prefers-reduced-motion: no-preference) { @view-transition '
         '{ navigation: auto; } } */') is False, "commented-out VT rejected (canary)")
+    ck(wp.view_transition_css_ok(
+        '@media print and (prefers-reduced-motion: no-preference) '
+        '{ @view-transition { navigation: auto; } }') is False,
+       "VT scoped to a non-screen (print) media block rejected (canary)")
     ck(wp.view_transition_css_ok('html{scroll-behavior:smooth}') is False,
        "no VT rule rejected (canary)")
     ck(wp.view_transition_css_ok(
@@ -179,6 +185,32 @@ def run() -> int:
         site.check_speculation_rules(root, f, pages)
         ck(any('not pinned in CSP' in x for x in f),
            "speculationrules hash absent from CSP -> FAIL (canary)")
+
+        # Canary: an EARLIER enforced head CSP (script-src 'none') blocks the ruleset even though
+        # a LATER meta pins the hash -- the browser applies the intersection of ALL enforced metas,
+        # so checking only the last meta is a false-GREEN.
+        _two_meta = ('<!DOCTYPE html>\n<html lang="en">\n<meta charset="utf-8">\n'
+                     '<meta http-equiv="Content-Security-Policy" '
+                     'content="default-src \'none\'; script-src \'none\'">\n'
+                     '<meta http-equiv="Content-Security-Policy" content="%s">\n'
+                     '<title>t</title>\n%s\n<header>h</header>\n<footer>f</footer>\n'
+                     % (_GOOD_CSP, wp.SPECULATION_RULES_SCRIPT))
+        root, pages = _write_site(tmp + '/d', _two_meta)
+        f = []
+        site.check_speculation_rules(root, f, pages)
+        ck(any('not pinned in CSP' in x for x in f),
+           "earlier script-src 'none' meta blocks ruleset though last meta pins it (canary)")
+
+        # Guard against a false-RED: two metas that BOTH pin the hash stay clean.
+        _both_pin = ('<!DOCTYPE html>\n<html lang="en">\n<meta charset="utf-8">\n'
+                     '<meta http-equiv="Content-Security-Policy" content="%s">\n'
+                     '<meta http-equiv="Content-Security-Policy" content="%s">\n'
+                     '<title>t</title>\n%s\n<header>h</header>\n<footer>f</footer>\n'
+                     % (_GOOD_CSP, _GOOD_CSP, wp.SPECULATION_RULES_SCRIPT))
+        root, pages = _write_site(tmp + '/e', _both_pin)
+        f = []
+        site.check_speculation_rules(root, f, pages)
+        ck(f == [], "two metas both pinning the hash stay clean (got %r)" % f)
 
         # Canary: VT CSS stripped.
         root, pages = _write_site(tmp + '/c', _page(), css='body{color:#000}')

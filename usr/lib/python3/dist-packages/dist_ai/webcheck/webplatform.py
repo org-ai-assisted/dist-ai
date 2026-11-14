@@ -89,34 +89,29 @@ VIEW_TRANSITION_CSS = (
 # Browser-free validators (unit-tested + canaried).
 # ----------------------------------------------------------------------------- #
 
-# An inline <script type="speculationrules">BODY</script>. type is matched
-# case-insensitively with optional surrounding whitespace (a browser trims+folds the
-# attribute); a src= form is a SEPARATE external ruleset, not this inline block, so it is not
-# matched here. DOTALL so a multi-line body is captured whole.
-_SPEC_SCRIPT_RE = re.compile(
-    r'<script\b[^>]*\btype\s*=\s*["\']?\s*speculationrules\s*["\']?[^>]*>(.*?)</script\s*>',
-    re.IGNORECASE | re.DOTALL)
-
-
 def speculation_block_bodies(html_text: str) -> list[str]:
-    """Every inline speculationrules script body in the document, in order. A src= (external)
-    ruleset carries no inline body and is not returned (it would need its own validation).
+    """Every inline speculationrules script body in the document, in order. Collected from the
+    REAL parsed DOM via html5lib (the WHATWG-spec parser site.py's CSP gate already uses), NOT a
+    regex over raw markup: a browser never runs a <script> inside an HTML comment, so a commented-
+    out block must not count as present -- a raw-markup regex would match it and false-pass the
+    gate. A src= (external) ruleset carries no inline body and is not returned (it needs its own
+    validation). type is compared case-insensitively with surrounding whitespace trimmed, as a
+    browser folds the attribute.
 
-    Scope: this validates OUR generators' canonical output + reviewed hand-authored pages. A
-    crafted evasion (an entity-encoded `type`, a block inside an HTML comment, a non-exact inert
-    type) is out of scope -- the browser-facing SECURITY gates (check_csp / check_no_inline_script
-    in site.py, which use a real HTML parser + the CSP intersection) own that boundary; this is a
-    presence/correctness check on trusted markup."""
+    Scope: this validates OUR generators' canonical output + reviewed hand-authored pages; the
+    browser-facing SECURITY gates (check_csp / check_no_inline_script in site.py) own the CSP-
+    intersection boundary. This is a presence/correctness check on the parsed document."""
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(html_text, 'html5lib')
     bodies = []
-    for match in _SPEC_SCRIPT_RE.finditer(html_text):
-        # Skip an external ruleset: <script type=speculationrules src=...> has an (ignored)
-        # body a browser never reads. Match the REAL src attribute only -- the negative
-        # lookbehind for a word char or hyphen keeps `data-src=` / `xlink:src=` (not the src
-        # attribute) from being mistaken for an external ruleset and wrongly dropping the body.
-        opening = html_text[match.start():match.start(1)]
-        if re.search(r'(?<![\w-])src\s*=', opening, re.IGNORECASE):
+    for tag in soup.find_all('script'):
+        if (tag.get('type') or '').strip().lower() != 'speculationrules':
             continue
-        bodies.append(match.group(1))
+        # A real src attribute makes the browser ignore the body (external ruleset); keep a
+        # look-alike like data-src=, which bs4 exposes under its own key, not 'src'.
+        if tag.get('src') is not None:
+            continue
+        bodies.append(tag.string or '')
     return bodies
 
 
@@ -163,28 +158,53 @@ def speculation_json_ok(body: str) -> tuple[bool, str]:
 
 # Remove CSS comments so a rule commented OUT does not count as present.
 _CSS_COMMENT_RE = re.compile(r'/\*.*?\*/', re.DOTALL)
-# The motion-welcome media block header, whitespace-robust (a browser folds inner whitespace;
-# `no-preference` is the value we require -- NOT `reduce`).
-_VT_MEDIA_RE = re.compile(
-    r'@media[^{]*\(\s*prefers-reduced-motion\s*:\s*no-preference\s*\)[^{]*\{', re.IGNORECASE)
+# An @media block header, capturing its condition prelude (text up to the opening brace).
+_MEDIA_BLOCK_RE = re.compile(r'@media([^{]*)\{', re.IGNORECASE)
+# The motion-welcome feature we require -- `no-preference`, NOT `reduce`; whitespace-robust.
+_NO_PREFERENCE_RE = re.compile(
+    r'\(\s*prefers-reduced-motion\s*:\s*no-preference\s*\)', re.IGNORECASE)
+# Media TYPES that scope a block OFF the on-screen render (every CSS media type except screen/all);
+# a no-preference block gated to one of these never governs the live navigation.
+_OFFSCREEN_MEDIA_RE = re.compile(
+    r'(?<![\w-])(?:print|speech|tty|tv|projection|handheld|braille|embossed|aural)(?![\w-])',
+    re.IGNORECASE)
+# A `not`-negation flips applicability; too tangled to resolve without a media-query engine.
+_MEDIA_NOT_RE = re.compile(r'(?<![\w-])not(?![\w-])', re.IGNORECASE)
 # @view-transition { ... navigation: auto ... }, whitespace-robust.
 _VT_RULE_RE = re.compile(
     r'@view-transition\s*\{[^}]*\bnavigation\s*:\s*auto\b[^}]*\}', re.IGNORECASE)
 
 
+def _no_pref_screen_prelude(prelude: str) -> bool:
+    """True iff an @media condition prelude welcomes motion ON SCREEN: it requests
+    prefers-reduced-motion:no-preference and is not scoped away from the screen render. A
+    non-screen media type (print/speech/...), a `not`-negation, or a comma-OR list is
+    conservatively REJECTED (never counted -- over-flag, never a false green); our generators emit
+    a bare `(prefers-reduced-motion: no-preference)`."""
+    if not _NO_PREFERENCE_RE.search(prelude):
+        return False
+    if _OFFSCREEN_MEDIA_RE.search(prelude) or _MEDIA_NOT_RE.search(prelude) or ',' in prelude:
+        return False
+    return True
+
+
 def view_transition_css_ok(css_text: str) -> bool:
     """True iff the CSS opts into cross-document View Transitions the canonical way: an
-    `@view-transition { navigation: auto }` rule nested INSIDE a `prefers-reduced-motion:
-    no-preference` media block -- so reduced-motion users get the instant swap. A top-level
-    @view-transition outside that guard, or inside a `reduce` block, does NOT satisfy it.
+    `@view-transition { navigation: auto }` rule nested INSIDE a screen-applicable
+    `prefers-reduced-motion: no-preference` media block -- so reduced-motion users get the instant
+    swap. A top-level @view-transition outside that guard, one inside a `reduce` block, or one
+    scoped to a non-screen media type (`@media print and (prefers-reduced-motion: no-preference)`,
+    which never governs the live render) does NOT satisfy it.
 
-    Scoped to OUR generators' canonical block shape; a crafted sheet (a `not`-negated or
-    comma-OR media query, a `/*` inside a string literal) is out of scope -- this is a
-    presence check on trusted generated/reviewed output, not an adversarial CSS parser."""
+    Scoped to OUR generators' canonical block shape; a tangled prelude (`not`-negated, comma-OR, a
+    `/*` inside a string literal) is conservatively rejected, not parsed -- this is a presence
+    check on trusted generated/reviewed output, not an adversarial CSS parser."""
     text = _CSS_COMMENT_RE.sub(' ', css_text)
-    # Check EVERY no-preference media block, not just the first: a page may carry more than one,
-    # and the rule living in a later one is still valid (the first-only scan false-failed it).
-    for media in _VT_MEDIA_RE.finditer(text):
+    # Check EVERY screen-applicable no-preference media block, not just the first: a page may carry
+    # more than one, and the rule living in a later one is still valid (first-only scan false-fail).
+    for media in _MEDIA_BLOCK_RE.finditer(text):
+        if not _no_pref_screen_prelude(media.group(1)):
+            continue
         body = _brace_block(text, media.end() - 1)
         if body is not None and _VT_RULE_RE.search(body):
             return True
@@ -291,20 +311,35 @@ _TAG_CANDIDATES_JS = r"""
 }
 """
 
-# Is the @view-transition rule PARSED into the live CSSOM? A CSSViewTransitionRule object
-# (top-level or nested in the enabled @media block) means the browser accepted and applied it.
+# Is an APPLICABLE @view-transition rule in the live CSSOM? A CSSViewTransitionRule object
+# (top-level, or nested in a grouping rule whose condition currently applies) means the browser
+# accepted and applied it. Descend a grouping rule ONLY when it applies now: matchMedia() gates a
+# @media rule, so a VT rule in @media print (or a reduce block) -- parsed into the CSSOM but never
+# governing the on-screen navigation -- does NOT pass (presence != applicability). Recurse to any
+# depth (a VT rule two groups deep is still reached). A non-media grouping rule (@supports/@layer
+# that parsed into the CSSOM) applies by definition.
 _VT_CSSOM_JS = r"""
 () => {
   const isVT = (r) => r && r.constructor && r.constructor.name === 'CSSViewTransitionRule';
-  for (const sheet of document.styleSheets) {
-    let rules;
-    try { rules = sheet.cssRules; } catch (e) { continue; }
+  const applies = (rule) => {
+    if (rule.media && typeof rule.media.mediaText === 'string') {
+      try { return window.matchMedia(rule.media.mediaText).matches; } catch (e) { return false; }
+    }
+    return true;
+  };
+  const walk = (rules) => {
     for (const rule of rules) {
       if (isVT(rule)) return true;
       let inner;
       try { inner = rule.cssRules; } catch (e) { inner = null; }
-      if (inner) { for (const ir of inner) { if (isVT(ir)) return true; } }
+      if (inner && applies(rule) && walk(inner)) return true;
     }
+    return false;
+  };
+  for (const sheet of document.styleSheets) {
+    let rules;
+    try { rules = sheet.cssRules; } catch (e) { continue; }
+    if (walk(rules)) return true;
   }
   return false;
 }
@@ -435,6 +470,40 @@ async def check(base: str, paths: list[str]) -> int:
     return overall
 
 
+async def _vt_cssom_canary() -> int:
+    """Canary for _VT_CSSOM_JS, run in real chromium: a @view-transition rule scoped to @media
+    print must NOT be reported applied (it never governs the on-screen render), while one in a
+    screen no-preference block must be. RED on a presence-only walker that ignores media
+    applicability. Uses set_content fixtures -- no site checkout needed."""
+    from playwright.async_api import async_playwright
+    cases = [
+        ('@media print and (prefers-reduced-motion: no-preference) '
+         '{ @view-transition { navigation: auto; } }', False,
+         'print-scoped @view-transition reported applied (media applicability ignored)'),
+        ('@media (prefers-reduced-motion: no-preference) '
+         '{ @view-transition { navigation: auto; } }', True,
+         'screen no-preference @view-transition not reported applied'),
+    ]
+    overall = 0
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch()
+        try:
+            for css, expected, msg in cases:
+                page = await browser.new_page()
+                await page.set_content(
+                    '<!doctype html><meta charset="utf-8"><title>c</title><style>%s</style>' % css)
+                got = bool(await page.evaluate(_VT_CSSOM_JS))
+                await page.close()
+                if got != expected:
+                    print('FAIL vt-cssom-canary          %s' % msg, flush=True)
+                    overall = 1
+            if overall == 0:
+                print('ok   vt-cssom-canary          media applicability honored', flush=True)
+        finally:
+            await browser.close()
+    return overall
+
+
 def check_roots(roots: list[str]) -> int:
     """FAMILY/CSR entry: serve each local checkout from a localhost mount (reusing mobile.py's
     harness incl. SUBSITES mounting) and run the functional feature gate against its root page.
@@ -477,6 +546,9 @@ def check_roots(roots: list[str]) -> int:
             entry['urls'] += _page_urls(root, '')
 
     overall = 0
+    # Media-applicability canary (fixture-only, no checkout) before the per-site probes.
+    if asyncio.run(_vt_cssom_canary()) != 0:
+        overall = 1
     for docroot, entry in docroots.items():
         handler = functools.partial(_MountHandler, directory=docroot)
         httpd = _MountingTCPServer(('127.0.0.1', 0), handler)

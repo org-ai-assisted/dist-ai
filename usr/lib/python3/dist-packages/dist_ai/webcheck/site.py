@@ -1585,10 +1585,12 @@ def check_speculation_rules(root, failures, pages=None):
             failures.append('%s: speculationrules block present but no enforced CSP meta to '
                             'pin it' % rel)
             continue
-        # Raw (unlowered) CSP: a hash base64 is case-sensitive.
-        csp_hashes = _csp_script_elem_hashes(metas[-1])
+        # Browser applies EVERY enforced head CSP (their intersection): the inline ruleset is
+        # allowed only if its hash is pinned in script-src-elem of ALL of them -- an earlier
+        # `script-src 'none'` meta still blocks it even when a later meta pins the hash. Raw
+        # (unlowered) CSP: a hash base64 is case-sensitive.
         body_hashes = _inline_script_hashes(bodies[0])
-        if csp_hashes.isdisjoint(body_hashes):
+        if any(_csp_script_elem_hashes(meta).isdisjoint(body_hashes) for meta in metas):
             failures.append('%s: speculationrules block not pinned in CSP script-src (need %s) '
                             '-- Chromium blocks an unhashed inline ruleset'
                             % (rel, webplatform.SPEC_RULES_HASH))
