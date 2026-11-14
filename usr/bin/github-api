@@ -173,13 +173,41 @@ fi
 ## it. RETRY ONLY IDEMPOTENT READS (GET/HEAD): a write whose response is cut AFTER the
 ## server already applied it would be re-applied on retry (a duplicate comment/resource),
 ## so writes are never retried -- a cut write surfaces its error to the caller instead.
+##
+## A retried read MUST buffer to a file, not stream to stdout: curl cannot retract the
+## bytes it already wrote for a FAILED attempt, so retrying straight to stdout would
+## append the complete response to the partial one (invalid output). With --output curl
+## truncates+rewrites the file on each attempt, so the file holds exactly the final
+## attempt; emit it only after curl returns, and discard curl's own stdout.
 retry_args=()
+response_file=''
 case "${method^^}" in
   GET|HEAD)
-    retry_args=(--retry 5 --retry-all-errors --retry-delay 1)
+    response_file="$(mktemp)"
+    retry_args=(--retry 5 --retry-all-errors --retry-delay 1 \
+      --output "${response_file}")
     ;;
 esac
 
+cleanup_response_file() {
+  ## style-ok: no-safe-rm -- github-api also runs in a bare CI container where
+  ## safe-rm (a workstation helper) does not exist; this removes our own temp file.
+  [ -n "${response_file}" ] && rm -f -- "${response_file}"
+  return 0
+}
+
+if [ -n "${response_file}" ]; then
+  trap cleanup_response_file EXIT
+  rc=0
+  printf '%s\n' "${config_document}" \
+    | "${curl_program}" "${curl_args[@]}" "${retry_args[@]}" \
+        --silent --show-error --config - --request "${method}" "$@" "${url}" \
+        >/dev/null \
+    || rc="$?"
+  cat -- "${response_file}"
+  exit "${rc}"
+fi
+
 printf '%s\n' "${config_document}" \
-  | "${curl_program}" "${curl_args[@]}" "${retry_args[@]}" \
+  | "${curl_program}" "${curl_args[@]}" \
       --silent --show-error --config - --request "${method}" "$@" "${url}"

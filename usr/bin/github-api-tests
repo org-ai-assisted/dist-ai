@@ -40,12 +40,18 @@ fails=0
 
 ## Fake transport: records argv and the --config document it is handed.
 mkdir -p "${tmp}/bin"
-{
-  printf '%s\n' '#!/bin/bash'
-  printf '%s\n' 'printf "%s\n" "ARGV: $*"'
-  printf '%s\n' 'printf "%s" "STDIN: "'
-  printf '%s\n' 'cat'
-} > "${tmp}/bin/curl"
+## Mirror curl: with --output FILE (the buffered GET/HEAD path) write the captured
+## argv+stdin to FILE so github-api cat-emits it; else to stdout. Quoted heredoc ->
+## the body is literal (no expansion here; it expands when the fake runs).
+cat > "${tmp}/bin/curl" <<'FAKE_CURL'
+#!/bin/bash
+out=""; prev=""
+for a in "$@"; do [ "$prev" = "--output" ] && out="$a"; prev="$a"; done
+[ -n "$out" ] && exec > "$out"
+printf "%s\n" "ARGV: $*"
+printf "%s" "STDIN: "
+cat
+FAKE_CURL
 chmod 0755 "${tmp}/bin/curl"
 
 ## github-api PREFERS scurl when present ('command -v scurl'); on a box that has
@@ -368,8 +374,41 @@ for method in POST PATCH DELETE; do
   esac
 done
 
+## RETRY BUFFERING (dist-ai#849): a retried read must emit from a seekable buffer, never
+## append a failed attempt's partial bytes to the complete retry (curl cannot retract
+## stdout bytes). The fake writes a PARTIAL then the COMPLETE body: with --output it
+## truncates+rewrites the file (-> complete only); without it, it appends to stdout
+## (-> partial+complete). A GET must surface ONLY the complete body.
+buf_bin="${tmp}/bufbin"
+mkdir -p -- "${buf_bin}"
+cat > "${buf_bin}/curl" <<'BUF_CURL'
+#!/bin/bash
+cat >/dev/null   # consume the --config document on stdin
+out=""; prev=""
+for a in "$@"; do [ "$prev" = "--output" ] && out="$a"; prev="$a"; done
+if [ -n "$out" ]; then printf PARTIAL > "$out"; printf COMPLETE_BODY > "$out"
+else printf PARTIAL; printf COMPLETE_BODY; fi
+BUF_CURL
+chmod 0755 -- "${buf_bin}/curl"
+cp -- "${buf_bin}/curl" "${buf_bin}/scurl"
+out="$(PATH="${buf_bin}:${PATH}" GITHUB_TOKEN_FILE="${tmp}/token" \
+  "${git_api}" GET /rate_limit 2>&1)"
+case "${out}" in
+  COMPLETE_BODY)
+    printf '%s\n' 'ok   GET retry emits only the complete body (no partial-append)'
+    ;;
+  *PARTIAL*)
+    printf '%s\n' "FAIL: GET retry leaked a partial attempt to the caller: ${out}" >&2
+    fails=$(( fails + 1 ))
+    ;;
+  *)
+    printf '%s\n' "FAIL: GET buffered output unexpected: ${out}" >&2
+    fails=$(( fails + 1 ))
+    ;;
+esac
+
 if (( fails > 0 )); then
   printf '%s\n' "github-api-tests: ${fails} check(s) FAILED" >&2
   exit 1
 fi
-printf '%s\n' 'github-api-tests: PASSED (21 checks, 0 failed, 0 skipped)'
+printf '%s\n' 'github-api-tests: PASSED (22 checks, 0 failed, 0 skipped)'
