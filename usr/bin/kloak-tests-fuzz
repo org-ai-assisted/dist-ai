@@ -80,6 +80,16 @@ out="${work}/out"
 mkdir -p -- "${out}"
 OUT="${out}" "${work}/ci/cfuzz-build.sh"
 
+## Seed corpus + dictionary (dist-ai-maintained, NOT vendored in the submodule):
+## without a foothold the structurally-gated harnesses (parse_inotify_events'
+## ^event[0-9]+$, parse_esc_key_str / lookup_keycode key names) barely reach
+## their real logic. The seeds are generated into a THROWAWAY dir that doubles
+## as libFuzzer's writable corpus, so inputs it discovers never touch the source
+## tree. The dict's tokens are spliced into mutations for every harness.
+seed_root="${work}/corpus"
+"${dist_ai_fuzz}/kloak-fuzz-seeds.py" "${seed_root}"
+fuzz_dict="${dist_ai_fuzz}/kloak-fuzz.dict"
+
 ## LeakSanitizer needs ptrace, which the confined sandbox / CI container denies
 ## -- it fatal-errors at process exit and libFuzzer reads that as a crash (a
 ## false red). This lane is a build+run SMOKE (ASAN/UBSAN memory-safety + UB,
@@ -93,10 +103,15 @@ pass=0
 for binary in "${out}"/fuzz_*; do
    [ -x "${binary}" ] || continue
    name="$(basename -- "${binary}")"
+   ## Each harness fuzzes from its own seed corpus (empty dir if it has no
+   ## seeds) with the shared dictionary; the corpus dir is writable + throwaway.
+   corpus="${seed_root}/${name}"
+   mkdir -p -- "${corpus}"
    ## Capture output so a crash's sanitizer report + libFuzzer reproduction
    ## (the failing input) survive into the CI log, not just the binary name.
    log="${work}/${name}.log"
-   if "${binary}" -runs="${runs}" -max_len=256 >"${log}" 2>&1; then
+   if "${binary}" -runs="${runs}" -max_len=256 -dict="${fuzz_dict}" \
+      "${corpus}" >"${log}" 2>&1; then
       printf '%s\n' "PASS: ${name} (${runs} runs, no crash)"
       pass=$(( pass + 1 ))
    else

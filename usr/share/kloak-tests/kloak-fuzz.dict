@@ -1,0 +1,39 @@
+# libFuzzer dictionary for the kloak fuzz harnesses (dist-ai-maintained).
+# Without these tokens the structurally-gated harnesses almost never reach their
+# interesting branches: parse_inotify_events only acts on names matching
+# ^event[0-9]+$, and parse_esc_key_str / lookup_keycode only accept table key
+# names -- random bytes essentially never produce either. libFuzzer splices
+# these tokens into mutations, so the inotify node-name path, the escape-combo
+# chord builder, and the keycode lookup all get exercised.
+#
+# A shared dict across all harnesses: a token irrelevant to one harness is
+# harmless there.
+
+# --- key names (lookup_keycode / parse_esc_key_str) ---
+"KEY_A"
+"KEY_B"
+"KEY_C"
+"KEY_ESC"
+"KEY_ENTER"
+"KEY_SPACE"
+"KEY_LEFTSHIFT"
+"KEY_RIGHTSHIFT"
+"KEY_LEFTCTRL"
+"KEY_RIGHTCTRL"
+"KEY_NUMLOCK"
+"KEY_CAPSLOCK"
+
+# --- escape-spec separators (comma between combos, pipe within a chord) ---
+","
+"|"
+
+# --- evdev node-name prefix: the inotify regex is ^event[0-9]+$ ---
+"event"
+"event0"
+"event12"
+
+# --- CLI numeric values (parse_uint_arg at both caps) ---
+"0"
+"2147483647"
+"4294967295"
+"0x"
