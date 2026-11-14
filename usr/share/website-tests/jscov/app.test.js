@@ -2841,3 +2841,20 @@ test("warm-ahead: skipped on Save-Data / 2g links, runs on an ordinary connectio
   assert.equal(!!warmIO(mk({ saveData: false, effectiveType: "2g" })), false, "2g: no warm-ahead observer");
   assert.equal(!!warmIO(mk({ saveData: false })), true, "ordinary link (no effectiveType): warm-ahead runs");
 });
+
+// ---- bfcache eligibility guard -------------------------------------------------------------
+// app.js must register NO "unload"/"beforeunload" listener: either one makes the page ineligible
+// for the back/forward cache (bfcache), so a back navigation reloads instead of restoring the live
+// page instantly. Source-text guard over the loaded SRC (same idea as mw-static-generator's
+// test_rootprefix.py), matching the REGISTRATION form -- an addEventListener(...) call or an
+// on<event> handler assignment -- so it never false-matches the word in a comment or the
+// bfcache-safe "pagehide"/"pageshow". A new registration fails CI (app.js's primary gate runs this
+// suite against the local source via APP_JS).
+
+test("app.js registers no unload/beforeunload listener (bfcache stays eligible)", () => {
+  const addListener = /addEventListener\s*\(\s*["'](?:before)?unload["']/g;
+  const onHandler = /\bon(?:before)?unload\s*=/g;
+  const hits = (SRC.match(addListener) || []).concat(SRC.match(onHandler) || []);
+  assert.deepEqual(hits, [],
+    "a bfcache-breaking (before)unload listener was added to app.js; use pagehide/pageshow instead");
+});
