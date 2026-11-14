@@ -431,7 +431,15 @@ class KloakDaemonE2E(unittest.TestCase):
         ## baseline advances past EVERY new event in a poll, so if one injection
         ## produced two releases (a duplicate-emitting bug) the extra would be
         ## silently absorbed and still pass every delay assertion. The final count
-        ## catches that -- and a late duplicate arriving after the last injection.
+        ## catches that. Drain the LAST injection's remaining schedule window
+        ## first: its first release breaks the loop, but a duplicate can be
+        ## scheduled up to max_delay later and would arrive AFTER an immediate
+        ## snapshot (earlier injections are already re-polled by the next
+        ## iteration, so only the last one needs this wait).
+        if num:
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                time.sleep(remaining)
         final = len(self._count_releases(wev_log_path, is_release_line))
         self.assertEqual(
             final - baseline, num,
