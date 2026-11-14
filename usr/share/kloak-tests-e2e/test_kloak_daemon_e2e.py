@@ -92,6 +92,20 @@ def _kloakwl_procs_owned_by_user():
             and line.rsplit(None, 1)[-1] == KLOAKWL_USER]
 
 
+def _kloakwl_pids():
+    ## PIDs of the kloakwl-owned 'kloakwl' privsep children. Returned as a set so
+    ## a before/after delta can tell a NEWLY dropped child from one left running
+    ## by an earlier test (a global presence check would false-positive on those).
+    out = _sh('ps', '-eo', 'pid=,user:32=,comm=').stdout.splitlines()
+    pids = set()
+    for line in out:
+        parts = line.split()
+        if (len(parts) >= 3 and parts[1] == KLOAKWL_USER
+                and parts[-1] == KLOAKWL_USER):
+            pids.add(parts[0])
+    return pids
+
+
 class KloakDaemonE2E(unittest.TestCase):
     _created_user = False
     _compositor = None
@@ -735,6 +749,106 @@ class KloakDaemonE2E(unittest.TestCase):
             wev_log_path, inject_move, _motion_stamp, num_moves, max_delay)
         self._assert_delays(stamp_delays, real_delays, max_delay, 'motion')
 
+    def _spawn_compositor(self, outputs='1'):
+        """Start a PRIVATE labwc instance in its own runtime dir, so a test can
+        kill it (disconnect) or give it a different output count without
+        disturbing the shared class fixture. Returns (proc, runtime_dir,
+        wayland_display); cleanup is registered. Mirrors _start_compositor."""
+        rdir = tempfile.mkdtemp(prefix='kloak-e2e-priv-', dir=self._work)
+        os.chmod(rdir, 0o700)
+        env = dict(os.environ)
+        env.update({
+            'XDG_RUNTIME_DIR': rdir,
+            'WLR_BACKENDS': 'libinput,headless',
+            'WLR_RENDERER': 'pixman',
+            'WLR_HEADLESS_OUTPUTS': outputs,
+            'LIBSEAT_BACKEND': 'builtin',
+        })
+        log = open(os.path.join(rdir, 'labwc.log'), 'wb')
+        self.addCleanup(log.close)
+        proc = subprocess.Popen(
+            ['unshare', '--net', 'labwc'], env=env, stdout=log,
+            stderr=subprocess.STDOUT)
+        self.addCleanup(self._kill, proc)
+        display = ''
+        for _ in range(30):
+            if proc.poll() is not None:
+                break
+            socks = [name for name in os.listdir(rdir)
+                     if name.startswith('wayland-') and not name.endswith('.lock')]
+            if socks:
+                display = sorted(socks)[0]
+                break
+            time.sleep(1)
+        if not display:
+            with open(os.path.join(rdir, 'labwc.log'),
+                      encoding='utf-8', errors='replace') as handle:
+                tail = handle.read()[-2000:]
+            ## style-ok: allow-skip: headless wlroots could not start here (no DRM/seat)
+            raise unittest.SkipTest(
+                'private labwc did not expose a Wayland socket:\n%s' % tail)
+        return proc, rdir, display
+
+    def test_7_mid_session_disconnect_exit0(self):
+        """kloak must exit 0 PROMPTLY when the compositor disconnects mid-session
+        -- the POLLHUP 'Peer disconnected, exiting' path -- not spin or keep the
+        input devices grabbed (which would deadlock the seat). Uses a PRIVATE
+        compositor so killing it leaves the shared fixture intact."""
+        comp, rdir, display = self._spawn_compositor()
+        proc, log_path = self._run_kloak(rdir, display)
+        time.sleep(4)
+        self.assertIsNone(
+            proc.poll(),
+            'kloak did not stay up against the private compositor:\n%s'
+            % self._read(log_path))
+
+        ## Drop the compositor; kloak's poll sees POLLHUP and must exit cleanly.
+        comp.terminate()
+        try:
+            rc = proc.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            self.fail('kloak did not exit after the compositor disconnected '
+                      '(spin / stuck device grab?):\n%s' % self._read(log_path))
+        self.assertEqual(
+            rc, 0,
+            'kloak should exit 0 on compositor disconnect, got %d:\n%s'
+            % (rc, self._read(log_path)))
+
+    def test_8_multi_screen_connects(self):
+        """kloak must handle a real MULTI-OUTPUT compositor: recalc_global_space
+        runs over 2 outputs, not the shared fixture's 1. Either it comes up
+        connected (layout accepted) and processes input, or it aborts cleanly on
+        a gapped/invalid layout -- but it must never crash with a signal or hang
+        degraded-silently."""
+        comp, rdir, display = self._spawn_compositor(outputs='2')
+        proc, log_path = self._run_kloak(rdir, display)
+        time.sleep(4)
+        rc = proc.poll()
+        log = self._read(log_path)
+        if rc is None:
+            ## Up: must be the connected path (not degraded), and injecting input
+            ## over the 2-output global space must not crash it.
+            self.assertNotIn(
+                'await escape key combo', log,
+                'kloak degraded against a 2-output compositor:\n%s' % log)
+            ecodes = self._evdev.ecodes
+            self._uinput.write(ecodes.EV_KEY, ecodes.KEY_A, 1)
+            self._uinput.write(ecodes.EV_KEY, ecodes.KEY_A, 0)
+            self._uinput.syn()
+            time.sleep(1)
+            self.assertIsNone(
+                proc.poll(),
+                'kloak crashed processing input with 2 outputs:\n%s'
+                % self._read(log_path))
+        else:
+            ## Exited: acceptable only as a clean abort (rc >= 0), never a crash
+            ## signal (negative rc from Popen).
+            self.assertGreaterEqual(
+                rc, 0,
+                'kloak crashed (signal %d) on a 2-output layout:\n%s'
+                % (-rc, log))
+
     def test_6_pointer_scroll_delay_measured(self):
         """Same proof as test_3, for SCROLL: inject real wheel ticks through the
         grabbed mouse and verify each wl_pointer axis event reaches a focused
@@ -788,6 +902,140 @@ class KloakDaemonE2E(unittest.TestCase):
         stamp_delays, real_delays = self._measure_delays(
             wev_log_path, inject_scroll, _axis_stamp, num_scrolls, max_delay)
         self._assert_delays(stamp_delays, real_delays, max_delay, 'scroll')
+
+
+    def test_9_device_hotplug_grabbed(self):
+        """A device appearing AFTER kloak started must be grabbed via the inotify
+        hotplug path and its input delayed to the client; removing it must not
+        crash kloak. Exercises the runtime attach/detach the startup scan can't."""
+        from evdev import UInput, ecodes
+        max_delay = 150
+        wev_log_path = self._start_wev()
+        if not self._wait_for_focus(wev_log_path, 'wl_keyboard'):
+            self.fail('wev never got keyboard focus:\n%s'
+                      % self._read(wev_log_path))
+        proc, log_path = self._run_kloak(
+            self.runtime_dir, self.wayland_display, max_delay=max_delay)
+        time.sleep(2)
+        self.assertIsNone(proc.poll(),
+                          'kloak exited before the hotplug test:\n%s'
+                          % self._read(log_path))
+
+        ## Hot-add a SECOND keyboard while kloak is already running + grabbing.
+        hot = UInput({ecodes.EV_KEY: [ecodes.KEY_B]}, name='kloak-e2e-hotplug')
+        self.addCleanup(hot.close)
+        time.sleep(2)   ## inotify IN_CREATE + grab settle
+
+        ## Inject through the NEW device; if kloak grabbed it the key reaches the
+        ## client (delayed). KEY_B (48) -> wl_keyboard keycode 56 (evdev + 8).
+        before = len(self._read(wev_log_path))
+        for _ in range(3):
+            hot.write(ecodes.EV_KEY, ecodes.KEY_B, 1)
+            hot.write(ecodes.EV_KEY, ecodes.KEY_B, 0)
+            hot.syn()
+            time.sleep((max_delay + 120) / 1000.0)
+        time.sleep((max_delay + 300) / 1000.0)
+
+        got = [line for line in self._read(wev_log_path)[before:].splitlines()
+               if 'wl_keyboard' in line and 'key: 56' in line]
+        self.assertTrue(
+            got,
+            'the hot-plugged device was not grabbed -- its key never reached the '
+            'client:\nwev:\n%s\nkloak:\n%s'
+            % (self._read(wev_log_path), self._read(log_path)))
+
+        ## Removing the device must not crash kloak.
+        hot.close()
+        time.sleep(2)
+        self.assertIsNone(proc.poll(),
+                          'kloak crashed on device removal:\n%s'
+                          % self._read(log_path))
+
+    def test_seccomp_filter_runtime(self):
+        """kloak must start under its SHIPPED SystemCallFilter without tripping a
+        SIGSYS -- the arm64 group-based-filter regression manifests only under the
+        real filter, which the direct-spawn tests bypass. Launch it as a TRANSIENT
+        SERVICE (systemd-run, not --scope: a scope rejects SystemCallFilter since
+        it manages an externally-forked process) with the filter parsed from the
+        shipped unit, so systemd applies the exec sandbox exactly as the real unit
+        does and the properties never drift. Honest: passes only if the privsep
+        uid drop COMPLETES under the filter (a kloakwl-owned process, as in
+        test_1) with no SIGSYS; skips only if the environment cannot run the
+        transient service; fails on SIGSYS or a privsep drop that never happens."""
+        systemd_run = shutil.which('systemd-run')
+        if systemd_run is None:
+            ## style-ok: allow-skip: systemd-run absent -- cannot apply the shipped filter
+            self.skipTest('systemd-run not installed (seccomp-filter lane)')
+        unit = os.path.join(_repo(), 'usr', 'lib', 'systemd', 'system',
+                            'kloak.service')
+        if not os.path.exists(unit):
+            ## style-ok: allow-skip: shipped unit absent in this checkout
+            self.skipTest('kloak.service not found')
+
+        props = []
+        for raw in self._read(unit).splitlines():
+            line = raw.strip()
+            if line.startswith('#'):
+                continue
+            for key in ('SystemCallFilter=', 'SystemCallArchitectures=',
+                        'RestrictNamespaces=', 'NoNewPrivileges='):
+                if line.startswith(key):
+                    props.extend(['-p', line])
+        self.assertTrue(
+            any(p.startswith('SystemCallFilter=') for p in props),
+            'no SystemCallFilter parsed from the shipped unit %s' % unit)
+
+        log_path = os.path.join(self._work, 'kloak-seccomp.log')
+        log = open(log_path, 'wb')
+        self.addCleanup(log.close)
+        ## Connect to the SHARED compositor (NOT a nonexistent display): only on
+        ## the connected path does the privsep child run the full sandbox + uid
+        ## drop, which is where the arm64 group-filter SIGSYS regression bit. The
+        ## degraded path bails before the uid drop and would not exercise it.
+        ## Baseline the kloakwl children left running by earlier tests, so only a
+        ## NEW one -- this run's privsep drop -- counts.
+        before = _kloakwl_pids()
+        cmd = [systemd_run, '--pipe', '--quiet', '--collect'] + props + [
+            '--', 'env', 'XDG_RUNTIME_DIR=%s' % self.runtime_dir,
+            'WAYLAND_DISPLAY=%s' % self.wayland_display, self.kloak_bin, '-d', '0']
+        proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT)
+        self.addCleanup(self._kill, proc)
+
+        ## A NEW kloakwl-owned process appears ONLY if the whole fork + sandbox +
+        ## setuid path ran under the filter without a blocked syscall -- the
+        ## positive proof the filter covers kloak's real privsep path.
+        dropped = False
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            if _kloakwl_pids() - before:
+                dropped = True
+                break
+            time.sleep(0.3)
+        out = self._read(log_path)
+        self.assertNotIn(
+            'Bad system call', out,
+            'kloak hit SIGSYS under its shipped SystemCallFilter:\n%s' % out)
+        if not dropped:
+            ## No new privsep child dropped. Skip ONLY if systemd-run itself could
+            ## not run the transient service (e.g. no system bus) -- a skip that
+            ## swallowed a real filter break would hide the very regression this
+            ## guards. A child SIGSYS kills the forked child silently (the parent
+            ## survives, so proc's rc never shows -31), so "kloak ran but never
+            ## dropped" is a FAILURE, not a skip.
+            launch_failed = any(
+                marker in out for marker in (
+                    'Failed to connect to bus',
+                    'Failed to start transient',
+                    'Failed to allocate',
+                    'Interactive authentication required'))
+            if launch_failed:
+                ## style-ok: allow-skip: cannot run a systemd transient service in this environment
+                self.skipTest('systemd-run could not run the service under the '
+                              'filter:\n%s' % out[-800:])
+            self.fail(
+                'kloak did not complete the privsep uid drop under its shipped '
+                'SystemCallFilter -- a needed syscall is blocked (SIGSYS in the '
+                'sandbox child; the arm64 group-filter regression):\n%s' % out)
 
 
 if __name__ == '__main__':
