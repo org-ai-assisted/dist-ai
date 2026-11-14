@@ -166,6 +166,20 @@ if [ -n "${token}" ]; then
 ${config_document}"
 fi
 
+## Large list responses (e.g. a PR's inline comments with big diff_hunks, >1MB) are
+## intermittently truncated mid-transfer by the network path -- curl then exits non-zero
+## (56 "unexpected eof" / 92 HTTP/2 CANCEL) with a PARTIAL body, which a caller such as
+## pr-comments-fetch correctly rejects as truncated. Retrying the whole transfer recovers
+## it. RETRY ONLY IDEMPOTENT READS (GET/HEAD): a write whose response is cut AFTER the
+## server already applied it would be re-applied on retry (a duplicate comment/resource),
+## so writes are never retried -- a cut write surfaces its error to the caller instead.
+retry_args=()
+case "${method^^}" in
+  GET|HEAD)
+    retry_args=(--retry 5 --retry-all-errors --retry-delay 1)
+    ;;
+esac
+
 printf '%s\n' "${config_document}" \
-  | "${curl_program}" "${curl_args[@]}" \
+  | "${curl_program}" "${curl_args[@]}" "${retry_args[@]}" \
       --silent --show-error --config - --request "${method}" "$@" "${url}"

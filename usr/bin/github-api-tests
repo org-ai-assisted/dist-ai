@@ -65,6 +65,22 @@ run_git_api() {
     "${git_api}" "$@" 2>&1
 }
 
+## The single 'ARGV: ' line (the transport argv) from a captured run.
+argv_line_of() {
+  local out="$1" line argv=''
+  while IFS= read -r line; do
+    case "${line}" in
+      'ARGV: '*)
+        argv="${line}"
+        ;;
+      *)
+        true "INFO: not the argv line"
+        ;;
+    esac
+  done <<< "${out}"
+  printf '%s' "${argv}"
+}
+
 check_refuses() {
   local label="$1"
   shift
@@ -323,8 +339,37 @@ else
   fails=$(( fails + 1 ))
 fi
 
+## RESILIENT READS: github-api retries a transiently-truncated large response, so
+## the retry flags must attach for idempotent reads (GET/HEAD) and NEVER for a
+## write (POST/PATCH/DELETE), where retrying a response cut AFTER the server
+## applied it would duplicate the created/changed resource.
+for method in GET HEAD; do
+  argv="$(argv_line_of "$(run_git_api "${method}" /rate_limit)")"
+  case "${argv}" in
+    *--retry*)
+      printf '%s\n' "ok   ${method} carries retry flags"
+      ;;
+    *)
+      printf '%s\n' "FAIL: ${method} missing retry flags: ${argv}" >&2
+      fails=$(( fails + 1 ))
+      ;;
+  esac
+done
+for method in POST PATCH DELETE; do
+  argv="$(argv_line_of "$(run_git_api "${method}" /repos/x/y/issues/1/comments)")"
+  case "${argv}" in
+    *--retry*)
+      printf '%s\n' "FAIL: ${method} must not retry (a cut write would duplicate): ${argv}" >&2
+      fails=$(( fails + 1 ))
+      ;;
+    *)
+      printf '%s\n' "ok   ${method} carries no retry flags"
+      ;;
+  esac
+done
+
 if (( fails > 0 )); then
   printf '%s\n' "github-api-tests: ${fails} check(s) FAILED" >&2
   exit 1
 fi
-printf '%s\n' 'github-api-tests: PASSED (16 checks, 0 failed, 0 skipped)'
+printf '%s\n' 'github-api-tests: PASSED (21 checks, 0 failed, 0 skipped)'
