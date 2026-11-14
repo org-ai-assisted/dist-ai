@@ -169,13 +169,23 @@ static void unit_coord_space(void)
     }
 }
 
-/* make_virtual_cursor_pos_sane walks start->end avoiding voids. A move wholly
- * within one screen reaches its target unchanged. */
+/* make_virtual_cursor_pos_sane walks start->end avoiding voids. Two cases: a
+ * move wholly within one screen reaches its target unchanged; a move whose
+ * straight line would cross a VOID is held at the last on-screen pixel and NEVER
+ * jumps the void (the whole reason the function exists -- the trivial case alone
+ * leaves that algorithm untested). */
 static void unit_make_virtual_cursor_pos_sane(void)
 {
     struct output_geometry g0 = geom(0, 0, 1920, 1080);
+    /* A over a NARROWER B: directly below x=75 there is screen for y<100 (A)
+     * but a void for y>=100 (B only spans x[0,50)). */
+    struct output_geometry va = geom(0, 0, 100, 100);
+    struct output_geometry vb = geom(0, 100, 50, 100);
+    struct screen_local_coord res = EMPTY_SCREEN_LOCAL_COORD;
     double cx = 200.0;
     double cy = 200.0;
+    double vx = 75.0;
+    double vy = 150.0;
     ssize_t i;
 
     for (i = 0; i < MAX_SCREEN_COUNT; ++i) {
@@ -185,6 +195,19 @@ static void unit_make_virtual_cursor_pos_sane(void)
 
     make_virtual_cursor_pos_sane(100.0, 100.0, &cx, &cy);
     CHECK(cx == 200.0 && cy == 200.0);
+
+    /* Void-crossing: walking straight down x=75 from (75,50) leaves the covered
+     * area at y=100; the cursor must stop before the void, not reach the raw end
+     * (75,150) which sits in it. */
+    for (i = 0; i < MAX_SCREEN_COUNT; ++i) {
+        state.output_geometries[i] = NULL;
+    }
+    state.output_geometries[0] = &va;
+    state.output_geometries[1] = &vb;
+    make_virtual_cursor_pos_sane(75.0, 50.0, &vx, &vy);
+    CHECK(vx == 75.0 && vy < 100.0);   /* clamped before the void, not 150 */
+    res = abs_coord_to_screen_local_coord((int32_t)(vx), (int32_t)(vy));
+    CHECK(res.output_idx >= 0);        /* lands on a screen, never in the void */
 
     for (i = 0; i < MAX_SCREEN_COUNT; ++i) {
         state.output_geometries[i] = NULL;
@@ -839,9 +862,65 @@ static void unit_applayer_config_init_exits_on_hangup(void)
     CHECK(run_config_init_hangup_child() == CH_EXIT0);
 }
 
+/* find_merge_target_packet is the core of packet coalescing (move-over-scroll
+ * and scroll-over-move): a reverse walk from the queue tail that returns the
+ * last packet of the target type, SKIPPING an allowed intervening type, but
+ * stopping (returning NULL) at any other packet. Every jitter test drains the
+ * queue between events, so this reverse walk + ignore-list + blocker logic was
+ * never exercised -- a broken coalescer (wrong skip, merging past a key) would
+ * ship green. Drive it directly over a hand-built queue. */
+static void unit_find_merge_target_packet(void)
+{
+    const enum input_packet_type ign_scroll[]
+        = { KLOAK_PACKET_TYPE_MOUSESCROLL, 0 };
+    const enum input_packet_type ign_move[]
+        = { KLOAK_PACKET_TYPE_MOUSEMOVE, 0 };
+    struct input_packet *mv = NULL;
+    struct input_packet *sc = NULL;
+    struct input_packet *kb = NULL;
+    struct input_packet *pkt = NULL;
+
+    TAILQ_INIT(&evq_head);
+
+    /* empty queue -> no merge target */
+    CHECK(find_merge_target_packet(KLOAK_PACKET_TYPE_MOUSEMOVE, ign_scroll)
+        == NULL);
+
+    /* [MOVE] -> that move is the target */
+    mv = safe_calloc(1, sizeof(struct input_packet));
+    mv->packet_type = KLOAK_PACKET_TYPE_MOUSEMOVE;
+    TAILQ_INSERT_TAIL(&evq_head, mv, evq_entries);
+    CHECK(find_merge_target_packet(KLOAK_PACKET_TYPE_MOUSEMOVE, ign_scroll)
+        == mv);
+
+    /* [MOVE, SCROLL]: a move coalesces ACROSS an intervening scroll (scroll is
+     * on the ignore list), and a scroll finds the tail scroll. */
+    sc = safe_calloc(1, sizeof(struct input_packet));
+    sc->packet_type = KLOAK_PACKET_TYPE_MOUSESCROLL;
+    TAILQ_INSERT_TAIL(&evq_head, sc, evq_entries);
+    CHECK(find_merge_target_packet(KLOAK_PACKET_TYPE_MOUSEMOVE, ign_scroll)
+        == mv);
+    CHECK(find_merge_target_packet(KLOAK_PACKET_TYPE_MOUSESCROLL, ign_move)
+        == sc);
+
+    /* [MOVE, SCROLL, KB]: a key at the tail is neither target nor ignored, so it
+     * BLOCKS the merge -- a move must not coalesce past an unrelated event. */
+    kb = safe_calloc(1, sizeof(struct input_packet));
+    kb->packet_type = KLOAK_PACKET_TYPE_KB;
+    TAILQ_INSERT_TAIL(&evq_head, kb, evq_entries);
+    CHECK(find_merge_target_packet(KLOAK_PACKET_TYPE_MOUSEMOVE, ign_scroll)
+        == NULL);
+
+    while ((pkt = TAILQ_FIRST(&evq_head)) != NULL) {
+        TAILQ_REMOVE(&evq_head, pkt, evq_entries);
+        free(pkt);
+    }
+}
+
 int main(void)
 {
     unit_check_screen_touch();
+    unit_find_merge_target_packet();
     unit_release_jitter();
     unit_release_jitter_mouse();
     unit_release_jitter_abs();

@@ -48,6 +48,7 @@ static jmp_buf g_reject;
 #include <assert.h>
 #include <stdint.h>
 #include <string.h>
+#include <unistd.h>
 
 static int checks = 0;
 #define CHECK(cond) do { assert(cond); ++checks; } while (0)
@@ -456,9 +457,68 @@ static void unit_li_open_restricted_missing_returns_errno(void)
     }
 }
 
+/* The parent->child PTC wire protocol was tested only from the CHILD side, by
+ * frames the kloakwl harness BUILDS BY HAND -- nothing ran the REAL parent
+ * serializer send_msg_to_peer and checked its bytes, so a drift in the
+ * serializer (field order/width, the uint8 pressed encoding) would break
+ * production while the hand-built frame and the child's parser stayed mutually
+ * consistent (silent green). Run the REAL serializer and pin its output bytes to
+ * the documented layout. (The reverse direction -- the parent decoding the
+ * untrusted child's CTP packets -- is covered by fuzz_kloak_child_msg.) */
+static void unit_wire_byte_contract(void)
+{
+    int spipe[2];
+    unsigned char buf[64];
+    size_t pos = 0;
+    ssize_t n = 0;
+    enum ptc_packet_type ptype = 0;
+    uint32_t code = 0;
+    uint8_t pressed = 0;
+    double gx = 0.0;
+    double gy = 0.0;
+    struct button_event ev = be(272u, true);
+    struct double_coord dc = { .x = 3.0, .y = -4.0 };
+
+    CHECK(pipe(spipe) == 0);
+    send_write_fd = spipe[1];
+
+    /* Click/key layout: [enum ptc_packet_type][uint32 code][uint8 pressed]. */
+    send_msg_to_peer(PTC_PACKET_CLICK_EVENT, 1, &ev);
+    n = read(spipe[0], buf, sizeof(buf));
+    CHECK(n == (ssize_t)(sizeof(enum ptc_packet_type) + sizeof(uint32_t)
+        + sizeof(uint8_t)));
+    pos = 0;
+    memcpy(&ptype, buf + pos, sizeof(ptype));
+    pos += sizeof(ptype);
+    memcpy(&code, buf + pos, sizeof(code));
+    pos += sizeof(code);
+    pressed = buf[pos];
+    CHECK(ptype == PTC_PACKET_CLICK_EVENT);
+    CHECK(code == 272u);
+    CHECK(pressed == 1);
+
+    /* Cursor/scroll layout: [enum ptc_packet_type][double x][double y]. */
+    send_msg_to_peer(PTC_PACKET_CURSOR_REL_EVENT, 1, &dc);
+    n = read(spipe[0], buf, sizeof(buf));
+    CHECK(n == (ssize_t)(sizeof(enum ptc_packet_type) + sizeof(double) * 2));
+    pos = 0;
+    memcpy(&ptype, buf + pos, sizeof(ptype));
+    pos += sizeof(ptype);
+    memcpy(&gx, buf + pos, sizeof(gx));
+    pos += sizeof(gx);
+    memcpy(&gy, buf + pos, sizeof(gy));
+    CHECK(ptype == PTC_PACKET_CURSOR_REL_EVENT);
+    CHECK(gx == 3.0 && gy == -4.0);
+
+    CHECK(close(spipe[0]) == 0);
+    CHECK(close(spipe[1]) == 0);
+    send_write_fd = -1;
+}
+
 int main(void)
 {
     unit_lookup_keycode();
+    unit_wire_byte_contract();
     unit_parse_uint31();
     unit_parse_uint32();
     unit_parse_esc_key_str();
