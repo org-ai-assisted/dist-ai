@@ -145,8 +145,53 @@ else
    esac
 fi
 
+## --- iso_pkg_repo_seed_list is ARCH-AWARE: grub-pc (PC/BIOS GRUB) only where a BIOS
+## target exists. grub-pc has no apt candidate on arm64, so seeding it aborts the
+## on-ISO apt-repo prep in 3500_install-packages ('apt download grub-pc' -> exit 100).
+## Canary: unconditional grub-pc (pre-fix) leaves it in the arm64 list -> the arm64
+## 'excludes grub-pc' assertion FAILS. EFI (grub-efi + grub-efi-<arch>) stays on all arches.
+seed_args=( --flavor kicksecure-cli --type vm --target raw --freshness current --freedom false --repo false )
+
+run_inner iso_pkg_repo_seed_list "" "${seed_args[@]}" --arch arm64
+if [ "${run_rc}" -ne 0 ]; then
+   fail "iso_pkg_repo_seed_list arm64: inner build exited ${run_rc} (expected a clean resolve)"
+else
+   seed_arm64="$(grep '^RESULT=' "${inner_out}" | head -1 | cut -d= -f2-)" || true
+   case " ${seed_arm64} " in
+      *" grub-pc "*)
+         fail "arm64 iso_pkg_repo_seed_list must NOT seed grub-pc (no arm64 candidate): '${seed_arm64}'"
+         ;;
+      *)
+         pass "arm64 iso_pkg_repo_seed_list excludes grub-pc"
+         ;;
+   esac
+   case " ${seed_arm64} " in
+      *" grub-efi-arm64 "*)
+         pass "arm64 iso_pkg_repo_seed_list still seeds grub-efi-arm64"
+         ;;
+      *)
+         fail "arm64 iso_pkg_repo_seed_list should seed grub-efi-arm64: '${seed_arm64}'"
+         ;;
+   esac
+fi
+
+run_inner iso_pkg_repo_seed_list "" "${seed_args[@]}" --arch amd64
+if [ "${run_rc}" -ne 0 ]; then
+   fail "iso_pkg_repo_seed_list amd64: inner build exited ${run_rc} (expected a clean resolve)"
+else
+   seed_amd64="$(grep '^RESULT=' "${inner_out}" | head -1 | cut -d= -f2-)" || true
+   case " ${seed_amd64} " in
+      *" grub-pc "*)
+         pass "amd64 iso_pkg_repo_seed_list still seeds grub-pc (BIOS GRUB)"
+         ;;
+      *)
+         fail "amd64 iso_pkg_repo_seed_list must still seed grub-pc on a BIOS arch: '${seed_amd64}'"
+         ;;
+   esac
+fi
+
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
    exit 1
 fi
-printf '%s\n' "OK: config precedence (CLI > env > default_if_empty config > default; bare = forces)."
+printf '%s\n' "OK: config precedence (CLI > env > default_if_empty config > default; bare = forces) + iso_pkg_repo_seed_list arch-awareness."
