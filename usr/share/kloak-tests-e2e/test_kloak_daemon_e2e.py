@@ -479,10 +479,14 @@ class KloakDaemonE2E(unittest.TestCase):
         for line in self._read(wev_log_path).splitlines():
             if 'wl_keyboard' not in line:
                 continue
-            match = re.search(r'time: (\d+); key: (\d+); state: (\d+)', line)
+            ## wev prints `time` with %d on a uint32_t, so a value >= 0x80000000
+            ## (~24.9d monotonic uptime) can print negative; accept an optional minus
+            ## and mask to 32 bits (matches the inject_ms masking) so the press is not
+            ## dropped, failing the count assertion.
+            match = re.search(r'time: (-?\d+); key: (\d+); state: (\d+)', line)
             if (match is not None and int(match.group(2)) == wl_keycode
                     and int(match.group(3)) == 1):
-                presses.append(int(match.group(1)))
+                presses.append(int(match.group(1)) & 0xffffffff)
 
         self.assertEqual(
             len(presses), num_keys,
@@ -561,11 +565,11 @@ class KloakDaemonE2E(unittest.TestCase):
         for line in self._read(wev_log_path)[offset:].splitlines():
             if 'wl_pointer' not in line or 'button' not in line:
                 continue
-            t_match = re.search(r'time:\s*(\d+)', line)
+            t_match = re.search(r'time:\s*(-?\d+)', line)
             s_match = re.search(r'state:\s*(\d+)', line)
             if (t_match is not None and s_match is not None
                     and int(s_match.group(1)) == 1):
-                presses.append(int(t_match.group(1)))
+                presses.append(int(t_match.group(1)) & 0xffffffff)
 
         self.assertEqual(
             len(presses), num_clicks,
@@ -633,9 +637,9 @@ class KloakDaemonE2E(unittest.TestCase):
         for line in self._read(wev_log_path)[offset:].splitlines():
             if 'wl_pointer' not in line or 'motion' not in line:
                 continue
-            t_match = re.search(r'time:\s*(\d+)', line)
+            t_match = re.search(r'time:\s*(-?\d+)', line)
             if t_match is not None:
-                motions.append(int(t_match.group(1)))
+                motions.append(int(t_match.group(1)) & 0xffffffff)
 
         self.assertEqual(
             len(motions), num_moves,
