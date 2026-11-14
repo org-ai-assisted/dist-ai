@@ -178,11 +178,16 @@ fi
 ## bytes it already wrote for a FAILED attempt, so retrying straight to stdout would
 ## append the complete response to the partial one (invalid output). With --output curl
 ## truncates+rewrites the file on each attempt, so the file holds exactly the final
-## attempt; emit it only after a CLEAN curl exit, and discard curl's own stdout. This
-## buffering also underpins body-based secondary-RL detection, so a caller's own
-## -o/--output is lifted out of the forwarded args (it would otherwise win -- curl honors
-## only the FIRST output -- leaving the buffer empty); the final body is delivered to that
-## destination after classification instead.
+## attempt; emit it only after a CLEAN curl exit, and discard curl's own stdout.
+##
+## The caller's args are passed to curl UNCHANGED, so curl owns delivery and keeps every
+## native output semantic (-o -, --output-dir, --create-dirs, --no-clobber, a single
+## stream straight to the destination disk). When the caller gives its own -o/--output,
+## curl writes the body THERE and we never add our own --output; the body-based
+## secondary-RL grep then reads that same destination file. We only LEARN that path by a
+## best-effort, NON-destructive scan: a misread degrades to header-only RL detection, it
+## never corrupts or misdirects the caller's output. Only when the caller gives no output
+## destination do we buffer to a private temp and emit it to stdout.
 ##
 ## GitHub SECONDARY rate limits return 403 -- and curl treats a 403 as a SUCCESSFUL transfer
 ## (exit 0), so neither --retry nor --retry-all-errors covers it. They carry a Retry-After
@@ -194,52 +199,55 @@ retry_args=()
 response_file=''
 hdr_file=''
 caller_out=''
-fwd_args=()
+body_file=''
 case "${method^^}" in
   GET|HEAD)
-    response_file="$(mktemp)"
     hdr_file="$(mktemp)"
     retry_args=(--retry 5 --retry-all-errors --retry-delay 1)
-    ## A caller may pass its own -o/--output to save the body to a file (e.g. dm-boot-local
-    ## downloading an artifact zip). curl honors only the FIRST output destination, so our
-    ## buffering --output must not compete with it: lift the caller's output flag out of the
-    ## forwarded args into caller_out, buffer every attempt to response_file for secondary-RL
-    ## classification + retry, then deliver the final body to caller_out (below). Simple match
-    ## on the real/common curl forms only -- no short-cluster parser (e.g. -sLo); no caller
-    ## uses one, and -O/--remote-name/--output-dir are likewise unused and forwarded as-is.
-    while [ "$#" -gt 0 ]; do
-      case "$1" in
-        -o | --output)
-          if [ "$#" -ge 2 ]; then
-            caller_out="$2"
-            shift 2
-          else
-            fwd_args+=("$1")
-            shift
-          fi
-          ;;
-        --output=*)
-          caller_out="${1#--output=}"
-          shift
-          ;;
-        -o?*)
-          caller_out="${1#-o}"
-          shift
-          ;;
-        *)
-          fwd_args+=("$1")
-          shift
-          ;;
-      esac
+    ## Learn the caller's output destination WITHOUT touching the args (curl keeps native
+    ## output handling). Match only the real/common curl forms; -o/--output take the next
+    ## token, --output=VAL and -oVAL attach it. FIRST wins, as curl does. Not handled (none
+    ## of our callers use them, and a miss only degrades to header-only RL detection, never
+    ## misdirects output): a value that merely looks like -o (e.g. --data-urlencode -o=x),
+    ## short clusters (-sLo), -O/--remote-name, and --output-dir's prefixing.
+    prev=''
+    for arg in "$@"; do
+      if [ -z "${caller_out}" ]; then
+        case "${prev}" in
+          -o | --output)
+            caller_out="${arg}"
+            ;;
+        esac
+        case "${arg}" in
+          --output=*)
+            caller_out="${arg#--output=}"
+            ;;
+          -o?*)
+            caller_out="${arg#-o}"
+            ;;
+        esac
+      fi
+      prev="${arg}"
     done
-    set -- "${fwd_args[@]}"
+    ## curl writes '-o -' to stdout: treat it as the no-destination (stdout) case.
+    [ "${caller_out}" = '-' ] && caller_out=''
+    if [ -n "${caller_out}" ]; then
+      ## curl writes the body to the caller's file; grep THAT for the secondary-RL body text.
+      body_file="${caller_out}"
+    else
+      ## No caller destination: buffer to a private temp, grep it, emit it to stdout.
+      response_file="$(mktemp)"
+      body_file="${response_file}"
+    fi
     ;;
 esac
 
 cleanup_response_file() {
   ## style-ok: no-safe-rm -- github-api also runs in a bare CI container where
   ## safe-rm (a workstation helper) does not exist; these are our own temp files.
-  [ -n "${response_file}" ] && rm -f -- "${response_file}" "${hdr_file}"
+  ## Only our own temps -- never the caller's output file.
+  [ -n "${response_file}" ] && rm -f -- "${response_file}"
+  [ -n "${hdr_file}" ] && rm -f -- "${hdr_file}"
   return 0
 }
 
@@ -283,8 +291,12 @@ secondary_rl_wait() {
   return 1
 }
 
-if [ -n "${response_file}" ]; then
+if [ -n "${hdr_file}" ]; then
   trap cleanup_response_file EXIT
+  ## Buffer to our own --output only when the caller gave no destination; when it did, curl
+  ## writes the body to the caller's file (that -o/--output is already in "$@").
+  out_args=()
+  [ -n "${response_file}" ] && out_args=(--output "${response_file}")
   rc=0
   attempt=1
   http_code=''
@@ -294,13 +306,13 @@ if [ -n "${response_file}" ]; then
     http_code="$(printf '%s\n' "${config_document}" \
       | "${curl_program}" "${curl_args[@]}" "${retry_args[@]}" \
           --silent --show-error --config - --request "${method}" "$@" \
-          --dump-header "${hdr_file}" --output "${response_file}" \
+          --dump-header "${hdr_file}" "${out_args[@]}" \
           --write-out '%{http_code}' "${url}")" \
       || rc="$?"
     ## Transport error (curl non-zero): curl's own --retry already exhausted -- do not loop.
     [ "${rc}" -ne 0 ] && break
     ## Secondary rate limit -> wait (bounded) and retry the whole request; anything else -> done.
-    if wait_s="$(secondary_rl_wait "${http_code}" "${hdr_file}" "${response_file}" "${attempt}")" \
+    if wait_s="$(secondary_rl_wait "${http_code}" "${hdr_file}" "${body_file}" "${attempt}")" \
        && [ "${attempt}" -lt "$(( 10#${GH_SECONDARY_RL_ATTEMPTS} ))" ]; then
       [ "$(( 10#${wait_s} ))" -gt 0 ] && sleep "$(( 10#${wait_s} ))"
       attempt=$(( attempt + 1 ))
@@ -308,19 +320,13 @@ if [ -n "${response_file}" ]; then
     fi
     break
   done
-  ## Emit the buffered body ONLY on a clean curl exit, to the caller's file when one was
-  ## requested (-o/--output), else to stdout. On a hard failure (every retry cut) the file
-  ## holds the last attempt's PARTIAL body; a caller keying on the exit status already fails
-  ## closed, so we write nothing -- leaving the caller's file untouched -- which also keeps a
-  ## caller that ignores the status from parsing a partial response as though it were whole.
-  ## The redirect follows a symlink exactly as curl -o did, so a caller's own fresh-dir
-  ## symlink mitigation (dm-boot-local) is unchanged.
-  if [ "${rc}" -eq 0 ]; then
-    if [ -n "${caller_out}" ]; then
-      cat -- "${response_file}" > "${caller_out}"
-    else
-      cat -- "${response_file}"
-    fi
+  ## A caller destination already holds curl's body (truncated+rewritten each attempt, so the
+  ## final attempt's bytes). On the stdout path, emit the buffered body ONLY on a clean curl
+  ## exit; on a hard failure (every retry cut) the temp holds a PARTIAL body and a caller
+  ## keying on the exit status already fails closed, so emitting nothing keeps a status-
+  ## ignoring caller from parsing a partial response as whole.
+  if [ -z "${caller_out}" ] && [ "${rc}" -eq 0 ]; then
+    cat -- "${response_file}"
   fi
   exit "${rc}"
 fi

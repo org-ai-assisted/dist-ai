@@ -512,13 +512,14 @@ fi
 
 ## SECONDARY RATE LIMIT + a caller's own -o: dist-ai#850. dm-boot-local downloads with
 ## 'github-api GET .../zip -L -o artifact.zip'. curl honors only the FIRST output, so the
-## wrapper's buffering --output must not compete: it must lift the caller's -o out of the
-## forwarded args, buffer every attempt itself for classification, and deliver the final body
-## to the caller file. This fake models curl 8.14.1 (FIRST of -o/--output wins) and returns a
-## secondary-limit 403 with NO Retry-After (so detection depends on the buffered BODY, the path
-## the -o bug breaks), then a 200. A GET -o must RETRY and land the 200 body in the caller file,
-## never the 403 body. On the pre-fix code the caller's -o won the buffer: detection saw an empty
-## body, did not retry, and the 403 error landed in the caller file -- this check went red.
+## wrapper must NOT add its own --output alongside the caller's -o -- it leaves the caller's
+## -o in place (curl writes the body there) and greps THAT file for the secondary-RL body
+## text. This fake models curl 8.14.1 (FIRST of -o/--output wins) and returns a secondary-limit
+## 403 with NO Retry-After (so detection depends on the body, the path the -o bug breaks), then
+## a 200. A GET -o must RETRY and land the 200 body in the caller file, never the 403 body. On
+## the pre-fix code the wrapper appended its own --output after the caller's -o: the caller's -o
+## won, the wrapper's buffer stayed empty, detection saw nothing, no retry, and the 403 error
+## landed in the caller file -- this check went red.
 rlo_bin="${tmp}/rlobin"
 mkdir -p -- "${rlo_bin}"
 cat > "${rlo_bin}/curl" <<'RLO_CURL'
@@ -562,8 +563,51 @@ else
   fails=$(( fails + 1 ))
 fi
 
+## A caller's -o must reach curl as the SOLE output flag: the wrapper leaves the caller's -o
+## in "$@" (curl owns delivery, with all its native output semantics) and injects NO --output
+## of its own. Re-adding a second --output would resurrect dist-ai#850 (curl's first-output-wins
+## starves whichever buffer loses) and double-buffer large downloads through TMPDIR. This fake
+## records its argv to a side file (the real transport's stdout is captured by the wrapper for
+## %{http_code}, so it cannot be observed through the wrapper's own stdout when a caller -o is
+## present). Assert the recorded argv carries the caller's -o and no wrapper-injected --output.
+soie_bin="${tmp}/soiebin"
+mkdir -p -- "${soie_bin}"
+cat > "${soie_bin}/curl" <<'SOIE_CURL'
+#!/bin/bash
+cat >/dev/null   # consume the --config document on stdin
+printf '%s\n' "$*" > "${SOIE_ARGV}"
+out=""; prev=""
+for a in "$@"; do case "${prev}" in -o | --output) [ -z "${out}" ] && out="$a" ;; esac; prev="$a"; done
+[ -n "${out}" ] && printf 'BODY' > "${out}"
+printf '200'
+SOIE_CURL
+chmod 0755 -- "${soie_bin}/curl"
+cp -- "${soie_bin}/curl" "${soie_bin}/scurl"
+soie_argv="${tmp}/soie_argv"; true > "${soie_argv}"
+caller_o="${tmp}/sole_out.bin"
+PATH="${soie_bin}:${PATH}" GITHUB_TOKEN_FILE="${tmp}/token" SOIE_ARGV="${soie_argv}" \
+  "${git_api}" GET /repos/x/y/actions/artifacts/1/zip -L -o "${caller_o}" >/dev/null 2>&1 || true
+soie_line="$(cat -- "${soie_argv}")"
+case "${soie_line}" in
+  *"-o ${caller_o}"*)
+    case "${soie_line}" in
+      *--output*)
+        printf '%s\n' "FAIL: wrapper injected its own --output alongside caller -o: ${soie_line}" >&2
+        fails=$(( fails + 1 ))
+        ;;
+      *)
+        printf '%s\n' 'ok   caller -o reaches curl as the sole output flag (no injected --output)'
+        ;;
+    esac
+    ;;
+  *)
+    printf '%s\n' "FAIL: caller -o not forwarded to the transport: ${soie_line}" >&2
+    fails=$(( fails + 1 ))
+    ;;
+esac
+
 if (( fails > 0 )); then
   printf '%s\n' "github-api-tests: ${fails} check(s) FAILED" >&2
   exit 1
 fi
-printf '%s\n' 'github-api-tests: PASSED (26 checks, 0 failed, 0 skipped)'
+printf '%s\n' 'github-api-tests: PASSED (27 checks, 0 failed, 0 skipped)'
