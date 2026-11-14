@@ -2944,3 +2944,119 @@ test("app.js registers no unload/beforeunload listener (bfcache stays eligible)"
   assert.deepEqual(hits, [],
     "a bfcache-breaking (before)unload listener was added to app.js; use pagehide/pageshow instead");
 });
+
+// ---- initHoverPopovers: desktop hover-to-open for the antispam e-mail info popover ----------
+// Native [popover] opened on mouseenter/focus of its invoker, closed after a short delay on
+// leave (the gap-bridge). Gated to a precise-pointer device so touch keeps tap-only + the (x).
+// jsdom ships no Popover API, so showPopover/hidePopover are stubbed per window.
+const ASPAM =
+  '<span class="antispam-email-tooltip">' +
+  '<button class="antispam-email-info" popovertarget="pop-ce" type="button">i</button>' +
+  '<span id="pop-ce" popover class="antispam-email-popover">' +
+  '<button class="info-close" popovertarget="pop-ce" popovertargetaction="hide" type="button">x</button>' +
+  'reasons</span></span>';
+
+// load ASPAM into a desktop (or touch) window with the Popover API stubbed to record calls.
+function loadHover(opts) {
+  opts = opts || {};
+  const body = opts.body !== undefined ? opts.body : ASPAM;
+  const w = load(body, {
+    preEval: (win) => {
+      win.__pop = [];
+      if (opts.noMatchMedia) { win.matchMedia = undefined; }
+      else { win.matchMedia = (q) => ({ matches: opts.touch ? false : /hover/.test(q) }); }
+      if (!opts.noPopoverApi) {
+        win.HTMLElement.prototype.showPopover = opts.showThrows
+          ? function () { throw new Error("already open"); }
+          : function () { win.__pop.push("show:" + this.id); };
+        win.HTMLElement.prototype.hidePopover = opts.hideThrows
+          ? function () { throw new Error("already closed"); }
+          : function () { win.__pop.push("hide:" + this.id); };
+      }
+    },
+  });
+  // Controllable timers so the close-delay is observable without wall-clock waits. Installed
+  // AFTER load (init already ran), so only the hover handlers' setTimeout is captured.
+  w.__pending = [];
+  w.setTimeout = (fn) => { w.__pending.push(fn); return w.__pending.length; };
+  w.clearTimeout = () => { w.__pending = []; };
+  w.__flush = () => { const p = w.__pending; w.__pending = []; p.forEach((fn) => fn()); };
+  return w;
+}
+
+test("hover popover: on a mouse device, mouseenter opens the antispam card and leave closes it", () => {
+  const w = loadHover();
+  const btn = w.document.querySelector(".antispam-email-info");
+  btn.dispatchEvent(new w.Event("mouseenter"));
+  assert.deepEqual(w.__pop, ["show:pop-ce"], "mouseenter shows the popover");
+  btn.dispatchEvent(new w.Event("mouseleave"));
+  assert.equal(w.__pop.length, 1, "leave only SCHEDULES the close (delay bridges the gap)");
+  w.__flush();
+  assert.deepEqual(w.__pop, ["show:pop-ce", "hide:pop-ce"], "after the delay it hides");
+});
+
+test("hover popover: moving onto the card cancels the pending close (the gap bridge)", () => {
+  const w = loadHover();
+  const btn = w.document.querySelector(".antispam-email-info");
+  const pop = w.document.getElementById("pop-ce");
+  btn.dispatchEvent(new w.Event("mouseenter"));
+  btn.dispatchEvent(new w.Event("mouseleave"));   // schedules hide
+  pop.dispatchEvent(new w.Event("mouseenter"));    // cancels it
+  w.__flush();
+  assert.deepEqual(w.__pop, ["show:pop-ce"], "entering the card keeps it open (no hide fired)");
+  pop.dispatchEvent(new w.Event("mouseleave"));    // leaving the card re-schedules the hide
+  w.__flush();
+  assert.deepEqual(w.__pop, ["show:pop-ce", "hide:pop-ce"], "leaving the card finally closes it");
+});
+
+test("hover popover: focus opens and blur schedules the close (keyboard parity)", () => {
+  const w = loadHover();
+  const btn = w.document.querySelector(".antispam-email-info");
+  btn.dispatchEvent(new w.Event("focus"));
+  assert.deepEqual(w.__pop, ["show:pop-ce"], "focus opens it for keyboard users");
+  btn.dispatchEvent(new w.Event("blur"));
+  w.__flush();
+  assert.deepEqual(w.__pop, ["show:pop-ce", "hide:pop-ce"], "blur closes it after the delay");
+});
+
+test("hover popover: a coarse-pointer (touch) device wires NO hover listeners", () => {
+  const w = loadHover({ touch: true });
+  const btn = w.document.querySelector(".antispam-email-info");
+  btn.dispatchEvent(new w.Event("mouseenter"));
+  assert.deepEqual(w.__pop, [], "no hover-open on touch -- tap + (x) stay the only path");
+});
+
+test("hover popover: with no matchMedia the feature is inert (no throw, no listeners)", () => {
+  const w = loadHover({ noMatchMedia: true });
+  const btn = w.document.querySelector(".antispam-email-info");
+  btn.dispatchEvent(new w.Event("mouseenter"));
+  assert.deepEqual(w.__pop, [], "an engine without matchMedia simply skips the enhancement");
+});
+
+test("hover popover: a popover-unaware engine (no showPopover) is left alone", () => {
+  const w = loadHover({ noPopoverApi: true });
+  const btn = w.document.querySelector(".antispam-email-info");
+  assert.doesNotThrow(() => btn.dispatchEvent(new w.Event("mouseenter")),
+    "no native Popover API -> no wiring, no error");
+});
+
+test("hover popover: an invoker whose target id is absent is skipped", () => {
+  const w = loadHover({
+    body: '<button class="antispam-email-info" popovertarget="pop-missing" type="button">i</button>' });
+  const btn = w.document.querySelector(".antispam-email-info");
+  assert.doesNotThrow(() => btn.dispatchEvent(new w.Event("mouseenter")),
+    "a dangling popovertarget is ignored, not a crash");
+  assert.deepEqual(w.__pop, []);
+});
+
+test("hover popover: showPopover/hidePopover throwing (already open/closed) is swallowed", () => {
+  const wOpen = loadHover({ showThrows: true });
+  const bOpen = wOpen.document.querySelector(".antispam-email-info");
+  assert.doesNotThrow(() => bOpen.dispatchEvent(new wOpen.Event("mouseenter")),
+    "showPopover throwing on an already-open popover is caught");
+  const wClose = loadHover({ hideThrows: true });
+  const bClose = wClose.document.querySelector(".antispam-email-info");
+  bClose.dispatchEvent(new wClose.Event("mouseenter"));
+  bClose.dispatchEvent(new wClose.Event("mouseleave"));
+  assert.doesNotThrow(() => wClose.__flush(), "hidePopover throwing on an already-closed popover is caught");
+});
