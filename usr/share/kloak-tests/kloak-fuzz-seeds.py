@@ -80,8 +80,11 @@ def _geometry_seed():
     seed = bytes([2])
     seed += struct.pack('<IIII', 0, 0, 1920, 1080)
     seed += struct.pack('<IIII', 1920, 0, 1920, 1080)
-    ## a trailing query point (two int32) the geometry harness reads if present.
-    seed += struct.pack('<ii', 500, 500)
+    ## A trailing query point (two int32) the harness reads if present. The
+    ## harness runs it through bounded_coord (raw % 200001 - 100000), so encode
+    ## the pre-image of an on-screen point -- (500,500) on screen 0 -- rather than
+    ## the raw coordinate (which bounded_coord would push off every screen).
+    seed += struct.pack('<ii', 500 + 100000, 500 + 100000)
     return seed
 
 
@@ -97,7 +100,10 @@ def _geometry_many_seed():
     seed = bytes([count - 1])
     for i in range(count):
         seed += struct.pack('<IIII', i * 100 + 100000, 100000, 100, 100)
-    seed += struct.pack('<ii', 150, 50)
+    ## Query point: the harness runs it through bounded_coord too, so encode the
+    ## pre-image of (150,50) -- inside screen 1 (x[100,200), y[0,100)) -- not the
+    ## raw value (which bounded_coord would push off every screen).
+    seed += struct.pack('<ii', 150 + 100000, 50 + 100000)
     return seed
 
 
