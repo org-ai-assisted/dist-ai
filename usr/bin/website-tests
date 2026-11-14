@@ -277,6 +277,13 @@ run_required_unit_test check_svg_safety_test.py
 ## imported inside check(), so this runs everywhere without a browser.
 run_required_unit_test check_console_test.py
 
+## Unit regression for the Speculation Rules + View Transitions gate's browser-free logic
+## (canonical-bytes/hash invariant, JSON + CSS shape validators, CDP-event classifiers, and
+## site.check_speculation_rules/check_view_transition end to end against a built fixture). The
+## functional chromium/CDP proof is the check_webplatform.py browser lane below; playwright is
+## imported only there, so this unit runs everywhere.
+run_required_unit_test check_webplatform_test.py
+
 ## Unit regression for the vnu HTML-conformance lane's vnu-free engine (message
 ## ASCII-normalization, file:url->path mapping, error/info/problem classification, baseline
 ## round-trip, the accept-baseline comparison incl. missing-baseline-fails-closed). vnu itself
@@ -487,6 +494,7 @@ if [ "${mobile_rc}" = '77' ]; then
       printf '%s\n' 'website-width-tests: SKIP (no Playwright/chromium; in-sandbox, cannot nest-provision)' >&2
       printf '%s\n' 'website-footer-tests: SKIP (no Playwright/chromium; in-sandbox, cannot nest-provision)' >&2
       printf '%s\n' 'website-console-tests: SKIP (no Playwright/chromium; in-sandbox, cannot nest-provision)' >&2
+      printf '%s\n' 'website-webplatform-tests: SKIP (no Playwright/chromium; in-sandbox, cannot nest-provision)' >&2
       env_unmet=1
    elif [ "${WEBSITE_TESTS_NO_SANDBOX:-}" != '1' ] \
       && [ -n "${driver}" ] && [ -x "${driver}" ] && command -v sandbox >/dev/null 2>&1; then
@@ -496,6 +504,7 @@ if [ "${mobile_rc}" = '77' ]; then
       printf '%s\n' 'website-width-tests: SKIP (no Playwright/chromium; no sandbox)' >&2
       printf '%s\n' 'website-footer-tests: SKIP (no Playwright/chromium; no sandbox)' >&2
       printf '%s\n' 'website-console-tests: SKIP (no Playwright/chromium; no sandbox)' >&2
+      printf '%s\n' 'website-webplatform-tests: SKIP (no Playwright/chromium; no sandbox)' >&2
       env_unmet=1
    fi
 else
@@ -546,6 +555,22 @@ else
       ## Same as check_footer.py above: a shipped required lane whose absence must FATAL,
       ## not silently skip the console-error gate to a green pass.
       printf '%s\n' "website-console-tests: FATAL: check_console.py not found in ${tests_dir} (required test missing)" >&2
+      overall=1
+      install_intact='false'
+   fi
+   if [ -f "${tests_dir}/check_webplatform.py" ]; then
+      webplatform_rc=0
+      "${tests_dir}/check_webplatform.py" "${roots[@]}" || webplatform_rc="$?"
+      if [ "${webplatform_rc}" = '77' ]; then
+         printf '%s\n' 'website-webplatform-tests: SKIP (no Playwright/chromium)' >&2
+         env_unmet=1
+      elif [ "${webplatform_rc}" != '0' ]; then
+         overall=1
+      fi
+   else
+      ## Same as check_console.py above: a shipped required lane whose absence must FATAL,
+      ## not silently skip the speculation-rules/view-transitions functional gate to green.
+      printf '%s\n' "website-webplatform-tests: FATAL: check_webplatform.py not found in ${tests_dir} (required test missing)" >&2
       overall=1
       install_intact='false'
    fi

@@ -171,7 +171,7 @@ staged_wt="${staging}/usr/share/website-tests"
 staged_pylib="${staging}/usr/lib/python3/dist-packages"
 mkdir --parents -- "${staged_wt}" "${staged_pylib}" "${staging}/roots"
 for runner in check_mobile.py check_width.py check_footer.py check_console.py \
-              check_taptarget_js_test.py; do
+              check_webplatform.py check_taptarget_js_test.py; do
    [ -f "${tests_dir}/${runner}" ] || die "missing runner: ${tests_dir}/${runner}"
    cp --archive -- "${tests_dir}/${runner}" "${staged_wt}/${runner}"
 done
@@ -227,6 +227,10 @@ run_lane check_mobile.py  || overall=1
 run_lane check_width.py   || overall=1
 run_lane check_footer.py  || overall=1
 run_lane check_console.py || overall=1
+## Functional Speculation Rules + View Transitions proof over CDP (ruleset accepted + prefetch
+## fires, @view-transition applied + a same-origin nav runs clean). Needs real chromium + a
+## loopback origin, exactly like the sibling lanes.
+run_lane check_webplatform.py || overall=1
 ## Browser-backed regression for the tap-target extractor's standalone/inline classifier (real
 ## chromium innerText semantics the browser-free check_taptarget_test.py cannot reach). Ignores the
 ## trailing site-root args -- it serves its own set_content fixtures.

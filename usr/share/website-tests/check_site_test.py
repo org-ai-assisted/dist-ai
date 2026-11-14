@@ -2754,10 +2754,12 @@ def run():
               any('footer nav inconsistent' in f for f in failures), repr(failures))
 
     # check_csr_csp: the final csr policy passes; a weaker script-src, an unsafe-inline,
-    # or a missing Trusted-Types directive fails.
-    _jcsp_ok = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; "
+    # or a missing Trusted-Types directive fails. script-src is 'self' PLUS the single frozen
+    # speculationrules hash (the inline block needs it or Chromium blocks the ruleset).
+    _jcsp_ok = ("default-src 'none'; script-src 'self' %s; style-src 'self'; img-src 'self'; "
                 "base-uri 'none'; form-action 'none'; object-src 'none'; "
-                "require-trusted-types-for 'script'; trusted-types 'none'")
+                "require-trusted-types-for 'script'; trusted-types 'none'"
+                % check_site.webplatform.SPEC_RULES_CSP_SOURCE)
 
     def _csp_page(csp):
         return ('<!doctype html><html lang="en"><head><meta charset="utf-8"><title>J</title>'
@@ -2783,6 +2785,15 @@ def run():
         check_site.check_csr_csp(root, failures)
         check('check_csr_csp flags a missing require-trusted-types-for',
               any('require-trusted-types-for' in f for f in failures), repr(failures))
+    with tempfile.TemporaryDirectory() as root:
+        # Canary: a script-src of bare 'self' (the pre-speculationrules shape) now FAILS -- the
+        # inline block would be CSP-blocked without its hash.
+        _write(root, 'index.html', _csp_page(
+            _jcsp_ok.replace(" %s" % check_site.webplatform.SPEC_RULES_CSP_SOURCE, '')))
+        failures = []
+        check_site.check_csr_csp(root, failures)
+        check('check_csr_csp flags script-src missing the speculationrules hash',
+              any('speculationrules hash' in f for f in failures), repr(failures))
 
     # Pure-predicate unit tests: these functions were reachable only through fixtures, so a
     # regression in the math/parsing silently mis-gated. Drive them directly on known values.

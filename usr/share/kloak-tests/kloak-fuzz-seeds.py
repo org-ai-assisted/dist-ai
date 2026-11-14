@@ -77,13 +77,15 @@ def _input_sequence_seed():
 def _geometry_seed():
     ## first byte -> output count (harness does byte % MAX_SCREEN_COUNT + 1);
     ## then 4 uint32 (x, y, width, height) per output. Two adjacent 1920x1080.
+    ## The harness runs BOTH the origins (through bounded_coord, raw % 200001 -
+    ## 100000) AND the query (same) back to real coordinates, so encode every
+    ## coordinate's pre-image (+100000); extents pass through bounded_extent
+    ## (raw % 100001) unchanged. Result: screen 0 at (0,0), screen 1 at (1920,0),
+    ## query (500,500) ON screen 0 -- so the on-screen transform path is exercised
+    ## (raw origins would decode to negative x and the query would miss both).
     seed = bytes([2])
-    seed += struct.pack('<IIII', 0, 0, 1920, 1080)
-    seed += struct.pack('<IIII', 1920, 0, 1920, 1080)
-    ## A trailing query point (two int32) the harness reads if present. The
-    ## harness runs it through bounded_coord (raw % 200001 - 100000), so encode
-    ## the pre-image of an on-screen point -- (500,500) on screen 0 -- rather than
-    ## the raw coordinate (which bounded_coord would push off every screen).
+    seed += struct.pack('<IIII', 0 + 100000, 0 + 100000, 1920, 1080)
+    seed += struct.pack('<IIII', 1920 + 100000, 0 + 100000, 1920, 1080)
     seed += struct.pack('<ii', 500 + 100000, 500 + 100000)
     return seed
 

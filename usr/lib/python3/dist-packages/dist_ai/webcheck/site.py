@@ -36,6 +36,7 @@ import urllib.parse
 from defusedxml.ElementTree import fromstring as _safe_fromstring
 
 from dist_ai.webcheck import config
+from dist_ai.webcheck import webplatform
 
 # The generated test-results output tree (test-results-site-generate's
 # RESULTS_SUBDIR). Every published screenshot lives under a per-run dir and is
@@ -1179,6 +1180,13 @@ def check_csr_csp(root, failures):
     # (NOT 'none') but stays hardened: no 'unsafe-inline'/'unsafe-eval' anywhere, and
     # Trusted Types ENFORCED (require-trusted-types-for 'script'). Assert that stronger shape
     # so a later loosening fails here.
+    #
+    # script-src is PINNED to exactly 'self' plus the single frozen speculationrules hash
+    # (webplatform.SPEC_RULES_HASH): the inline speculationrules block needs its sha256 in
+    # script-src or Chromium blocks it, and that one hash is NOT a loosening (it pins exact
+    # bytes, admits no arbitrary inline script). Any OTHER token, a missing hash, or a missing
+    # 'self' fails -- so neither a dropped feature nor a smuggled extra source slips through.
+    want = ["'self'", webplatform.SPEC_RULES_CSP_SOURCE]
     for page in html_files(root):
         rel = os.path.relpath(page, root)
         with open(page, encoding='utf-8') as handle:
@@ -1186,10 +1194,13 @@ def check_csr_csp(root, failures):
         metas = _enforced_csp_contents(content)
         if not metas:
             continue              # a missing CSP meta is already a check_csp failure
-        directives = _csp_directives(metas[-1].lower())
-        if directives.get('script-src') != ["'self'"]:
-            failures.append("%s: CSR CSP script-src must be 'self' (got %s)"
-                            % (rel, directives.get('script-src')))
+        # Case kept for the hash token (base64 is case-sensitive); directive names fold anyway.
+        directives = _csp_directives(metas[-1])
+        script_src = directives.get('script-src')
+        if script_src is None or sorted(script_src) != sorted(want):
+            failures.append("%s: CSR CSP script-src must be exactly 'self' + the "
+                            "speculationrules hash %s (got %s)"
+                            % (rel, webplatform.SPEC_RULES_HASH, script_src))
         for name, toks in directives.items():
             if "'unsafe-inline'" in toks or "'unsafe-eval'" in toks:
                 failures.append("%s: CSR CSP %s permits unsafe-inline/unsafe-eval" % (rel, name))
@@ -1459,6 +1470,126 @@ def check_no_inline_script(root, failures, pages=None):
         if audit.js_url:
             failures.append('%s: javascript: URL -- script-src forbids inline'
                             % rel)
+
+
+class _StyleCollector(html.parser.HTMLParser):
+    """Collect a page's own CSS: every <link rel=stylesheet href> and every inline <style>
+    body. rel is token-matched (a space-separated list may carry extra tokens), so
+    rel="preload stylesheet" counts and rel="preconnect" does not."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.hrefs: list[str] = []
+        self.inline: list[str] = []
+        self._in_style = False
+        self._style_buf: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        amap = _first_wins(attrs)
+        if tag == 'link':
+            rels = (amap.get('rel') or '').lower().split()
+            href = amap.get('href')
+            if 'stylesheet' in rels and href:
+                self.hrefs.append(href)
+        elif tag == 'style':
+            self._in_style = True
+            self._style_buf = []
+
+    def handle_endtag(self, tag):
+        if tag == 'style' and self._in_style:
+            self._in_style = False
+            self.inline.append(''.join(self._style_buf))
+            self._style_buf = []
+
+    def handle_data(self, data):
+        if self._in_style:
+            self._style_buf.append(data)
+
+
+def _page_css_texts(root, page_path, html_text):
+    """The concatenated CSS a page actually applies: each same-origin <link> stylesheet read
+    off disk plus every inline <style> body. A cross-origin or unresolvable href is skipped
+    (its bytes are not in the tree); a query/fragment is stripped to find the file."""
+    collector = _StyleCollector()
+    collector.feed(html_text)
+    texts = list(collector.inline)
+    page_dir = os.path.dirname(page_path)
+    for href in collector.hrefs:
+        norm = _url_norm(href)
+        if norm.startswith(('http:', 'https:', '//', 'data:')):
+            continue                         # cross-origin / inline-data sheet: not on disk
+        clean = norm.split('?', 1)[0].split('#', 1)[0]
+        if not clean:
+            continue
+        if clean.startswith('/'):
+            target = os.path.join(root, clean.lstrip('/'))
+        else:
+            target = os.path.join(page_dir, clean)
+        target = os.path.normpath(target)
+        if os.path.isfile(target):
+            try:
+                texts.append(_read_css_text(target))
+            except OSError:
+                continue
+    return '\n'.join(texts)
+
+
+def check_speculation_rules(root, failures, pages=None):
+    # Every navigable page must carry the inline Speculation Rules block with the canonical,
+    # byte-identical rule (webplatform.SPECULATION_RULES_JSON) AND pin its sha256 in the page's
+    # effective script-src -- else Chromium silently blocks the inline ruleset (the functional
+    # lane's ruleSetUpdated error). The generic no-inline-script gate treats type=speculationrules
+    # as inert and verifies NEITHER its bytes nor its hash, so this is the gate that does.
+    #
+    # The generated results plane is ephemeral test output, not a primary navigation surface
+    # (exempt like check_page_metadata) -- and its heavy per-run pages are better left
+    # un-prefetched -- so the home link into it carries [data-no-instant] instead.
+    for page in (html_files(root) if pages is None else pages):
+        rel = os.path.relpath(page, root).replace(os.sep, '/')
+        if rel == RESULTS_SUBDIR or rel.startswith(RESULTS_SUBDIR + '/'):
+            continue
+        with open(page, encoding='utf-8') as handle:
+            content = handle.read()
+        bodies = webplatform.speculation_block_bodies(content)
+        if not bodies:
+            failures.append('%s: no inline <script type="speculationrules"> block '
+                            '(instant-nav prefetch missing)' % rel)
+            continue
+        if len(bodies) > 1:
+            failures.append('%s: %d speculationrules blocks; expected exactly one'
+                            % (rel, len(bodies)))
+        ok, reason = webplatform.speculation_json_ok(bodies[0])
+        if not ok:
+            failures.append('%s: speculationrules block %s' % (rel, reason))
+            continue
+        metas = _enforced_csp_contents(content)
+        if not metas:
+            failures.append('%s: speculationrules block present but no enforced CSP meta to '
+                            'pin it' % rel)
+            continue
+        # Raw (unlowered) CSP: a hash base64 is case-sensitive.
+        csp_hashes = _csp_script_elem_hashes(metas[-1])
+        body_hashes = _inline_script_hashes(bodies[0])
+        if csp_hashes.isdisjoint(body_hashes):
+            failures.append('%s: speculationrules block not pinned in CSP script-src (need %s) '
+                            '-- Chromium blocks an unhashed inline ruleset'
+                            % (rel, webplatform.SPEC_RULES_HASH))
+
+
+def check_view_transition(root, failures, pages=None):
+    # Every navigable page must opt into cross-document View Transitions the canonical way:
+    # @view-transition{navigation:auto} inside a prefers-reduced-motion:no-preference media
+    # block in the page's own CSS. Pure CSS, no CSP change; unsupported browsers (Firefox/Tor)
+    # fall back to an instant navigation. Scoped to the motion-welcome block so reduced-motion
+    # users (and the reduced default) get the instant swap.
+    for page in (html_files(root) if pages is None else pages):
+        rel = os.path.relpath(page, root).replace(os.sep, '/')
+        with open(page, encoding='utf-8') as handle:
+            content = handle.read()
+        if not webplatform.view_transition_css_ok(_page_css_texts(root, page, content)):
+            failures.append('%s: no @view-transition{navigation:auto} inside a '
+                            'prefers-reduced-motion:no-preference block in the page CSS '
+                            '(cross-document View Transitions missing)' % rel)
 
 
 # Browser-rendered HTML-family markup. A header-less Pages origin serves every one of
@@ -4062,6 +4193,13 @@ def main():
             check_undefined_classes(root, failures)
             check_generated_class_contract(root, failures)
             check_results_footer_matches_home(root, failures)
+        # Progressive-enhancement web-platform features -- the SAME Speculation Rules block +
+        # cross-document View Transitions the wikis carry, on every family + CSR page (not the
+        # MediaWiki trees, whose own generator owns theirs). Static half of the webplatform
+        # gate; the functional CDP/VT proof is the check_webplatform.py browser lane.
+        if policy in ('family', 'csr'):
+            check_speculation_rules(root, failures, pages)
+            check_view_transition(root, failures, pages)
         # CSR-only (vendor-neutral, not in FAMILY): its own footer-nav-consistency
         # check, the stricter CSR CSP assertion, and the perfect-SEO page-metadata bar.
         if policy == 'csr':
