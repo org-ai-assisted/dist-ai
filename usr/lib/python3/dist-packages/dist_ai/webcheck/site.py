@@ -3926,7 +3926,13 @@ def check_og_image(root, failures):
         if not audit.og_image:
             failures.append('%s: missing <meta property="og:image"> (social preview)' % rel)
             continue
-        target = _og_image_target(audit.og_image, rel)
+        try:
+            target = _og_image_target(audit.og_image, rel)
+        except ValueError:
+            # urlsplit rejects a malformed URL (e.g. an unbalanced '[' -> "Invalid IPv6 URL").
+            # Degrade to a per-page FAIL like every other check here, never crash the whole lane.
+            failures.append('%s: og:image is not a valid URL: %s' % (rel, audit.og_image))
+            continue
         if not os.path.isfile(os.path.join(root, target)):
             failures.append('%s: og:image does not resolve to a file in the tree: %s'
                             % (rel, audit.og_image))

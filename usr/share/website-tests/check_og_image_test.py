@@ -186,6 +186,19 @@ def run():
         check('a .. traversal og:image cannot escape the tree -> flagged',
               len(f) == 1 and 'does not resolve' in f[0], repr(f))
 
+    # a malformed og:image URL (unbalanced '[' -> urlsplit "Invalid IPv6 URL") degrades to a
+    # per-page FAIL, NEVER an uncaught ValueError that crashes the whole website-tests lane.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'wiki/Bad.html', _page(og='http://[::1/x.jpg', width=True, height=True))
+        try:
+            f = _fails(root)
+            crashed = False
+        except ValueError:
+            crashed = True
+            f = []
+        check('a malformed og:image URL is a per-page FAIL, not a lane crash',
+              (not crashed) and len(f) == 1 and 'not a valid URL' in f[0], repr((crashed, f)))
+
     # whole-tree enumeration: a tree with a clean regular page AND a special page missing
     # its card reports EXACTLY the one missing page (canary-red on today's generator).
     with tempfile.TemporaryDirectory() as root:
