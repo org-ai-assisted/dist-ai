@@ -206,10 +206,16 @@ case "${method^^}" in
     retry_args=(--retry 5 --retry-all-errors --retry-delay 1)
     ## Learn the caller's output destination WITHOUT touching the args (curl keeps native
     ## output handling). Match only the real/common curl forms; -o/--output take the next
-    ## token, --output=VAL and -oVAL attach it. FIRST wins, as curl does. Not handled (none
-    ## of our callers use them, and a miss only degrades to header-only RL detection, never
-    ## misdirects output): a value that merely looks like -o (e.g. --data-urlencode -o=x),
-    ## short clusters (-sLo), -O/--remote-name, and --output-dir's prefixing.
+    ## token, --output=VAL and -oVAL attach it. FIRST wins, as curl does, so once caller_out
+    ## is set, stop looking (the second case below is guarded too, so -o -out.json records
+    ## -out.json, not a doubly-stripped ut.json). SCOPE: this is a GitHub-API wrapper and no
+    ## caller passes anything but a plain -o/--output <file>; the wrapper does NOT reimplement
+    ## curl's option table, so for exotic inputs no caller emits -- a value that merely looks
+    ## like -o (--data-urlencode -o=x), short clusters (-sLo), -O/--remote-name, --output-dir's
+    ## prefixing, /dev/stdout -- the learned path may be wrong or absent. The worst case is that
+    ## body-based secondary-RL detection falls back to header-only (a body-only secondary limit
+    ## is then not retried), or, when the misread hides a body curl actually streamed to stdout,
+    ## that body is lost; curl still delivers wherever the caller's real flags point.
     prev=''
     for arg in "$@"; do
       if [ -z "${caller_out}" ]; then
@@ -218,6 +224,8 @@ case "${method^^}" in
             caller_out="${arg}"
             ;;
         esac
+      fi
+      if [ -z "${caller_out}" ]; then
         case "${arg}" in
           --output=*)
             caller_out="${arg#--output=}"
@@ -229,13 +237,41 @@ case "${method^^}" in
       fi
       prev="${arg}"
     done
-    ## curl writes '-o -' to stdout: treat it as the no-destination (stdout) case.
-    [ "${caller_out}" = '-' ] && caller_out=''
+    ## curl writes '-o -' (and the attached '-o-') to stdout. We deliver stdout ourselves from
+    ## the buffer, so the sentinel must be STRIPPED from the args: left in, curl's first-output-
+    ## wins would send the body to the stdout we capture for %{http_code} and discard (silent
+    ## loss). Strip only the FIRST stdout-sentinel output flag; a real-file -o is left in place.
+    if [ "${caller_out}" = '-' ]; then
+      caller_out=''
+      stripped=()
+      dropped=''
+      while [ "$#" -gt 0 ]; do
+        if [ -z "${dropped}" ]; then
+          case "$1" in
+            -o | --output)
+              if [ "${2:-}" = '-' ]; then
+                dropped=1
+                shift 2
+                continue
+              fi
+              ;;
+            -o- | --output=-)
+              dropped=1
+              shift
+              continue
+              ;;
+          esac
+        fi
+        stripped+=("$1")
+        shift
+      done
+      set -- "${stripped[@]}"
+    fi
     if [ -n "${caller_out}" ]; then
       ## curl writes the body to the caller's file; grep THAT for the secondary-RL body text.
       body_file="${caller_out}"
     else
-      ## No caller destination: buffer to a private temp, grep it, emit it to stdout.
+      ## No caller destination (or '-' = stdout): buffer to a private temp, grep it, emit to stdout.
       response_file="$(mktemp)"
       body_file="${response_file}"
     fi
@@ -269,7 +305,10 @@ secondary_rl_wait() {
       ;;
   esac
   cap="$(( 10#${GH_SECONDARY_RL_WAIT_CAP} ))"
-  ra="$(grep --ignore-case --max-count=1 '^retry-after:' "${hdr}" 2>/dev/null \
+  ## '--' before the path: body/hdr can be a caller-chosen name starting with '-' (curl
+  ## accepts it), which grep would otherwise read as an option -- or, for '--', as no file
+  ## at all, hanging on stdin.
+  ra="$(grep --ignore-case --max-count=1 '^retry-after:' -- "${hdr}" 2>/dev/null \
         | tr --delete '\r' | sed 's/^[^:]*:[[:space:]]*//')" || ra=''
   case "${ra}" in
     '' | *[!0-9]*)
@@ -282,7 +321,7 @@ secondary_rl_wait() {
     printf '%s' "${w}"
     return 0
   fi
-  if grep --quiet --ignore-case 'secondary rate limit' "${body}" 2>/dev/null; then
+  if grep --quiet --ignore-case 'secondary rate limit' -- "${body}" 2>/dev/null; then
     w="$(( 10#${attempt} * 10#${GH_SECONDARY_RL_BACKOFF} ))"
     [ "${w}" -le "${cap}" ] || w="${cap}"
     printf '%s' "${w}"

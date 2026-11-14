@@ -606,8 +606,50 @@ case "${soie_line}" in
     ;;
 esac
 
+## '-o -' (and the attached '-o-') mean stdout in curl, not a file named '-'. The wrapper must
+## deliver the body to stdout, never silently lose it: it buffers to a private temp and emits
+## that, so the caller's stdout sentinel must be KEPT OUT of curl's args -- otherwise curl's
+## first-output-wins sends the body to the stdout the wrapper captures for %{http_code} and
+## discards, yielding empty stdout + rc 0. This fake models curl: an output dest of '-' writes
+## the body to stdout (where %{http_code} also lands), any other dest writes that file.
+odash_bin="${tmp}/odashbin"
+mkdir -p -- "${odash_bin}"
+cat > "${odash_bin}/curl" <<'ODASH_CURL'
+#!/bin/bash
+cat >/dev/null   # consume the --config document on stdin
+out=""; prev=""
+for a in "$@"; do
+  case "${prev}" in -o | --output) [ -z "${out}" ] && out="$a" ;; esac
+  case "${a}" in
+    --output=*) [ -z "${out}" ] && out="${a#--output=}" ;;
+    -o?*)       [ -z "${out}" ] && out="${a#-o}" ;;
+  esac
+  prev="$a"
+done
+if [ -n "${out}" ] && [ "${out}" != "-" ]; then printf 'ODASH_BODY' > "${out}"; else printf 'ODASH_BODY'; fi
+printf '200'
+ODASH_CURL
+chmod 0755 -- "${odash_bin}/curl"
+cp -- "${odash_bin}/curl" "${odash_bin}/scurl"
+odash_sep="$(PATH="${odash_bin}:${PATH}" GITHUB_TOKEN_FILE="${tmp}/token" \
+  "${git_api}" GET /rate_limit -o - 2>/dev/null || true)"
+if [ "${odash_sep}" = "ODASH_BODY" ]; then
+  printf '%s\n' "ok   GET -o - emits the body to stdout (not a file named '-', not lost)"
+else
+  printf '%s\n' "FAIL: GET -o - did not emit the body to stdout: [${odash_sep}]" >&2
+  fails=$(( fails + 1 ))
+fi
+odash_att="$(PATH="${odash_bin}:${PATH}" GITHUB_TOKEN_FILE="${tmp}/token" \
+  "${git_api}" GET /rate_limit -o- 2>/dev/null || true)"
+if [ "${odash_att}" = "ODASH_BODY" ]; then
+  printf '%s\n' "ok   GET -o- (attached) emits the body to stdout"
+else
+  printf '%s\n' "FAIL: GET -o- (attached) did not emit the body to stdout: [${odash_att}]" >&2
+  fails=$(( fails + 1 ))
+fi
+
 if (( fails > 0 )); then
   printf '%s\n' "github-api-tests: ${fails} check(s) FAILED" >&2
   exit 1
 fi
-printf '%s\n' 'github-api-tests: PASSED (27 checks, 0 failed, 0 skipped)'
+printf '%s\n' 'github-api-tests: PASSED (29 checks, 0 failed, 0 skipped)'
