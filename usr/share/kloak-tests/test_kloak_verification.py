@@ -230,6 +230,41 @@ class KloakVerification(unittest.TestCase):
             result.returncode, 0,
             'make failed (WARN_CFLAGS is -Werror):\n%s' % result.stderr[-3000:])
 
+    def test_unsigned_char_portability(self) -> None:
+        ## char's signedness is implementation-defined: signed on x86, UNSIGNED
+        ## on arm64. fill_with_rand_alphabetic (kloak-shared.h) normalizes a
+        ## random byte in the signed [-128, 127] domain (abs() to fold the
+        ## negative half, SCHAR_MIN/SCHAR_MAX bounds), so a plain-char version
+        ## both miscompiles the modulo-bias math on arm64 AND trips the Makefile's
+        ## -Werror on -Wabsolute-value (abs() of an unsigned value is a no-op).
+        ## Reproduce arm64's char signedness on this host by appending
+        ## -funsigned-char to the REAL Makefile build (env CFLAGS is appended
+        ## last, after WARN_CFLAGS's -Werror, per the Makefile's CFLAGS :=); the
+        ## build must stay clean. Regression guard for the arm64 cross-compile
+        ## break; RED on the pre-fix plain-char source.
+        ##
+        ## Keep the Makefile's own default optimization (-O2 -g): a bare
+        ## CFLAGS=-funsigned-char would drop -O2, and at -O0 GCC's value-range
+        ## propagation no longer suppresses provably-safe narrowing conversions,
+        ## producing -Wsign-conversion false positives unrelated to char
+        ## signedness (e.g. an ssize_t->size_t calloc arg). The real arm64
+        ## package build runs at -O2, so match it.
+        make = _require('make')
+        repo = _repo()
+        self.addCleanup(subprocess.run, [make, '-C', repo, 'clean'],
+                        capture_output=True, text=True, check=True)
+        subprocess.run([make, '-C', repo, 'clean'], capture_output=True,
+                       text=True, check=True)
+        env = dict(os.environ)
+        env['CFLAGS'] = ('%s -O2 -g -funsigned-char'
+                         % env.get('CFLAGS', '')).strip()
+        result = subprocess.run(
+            [make, '-C', repo], capture_output=True, text=True, env=env)
+        self.assertEqual(
+            result.returncode, 0,
+            'make with -funsigned-char failed -- char-signedness portability '
+            'bug (breaks the arm64 cross-compile):\n%s' % result.stderr[-3000:])
+
     def test_cbmc_proofs_verify(self) -> None:
         for function, (cbmc_file, extra) in CBMC_FUNCTIONS.items():
             with self.subTest(function=function):
