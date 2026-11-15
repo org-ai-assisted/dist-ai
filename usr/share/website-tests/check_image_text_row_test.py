@@ -79,8 +79,9 @@ def run():
     # Fail-closed on an unmeasurable row: a non-rendered row is skipped (no false-fail), a
     # RENDERED promo row lacking a direct .image/.text pair is counted malformed, and BOTH
     # pass branches require malformed === 0 (a row the gate cannot measure must not pass).
-    check('probe skips non-rendered rows but not display:contents',
-          "getClientRects().length" in js and "!== 'contents'" in js)
+    check('probe skips a row only when nothing in it renders (own box or any descendant)',
+          "getClientRects().length" in js and "querySelectorAll('*')" in js
+          and "if (!rendered) return;" in js)
     check('probe counts malformed rendered rows',
           "malformed++" in js and "malformed," in js)
     check('both pass branches gate on malformed === 0',

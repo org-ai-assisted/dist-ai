@@ -82,15 +82,17 @@ IMAGE_TEXT_ROW_JS = r"""
   const measured = [];
   let malformed = 0;
   rows.forEach((row, i) => {
-    // Skip a row only when it is genuinely NOT rendered (display:none / hidden attr / inside a
-    // hidden subtree -> no client rects), so a conditionally-hidden promo row cannot FALSE-FAIL.
-    // A display:contents row has NO box of its own (also no client rects) but its children ARE
-    // rendered -- do NOT skip it: measure its children, or count it malformed below. A RENDERED
-    // row lacking a direct .image/.text pair is unmeasurable -- count it malformed and FAIL-CLOSED,
-    // never silently skip (a promo row the gate cannot measure must not pass). The real generator
+    // Skip a row only when NOTHING in it is rendered -- neither the row's own box nor any
+    // descendant has a client rect (display:none, the hidden attr, or any hidden ancestor) --
+    // so a conditionally-hidden promo row cannot FALSE-FAIL. A display:contents row has NO box
+    // of its own but its descendants ARE rendered, so it is NOT skipped: measure its children,
+    // or count it malformed below. A RENDERED row lacking a direct .image/.text pair is
+    // unmeasurable -- count it malformed and FAIL-CLOSED, never silently skip. The real generator
     // emits .image/.text as direct children with explicit <img> dimensions, so each container box
     // measured here equals its rendered content; the gate measures those boxes for that known DOM.
-    if (!row.getClientRects().length && getComputedStyle(row).display !== 'contents') return;
+    const rendered = row.getClientRects().length
+      || Array.from(row.querySelectorAll('*')).some((el) => el.getClientRects().length);
+    if (!rendered) return;
     const image = row.querySelector(':scope > .image');
     const text = row.querySelector(':scope > .text');
     if (!image || !text) { malformed++; return; }
