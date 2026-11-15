@@ -127,14 +127,19 @@ _OPEN_HAS_JS = "()=>!!document.querySelector('[data-webcheck-open]')"
 # measured at base_sw (no hit) -- correct for the two cases that occur: (1) a reveal laid out when
 # closed (opacity / max-height / transform), whose horizontal overflow already exists in the
 # closed state where the closed-state audit catches it; (2) a display:none / :target / popover
-# reveal that widens WITHIN the bound, which is measured.
+# reveal that widens to a stable width within the bound -- captured at its FIRST stable change:
+# the loop exits once scrollWidth moves off base_sw and then holds for one poll, so a multi-stage
+# widening that pauses >=1 poll mid-way is measured at its first plateau (not a pattern here).
 # OUT OF SCOPE (accepted): a display:none/collapsed reveal whose widening lands AFTER the bound (a
 # reveal transition-delay > OPEN_SETTLE_POLLS*OPEN_SETTLE_POLL_MS ~= 2s) is hidden from the
 # closed-state audit yet never moves scrollWidth in-bound, so it reads green. We do NOT make
 # "sw stayed == base_sw" loud to catch it: that condition is ALSO clean case (1), so flagging it
 # would re-introduce the false-REDs on opacity/max-height/transform reveals the width-delta design
-# removed. No authored page uses a >2s reveal delay and the bound is generous. (A broken selector
-# or wrong mode still fails loud -- _open_one throws and the caller records the hit.)
+# removed. No authored page uses a >2s reveal delay and the bound is generous.
+# Mis-annotations are mostly measured SILENTLY, not loud: a misspelled mode falls back to hover
+# (_OPEN_SPECS_JS defaults mode to hover) and data-webcheck-sel is only a report label, so neither
+# raises. The one trigger that raises -- recorded as an open-failed hit -- is popover mode on an
+# element with no valid popover attribute, where showPopover() throws.
 _SCROLLWIDTH_JS = "()=>document.documentElement.scrollWidth"
 
 # Height the sticky <header> occupies at the top of the viewport (null if none).
