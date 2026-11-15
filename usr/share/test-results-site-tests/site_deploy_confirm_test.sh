@@ -87,16 +87,21 @@ exit 0
 STUB
 chmod +x -- "${gate}"
 
-## git stub: push succeeds; answer the branch query, the pushed HEAD sha, and the remote URL (so
-## owner/repo derivation runs); the is-inside-work-tree probe falls through to exit 0.
+## git stub: push RECORDS its argv (so a test can assert the pushed refspec) then succeeds; answers
+## the branch query, the pushed HEAD sha, and the remote URL (so owner/repo derivation runs); the
+## is-inside-work-tree probe falls through to exit 0.
 ## The PUSH url and FETCH url resolve to DIFFERENT owner/repo so the test can prove the confirm
 ## keys on the repo we PUSHED to (`remote get-url --push`), not the fetch url (agy finding).
-cat > "${bin}/git" <<'STUB'
+push_argv="${work}/push.argv"
+cat > "${bin}/git" <<STUB
 #!/bin/bash
-for a in "$@"; do
-   [ "$a" = 'push' ] && exit 0
+for a in "\$@"; do
+   if [ "\$a" = 'push' ]; then
+      printf '%s\n' "\$*" > "${push_argv}"
+      exit 0
+   fi
 done
-case "$*" in
+case "\$*" in
    *--abbrev-ref*) printf '%s\n' 'master' ;;
    *'rev-parse HEAD'*) printf '%s\n' 'cafe1234cafe1234cafe1234cafe1234cafe1234' ;;
    *'remote get-url --push'*) printf '%s\n' 'git@github.com:org-ai-assisted/org-ai-assisted.github.io.git' ;;
@@ -147,6 +152,10 @@ make_ghapi '[{"id":101}]' '[{"state":"success"}]'
 run_deploy ''
 check "deployment success -> published (live deploy confirmed)" "${out}" "live deploy confirmed"
 check_rc "deployment success -> exit 0" "${rc}" zero
+## The push must pin the EXACT captured sha (<sha>:refs/heads/<branch>), not the bare branch name,
+## so a concurrent ref move cannot publish a commit different from the one confirmed.
+check "push pins the captured sha, not the bare branch" \
+   "$(cat -- "${push_argv}" 2>/dev/null || true)" "cafe1234cafe1234cafe1234cafe1234cafe1234:refs/heads/master"
 
 ## 2. CANARY: deployment for our sha reports failure -> FAIL LOUD, non-zero (pre-fix printed
 ##    "published" and exited 0).

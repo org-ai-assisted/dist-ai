@@ -72,6 +72,15 @@ check "git@github.com:123/123.github.io.git" "123/123.github.io"
 check "https://github.com/org-ai-assisted/org-ai-assisted.github.io.git?access_token=ghp_SECRET" "${want}"
 check "https://github.com/org-ai-assisted/org-ai-assisted.github.io#readme" "${want}"
 
+## A stray '@' in a query/fragment must NOT be read as the userinfo delimiter -- else the parse jumps
+## to an attacker-named repo (false confirm) and leaks the token. The query must win, not the '@'.
+check "https://github.com/org-ai-assisted/org-ai-assisted.github.io.git?x=@attacker/secret" "${want}"
+check "https://github.com/org-ai-assisted/org-ai-assisted.github.io#y=@attacker/secret" "${want}"
+
+## Multiple trailing slashes: strip ALL of them before ".git", not just one.
+check "https://github.com/org-ai-assisted/org-ai-assisted.github.io.git//" "${want}"
+check "git@github.com:org-ai-assisted/org-ai-assisted.github.io.git//" "${want}"
+
 ## No credential must EVER appear in the output (explicit, belt-and-braces on the leak class).
 leaky="$(pages_owner_repo_from_url 'https://alice:ghp_SECRET@GITHUB.COM/org-ai-assisted/org-ai-assisted.github.io.git')"
 case "${leaky}" in

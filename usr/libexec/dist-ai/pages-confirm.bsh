@@ -38,6 +38,12 @@ pages_owner_repo_from_url() {
    ## trim surrounding whitespace
    u="${u#"${u%%[![:space:]]*}"}"
    u="${u%"${u##*[![:space:]]}"}"
+   ## Drop a "?query"/"#fragment" FIRST, before any '@'/'/' parsing: a query or fragment can carry a
+   ## stray '@' (e.g. ?x=@attacker/repo) or '/' that would otherwise be read as the userinfo
+   ## delimiter or a path segment, hijacking owner/repo to an attacker-named repo and leaking the
+   ## credential into the log + API argument.
+   u="${u%%\?*}"
+   u="${u%%#*}"
    case "${u}" in
       *://*)
          ## scheme URL: drop scheme, then userinfo, then host[:port] up to the first path '/'
@@ -54,12 +60,9 @@ pages_owner_repo_from_url() {
          path="${u}"
          ;;
    esac
-   ## drop a "?query"/"#fragment" (can carry a credential), then a trailing slash and ".git"
-   path="${path%%\?*}"
-   path="${path%%#*}"
-   path="${path%/}"
+   ## strip ALL trailing slashes (not just one), then a trailing ".git"
+   path="${path%"${path##*[!/]}"}"
    path="${path%.git}"
-   path="${path%/}"
    ## reduce to the LAST two path segments
    repo="${path##*/}"
    owner="${path%/*}"

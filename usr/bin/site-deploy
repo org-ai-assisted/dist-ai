@@ -266,7 +266,10 @@ printf '%s\n' "${me}: pushing ${branch} -> ${remote}/${branch}" >&2
 ## this same checkout, moments ago -- letting the hook re-run it would gate TWICE (doubling a
 ## ~15-20min browser suite, the deploy's dominant cost). Suppress the hook for THIS push only; a
 ## bare `git push` by anyone else is unaffected and still gates.
-SITE_DEPLOY_SKIP=1 git -C "${repo_dir}" push -- "${remote}" "${branch}"
+## Push the EXACT captured sha (not the branch name): a bare `${branch}` would re-resolve the ref at
+## push time, so a concurrent ref move between the capture above and here would publish a different
+## commit than the one confirmed below. An explicit <sha>:refs/heads/<branch> binds push to confirm.
+SITE_DEPLOY_SKIP=1 git -C "${repo_dir}" push -- "${remote}" "${pushed_sha}:refs/heads/${branch}"
 
 ## A push only QUEUES the async Pages build -- "published" must mean LIVE, not merely pushed. A
 ## build that fails (e.g. the server-side re-gate going red) or never runs leaves the PRIOR commit
