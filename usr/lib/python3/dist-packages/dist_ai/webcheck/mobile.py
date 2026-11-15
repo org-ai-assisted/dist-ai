@@ -123,9 +123,18 @@ _OPEN_HAS_JS = "()=>!!document.querySelector('[data-webcheck-open]')"
 # :popover-open, or a scrollHeight delta -- because each of those becomes true the instant the
 # trigger fires, BEFORE a transition-delayed panel has actually widened; keying on one lets the
 # loop settle early on the still-closed width and miss a delayed overflow (the exact false green
-# this lane exists to catch). A reveal with no horizontal effect never changes scrollWidth and
-# simply exhausts the bound -- correct, since any horizontal overflow of such a reveal already
-# exists in the closed state, where the closed-state audit catches it.
+# this lane exists to catch). A reveal whose width never moves in-bound exhausts the bound and is
+# measured at base_sw (no hit) -- correct for the two cases that occur: (1) a reveal laid out when
+# closed (opacity / max-height / transform), whose horizontal overflow already exists in the
+# closed state where the closed-state audit catches it; (2) a display:none / :target / popover
+# reveal that widens WITHIN the bound, which is measured.
+# OUT OF SCOPE (accepted): a display:none/collapsed reveal whose widening lands AFTER the bound (a
+# reveal transition-delay > OPEN_SETTLE_POLLS*OPEN_SETTLE_POLL_MS ~= 2s) is hidden from the
+# closed-state audit yet never moves scrollWidth in-bound, so it reads green. We do NOT make
+# "sw stayed == base_sw" loud to catch it: that condition is ALSO clean case (1), so flagging it
+# would re-introduce the false-REDs on opacity/max-height/transform reveals the width-delta design
+# removed. No authored page uses a >2s reveal delay and the bound is generous. (A broken selector
+# or wrong mode still fails loud -- _open_one throws and the caller records the hit.)
 _SCROLLWIDTH_JS = "()=>document.documentElement.scrollWidth"
 
 # Height the sticky <header> occupies at the top of the viewport (null if none).
