@@ -1598,12 +1598,45 @@ rt_local_repo_source_sha() {
 ## Generation id of the local apt repo under test: the sha256 of its Packages index. Captured BEFORE
 ## the guest upgrade (rt_lane_whonix_inst) and re-checked when building provenance, so provenance is
 ## bound to the generation the guest actually upgraded from. "" when the index is unreadable.
+## The DERIVATIVE CHAIN delivered for a --local-repo run, as resident space-separated tokens. Whonix
+## is built ON Kicksecure, so a whonix guest installs from BOTH the kicksecure base repo AND the
+## whonix repo -- testing only the whonix repo leaves locally-built kicksecure packages (security-misc,
+## kicksecure-*) on their OLD versions. A member is included ONLY when its local Packages index
+## exists (a whonix-only rebuild with no kicksecure repo stays testable, delivering + recording just
+## whonix -- honest). kicksecure's chain is itself. Order = base first (kicksecure before whonix).
+rt_local_repo_chain() {
+   local deriv="$1" cand repo_path pkgs_file chain=""
+   local -a candidates
+   case "${deriv}" in
+      whonix)
+         candidates=( kicksecure whonix )
+         ;;
+      *)
+         candidates=( "${deriv}" )
+         ;;
+   esac
+   for cand in "${candidates[@]}"; do
+      repo_path="$("${DM_SHARED_APT_REPO}" repo-path "${cand}" 2>/dev/null || true)"
+      pkgs_file="${repo_path}/dists/local/main/binary-amd64/Packages"
+      [ -n "${repo_path}" ] && [ -r "${pkgs_file}" ] && chain="${chain}${chain:+ }${cand}"
+   done
+   printf '%s' "${chain}"
+}
+
+## Generation id over the WHOLE resident chain: the concatenated Packages-index sha of each member,
+## so a rebuild of EITHER the kicksecure base OR the whonix repo invalidates the generation and
+## rebuilds provenance. Empty + rc 0 when any member's index is unreadable (benign "unverifiable",
+## the single-repo behavior preserved); non-zero only on a real sha256sum/awk tool failure.
 rt_local_repo_gen_id() {
-   local deriv="$1" repo_path pkgs_file
-   repo_path="$("${DM_SHARED_APT_REPO}" repo-path "${deriv}" 2>/dev/null || true)"
-   pkgs_file="${repo_path}/dists/local/main/binary-amd64/Packages"
-   [ -n "${repo_path}" ] && [ -r "${pkgs_file}" ] || return 0
-   sha256sum -- "${pkgs_file}" 2>/dev/null | awk '{print $1}'
+   local deriv="$1" member repo_path pkgs_file one ids=""
+   for member in $(rt_local_repo_chain "${deriv}"); do
+      repo_path="$("${DM_SHARED_APT_REPO}" repo-path "${member}" 2>/dev/null || true)"
+      pkgs_file="${repo_path}/dists/local/main/binary-amd64/Packages"
+      [ -n "${repo_path}" ] && [ -r "${pkgs_file}" ] || return 0
+      one="$(sha256sum -- "${pkgs_file}" | awk '{print $1}')" || return 1
+      ids="${ids}${one}"
+   done
+   printf '%s' "${ids}"
 }
 
 ## Build the localRepo provenance JSON (host-side; no guest round-trip) for a --local-repo run:
@@ -1619,7 +1652,8 @@ rt_local_repo_gen_id() {
 ## throughout this function body -- so an uncaught awk/jq failure would otherwise be swallowed
 ## (yielding a block with a silently-empty packages list and a 0 return). Every tool step is therefore
 ## guarded with an explicit `|| return 1`; do NOT rely on errexit here.
-rt_build_local_repo_provenance() {
+## ONE repo's provenance object: {derivative, repoPath, sourceSha, packages:[name=version,...]}.
+rt_build_local_repo_one() {
    local deriv="$1" repo_path pkgs_file sha pkgs_json awk_out
    repo_path="$("${DM_SHARED_APT_REPO}" repo-path "${deriv}" 2>/dev/null || true)"
    pkgs_file="${repo_path}/dists/local/main/binary-amd64/Packages"
@@ -1639,6 +1673,25 @@ rt_build_local_repo_provenance() {
       --argjson pkgs "${pkgs_json}" \
       '{derivative:$deriv, repoPath:$repo, sourceSha:$sha, packages:$pkgs}' \
       || return 1
+}
+
+## The localRepo provenance JSON for a --local-repo run: a LIST with one object per resident chain
+## member (kicksecure base + whonix), so the results page shows EVERY local repo the verdict applies
+## to -- a derivative needs both. An empty chain (no resident local repo) yields '[]'. See the exit-
+## status caveat on rt_build_local_repo_one's callers: errexit is OFF on the `||` LHS, so every tool
+## step is explicitly `|| return 1`.
+rt_build_local_repo_provenance() {
+   local deriv="$1" member obj
+   local -a objs=()
+   for member in $(rt_local_repo_chain "${deriv}"); do
+      obj="$(rt_build_local_repo_one "${member}")" || return 1
+      objs+=( "${obj}" )
+   done
+   if [ "${#objs[@]}" -eq 0 ]; then
+      printf '%s' '[]'
+      return 0
+   fi
+   printf '%s\n' "${objs[@]}" | jq -s -c '.' || return 1
 }
 
 ## inst lane: the functional release-check battery (>= the kicksecure coverage) run on the
@@ -1705,7 +1758,13 @@ rt_lane_whonix_inst() {
          sudo -u "${account}" -- safe-rm --recursive --force -- "${check_log}" "${shot_dir}" 2>/dev/null || true
          return "${SETUP_RC}"
       fi
-      lr_args=( --local-repo "${local_repo}" --local-repo-base "${lr_base}" )
+      ## Deliver the WHOLE resident derivative chain (kicksecure base + whonix), not just the lane's
+      ## primary derivative -- a whonix guest upgrades from both, so a local-repo test that omits the
+      ## kicksecure repo leaves locally-built base packages stale. Resolved host-side (where the slot
+      ## is known) and passed down so the account-run delivery enables each member's 'local' source.
+      local lr_chain
+      lr_chain="$(rt_local_repo_chain "${local_repo}")"
+      lr_args=( --local-repo "${local_repo}" --local-repo-base "${lr_base}" --local-repo-chain "${lr_chain}" )
    fi
    ## Capture the local repo's generation id BEFORE the guest upgrade, so the provenance read below
    ## binds to the generation the guest actually upgraded from -- a concurrent rebuild landing in the

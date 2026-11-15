@@ -1012,9 +1012,14 @@ wire() {
       dm-whonix-pair)
          ## Self-contained no-VM unit tests: source the real dm-whonix-pair + its
          ## shared libs from this dist-ai checkout with stubbed tcpdump/vbox-exec-local;
-         ## no external checkout, no VM, no network.
+         ## no external checkout, no VM, no network. The --local-repo enable/verify path
+         ## needs helper-scripts local-apt-repo-sources.bsh (the stanza builders), sourced
+         ## via HELPER_SCRIPTS_PATH -- wire it so that section runs instead of dying SETUP.
          wire_env=()
          wire_args=()
+         if [ -n "${hs}" ]; then
+            wire_env+=( "HELPER_SCRIPTS_PATH=${hs}" )
+         fi
          ;;
       dm-vm-lock)
          ## Self-contained: drives the real dm-vm-lock (and the real VM entry points for

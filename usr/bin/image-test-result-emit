@@ -454,16 +454,19 @@ def main(argv):
         attachments=attachments,
     )
 
-    ## Parse the localRepo block once (null when not a local-repo run). A malformed JSON object
-    ## raises SystemExit -> no result.json (NO-DATA), never a silently-dropped provenance claim.
+    ## Parse the localRepo block once (null when not a local-repo run). A derivative run delivers
+    ## its whole chain, so this is a JSON LIST of repo objects (kicksecure base + whonix); a single
+    ## object is still accepted (older single-repo callers). Anything else raises SystemExit -> no
+    ## result.json (NO-DATA), never a silently-dropped provenance claim. model.build_result does the
+    ## per-field validation.
     local_repo = None
     if args.provenance_local_repo is not None:
         try:
             local_repo = json.loads(args.provenance_local_repo)
         except ValueError as exc:
             raise SystemExit("image-test-result-emit: --provenance-local-repo is not valid JSON: %s" % exc)
-        if not isinstance(local_repo, dict):
-            raise SystemExit("image-test-result-emit: --provenance-local-repo must be a JSON object")
+        if not isinstance(local_repo, (dict, list)):
+            raise SystemExit("image-test-result-emit: --provenance-local-repo must be a JSON object or list")
 
     environment = None
     if args.env_firmware_detected or args.env_firmware_evidence:

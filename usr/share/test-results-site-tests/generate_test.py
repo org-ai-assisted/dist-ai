@@ -340,6 +340,29 @@ def build_plane(root):
     with open(os.path.join(lrb_dir, "result.json"), "w", encoding="ascii") as handle:
         handle.write(model.dumps(lrb_result))
 
+    ## LRchain: a whonix --local-repo run delivers its WHOLE derivative chain -- the kicksecure base
+    ## repo AND the whonix repo -- so provenance.localRepo is a LIST, and the page must render a
+    ## panel for EACH. Regression: a derivative run showed only the whonix repo, never kicksecure.
+    lrc_dir = os.path.join(root, "whonix-lrchain-18-2-3-5", "20261006T000000Z")
+    lrc_prov = {"local_repo": [
+        {"derivative": "kicksecure",
+         "repoPath": "/srv/derivative-maker/LRKSREPO_NEEDLE/aptrepo_local/kicksecure",
+         "sourceSha": "abcdef0123456789abcdef0123456789abcdef01",
+         "packages": ["security-misc=LRKSPKG_NEEDLE", "kicksecure-meta=3:40.6-1"]},
+        {"derivative": "whonix",
+         "repoPath": "/srv/derivative-maker/LRWSREPO_NEEDLE/aptrepo_local/whonix",
+         "sourceSha": "abcdef0123456789abcdef0123456789abcdef01",
+         "packages": ["whonix-ws-network-conf=3:40.6-1"]},
+    ]}
+    lrc_step = model.make_step(name="checks", status=model.step_status_from_rc(0), exit_code=0)
+    lrc_result = model.build_result(
+        run_id="whonix-lrchain-18-2-3-5-1", lane="whonix-cli-inst-chain", version="18.2.3.5",
+        builder="dm-release-test", mode="calamares-install", origin=model.ORIGIN_DOWNLOADED,
+        rc=0, generated_unix=now, stop_unix=now, steps=[lrc_step], provenance=lrc_prov)
+    os.makedirs(lrc_dir, exist_ok=True)
+    with open(os.path.join(lrc_dir, "result.json"), "w", encoding="ascii") as handle:
+        handle.write(model.dumps(lrc_result))
+
     ## V: a PASS run carrying per-shot CONTENT validation + an OCR sidecar + a state-card TEXT panel
     ## (the DISPLAY/publish half). On a PASSING run: a 'validated' shot shows a green content chip; an
     ## 'unvalidated' shot (no golden) shows an INCONCLUSIVE content chip -- NOT green (the keystone:
@@ -683,18 +706,29 @@ check("PASS+firmware-mismatch overview cell is non-green",
 ## page -- the exact local build the verdict applies to. Before the fix it was validated + stored
 ## but never surfaced, so a local-repo run could not show which build it tested.
 lr_page = read(os.path.join(out1, "whonix-lr-18-2-3-5-1", "index.html"))
-check("localRepo panel: heading present", "Local apt repo build" in lr_page)
+check("localRepo panel: heading present", "Local apt repo manifest: whonix" in lr_page)
+## The heading carries the package COUNT, so a complete manifest never reads as a truncated log.
+check("localRepo panel: heading states the package count", "(2 packages)" in lr_page)
 check("localRepo panel: repo path shown", "LRREPO_NEEDLE" in lr_page)
 check("localRepo panel: package name=version shown", "LRPKG_NEEDLE" in lr_page)
 check("localRepo panel: build sourceSha shown",
       "abcdef0123456789abcdef0123456789abcdef01" in lr_page)
 ## A non-local-repo run (the firmware run O) must NOT show the localRepo panel.
-check("non-local-repo run omits the localRepo panel", "Local apt repo build" not in o_page)
+check("non-local-repo run omits the localRepo panel", "Local apt repo manifest" not in o_page)
 ## LRbare: an unverified run shows the identity but an HONEST empty sha/packages, never fabricated.
 lrb_page = read(os.path.join(out1, "whonix-lrbare-18-2-3-5-1", "index.html"))
-check("localRepo panel renders for an unverified run", "Local apt repo build" in lrb_page)
+check("localRepo panel renders for an unverified run", "Local apt repo manifest: whonix" in lrb_page)
+check("localRepo singular count reads '(0 packages)'", "(0 packages)" in lrb_page)
 check("localRepo unverified sourceSha reads 'unverified'", "<em>unverified</em>" in lrb_page)
 check("localRepo empty package list reads honestly", "no package versions recorded" in lrb_page)
+## LRchain: a whonix run delivers BOTH the kicksecure base repo AND the whonix repo -- the page
+## must render a panel for EACH (a derivative needs both; showing only whonix was the bug).
+lrc_page = read(os.path.join(out1, "whonix-lrchain-18-2-3-5-1", "index.html"))
+check("localRepo chain: kicksecure panel present", "Local apt repo manifest: kicksecure" in lrc_page)
+check("localRepo chain: whonix panel present", "Local apt repo manifest: whonix" in lrc_page)
+check("localRepo chain: kicksecure repo path shown", "LRKSREPO_NEEDLE" in lrc_page)
+check("localRepo chain: whonix repo path shown", "LRWSREPO_NEEDLE" in lrc_page)
+check("localRepo chain: kicksecure package shown", "LRKSPKG_NEEDLE" in lrc_page)
 
 ## R: a malformed environment.firmware does NOT abort the site. run_generator above did not
 ## raise (it would have, on the pre-fix AttributeError), and the run renders NO-DATA while
