@@ -131,6 +131,10 @@ def run() -> int:
         '@media print and (prefers-reduced-motion: no-preference) '
         '{ @view-transition { navigation: auto; } }') is False,
        "VT scoped to a non-screen (print) media block rejected (canary)")
+    ck(wp.view_transition_css_ok(
+        '@media (prefers-reduced-motion: no-preference) or (prefers-reduced-motion: reduce) '
+        '{ @view-transition { navigation: auto; } }') is False,
+       "VT in a no-preference OR reduce disjunction rejected (also applies to reduce) (canary)")
     ck(wp.view_transition_css_ok('html{scroll-behavior:smooth}') is False,
        "no VT rule rejected (canary)")
     ck(wp.view_transition_css_ok(

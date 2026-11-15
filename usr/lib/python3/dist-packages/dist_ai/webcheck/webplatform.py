@@ -170,6 +170,10 @@ _OFFSCREEN_MEDIA_RE = re.compile(
     re.IGNORECASE)
 # A `not`-negation flips applicability; too tangled to resolve without a media-query engine.
 _MEDIA_NOT_RE = re.compile(r'(?<![\w-])not(?![\w-])', re.IGNORECASE)
+# An `or` disjunction widens the block to ALSO apply when the other arm matches, e.g.
+# `(prefers-reduced-motion: no-preference) or (prefers-reduced-motion: reduce)` applies to
+# reduce users too -- conservatively rejected, like a comma-OR list. `and` is fine (narrows).
+_MEDIA_OR_RE = re.compile(r'(?<![\w-])or(?![\w-])', re.IGNORECASE)
 # @view-transition { ... navigation: auto ... }, whitespace-robust.
 _VT_RULE_RE = re.compile(
     r'@view-transition\s*\{[^}]*\bnavigation\s*:\s*auto\b[^}]*\}', re.IGNORECASE)
@@ -178,12 +182,13 @@ _VT_RULE_RE = re.compile(
 def _no_pref_screen_prelude(prelude: str) -> bool:
     """True iff an @media condition prelude welcomes motion ON SCREEN: it requests
     prefers-reduced-motion:no-preference and is not scoped away from the screen render. A
-    non-screen media type (print/speech/...), a `not`-negation, or a comma-OR list is
-    conservatively REJECTED (never counted -- over-flag, never a false green); our generators emit
-    a bare `(prefers-reduced-motion: no-preference)`."""
+    non-screen media type (print/speech/...), a `not`-negation, an `or`-disjunction, or a comma-OR
+    list is conservatively REJECTED (never counted -- over-flag, never a false green); our generators
+    emit a bare `(prefers-reduced-motion: no-preference)`."""
     if not _NO_PREFERENCE_RE.search(prelude):
         return False
-    if _OFFSCREEN_MEDIA_RE.search(prelude) or _MEDIA_NOT_RE.search(prelude) or ',' in prelude:
+    if (_OFFSCREEN_MEDIA_RE.search(prelude) or _MEDIA_NOT_RE.search(prelude)
+            or _MEDIA_OR_RE.search(prelude) or ',' in prelude):
         return False
     return True
 
@@ -196,8 +201,8 @@ def view_transition_css_ok(css_text: str) -> bool:
     scoped to a non-screen media type (`@media print and (prefers-reduced-motion: no-preference)`,
     which never governs the live render) does NOT satisfy it.
 
-    Scoped to OUR generators' canonical block shape; a tangled prelude (`not`-negated, comma-OR, a
-    `/*` inside a string literal) is conservatively rejected, not parsed -- this is a presence
+    Scoped to OUR generators' canonical block shape; a tangled prelude (`not`-negated, `or`- or
+    comma-disjunction, a `/*` inside a string literal) is conservatively rejected, not parsed -- a presence
     check on trusted generated/reviewed output, not an adversarial CSS parser."""
     text = _CSS_COMMENT_RE.sub(' ', css_text)
     # Check EVERY screen-applicable no-preference media block, not just the first: a page may carry
@@ -315,15 +320,20 @@ _TAG_CANDIDATES_JS = r"""
 # (top-level, or nested in a grouping rule whose condition currently applies) means the browser
 # accepted and applied it. Descend a grouping rule ONLY when it applies now: matchMedia() gates a
 # @media rule, so a VT rule in @media print (or a reduce block) -- parsed into the CSSOM but never
-# governing the on-screen navigation -- does NOT pass (presence != applicability). Recurse to any
-# depth (a VT rule two groups deep is still reached). A non-media grouping rule (@supports/@layer
-# that parsed into the CSSOM) applies by definition.
+# governing the on-screen navigation -- does NOT pass (presence != applicability). An @supports with
+# a FALSE condition likewise keeps its rules in the CSSOM without applying them, so CSS.supports()
+# gates it. Recurse to any depth (a VT rule two groups deep is still reached). @layer and any other
+# grouping rule apply by definition.
 _VT_CSSOM_JS = r"""
 () => {
   const isVT = (r) => r && r.constructor && r.constructor.name === 'CSSViewTransitionRule';
   const applies = (rule) => {
     if (rule.media && typeof rule.media.mediaText === 'string') {
       try { return window.matchMedia(rule.media.mediaText).matches; } catch (e) { return false; }
+    }
+    if (rule.constructor && rule.constructor.name === 'CSSSupportsRule' &&
+        typeof rule.conditionText === 'string') {
+      try { return CSS.supports(rule.conditionText); } catch (e) { return false; }
     }
     return true;
   };
@@ -472,9 +482,10 @@ async def check(base: str, paths: list[str]) -> int:
 
 async def _vt_cssom_canary() -> int:
     """Canary for _VT_CSSOM_JS, run in real chromium: a @view-transition rule scoped to @media
-    print must NOT be reported applied (it never governs the on-screen render), while one in a
-    screen no-preference block must be. RED on a presence-only walker that ignores media
-    applicability. Uses set_content fixtures -- no site checkout needed."""
+    print or wrapped in a FALSE @supports must NOT be reported applied (neither governs the
+    on-screen render), while one in a screen no-preference block or a TRUE @supports must be. RED
+    on a presence-only walker that ignores media/condition applicability. Uses set_content
+    fixtures -- no site checkout needed."""
     from playwright.async_api import async_playwright
     cases = [
         ('@media print and (prefers-reduced-motion: no-preference) '
@@ -483,6 +494,12 @@ async def _vt_cssom_canary() -> int:
         ('@media (prefers-reduced-motion: no-preference) '
          '{ @view-transition { navigation: auto; } }', True,
          'screen no-preference @view-transition not reported applied'),
+        ('@supports (display: unsupported-value-zzz) '
+         '{ @view-transition { navigation: auto; } }', False,
+         'false-@supports @view-transition reported applied (condition ignored)'),
+        ('@supports (display: flex) '
+         '{ @view-transition { navigation: auto; } }', True,
+         'true-@supports @view-transition not reported applied'),
     ]
     overall = 0
     async with async_playwright() as pw:
