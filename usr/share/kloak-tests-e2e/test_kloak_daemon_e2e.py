@@ -324,11 +324,14 @@ class KloakDaemonE2E(unittest.TestCase):
                     fields = handle.read().rsplit(')', 1)[1].split()
                 state, utime, stime = fields[0], fields[11], fields[12]
             except (OSError, IndexError):
+                ## Best-effort: the process may exit between the comm scan and
+                ## this read (or stat be malformed); leave the fields at '?'.
                 pass
             try:
                 with open('/proc/%s/wchan' % pid, encoding='utf-8') as handle:
                     wchan = handle.read().strip() or '0'
             except OSError:
+                ## Best-effort: process gone between scan and read; wchan stays '?'.
                 pass
             lines.append('pid=%s comm=%s state=%s wchan=%s utime=%s stime=%s'
                          % (pid, comm, state, wchan, utime, stime))
