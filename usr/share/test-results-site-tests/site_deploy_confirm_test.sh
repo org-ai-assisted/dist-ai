@@ -186,5 +186,45 @@ check "confirm queries the PUSH url's owner/repo" "$(cat -- "${ghapi_log}")" "or
 check "confirm does NOT query the fetch url's owner/repo" \
    "$(grep -c 'fetch-mirror/wrong-fetch-repo' -- "${ghapi_log}" || true)" "0"
 
+## 6. CANARY: HEAD moves DURING the gate -> site-deploy must refuse to publish an ungated commit.
+##    The stub answers `rev-parse HEAD` with a DIFFERENT sha before vs after the gate (a concurrent
+##    ref move); the pre-fix code captured the sha only AFTER the gate and pushed it, shipping an
+##    ungated commit. So on old code this pushes + exits 0 with no "HEAD moved" message.
+safe-rm --force -- "${push_argv}"
+head_calls="${work}/head.calls"
+true > "${head_calls}"
+cat > "${bin}/git" <<STUB
+#!/bin/bash
+for a in "\$@"; do
+   if [ "\$a" = 'push' ]; then
+      printf '%s\n' "\$*" > "${push_argv}"
+      exit 0
+   fi
+done
+case "\$*" in
+   *--abbrev-ref*) printf '%s\n' 'master' ;;
+   *'rev-parse HEAD'*)
+      n="\$(cat "${head_calls}" 2>/dev/null || printf '%s' 0)"
+      n=\$(( n + 1 ))
+      printf '%s\n' "\$n" > "${head_calls}"
+      if [ "\$n" -eq 1 ]; then
+         printf '%s\n' 'aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111'
+      else
+         printf '%s\n' 'bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222'
+      fi
+      ;;
+   *'remote get-url --push'*) printf '%s\n' 'git@github.com:org-ai-assisted/org-ai-assisted.github.io.git' ;;
+   *'remote get-url'*) printf '%s\n' 'git@github.com:fetch-mirror/wrong-fetch-repo.git' ;;
+esac
+exit 0
+STUB
+chmod +x -- "${bin}/git"
+make_ghapi '[{"id":106}]' '[{"state":"success"}]'
+run_deploy ''
+check_rc "HEAD moved during gate -> non-zero exit" "${rc}" nonzero
+check "HEAD moved during gate -> refused with reason" "${out}" "HEAD moved during the gate"
+check "HEAD moved during gate -> did NOT push" \
+   "$([ -e "${push_argv}" ] && printf '%s' pushed || printf '%s' none)" "none"
+
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 [ "${fail}" -eq 0 ]

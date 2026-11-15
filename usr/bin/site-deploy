@@ -188,6 +188,12 @@ esac
 
 printf '%s\n' "${me}: testing ${repo_dir}" >&2
 
+## Capture HEAD BEFORE the gate: the suite verifies the tree at THIS commit, and the push below must
+## publish exactly it. A concurrent ref move in repo_dir between here and the push would otherwise
+## ship an UNGATED commit (the push suppresses the server re-gate), so we refuse below if HEAD moved.
+gated_head="$(git -C "${repo_dir}" rev-parse HEAD 2>/dev/null)" \
+   || die 1 "cannot read HEAD in '${repo_dir}' before gating"
+
 test_rc=0
 suite_out=''
 if [ "${record_and_publish}" = 'true' ]; then
@@ -259,6 +265,11 @@ branch="$(git -C "${repo_dir}" rev-parse --abbrev-ref HEAD)"
 ## that commit -- reading HEAD after the push could race a concurrent ref move and confirm the wrong
 ## (already-live) sha.
 pushed_sha="$(git -C "${repo_dir}" rev-parse HEAD)"
+
+## Refuse if HEAD moved during the gate: the suite verified ${gated_head}, so publishing any other
+## commit would ship an UNGATED site (this push suppresses the server re-gate). Re-run to re-gate.
+[ "${gated_head}" = "${pushed_sha}" ] \
+   || die 1 "HEAD moved during the gate (gated ${gated_head}, now ${pushed_sha}); refusing to publish an ungated commit -- re-run"
 
 printf '%s\n' "${me}: pushing ${branch} -> ${remote}/${branch}" >&2
 ## The pre-push hook in each site repo re-runs website-tests via `site-deploy --check-only` on the
