@@ -66,19 +66,19 @@ check_eq() {
 
 nl=$'\n'
 
-## Build a reprepro-shaped local repo fixture under <root>/dists/local. Each
-## remaining arg is 'component[:all]:<bytes>': <bytes>=0 writes a 0-byte Packages
-## (reprepro's configured-but-unpopulated component); 'all' puts the index under
-## binary-all instead of binary-amd64 (arch-independent payload).
+## Build a reprepro-shaped local repo fixture under <root>/dists/local. Each remaining arg is
+## 'component[:<arch>]:<bytes>': <arch> defaults to amd64 (so 'main:120' is amd64); <bytes>=0 writes
+## a 0-byte Packages (reprepro's configured-but-unpopulated component). Pass an explicit arch (e.g.
+## 'contrib:arm64:40') to seed a component only under a non-native binary-<arch>.
 mk_local_repo() {
-   local root suite comp arch target spec bytes
+   local root suite comp arch target spec rest bytes
    root="$1"; suite="$2"; shift 2
    for spec in "$@"; do
-      comp="${spec%%:*}"; spec="${spec#*:}"
-      if [ "${spec%%:*}" = 'all' ]; then
-         arch='all'; bytes="${spec#*:}"
+      comp="${spec%%:*}"; rest="${spec#*:}"
+      if [ "${rest}" != "${rest#*:}" ]; then
+         arch="${rest%%:*}"; bytes="${rest#*:}"
       else
-         arch='amd64'; bytes="${spec}"
+         arch='amd64'; bytes="${rest}"
       fi
       target="${root}/dists/${suite}/${comp}/binary-${arch}"
       mkdir --parents -- "${target}"
@@ -129,11 +129,29 @@ else
    printf '%s\n' "FAIL: canary: an empty component leaked into the whonix stanza -- apt-get update will hard-fail"
 fi
 
-## --- binary-all residency: a component resident only via binary-all/Packages -
-mk_local_repo "${repo_fix}/archindep" local main:0 contrib:all:50
-actual_archindep="$(local_apt_repo_sources_stanza "file:${repo_fix}/archindep" 'local')"
-check_eq "binary-all index counts as resident; empty binary-amd64 main dropped" \
-   "contrib" "$(printf '%s\n' "${actual_archindep}" | sed -n 's/^Components: //p')"
+## --- arch-aware residency: the probe reads binary-<arch>, defaulting to the NATIVE arch ----------
+## REGRESSION (F1): a component resident only under a NON-native binary-<arch> must be invisible by
+## default (the native-arch probe never looks there) but appear when that arch is passed explicitly.
+## A hard-coded amd64 default would wrongly mark an arm64-only repo's components present/absent.
+native_arch="$(dpkg --print-architecture 2>/dev/null || printf '%s' amd64)"
+other_arch='arm64'; [ "${native_arch}" = 'arm64' ] && other_arch='amd64'
+## contrib resident ONLY under binary-<other_arch>; main empty under binary-<native_arch>.
+mk_local_repo "${repo_fix}/archcross" local "main:${native_arch}:0" "contrib:${other_arch}:40"
+default_comps="$(local_apt_repo_sources_stanza "file:${repo_fix}/archcross" 'local' | sed -n 's/^Components: //p')"
+check_eq "native-arch default: a ${other_arch}-only component is NOT seen; falls back to main" \
+   "main" "${default_comps}"
+other_comps="$(local_apt_repo_sources_stanza "file:${repo_fix}/archcross" 'local' '' "${other_arch}" | sed -n 's/^Components: //p')"
+check_eq "explicit arch ${other_arch}: the ${other_arch}-resident contrib component IS listed" \
+   "contrib" "${other_comps}"
+
+## --- binary-all is NOT consulted: a component resident ONLY under binary-all must be dropped ------
+## reprepro folds arch:all into each binary-<arch> index and makes no binary-all tree; counting
+## binary-all would keep a component whose native binary-<arch>/Packages is absent/0-byte, which apt
+## then hard-fails fetching. Seed contrib only under binary-all + empty native main -> fallback main.
+mk_local_repo "${repo_fix}/allonly" local "main:${native_arch}:0" contrib:all:50
+allonly_comps="$(local_apt_repo_sources_stanza "file:${repo_fix}/allonly" 'local' | sed -n 's/^Components: //p')"
+check_eq "binary-all-only component is dropped (native binary-<arch> is the sole signal)" \
+   "main" "${allonly_comps}"
 
 ## --- read_root override: emit guest URI, read residency from host path ------
 ## A host-side caller (dm-whonix-pair) emits the GUEST mount URI but must probe
