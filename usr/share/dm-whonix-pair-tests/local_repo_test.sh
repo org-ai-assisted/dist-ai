@@ -400,5 +400,28 @@ assert "verify does NOT force-reinstall a dkms package (tirdad-dkms)" \
 assert "verify STILL force-reinstalls the normal kicksecure payload (security-misc)" \
    grep --quiet --fixed-strings -- 'security-misc=3:18.3-1' "${APT_LOG}"
 
+## EPOCH: the local Packages index records an explicit zero epoch (tirdad '0:0.3.5-1') that
+## dpkg-query NORMALIZES away in its output ('0.3.5-1'). The two are the SAME installed version;
+## a string '=' false-fails the whole lane INCONCLUSIVE. Verify must compare Debian versions, not
+## strings. On the pre-fix string-compare code this PASS assertion FAILS (verify exits SETUP_RC).
+cat > "${ks_dir}/Packages" <<'EOF'
+Package: security-misc
+Version: 3:18.3-1
+Architecture: all
+
+Package: tirdad
+Version: 0:0.3.5-1
+Architecture: all
+EOF
+true > "${APT_LOG}"
+## dpkg-query reports tirdad WITHOUT the implicit zero epoch, exactly as the real tool does.
+printf '%s\n' 'anon-apps-config 7:18.1-1' 'whonix-gw-network-conf 3:18.2-1' 'security-misc 3:18.3-1' 'tirdad 0.3.5-1' > "${DPKG_MAP}"
+ep_rc=0
+( ws_func_verify_local_repo_installed ) >/dev/null 2>&1 || ep_rc=$?
+assert "verify PASSES when dpkg-query drops an explicit zero epoch (0:0.3.5-1 == 0.3.5-1)" \
+   test "${ep_rc}" -eq 0
+assert "verify force-reinstalls the zero-epoch payload at its indexed version" \
+   grep --quiet --fixed-strings -- 'tirdad=0:0.3.5-1' "${APT_LOG}"
+
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 [ "${fail}" -eq 0 ] || exit 1

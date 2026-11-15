@@ -1636,7 +1636,11 @@ dsudo apt-get ${LOCAL_TEST_APT_OPTS} install --reinstall --yes --allow-downgrade
 for s in \$installed; do
   n=\${s%%=*}; v=\${s#*=}
   got=\$(dpkg-query -W -f='\${Version}' "\$n")
-  [ "\$got" = "\$v" ] || { echo "local payload NOT installed: \$n want \$v got \${got:-<none>}" >&2; exit 1; }
+  ## Debian version EQUALITY, not a string compare: the Packages index records an explicit zero
+  ## epoch (e.g. tirdad '0:0.3.5-1') that dpkg-query normalizes away in its output ('0.3.5-1').
+  ## The two are the SAME installed version; a string '=' false-fails the whole lane INCONCLUSIVE.
+  ## dpkg --compare-versions is epoch-correct and still fails a genuine mismatch (and an empty got).
+  dpkg --compare-versions "\${got:-}" eq "\$v" || { echo "local payload NOT installed: \$n want \$v got \${got:-<none>}" >&2; exit 1; }
 done
 GUEST
    gc_run user "${verify_cmd}" 600 \
