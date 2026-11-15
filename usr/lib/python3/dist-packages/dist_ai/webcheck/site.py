@@ -358,6 +358,10 @@ def resolve_internal(root, page, target, mount=None, parent_roots=(),
     # (covers the '//host' scheme-relative form with no scheme colon).
     if _is_external(target) or _SCHEME_RE.match(_url_norm(target)):
         return None
+    # Normalize the PATH the way a browser does (whitespace/tab/newline/'\'), case-preserving --
+    # the on-disk filename is case-sensitive. Without this ` /style.css ` or `css\x.css` would
+    # resolve to a literal, absent name and false-fail (and would disagree with _page_css_texts).
+    target = _url_path_norm(target)
     frag = ''
     if '#' in target:
         target, frag = target.split('#', 1)
@@ -940,13 +944,22 @@ _URL_STRIP = str.maketrans('', '', '\t\n\r')
 _URL_TRIM = ''.join(chr(code) for code in range(0x21))
 
 
+def _url_path_norm(url):
+    # Browser URL normalization WITHOUT the case fold, for on-disk PATH resolution (a filename is
+    # case-sensitive): ASCII tab/newline/CR removed from ANYWHERE (WHATWG), leading/trailing C0
+    # controls and space trimmed, '\' folded to '/' (special scheme). The single source both the
+    # link checker and the CSS collector resolve a path through, so they name the same file a
+    # browser fetches. _url_norm is this plus .lower() for the case-insensitive scheme/host test.
+    return url.translate(_URL_STRIP).strip(_URL_TRIM).replace('\\', '/')
+
+
 def _url_norm(url):
     # Normalize a URL reference the way a browser does before scheme matching:
     # ASCII tab/newline/CR are removed from ANYWHERE (WHATWG), leading/trailing C0
     # controls and space are trimmed, '\' is a '/' for a special scheme, and the
     # scheme compares case-insensitively -- so none of those forms can smuggle a
     # cross-origin load or a javascript: URL past the gate.
-    return url.translate(_URL_STRIP).strip(_URL_TRIM).replace('\\', '/').lower()
+    return _url_path_norm(url).lower()
 
 
 def _is_external(url):
@@ -1524,17 +1537,14 @@ def _page_css_texts(root, page_path, html_text):
     texts = list(collector.inline)
     page_dir = os.path.dirname(page_path)
     for href in collector.hrefs:
-        if _url_norm(href).startswith(('http:', 'https:', '//', 'data:')):
-            continue                         # cross-origin / inline-data sheet: not on disk
-        # Resolve the on-disk path the way a browser does BEFORE splitting: normalize URL
-        # whitespace (ASCII tab/newline/CR removed from anywhere, leading/trailing C0 controls +
-        # space trimmed -- the same _URL_STRIP/_URL_TRIM as _url_norm but WITHOUT its lowercasing),
-        # then strip query/fragment and percent-decode, preserving filename case. _url_norm is for
-        # the scheme test ONLY (it lowercases and does NOT unquote); using the raw href here would
-        # resolve ` /style.css ` (or a %20-encoded / mixed-case name) to the wrong (absent) file
-        # and false-fail the VT check.
-        clean = href.translate(_URL_STRIP).strip(_URL_TRIM)
-        clean = clean.split('?', 1)[0].split('#', 1)[0]
+        if _is_external(href) or _SCHEME_RE.match(_url_norm(href)):
+            continue                         # cross-origin, data:, or any other scheme: not on disk
+        # Resolve the on-disk path exactly as _resolve_internal does (so the link checker and this
+        # gate name the same file a browser fetches): browser-normalize the path (whitespace / tab /
+        # newline / '\'), case-preserving since the filename is case-sensitive, then strip
+        # query/fragment and percent-decode. The raw href would resolve ` /style.css ` or a
+        # mixed-case / %20-encoded name to the wrong (absent) file and false-fail the VT check.
+        clean = _url_path_norm(href).split('?', 1)[0].split('#', 1)[0]
         clean = urllib.parse.unquote(clean)
         if not clean:
             continue

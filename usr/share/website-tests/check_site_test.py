@@ -1278,6 +1278,23 @@ def run():
               not any('#top' in f.lower() for f in fails), repr(fails))
         check('check_links: a real missing cross-page anchor is still flagged',
               any('#realmissing' in f for f in fails), repr(fails))
+    # A browser normalizes a URL before resolving (WHATWG): trim leading/trailing space, drop inner
+    # tab/newline/CR, fold '\' to '/' -- case-preserving (the on-disk filename is case-sensitive).
+    check('_url_path_norm trims ends + inner tab/newline, folds backslash, keeps case',
+          check_site._url_path_norm(' /My\tStyle\n.css ') == '/MyStyle.css'
+          and check_site._url_path_norm('a\\b\\c.css') == 'a/b/c.css', 'url path norm')
+    # The link checker must apply that same normalization, so a link to an existing file carrying
+    # such noise is NOT broken -- and it must agree with _page_css_texts. (Regression: the raw-path
+    # resolver reported ' /app.css ' and 'a\b.css' as broken internal links.)
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'app.css', 'body{}')
+        _write(root, 'sub/app.css', 'body{}')
+        _write(root, 'index.html',
+               '<!doctype html><html><head><title>t</title></head><body>'
+               '<a href=" /app.css ">s</a><a href="sub\\app.css">b</a></body></html>')
+        fails = _links_failures(root)
+        check('check_links: whitespace/backslash href resolves, not broken',
+              not any('broken internal link' in f for f in fails), repr(fails))
     cands = check_site._abs_candidates('../../etc/hostname', ['/nonexistent-root'])
     check('_abs_candidates clamps a root-escaping path into the root',
           bool(cands) and all(c.startswith('/nonexistent-root/') for c in cands)
