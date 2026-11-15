@@ -1135,6 +1135,11 @@ rt_eph_reclaim() {
 ## Publish one lane's verdict to the results plane and print a summary line. The
 ## results subtree carries guest, interface AND version so lxqt and cli (or two
 ## versions) never collide on one path.
+## Effective published rc of the LAST rt_publish_result call -- possibly bumped by the screenshot
+## gate below. rt_publish_result receives rc BY VALUE, so a lane must RETURN this to carry the gated
+## verdict out; otherwise a blank/stuck-screenshot FAIL publishes a FAIL page yet the lane and main
+## exit 0 -- a false green the calling runner reads as success.
+rt_effective_rc=0
 rt_publish_result() {
    local guest_name version account mode rc shot outdir verdict tok lane_fw
    local -a pub_expect=()
@@ -1201,6 +1206,9 @@ rt_publish_result() {
    ## gap or inconclusive probe -- NOT a leak); any other non-zero (incl dm-whonix-pair
    ## FAIL_RC=5) = FAIL. The publisher derives the same verdict from rc for result.json
    ## (one source); computed here only for the console line below.
+   ## Expose the effective (possibly shot-gated) rc so the lane can RETURN it -- publishing it by
+   ## value alone leaves the lane/main exit status stale vs the published verdict.
+   rt_effective_rc="${rc}"
    verdict="$(image_test_verdict_from_rc "${rc}")"
    for tok in "$@"; do
       pub_expect+=( --expect "${tok}" )
@@ -1213,7 +1221,15 @@ rt_publish_result() {
       rt_shotgate_tmp="$(mktemp --tmpdir "dm-release-test-shotgate.XXXXXX" 2>/dev/null || true)"
       if [ -n "${rt_shotgate_tmp}" ]; then
          if [ -n "${rt_check_log:-}" ] && [ -s "${rt_check_log}" ]; then
-            cat -- "${rt_check_log}" >> "${rt_shotgate_tmp}" 2>/dev/null || true
+            ## Read the account-owned check-log AS THE ACCOUNT. A symlink the account planted at this
+            ## path to a root-only file (e.g. /etc/shadow) is then read with the account's privileges
+            ## and simply fails -- root never follows it into the published tail. (The direct-pass
+            ## paths below hand the raw path to the emitter, which guards it with open_regular_nofollow;
+            ## this root-side combine must not bypass that by cat-ing as root.)
+            ## SC2024: the redirect staying root-side is INTENDED -- only the READ (cat) drops to the
+            ## account; rt_shotgate_tmp is our root-owned temp and must be written by root.
+            # shellcheck disable=SC2024
+            sudo -u "${account}" -- cat -- "${rt_check_log}" >> "${rt_shotgate_tmp}" 2>/dev/null || true
          fi
          printf '%s\n' "${rt_shotgate_reason}" >> "${rt_shotgate_tmp}" 2>/dev/null || true
          pub_stderr=( --step-stderr-file "${rt_shotgate_tmp}" )
@@ -1488,7 +1504,7 @@ rt_lane_kicksecure() {
    rt_publish_result kicksecure "${version}" "${account}" calamares-install "${rc}" "${shot_arg}" Kicksecure
    sudo -u "${account}" -- safe-rm --recursive --force -- "${shot_dir}" "${check_log}" "${firmware_evidence_file}" 2>/dev/null || true
    ## The per-run staged ISO dir (rt_staged_dir) is reaped by rt_eph_cleanup on exit.
-   return "${rc}"
+   return "${rt_effective_rc}"
 }
 
 ## Shared whonix-pair preamble (both lanes): serialize on the shared persistent account +
@@ -1558,7 +1574,7 @@ rt_lane_whonix_leak() {
    shot_arg="${shot_dir}"
    rt_publish_result whonix "${version}" "${account}" whonix-pair "${rc}" "${shot_arg}" tor-confirm
    sudo -u "${account}" -- safe-rm --recursive --force -- "${shot_dir}" 2>/dev/null || true
-   return "${rc}"
+   return "${rt_effective_rc}"
 }
 
 ## Resolve the build/admin user's home (holds ~/derivative-maker + ~/derivative-binary). Test seam
@@ -1628,8 +1644,11 @@ rt_local_repo_chain() {
 ## rebuilds provenance. Empty + rc 0 when any member's index is unreadable (benign "unverifiable",
 ## the single-repo behavior preserved); non-zero only on a real sha256sum/awk tool failure.
 rt_local_repo_gen_id() {
-   local deriv="$1" member repo_path pkgs_file one ids=""
-   for member in $(rt_local_repo_chain "${deriv}"); do
+   ## chain (optional $2): the membership set the caller already resolved + is DELIVERING. Reuse it
+   ## so a derivative becoming resident mid-test cannot slip into the generation id while the guest
+   ## never enables it (the delivered chain is captured once). Falls back to a fresh resolve.
+   local deriv="$1" chain="${2:-}" member repo_path pkgs_file one ids=""
+   for member in ${chain:-$(rt_local_repo_chain "${deriv}")}; do
       repo_path="$("${DM_SHARED_APT_REPO}" repo-path "${member}" 2>/dev/null || true)"
       pkgs_file="${repo_path}/dists/local/main/binary-amd64/Packages"
       [ -n "${repo_path}" ] && [ -r "${pkgs_file}" ] || return 0
@@ -1681,9 +1700,11 @@ rt_build_local_repo_one() {
 ## status caveat on rt_build_local_repo_one's callers: errexit is OFF on the `||` LHS, so every tool
 ## step is explicitly `|| return 1`.
 rt_build_local_repo_provenance() {
-   local deriv="$1" member obj
+   ## chain (optional $2): reuse the caller's already-resolved + delivered membership so provenance
+   ## records exactly the repos the guest enabled, never one that became resident mid-test.
+   local deriv="$1" chain="${2:-}" member obj
    local -a objs=()
-   for member in $(rt_local_repo_chain "${deriv}"); do
+   for member in ${chain:-$(rt_local_repo_chain "${deriv}")}; do
       obj="$(rt_build_local_repo_one "${member}")" || return 1
       objs+=( "${obj}" )
    done
@@ -1775,7 +1796,7 @@ rt_lane_whonix_inst() {
    ## would collapse to an empty gen and be swallowed as the benign omit below.
    local rt_local_repo_gen="" rt_local_repo_gen_rc=0
    if [ -n "${local_repo}" ]; then
-      rt_local_repo_gen="$(rt_local_repo_gen_id "${local_repo}")" || rt_local_repo_gen_rc=$?
+      rt_local_repo_gen="$(rt_local_repo_gen_id "${local_repo}" "${lr_chain}")" || rt_local_repo_gen_rc=$?
       ## Expose the local Debian mirror under this repo's share tree (ROOT bind-mount, ro+nosymfollow)
       ## BEFORE the account-run lane attaches + boots, so the WS can source the Debian base locally
       ## for check 3's full upgrade. Keyed to the SAME base the lane attaches (--local-repo-base).
@@ -1829,11 +1850,11 @@ rt_lane_whonix_inst() {
       ##    INCONCLUSIVE, never a published-repo masquerade. A missing/empty localRepo block otherwise
       ##    reads as a published run, so a tool failure must NOT be swallowed as the benign omit.
       local rt_local_repo_gen_now="" gen_now_rc=0 prov_rc=0
-      rt_local_repo_gen_now="$(rt_local_repo_gen_id "${local_repo}")" || gen_now_rc=$?
+      rt_local_repo_gen_now="$(rt_local_repo_gen_id "${local_repo}" "${lr_chain}")" || gen_now_rc=$?
       if [ "${rt_local_repo_gen_rc}" -eq 0 ] && [ "${gen_now_rc}" -eq 0 ] \
          && [ -n "${rt_local_repo_gen}" ] && [ -n "${rt_local_repo_gen_now}" ] \
          && [ "${rt_local_repo_gen}" = "${rt_local_repo_gen_now}" ]; then
-         rt_local_repo_json="$(rt_build_local_repo_provenance "${local_repo}")" || prov_rc=$?
+         rt_local_repo_json="$(rt_build_local_repo_provenance "${local_repo}" "${lr_chain}")" || prov_rc=$?
       fi
       if [ "${rt_local_repo_gen_rc}" -ne 0 ] || [ "${gen_now_rc}" -ne 0 ] || [ "${prov_rc}" -ne 0 ]; then
          log error "localRepo provenance for ${local_repo} failed (gen_before_rc ${rt_local_repo_gen_rc}, gen_now_rc ${gen_now_rc}, build_rc ${prov_rc}) -- refusing to publish a local-repo run as a published-repo run"
@@ -1848,7 +1869,7 @@ rt_lane_whonix_inst() {
    rt_publish_result whonix "${version}" "${account}" whonix-func "${rc}" "${shot_dir}" release-checks
    sudo -u "${account}" -- safe-rm --recursive --force -- "${check_log}" "${shot_dir}" 2>/dev/null || true
    if [ -n "${rt_func_log}" ]; then safe-rm --force -- "${rt_func_log}" 2>/dev/null || true; rt_func_log=""; fi
-   return "${rc}"
+   return "${rt_effective_rc}"
 }
 
 ## ---------------------------------------------------------------------------

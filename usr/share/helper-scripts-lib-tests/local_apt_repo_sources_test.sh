@@ -133,7 +133,13 @@ fi
 ## REGRESSION (F1): a component resident only under a NON-native binary-<arch> must be invisible by
 ## default (the native-arch probe never looks there) but appear when that arch is passed explicitly.
 ## A hard-coded amd64 default would wrongly mark an arm64-only repo's components present/absent.
-native_arch="$(dpkg --print-architecture 2>/dev/null || printf '%s' amd64)"
+## The fixtures are keyed to the REAL native arch, so the test must KNOW it, not guess: a
+## fabricated amd64 fallback would silently mislabel which binary-<arch> is "native" on an arm64
+## host and invert this very regression. dpkg is a hard test dependency; its absence is an env bug.
+if ! native_arch="$(dpkg --print-architecture 2>/dev/null)" || [ -z "${native_arch}" ]; then
+   printf '%s\n' "FATAL: dpkg --print-architecture unavailable; cannot determine the native arch" >&2
+   exit 1
+fi
 other_arch='arm64'; [ "${native_arch}" = 'arm64' ] && other_arch='amd64'
 ## contrib resident ONLY under binary-<other_arch>; main empty under binary-<native_arch>.
 mk_local_repo "${repo_fix}/archcross" local "main:${native_arch}:0" "contrib:${other_arch}:40"

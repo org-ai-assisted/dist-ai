@@ -215,6 +215,10 @@ assert "die failure card carries the check output tail"      grep --quiet --fixe
 check_log=''
 safe-rm --force -- "${shot_dir}/98-failure.card.txt"
 ( die 2 'provisioning gap: snapshot restore failed' ) >/dev/null 2>&1 || true
+## Assert the card EXISTS and states the real reason FIRST: the header-absence check below is
+## vacuously true if die wrote no card at all, so it only means something once the card is present.
+assert "setup die card exists"                               test -s "${shot_dir}/98-failure.card.txt"
+assert "setup die card states the real reason"               grep --quiet --fixed-strings 'provisioning gap: snapshot restore failed' "${shot_dir}/98-failure.card.txt"
 assert "setup die card has no stale output header"           test -z "$(grep -F 'failed check output' "${shot_dir}/98-failure.card.txt" || true)"
 
 ## Both functional mains must OPEN with the shared pair card and PASS the per-check story hook
