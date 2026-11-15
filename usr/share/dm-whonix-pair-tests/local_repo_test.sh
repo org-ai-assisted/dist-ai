@@ -368,5 +368,37 @@ assert "chain verify force-installs the kicksecure base payload" \
 assert "chain verify force-installs the whonix payload" \
    grep -q -- 'anon-apps-config=7:18.1-1' "${APT_LOG}"
 
+## SKIP CLASS: force-reinstalling the guest-additions installer (vm-config-dist) tears down the
+## guestcontrol channel this very command runs over, and a *-dkms reinstall rebuilds kernel modules
+## needing headers the guest may lack -- so both are EXCLUDED from the reinstall set (their provenance
+## rode check 3's upgrade). The normal payloads still reinstall and the verdict stays PASS.
+## On the pre-fix code vm-config-dist WAS reinstalled, so the exclusion assertions FAIL there.
+cat > "${ks_dir}/Packages" <<'EOF'
+Package: security-misc
+Version: 3:18.3-1
+Architecture: all
+
+Package: vm-config-dist
+Version: 3:18.5-1
+Architecture: all
+
+Package: tirdad-dkms
+Version: 0:0.0.9-1
+Architecture: all
+EOF
+true > "${APT_LOG}"
+printf '%s\n' 'anon-apps-config 7:18.1-1' 'whonix-gw-network-conf 3:18.2-1' 'security-misc 3:18.3-1' 'vm-config-dist 3:18.5-1' 'tirdad-dkms 0:0.0.9-1' > "${DPKG_MAP}"
+sk_rc=0
+( ws_func_verify_local_repo_installed ) >/dev/null 2>&1 || sk_rc=$?
+## succeed when <pattern> is ABSENT from <file> -- for the exclusion assertions below.
+grep_absent() { ! grep --quiet --fixed-strings -- "$1" "$2"; }
+assert "skip-class verify still PASSES" test "${sk_rc}" -eq 0
+assert "verify does NOT force-reinstall the guest-additions installer (vm-config-dist)" \
+   grep_absent vm-config-dist "${APT_LOG}"
+assert "verify does NOT force-reinstall a dkms package (tirdad-dkms)" \
+   grep_absent tirdad-dkms "${APT_LOG}"
+assert "verify STILL force-reinstalls the normal kicksecure payload (security-misc)" \
+   grep --quiet --fixed-strings -- 'security-misc=3:18.3-1' "${APT_LOG}"
+
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 [ "${fail}" -eq 0 ] || exit 1

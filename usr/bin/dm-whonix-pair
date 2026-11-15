@@ -1613,14 +1613,25 @@ for pkgs in ${pkgs_paths# }; do
 done
 specs=\$(echo \$specs)
 [ -n "\$specs" ] || { echo 'local repos list no packages' >&2; exit 1; }
+# Packages whose force-REINSTALL is self-destructive to this very check, so they are NOT
+# reinstalled here -- their local-repo provenance already rode check 3's upgrade above:
+#  - vm-config-dist: its postinst runs vbox-guest-installer, which removes+reinstalls the
+#    VirtualBox Guest Additions. gc_run executes THIS command over the guestcontrol channel
+#    GA provides, so reinstalling it tears down the transport mid-command -> a false INCONCLUSIVE.
+#  - *-dkms: a reinstall triggers a kernel-module rebuild that needs headers for the running
+#    kernel the guest may not carry -> an unrelated build failure, not a local-repo signal.
+# The many other local packages still prove the local repo was exercised.
+reinstall_skip=' vm-config-dist '
 installed=''
 for s in \$specs; do
   n=\${s%%=*}
+  case "\$reinstall_skip" in *" \$n "*) continue ;; esac
+  case "\$n" in *-dkms) continue ;; esac
   if dpkg-query -W -f='\${Status}' "\$n" 2>/dev/null | grep -q 'install ok installed'; then
     installed="\$installed \$s"
   fi
 done
-[ -n "\$installed" ] || { echo 'no local-repo package is installed in the guest -- this build was not exercised' >&2; exit 1; }
+[ -n "\$installed" ] || { echo 'no reinstallable local-repo package is installed in the guest -- this build was not exercised' >&2; exit 1; }
 dsudo apt-get ${LOCAL_TEST_APT_OPTS} install --reinstall --yes --allow-downgrades -t local \$installed
 for s in \$installed; do
   n=\${s%%=*}; v=\${s#*=}
@@ -1630,7 +1641,7 @@ done
 GUEST
    gc_run user "${verify_cmd}" 600 \
       || die "${SETUP_RC}" "${ws}: local payload verification failed -- the locally-built packages were not actually installed (INCONCLUSIVE, not a release FAIL)"
-   story_card 56 local-build-installed "Local build payloads installed" "Every locally-built package already installed was reinstalled from the local repo and its installed version matches the local build, so check 3's verdict applies to THIS build, not the image's same-version payload."
+   story_card 56 local-build-installed "Local build payloads installed" "Every locally-built package already installed (except the guest-additions installer and dkms packages, whose reinstall would tear down the test transport or rebuild kernel modules) was reinstalled from the local repo and its installed version matches the local build, so check 3's verdict applies to THIS build, not the image's same-version payload."
 }
 
 ## Everything else runs faithfully headless: user/sysmaint boot-role (checks 1, 2), CLI login
