@@ -12,8 +12,9 @@
 ##     optimized -- the canary proving the gate distinguishes the two, not
 ##     always-red/always-green;
 ##   - minimize is idempotent and never grows a file;
-##   - --webp replaces a JPEG with a smaller .webp and prints the OLD<TAB>NEW map;
-##   - a --webp PNG result is never larger than the source;
+##   - --convert replaces a raster with whichever of {webp, avif} is SMALLER (and
+##     prints the OLD<TAB>NEW map), never larger than the source;
+##   - keep-smaller picks per image: a photo wins as avif, flat/line-art as webp;
 ##   - unsupported types are skipped and left untouched;
 ##   - a missing / unreadable input yields a non-zero exit without aborting a batch.
 ## exit 1 (FATAL) when the subject or a required image tool is absent (R-220).
@@ -45,7 +46,7 @@ if [ ! -r "${hs_prefix}/usr/libexec/helper-scripts/strings.bsh" ]; then
    exit 1
 fi
 
-for tool in convert optipng jpegoptim cwebp stat; do
+for tool in convert optipng jpegoptim cwebp avifenc stat; do
    if ! type -P "${tool}" >/dev/null; then
       printf '%s\n' "image-optimize-tests: FATAL (missing tool: ${tool})" >&2
       exit 1
@@ -127,40 +128,78 @@ png_again="$(fsize "${png}")"
 assert_le 'second optimize never grows the file' "${png_again}" "${png_after}"
 
 ## ---------------------------------------------------------------------------
-## JPEG -> webp replacement + the OLD<TAB>NEW mapping on stdout.
+## --convert: KEEP-SMALLER. A photographic JPEG is replaced by whichever of
+## {webp, avif} is smaller (avif usually wins on a photo); source removed, map
+## printed. The winner extension is NOT assumed.
 ## ---------------------------------------------------------------------------
 jpg="${workdir}/photo.jpg"
 convert -size 400x400 plasma: "${jpg}"
 jpg_before="$(fsize "${jpg}")"
-map="$("${BIN}" --webp --quiet -- "${jpg}")" || map=""
-webp="${workdir}/photo.webp"
-if [ -f "${webp}" ] && [ ! -e "${jpg}" ]; then
-   report pass 'JPEG converted to webp (source removed, .webp created)'
+map="$("${BIN}" --convert --quiet -- "${jpg}")" || map=""
+result="${map#*$'\t'}"
+if [ -n "${map}" ] && [ -f "${result}" ] && [ ! -e "${jpg}" ]; then
+   report pass 'JPEG converted (source removed, winner created)'
 else
-   report fail 'JPEG converted to webp (source removed, .webp created)'
+   report fail "JPEG converted (map: ${map})"
 fi
-if [ "${map}" = "${jpg}"$'\t'"${webp}" ]; then
-   report pass 'webp mode prints OLD<TAB>NEW mapping'
+if [ "${map}" = "${jpg}"$'\t'"${result}" ] && [ "${result}" != "${jpg}" ]; then
+   report pass 'convert prints OLD<TAB>NEW mapping'
 else
-   report fail "webp mode prints OLD<TAB>NEW mapping (got: ${map})"
+   report fail "convert prints OLD<TAB>NEW mapping (got: ${map})"
 fi
-assert_lt 'webp is smaller than the source JPEG' "$(fsize "${webp}")" "${jpg_before}"
+assert_lt 'winner is smaller than the source JPEG' "$(fsize "${result}")" "${jpg_before}"
+case "${result}" in
+   *.avif)
+      report pass 'photographic JPEG wins as AVIF (keep-smaller)'
+      ;;
+   *.webp)
+      report pass 'photographic JPEG wins as WebP (keep-smaller: webp was smaller)'
+      ;;
+   *)
+      report fail "photographic JPEG winner has an unexpected extension: ${result}"
+      ;;
+esac
 
 ## ---------------------------------------------------------------------------
-## PNG --webp: whatever the result, it is never larger than the source.
+## Keep-smaller canary: a FLAT / line-art PNG (where lossless webp beats lossy avif)
+## wins as .webp, NOT .avif -- proving the tool picks per image, not a fixed format.
+## ---------------------------------------------------------------------------
+flat="${workdir}/flat.png"
+convert -size 400x400 xc:'#204080' -fill white -pointsize 40 \
+   -draw "text 20,200 'FLAT LINE ART 0123456789'" "${flat}"
+"${BIN}" --quiet -- "${flat}"
+flatmap="$("${BIN}" --convert --quiet -- "${flat}")" || flatmap=""
+flatres="${flatmap#*$'\t'}"
+case "${flatres}" in
+   *.webp)
+      report pass 'flat/line-art PNG wins as WebP (keep-smaller picks per image)'
+      ;;
+   "${flat}")
+      report pass 'flat/line-art PNG kept as source (already smallest)'
+      ;;
+   *.avif)
+      report fail 'flat/line-art PNG won as AVIF (avif beat lossless webp here?)'
+      ;;
+   *)
+      report fail "flat/line-art winner unexpected: ${flatres}"
+      ;;
+esac
+
+## ---------------------------------------------------------------------------
+## PNG --convert: whatever the result, it is never larger than the source.
 ## ---------------------------------------------------------------------------
 png2="${workdir}/logo.png"
 convert -size 200x200 plasma:fractal "${png2}"
 "${BIN}" --quiet -- "${png2}"          # minimize first so the comparison is fair
 png2_min="$(fsize "${png2}")"
-map2="$("${BIN}" --webp --quiet -- "${png2}")" || map2=""
+map2="$("${BIN}" --convert --quiet -- "${png2}")" || map2=""
 result2="${map2#*$'\t'}"
-if [ -f "${result2}" ]; then
-   report pass 'PNG --webp result path exists'
+if [ -n "${result2}" ] && [ -f "${result2}" ]; then
+   report pass 'PNG --convert result path exists'
 else
-   report fail "PNG --webp result path exists (got: ${result2})"
+   report fail "PNG --convert result path exists (got: ${result2})"
 fi
-assert_le 'PNG --webp result is never larger than the minimized source' \
+assert_le 'PNG --convert result is never larger than the minimized source' \
    "$(fsize "${result2}")" "${png2_min}"
 
 ## ---------------------------------------------------------------------------
@@ -169,7 +208,7 @@ assert_le 'PNG --webp result is never larger than the minimized source' \
 gif="${workdir}/anim.gif"
 printf '%s' 'GIF89a and some bytes that are not a real gif' > "${gif}"
 gif_sum_before="$(cksum < "${gif}")"
-skip_map="$("${BIN}" --webp --quiet -- "${gif}")" || skip_map=""
+skip_map="$("${BIN}" --convert --quiet -- "${gif}")" || skip_map=""
 gif_sum_after="$(cksum < "${gif}")"
 if [ "${gif_sum_before}" = "${gif_sum_after}" ]; then
    report pass 'unsupported type left byte-identical'
@@ -177,9 +216,9 @@ else
    report fail 'unsupported type left byte-identical'
 fi
 if [ "${skip_map}" = "${gif}"$'\t'"${gif}" ]; then
-   report pass 'unsupported type maps to itself in --webp'
+   report pass 'unsupported type maps to itself in --convert'
 else
-   report fail "unsupported type maps to itself in --webp (got: ${skip_map})"
+   report fail "unsupported type maps to itself in --convert (got: ${skip_map})"
 fi
 assert_ok 'check PASSES an unsupported type (only rasters are gated)' \
    "${BIN}" --check -- "${gif}"
@@ -195,7 +234,7 @@ assert_fail 'check on a missing input yields non-zero exit' \
 ## ---------------------------------------------------------------------------
 ## A symlinked image must be REFUSED, not optimized: 'stat -c %s' reports the link's
 ## own path length rather than the target's size, so a symlink would misread as
-## "already minimal" (or, in --webp mode, be replaced by a regular file). The refusal
+## "already minimal" (or, in --convert mode, be replaced by a regular file). The refusal
 ## must leave BOTH the link and its target untouched -- a non-zero exit alone does not
 ## prove nothing was mutated.
 ## ---------------------------------------------------------------------------
@@ -206,7 +245,7 @@ ln -s real.png "${workdir}/link.png"
 assert_fail 'refuses to optimize a symlink (stat misreads its size)' \
    "${BIN}" --quiet -- "${workdir}/link.png"
 ## The --check GATE must refuse a symlink too, not false-pass it: stat's link-size
-## misread makes reclaim negative, which the old code reported as "already minimal".
+## misread makes reclaim negative, which would otherwise read as "already minimal".
 assert_fail 'refuses to --check a symlink (gate must not false-pass it)' \
    "${BIN}" --check -- "${workdir}/link.png"
 link_target="$(readlink -- "${workdir}/link.png" 2>/dev/null || true)"
@@ -223,49 +262,51 @@ else
 fi
 
 ## ---------------------------------------------------------------------------
-## --webp stem collision: two sources sharing a stem (foo.png + foo.jpg) both map to
-## foo.webp. The tool must convert exactly one and REFUSE the other rather than let the
-## second clobber the first's webp and delete both sources: exactly one original
-## survives, one webp is produced, and the run exits non-zero (no content lost).
+## Stem collision: two sources sharing a stem (img.png + img.jpg) both target
+## <stem>.webp/.avif. The tool converts exactly ONE and REFUSES the other (its early
+## target check sees the first's output) -- one original survives byte-identical,
+## one converted output exists, and the run exits non-zero (no content lost).
 ## ---------------------------------------------------------------------------
 col="${workdir}/collide"
 mkdir -- "${col}"
 convert -size 120x120 plasma:fractal "${col}/img.png"
 convert -size 120x120 plasma: "${col}/img.jpg"
 col_rc=0
-"${BIN}" --webp --quiet -- "${col}/img.png" "${col}/img.jpg" || col_rc=$?
+"${BIN}" --convert --quiet -- "${col}/img.png" "${col}/img.jpg" || col_rc=$?
 survivors=0
 [ -e "${col}/img.png" ] && survivors=$(( survivors + 1 ))
 [ -e "${col}/img.jpg" ] && survivors=$(( survivors + 1 ))
-webp_made='no'
-[ -f "${col}/img.webp" ] && webp_made='yes'
-if [ "${col_rc}" -ne 0 ] && [ "${webp_made}" = 'yes' ] && [ "${survivors}" -eq 1 ]; then
-   report pass 'webp stem collision errors and loses no source content'
+out_made='no'
+{ [ -f "${col}/img.webp" ] || [ -f "${col}/img.avif" ]; } && out_made='yes'
+if [ "${col_rc}" -ne 0 ] && [ "${out_made}" = 'yes' ] && [ "${survivors}" -eq 1 ]; then
+   report pass 'stem collision errors and loses no source content'
 else
-   report fail "webp stem collision (rc=${col_rc}, survivors=${survivors}, webp=${webp_made})"
+   report fail "stem collision (rc=${col_rc}, survivors=${survivors}, out=${out_made})"
 fi
 
-## --webp must REFUSE an existing <stem>.webp target rather than overwrite it and delete
-## the source: overwriting destroys the pre-existing target's content. The refusal must
-## also fire BEFORE the source is minimized in place, so the source is left BYTE-IDENTICAL,
-## not merely present. A stored-uncompressed PNG guarantees an in-place minimize would be a
-## visible byte change, so this fails if the collision is caught only after the source is
-## already rewritten.
+## An existing <stem>.webp OR <stem>.avif target must be REFUSED, not overwritten, and
+## the source left BYTE-IDENTICAL -- the refusal fires BEFORE the in-place minimize. A
+## stored-uncompressed PNG guarantees an in-place minimize would be a visible byte
+## change. Pre-create BOTH targets so the refusal holds regardless of which would win.
 pre="${workdir}/pre"
 mkdir -- "${pre}"
 convert -size 120x120 plasma:fractal -define png:compression-level=0 "${pre}/x.png"
 pre_png_before="$(cksum < "${pre}/x.png")"
-printf '%s' 'PRE-EXISTING-WEBP' > "${pre}/x.webp"      # an unrelated file already at the target
+printf '%s' 'PRE-EXISTING-WEBP' > "${pre}/x.webp"
+printf '%s' 'PRE-EXISTING-AVIF' > "${pre}/x.avif"
 pre_rc=0
-"${BIN}" --webp --quiet -- "${pre}/x.png" || pre_rc=$?
+"${BIN}" --convert --quiet -- "${pre}/x.png" || pre_rc=$?
 pre_kept='no'
-[ "$(cat "${pre}/x.webp" 2>/dev/null)" = 'PRE-EXISTING-WEBP' ] && pre_kept='yes'
+if [ "$(cat "${pre}/x.webp" 2>/dev/null)" = 'PRE-EXISTING-WEBP' ] \
+   && [ "$(cat "${pre}/x.avif" 2>/dev/null)" = 'PRE-EXISTING-AVIF' ]; then
+   pre_kept='yes'
+fi
 pre_png='no'
 [ "$(cksum < "${pre}/x.png" 2>/dev/null)" = "${pre_png_before}" ] && pre_png='yes'
 if [ "${pre_rc}" -ne 0 ] && [ "${pre_png}" = 'yes' ] && [ "${pre_kept}" = 'yes' ]; then
-   report pass 'webp refuses an existing target: source byte-identical, pre-existing webp intact'
+   report pass 'convert refuses existing targets: source byte-identical, targets intact'
 else
-   report fail "webp existing-target (rc=${pre_rc}, png_unchanged=${pre_png}, kept=${pre_kept})"
+   report fail "convert existing-target (rc=${pre_rc}, png_unchanged=${pre_png}, kept=${pre_kept})"
 fi
 
 ## ---------------------------------------------------------------------------

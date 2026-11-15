@@ -479,7 +479,7 @@ shots_optimize_to_avif() {  ## $@=produced PNG shots -> convert each to avif in 
    local shot
    for shot in "$@"; do
       [ -f "${shot}" ] || continue
-      "${shots_image_optimize}" --avif --quiet -- "${shot}" >/dev/null
+      "${shots_image_optimize}" --convert --quiet -- "${shot}" >/dev/null
    done
 }
 

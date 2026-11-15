@@ -393,7 +393,7 @@ def main():
 
     ## Convert the content set; capture OLD<TAB>NEW to drive the rewrite.
     for path in to_convert:
-        result = run_optimize(tool, ["--avif", "--quiet", "--", path])
+        result = run_optimize(tool, ["--convert", "--quiet", "--", path])
         if result.returncode != 0:
             sys.stderr.write("site-image-optimize: image-optimize failed for "
                              "%s:\n%s" % (rel(path), result.stderr))
