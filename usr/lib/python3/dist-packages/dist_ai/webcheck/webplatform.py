@@ -266,7 +266,7 @@ def ruleset_accepted(events: list[dict]) -> tuple[bool, str]:
 def prefetch_fired(events: list[dict]) -> tuple[bool, str]:
     """(ok, reason) over collected Preload.prefetchStatusUpdated payloads: the moderate rule
     actually started a prefetch (status reached Running/Ready/Success for a candidate link)."""
-    seen = sorted({ev.get('status') for ev in events if ev.get('status')})
+    seen = sorted({s for ev in events if (s := ev.get('status'))})
     if any(ev.get('status') in PREFETCH_LIVE_STATUSES for ev in events):
         return True, ''
     if not events:

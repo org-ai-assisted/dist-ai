@@ -170,7 +170,7 @@ def run() -> int:
     # --- end-to-end against a built fixture tree (the REAL site.py gate) -------------------- #
     with tempfile.TemporaryDirectory() as tmp:
         root, pages = _write_site(tmp, _page())
-        f = []
+        f: list[str] = []
         site.check_speculation_rules(root, f, pages)
         site.check_view_transition(root, f, pages)
         ck(f == [], "good fixture: speculation + view-transition both clean (got %r)" % f)
