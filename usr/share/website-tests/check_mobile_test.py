@@ -180,6 +180,29 @@ def run():
     check('no-JS probes content + layout (ancestor-visibility aware)',
           'h1' in cm._NOJS_JS and 'textlen' in cm._NOJS_JS
           and 'overflow' in cm._NOJS_JS and 'checkVisibility' in cm._NOJS_JS)
+    # Open-state overflow: a reveal panel is display:none when closed, so the
+    # closed-state scrollWidth cannot see it; a panel that overflows only while
+    # OPEN (the A/B3 narrow-screen cascade bug) slips past. Opt-in per trigger via
+    # data-webcheck-open. ALL of this is ABSENT on the pre-fix code -- canary.
+    check('open-state discovery keys on data-webcheck-open',
+          'data-webcheck-open' in cm._OPEN_SPECS_JS
+          and 'data-webcheck-open' in cm._OPEN_HAS_JS)
+    check('open-state spec carries the open mode', 'mode:' in cm._OPEN_SPECS_JS)
+    # _open_one opens via REAL user actions -- a CSS :hover reveal is NOT settable
+    # from in-page JS, so hover/focus/click/popover must drive real Playwright calls.
+    _open_src = inspect.getsource(cm._open_one)
+    check('_open_one opens hover/focus/click/popover via real actions',
+          'showPopover' in _open_src and '.hover()' in _open_src
+          and '.focus()' in _open_src and '.click()' in _open_src)
+    _osf_src = inspect.getsource(cm._open_state_failures)
+    check('open-state re-navigates per trigger (no leak between reveals)',
+          _osf_src.count('goto(') >= 2 and 'scrollWidth' in _osf_src)
+    check('open-state reports a mis-annotated trigger loudly (no silent swallow)',
+          'open failed' in _osf_src)
+    check('open-state gate wired into main', '_OPEN_HAS_JS' in main_body
+          and '_open_state_failures' in main_body and 'open-state overflow' in main_body)
+    check('open-state runs at EVERY width (before the VIEWPORT-only continue)',
+          main_body.index('_open_state_failures') < main_body.index('if width != VIEWPORT:'))
     # The fragile nav assertion was dropped (navless standalone views + links in a
     # sibling list outside header/nav both false-fail); it must not come back.
     check('no-JS has no fragile nav assertion',

@@ -18,6 +18,11 @@ layout and the computed cascade:
     (catches low contrast from any source, not only :root tokens);
   - no content box spills its own text past its padding edge (per-element
     overflow -- the body-overflow check cannot see an in-box spill);
+  - no reveal panel (tooltip / disclosure / popover) overflows the body once
+    OPENED -- the closed-state overflow check above measures a display:none panel
+    as zero-width, so a panel that only overflows while open slips past it. A page
+    OPTS IN per trigger with data-webcheck-open="hover|focus|click|popover"
+    (default hover); pages without the attribute are unaffected;
   - no <img> is broken (404/decode-fail: blank, and not a console error);
   - with JS DISABLED the core content (<h1> + visible body text) and the layout
     still hold (progressive enhancement -- content/layout never gated behind JS);
@@ -91,6 +96,18 @@ _OVERFLOW_JS = (
     ".slice(0,40)+'~'+Math.round(r.right))});"
     "return o.sort((a,b)=>parseInt(b.split('~')[1])-parseInt(a.split('~')[1])).slice(0,4)}"
 )
+
+# Open-state overflow: discover the opt-in reveal triggers. Each element carrying
+# data-webcheck-open names how to open its panel; data-webcheck-sel (optional) is a
+# human label for the failure line. Order is DOM order and stable across reloads, so
+# the Nth spec maps to the Nth element handle after a re-navigation.
+_OPEN_SPECS_JS = (
+    "()=>[...document.querySelectorAll('[data-webcheck-open]')].map(el=>({"
+    "mode:(el.getAttribute('data-webcheck-open')||'hover').trim().toLowerCase(),"
+    "sel:el.getAttribute('data-webcheck-sel')||el.tagName.toLowerCase()"
+    "+(el.id?'#'+el.id:(el.className?'.'+String(el.className).trim().split(/\\s+/)[0]:''))}))"
+)
+_OPEN_HAS_JS = "()=>!!document.querySelector('[data-webcheck-open]')"
 
 # Height the sticky <header> occupies at the top of the viewport (null if none).
 _HEADER_JS = (
@@ -633,6 +650,53 @@ def _sample_bulk_archive(urls):
     return sorted(set(kept + run_pages[:_ARCHIVE_SAMPLE]))
 
 
+def _open_one(page, handle, mode):
+    """Open the reveal panel for one annotated trigger via a REAL user action, so a
+    CSS :hover/:focus-within reveal (not settable from in-page JS) actually opens."""
+    if mode == 'popover':
+        handle.evaluate("el=>{ if (el.showPopover) el.showPopover(); }")
+    elif mode == 'focus':
+        handle.focus()
+    elif mode == 'click':
+        handle.click()
+    else:  # hover (default)
+        handle.hover()
+
+
+def _open_state_failures(browser, base, width):
+    """Open each opt-in reveal panel on the page and report any that overflow the body.
+    Returns a list of (selector-label, mode, scrollWidth) for the overflowing ones.
+
+    Each trigger is exercised on a FRESH navigation so an earlier open panel (or a URL
+    #fragment from a click/:target reveal) cannot leak into the next measurement. Runs
+    on its own page object, so the caller's closed-state audits are untouched. Cost is
+    paid ONLY by pages that carry the attribute (callers gate on _OPEN_HAS_JS first)."""
+    hits = []
+    op = browser.new_page(viewport={'width': width, 'height': 844})
+    try:
+        op.goto(base, timeout=NAV_TIMEOUT_MS)
+        op.wait_for_timeout(200)
+        specs = op.evaluate(_OPEN_SPECS_JS)
+        for i, spec in enumerate(specs):
+            op.goto(base, timeout=NAV_TIMEOUT_MS)
+            op.wait_for_timeout(120)
+            handles = op.query_selector_all('[data-webcheck-open]')
+            if i >= len(handles):
+                continue
+            try:
+                _open_one(op, handles[i], spec['mode'])
+                op.wait_for_timeout(80)
+                sw = op.evaluate('document.documentElement.scrollWidth')
+                iw = op.evaluate('window.innerWidth')
+                if sw > iw + 1:
+                    hits.append((spec['sel'], spec['mode'], sw))
+            except Exception as exc:  # a mis-annotated trigger must be loud, not silent
+                hits.append((spec['sel'], spec['mode'] + ' (open failed: %s)' % exc, 0))
+    finally:
+        op.close()
+    return hits
+
+
 def main():
     roots = [os.path.abspath(r) for r in sys.argv[1:] if os.path.isdir(r)]
     if not roots:
@@ -736,6 +800,17 @@ def main():
                                         'FAIL %s%s: horizontal overflow at %dpx '
                                         '(scrollWidth=%d); widest: %s\n'
                                         % (url, tag, width, sw, off))
+                                # Open-state overflow: a reveal panel is display:none
+                                # when closed, so the body check above cannot see it.
+                                # Only pages that opt in (data-webcheck-open) pay the cost.
+                                if page.evaluate(_OPEN_HAS_JS):
+                                    for osel, omode, osw in _open_state_failures(
+                                            browser, base, width):
+                                        failures += 1
+                                        sys.stderr.write(
+                                            'FAIL %s%s: open-state overflow at %dpx '
+                                            'after opening %s (%s); scrollWidth=%d\n'
+                                            % (url, tag, width, osel, omode, osw))
                                 if width != VIEWPORT:
                                     continue
                                 # VIEWPORT-width audits. Geometry (element-overflow
