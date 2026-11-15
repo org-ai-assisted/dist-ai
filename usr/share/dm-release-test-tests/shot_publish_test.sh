@@ -38,16 +38,18 @@ failures=0
 ## a global set by the stub would not escape -- capture via a FILE instead.
 capture_file="$(mktemp --tmpdir dm-release-test-shotcap.XXXXXX)"
 argv_file="$(mktemp --tmpdir dm-release-test-argvcap.XXXXXX)"
-shot_cap_cleanup() { safe-rm --force -- "${capture_file}" "${argv_file}"; }
+rc_file="$(mktemp --tmpdir dm-release-test-rccap.XXXXXX)"
+shot_cap_cleanup() { safe-rm --force -- "${capture_file}" "${argv_file}" "${rc_file}"; }
 trap shot_cap_cleanup EXIT
 captured_shot='UNSET'
 
-## Stub the publisher: record the 7th positional (shot_src) the lane forwards AND the
-## whole argv (to assert option passthrough), and print an outdir so rt_publish_result's
-## summary line does not choke.
+## Stub the publisher: record the 7th positional (shot_src) the lane forwards, the 6th (rc, so a
+## test can assert the blank gate flipped a passing run to FAIL) AND the whole argv (to assert
+## option passthrough), and print an outdir so rt_publish_result's summary line does not choke.
 # shellcheck disable=SC2329  ## invoked indirectly by rt_publish_result
 image_test_results_publish() {
    printf '%s' "$7" > "${capture_file}"
+   printf '%s' "$6" > "${rc_file}"
    printf '%s\n' "$*" > "${argv_file}"
    printf '%s' "/nonexistent/outdir"
 }
@@ -221,6 +223,89 @@ if [[ "${fw_reject}" == *"--firmware must be bios|efi|efi-secureboot, got 'bogus
    printf '%s\n' "ok: unknown --firmware rejected at parse time"
 else
    printf '%s\n' "FAIL: unknown --firmware not rejected: ${fw_reject}" >&2
+   failures=$((failures + 1))
+fi
+
+## -------------------------------------------------------------------------------------------------
+## BLANK-SCREENSHOT GATE (rt_publish_result): a whonix milestone story dir holding a fully-black
+## must-render frame (gateway-booted etc.) must FAIL an otherwise-passing run -- never publish a
+## black rectangle as a pass. Regression for the real bug: a 1023984-black + 16-grey-px frame that
+## --uniform-only missed. Drives the REAL rt_publish_result with a synthetic blank fixture dir.
+magick_bin='convert'
+if type -P magick >/dev/null 2>&1; then
+   magick_bin='magick'
+fi
+type -P "${magick_bin}" >/dev/null 2>&1 \
+   || { printf '%s\n' "FATAL: ImageMagick (${magick_bin}) required for the blank-gate fixtures" >&2; exit 1; }
+
+## Point the sourced gate at the checkout's image-blank-check (not installed in the test env).
+if [ -f "${test_dir}/../../bin/image-blank-check" ]; then
+   # shellcheck disable=SC2034  ## read by the sourced rt_publish_result (dynamic scope)
+   IMAGE_BLANK_CHECK="${test_dir}/../../bin/image-blank-check"
+fi
+
+blank_dir="$(mktemp --directory --tmpdir dm-release-test-blankshots.XXXXXX)"
+content_dir="$(mktemp --directory --tmpdir dm-release-test-contentshots.XXXXXX)"
+all_cleanup() { shot_cap_cleanup; safe-rm --recursive --force -- "${blank_dir}" "${content_dir}"; }
+trap all_cleanup EXIT
+## The exact bug shape: ~100% black with a tiny 4x4 grey mark (16 lit px over 1023984 black,
+## ~0.002% lit, 2 colours) -- a broken/too-early capture that --uniform-only (single-colour) does
+## NOT flag, which is precisely the frame that shipped undetected.
+"${magick_bin}" -size 1280x800 xc:black -fill '#aaaaaa' -draw 'rectangle 0,0 3,3' "${blank_dir}/20-gateway-booted.png"
+## A real, content-rich desktop frame (plasma = thousands of colours) must NOT be flagged.
+"${magick_bin}" -size 1280x800 plasma: "${content_dir}/20-gateway-booted.png"
+
+## whonix-func, passing rc=0, BLANK dir -> gate flips the published rc to FAIL (5) and threads a
+## --step-stderr-file so the page states WHY.
+rt_publish_result whonix 18.2.4.3 acct whonix-func 0 "${blank_dir}" release-checks >/dev/null
+if [ "$(cat -- "${rc_file}")" = '5' ]; then
+   printf '%s\n' "ok: blank milestone frame flips a passing whonix-func run to FAIL"
+else
+   printf '%s\n' "FAIL: blank whonix-func run published rc=$(cat -- "${rc_file}"), expected 5" >&2
+   failures=$((failures + 1))
+fi
+if grep --quiet -- '--step-stderr-file' "${argv_file}"; then
+   printf '%s\n' "ok: blank gate threads a --step-stderr-file (the reason reaches the page)"
+else
+   printf '%s\n' "FAIL: blank gate did not thread a stderr reason: $(cat -- "${argv_file}")" >&2
+   failures=$((failures + 1))
+fi
+
+## whonix-pair (leak lane) is gated identically.
+rt_publish_result whonix 18.2.4.3 acct whonix-pair 0 "${blank_dir}" tor-confirm >/dev/null
+if [ "$(cat -- "${rc_file}")" = '5' ]; then
+   printf '%s\n' "ok: blank milestone frame flips a passing whonix-pair (leak) run to FAIL"
+else
+   printf '%s\n' "FAIL: blank whonix-pair run published rc=$(cat -- "${rc_file}"), expected 5" >&2
+   failures=$((failures + 1))
+fi
+
+## Negative: a content-rich desktop frame must NOT false-fail a passing run.
+rt_publish_result whonix 18.2.4.3 acct whonix-func 0 "${content_dir}" release-checks >/dev/null
+if [ "$(cat -- "${rc_file}")" = '0' ]; then
+   printf '%s\n' "ok: a content-rich milestone frame does NOT false-fail the run"
+else
+   printf '%s\n' "FAIL: content frame wrongly failed: published rc=$(cat -- "${rc_file}")" >&2
+   failures=$((failures + 1))
+fi
+
+## Scoping: the calamares lane runs its OWN per-milestone gate, so rt_publish_result must NOT
+## double-gate it (a blank dir under calamares-install keeps its rc; no false-fail of sparse frames).
+rt_publish_result kicksecure 18.2.4.3 acct calamares-install 0 "${blank_dir}" Kicksecure >/dev/null
+if [ "$(cat -- "${rc_file}")" = '0' ]; then
+   printf '%s\n' "ok: calamares-install is not double-gated by rt_publish_result"
+else
+   printf '%s\n' "FAIL: calamares-install wrongly gated: published rc=$(cat -- "${rc_file}")" >&2
+   failures=$((failures + 1))
+fi
+
+## An already-FAILING whonix run (rc=5 from the battery) with a blank frame keeps rc=5 (its primary
+## reason stands) -- the gate does not mask it as a different code, and still records the blank frame.
+rt_publish_result whonix 18.2.4.3 acct whonix-func 5 "${blank_dir}" release-checks >/dev/null
+if [ "$(cat -- "${rc_file}")" = '5' ]; then
+   printf '%s\n' "ok: an already-failing run keeps its rc when a frame is also blank"
+else
+   printf '%s\n' "FAIL: already-failing run rc changed to $(cat -- "${rc_file}")" >&2
    failures=$((failures + 1))
 fi
 

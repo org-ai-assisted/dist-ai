@@ -154,6 +154,10 @@ rt_fw_match=""
 rt_local_repo_json=""
 
 SETUP_RC=2
+## A real release FAIL (not the inconclusive SETUP_RC). image_test_verdict_from_rc maps any
+## non-zero != SETUP_RC to FAIL; this names the blank-screenshot gate's failure code (same value
+## dm-whonix-pair uses for a check FAIL, so the console/site verdict reads identically).
+FAIL_RC=5
 
 guest=""
 interface=""
@@ -1146,6 +1150,38 @@ rt_publish_result() {
    shot="$6"
    shift 6
 
+   ## Structural BLANK-SCREENSHOT gate (whonix milestone lanes). The whonix story dir can hold a
+   ## MUST-RENDER milestone frame (gateway-booted, workstation desktop, tor-confirmed, final) that
+   ## came back fully black -- a broken framebuffer grab or a desktop/console that never painted. A
+   ## black milestone is a run BUG, so it must FAIL the run, never publish silently as a black
+   ## rectangle. image-blank-check --min-content-frac flags a near-TOTAL-black frame robustly:
+   ## --uniform-only MISSES it (a few stray non-black pixels defeat the single-colour test -- the
+   ## actual bug seen: 16 grey px over 1023984 black), and the near-blank colour-count heuristic
+   ## mis-fires on a legitimate 2-colour text console; the lit-pixel FRACTION cleanly separates a
+   ## broken all-black frame from a sparse-but-real console/desktop. Scoped to the whonix lanes --
+   ## the calamares lane runs its OWN per-milestone gate (milestone_blank_mode), so gating here too
+   ## would double-gate and could false-fail its deliberately-sparse LUKS frames.
+   local rt_blankgate_reason="" rt_blankgate_tmp=""
+   case "${mode}" in
+      whonix-func | whonix-pair)
+         if [ -n "${shot}" ] && [ -d "${shot}" ] && [ ! -L "${shot}" ]; then
+            local rt_blank_out="" rt_blank_rc=0
+            rt_blank_out="$("${IMAGE_BLANK_CHECK:-image-blank-check}" \
+               --min-content-frac "${RT_BLANK_MIN_CONTENT_FRAC:-0.0005}" -- "${shot}" 2>&1)" \
+               || rt_blank_rc=$?
+            if [ "${rt_blank_rc}" -ne 0 ]; then
+               rt_blankgate_reason="$(printf '%s\n' \
+                  "dm-release-test FAILED: blank/near-black milestone screenshot(s) -- a broken capture or a display that never rendered:" \
+                  "${rt_blank_out}")"
+               printf '%s\n' "${me}: ERROR: ${rt_blankgate_reason}" >&2
+               ## FAIL an otherwise-passing run; an already-failing/inconclusive run keeps its own rc
+               ## (its primary reason stands) but still records the blank frame in the published tail.
+               [ "${rc}" -eq 0 ] && rc="${FAIL_RC}"
+            fi
+         fi
+         ;;
+   esac
+
    ## rc 0 = PASS; the reserved SETUP/inconclusive code 2 = INCONCLUSIVE (a provisioning
    ## gap or inconclusive probe -- NOT a leak); any other non-zero (incl dm-whonix-pair
    ## FAIL_RC=5) = FAIL. The publisher derives the same verdict from rc for result.json
@@ -1155,8 +1191,22 @@ rt_publish_result() {
       pub_expect+=( --expect "${tok}" )
    done
    ## A lane may hand us the failed check's output (rt_check_log) to publish as the
-   ## step's stderr tail, so the run record explains WHY it failed. Consumed once.
-   if [ -n "${rt_check_log:-}" ] && [ -s "${rt_check_log}" ]; then
+   ## step's stderr tail, so the run record explains WHY it failed. Consumed once. When the blank
+   ## gate above also fired, COMBINE both into one root-owned temp (the check-log is account-owned;
+   ## do not mutate it), so the page shows the primary failure AND the blank-frame reason together.
+   if [ -n "${rt_blankgate_reason}" ]; then
+      rt_blankgate_tmp="$(mktemp --tmpdir "dm-release-test-blankgate.XXXXXX" 2>/dev/null || true)"
+      if [ -n "${rt_blankgate_tmp}" ]; then
+         if [ -n "${rt_check_log:-}" ] && [ -s "${rt_check_log}" ]; then
+            cat -- "${rt_check_log}" >> "${rt_blankgate_tmp}" 2>/dev/null || true
+         fi
+         printf '%s\n' "${rt_blankgate_reason}" >> "${rt_blankgate_tmp}" 2>/dev/null || true
+         pub_stderr=( --step-stderr-file "${rt_blankgate_tmp}" )
+      elif [ -n "${rt_check_log:-}" ] && [ -s "${rt_check_log}" ]; then
+         ## mktemp failed: still publish the check-log tail so the primary reason is not lost.
+         pub_stderr=( --step-stderr-file "${rt_check_log}" )
+      fi
+   elif [ -n "${rt_check_log:-}" ] && [ -s "${rt_check_log}" ]; then
       pub_stderr=( --step-stderr-file "${rt_check_log}" )
    fi
    rt_check_log=""
@@ -1228,6 +1278,8 @@ rt_publish_result() {
       --builder dm-release-test --origin "${rt_origin}" \
       "${pub_expect[@]}" "${pub_stderr[@]}" "${pub_stdout[@]}" "${pub_sha[@]}" "${pub_fw[@]}" "${pub_local_repo[@]}")" \
       || { log warn "results publish failed for ${guest_name} ${interface} ${version} (verdict ${verdict} preserved)"; outdir='(publish-failed)'; }
+   ## Reap the blank-gate stderr temp (root-owned; the emitter has read it by now).
+   [ -n "${rt_blankgate_tmp}" ] && { safe-rm --force -- "${rt_blankgate_tmp}" 2>/dev/null || true; }
    printf '%s\n' \
       "${me}: ${guest_name} ${interface} ${version} -- ${verdict} (rc=${rc}) -> ${outdir}"
 }
