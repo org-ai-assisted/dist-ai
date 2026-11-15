@@ -192,6 +192,31 @@ assert "wp_story_check routed wrote 62-check6-GUI-login.card.txt" \
 assert "per-check routed card says ROUTED" \
    grep --quiet --fixed-strings 'ROUTED' "${shot_dir}/62-check6-GUI-login.card.txt"
 
+## A FAILED per-check card must carry the ACTUAL reason + the failed check's output tail -- NOT a
+## circular "see the verdict/failure card" pointer (the unhelpful shape a reviewer hit). The battery
+## sets RELEASE_CHECK_FAILED_REASON and the exec_fn writes the output to ${check_log} before the
+## callback, so both are available here.
+# shellcheck disable=SC2034  ## read by the sourced wp_story_check / die (dynamic scope)
+RELEASE_CHECK_FAILED_REASON='systemcheck (functional, rc=1)'
+check_log="${work}/checklog"
+printf '%s\n' "=== check 8 (systemcheck --cli --ci) FAILED rc=1 ===" "systemcheck unknown option: --ci" > "${check_log}"
+wp_story_check fail 8
+fail_card="${shot_dir}/63-check8-systemcheck.card.txt"
+assert "wp_story_check fail wrote the check-8 card"          test -s "${fail_card}"
+assert "per-check fail card carries the real reason"         grep --quiet --fixed-strings 'systemcheck (functional, rc=1)' "${fail_card}"
+assert "per-check fail card carries the check output tail"   grep --quiet --fixed-strings 'unknown option: --ci' "${fail_card}"
+assert "per-check fail card is NOT the circular pointer"     test -z "$(grep -F 'see the verdict/failure card' "${fail_card}" || true)"
+
+## die's 98-failure card must ALSO be self-contained on a check failure: it appends the ${check_log}
+## tail (the real diagnostic), so the card a reviewer lands on actually states WHY.
+( die 5 'release check 8 (systemcheck (functional, rc=1)) FAILED' ) >/dev/null 2>&1 || true
+assert "die failure card carries the check output tail"      grep --quiet --fixed-strings 'unknown option: --ci' "${shot_dir}/98-failure.card.txt"
+## A SETUP die (no check_log) stays a bare message -- no spurious 'failed check output' header.
+check_log=''
+safe-rm --force -- "${shot_dir}/98-failure.card.txt"
+( die 2 'provisioning gap: snapshot restore failed' ) >/dev/null 2>&1 || true
+assert "setup die card has no stale output header"           test -z "$(grep -F 'failed check output' "${shot_dir}/98-failure.card.txt" || true)"
+
 ## Both functional mains must OPEN with the shared pair card and PASS the per-check story hook
 ## to the shared battery -- the single wiring that makes the gui+cli inst story comprehensive.
 fn_has() { local body; body="$(declare -f "$1")"; grep --quiet -- "$2" <<< "${body}"; }

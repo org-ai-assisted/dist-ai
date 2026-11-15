@@ -218,7 +218,15 @@ die() {
    ## carries a readable verdict in the results plane (mirrors the install lane's failure card).
    ## No-op without --shot-dir. story_card is defined below; die is only ever CALLED at runtime
    ## (after the whole file is parsed), so forward-reference is fine.
-   story_card 98 failure "Run failed (rc=${1})" "${2}"
+   ## Make the card SELF-CONTAINED: on a release-check failure the exec_fn wrote the failed check's
+   ## in-guest output to ${check_log}, so append its tail (the real diagnostic). check_log is empty
+   ## for a SETUP/provisioning die, so this no-ops there and the message stands alone.
+   local fail_body="${2}"
+   if [ -n "${check_log:-}" ] && [ -s "${check_log}" ]; then
+      fail_body="$(printf '%s\n' "${2}" "" "--- failed check output (last lines) ---" \
+         "$(tail -n 25 -- "${check_log}" 2>/dev/null)")"
+   fi
+   story_card 98 failure "Run failed (rc=${1})" "${fail_body}"
    exit "$1"
 }
 
@@ -299,7 +307,16 @@ wp_story_check() {
          body="PASS"
          ;;
       fail)
-         body="FAILED -- see the verdict/failure card for the reason"
+         ## Carry the ACTUAL reason here, not a pointer to another card (a "see the other card"
+         ## that only restated the failure is the circular, unhelpful shape a reviewer hit). The
+         ## battery set RELEASE_CHECK_FAILED_REASON before this callback, and the exec_fn wrote the
+         ## failed check's in-guest output to ${check_log} before returning -- so append a short
+         ## tail of that output, the real diagnostic (empty check_log -> just the reason line).
+         body="FAILED: ${RELEASE_CHECK_FAILED_REASON:-check ${num} failed}"
+         if [ -n "${check_log:-}" ] && [ -s "${check_log}" ]; then
+            body="$(printf '%s\n' "${body}" "" "--- failed check output (last lines) ---" \
+               "$(tail -n 25 -- "${check_log}" 2>/dev/null)")"
+         fi
          ;;
       *)
          body="${result}"
