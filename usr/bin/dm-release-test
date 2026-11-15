@@ -1849,15 +1849,22 @@ rt_lane_whonix_inst() {
       ##    matches but the build FAILS (jq/awk error, read race) -- a real tool/env bug: publish
       ##    INCONCLUSIVE, never a published-repo masquerade. A missing/empty localRepo block otherwise
       ##    reads as a published run, so a tool failure must NOT be swallowed as the benign omit.
-      local rt_local_repo_gen_now="" gen_now_rc=0 prov_rc=0
+      local rt_local_repo_gen_now="" gen_now_rc=0 prov_rc=0 rt_local_repo_gen_after="" gen_after_rc=0
       rt_local_repo_gen_now="$(rt_local_repo_gen_id "${local_repo}" "${lr_chain}")" || gen_now_rc=$?
       if [ "${rt_local_repo_gen_rc}" -eq 0 ] && [ "${gen_now_rc}" -eq 0 ] \
          && [ -n "${rt_local_repo_gen}" ] && [ -n "${rt_local_repo_gen_now}" ] \
          && [ "${rt_local_repo_gen}" = "${rt_local_repo_gen_now}" ]; then
          rt_local_repo_json="$(rt_build_local_repo_provenance "${local_repo}" "${lr_chain}")" || prov_rc=$?
+         ## rt_build_local_repo_provenance re-reads the live Packages files a SECOND time, so a rebuild
+         ## landing between the generation match above and that read would record a newer index than the
+         ## generation the verdict was checked against. Re-read the generation AFTER the build: if it
+         ## moved during the read, drop the block (benign race -> omit); a compute FAILURE here is a real
+         ## tool bug, surfaced INCONCLUSIVE with the others below.
+         rt_local_repo_gen_after="$(rt_local_repo_gen_id "${local_repo}" "${lr_chain}")" || gen_after_rc=$?
+         [ "${gen_after_rc}" -ne 0 ] || [ "${rt_local_repo_gen_after}" = "${rt_local_repo_gen}" ] || rt_local_repo_json=""
       fi
-      if [ "${rt_local_repo_gen_rc}" -ne 0 ] || [ "${gen_now_rc}" -ne 0 ] || [ "${prov_rc}" -ne 0 ]; then
-         log error "localRepo provenance for ${local_repo} failed (gen_before_rc ${rt_local_repo_gen_rc}, gen_now_rc ${gen_now_rc}, build_rc ${prov_rc}) -- refusing to publish a local-repo run as a published-repo run"
+      if [ "${rt_local_repo_gen_rc}" -ne 0 ] || [ "${gen_now_rc}" -ne 0 ] || [ "${prov_rc}" -ne 0 ] || [ "${gen_after_rc}" -ne 0 ]; then
+         log error "localRepo provenance for ${local_repo} failed (gen_before_rc ${rt_local_repo_gen_rc}, gen_now_rc ${gen_now_rc}, build_rc ${prov_rc}, gen_after_rc ${gen_after_rc}) -- refusing to publish a local-repo run as a published-repo run"
          rt_publish_result whonix "${version}" "${account}" whonix-func "${SETUP_RC}" "${shot_dir}" release-checks
          sudo -u "${account}" -- safe-rm --recursive --force -- "${check_log}" "${shot_dir}" 2>/dev/null || true
          if [ -n "${rt_func_log}" ]; then safe-rm --force -- "${rt_func_log}" 2>/dev/null || true; rt_func_log=""; fi
