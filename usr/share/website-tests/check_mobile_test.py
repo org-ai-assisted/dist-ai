@@ -208,16 +208,20 @@ def run():
     # overflowing) measurement passes. The lane must POLL until the panel opens and its
     # width settles, and fail loud if it never opens. Canary: fails on the pre-fix code,
     # which had only a fixed wait_for_timeout(80) here.
-    check('open-state polls for the panel to open before measuring (no fixed wait)',
+    check('open-state polls for the reveal to land before measuring (no fixed wait)',
           '_wait_open_settled' in _osf_src and 'wait_for_timeout(80)' not in _osf_src)
     _wos_src = inspect.getsource(cm._wait_open_settled)
-    check('open-settle wait is bounded and keys on an opened+settled signal',
-          'OPEN_SETTLE_POLLS' in _wos_src and 'base_visible' in _wos_src)
-    check('open-state fails loud when a panel never opens within the bound',
-          'never opened within bound' in _osf_src)
-    check('open-probe reports visible-count + scrollWidth (mode-agnostic opened signal)',
-          'getBoundingClientRect' in cm._OPEN_PROBE_JS
-          and 'scrollWidth' in cm._OPEN_PROBE_JS)
+    check('open-settle wait is bounded and keys on a landed-from-initial + settled signal',
+          'OPEN_SETTLE_POLLS' in _wos_src and 'init_sw' in _wos_src
+          and 'landed' in _wos_src and 'prev_sw' in _wos_src)
+    # The landed signal keys ONLY on overflow-relevant scroll geometry + unambiguous reveal
+    # state (popover-open / :target) -- NOT a raw visible-element count, which a reveal via
+    # opacity/transform/max-height leaves unchanged (false "never opened") and which an
+    # unrelated element can spuriously trip. Canary: fails on the count-based first cut.
+    check('open-probe keys on scroll geometry + popover/:target, not a visible-count',
+          'scrollWidth' in cm._OPEN_PROBE_JS and 'scrollHeight' in cm._OPEN_PROBE_JS
+          and 'popover-open' in cm._OPEN_PROBE_JS and ':target' in cm._OPEN_PROBE_JS
+          and 'getBoundingClientRect' not in cm._OPEN_PROBE_JS)
     # The fragile nav assertion was dropped (navless standalone views + links in a
     # sibling list outside header/nav both false-fail); it must not come back.
     check('no-JS has no fragile nav assertion',
