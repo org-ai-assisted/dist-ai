@@ -275,9 +275,10 @@ fi
 pushed_sha="$(git -C "${repo_dir}" rev-parse HEAD)"
 owner_repo="${SITE_DEPLOY_PAGES_OWNER_REPO:-}"
 if [ -z "${owner_repo}" ]; then
-   remote_url="$(git -C "${repo_dir}" remote get-url "${remote}" 2>/dev/null)" \
-      || die 1 "pushed ${pushed_sha}, but cannot read '${remote}' URL to confirm the live deploy"
-   owner_repo="$(printf '%s' "${remote_url}" | sed -E 's#^.*github\.com[:/]+##; s#\.git$##')"
+   ## --push: confirm the repo we PUSHED to, not the fetch URL (they differ when a push URL is set).
+   remote_url="$(git -C "${repo_dir}" remote get-url --push "${remote}" 2>/dev/null)" \
+      || die 1 "pushed ${pushed_sha}, but cannot read '${remote}' push URL to confirm the live deploy"
+   owner_repo="$(pages_owner_repo_from_url "${remote_url}")"
 fi
 printf '%s\n' "${me}: confirming GitHub Pages deploy of ${pushed_sha} (${owner_repo})" >&2
 if pages_confirm_published "${owner_repo}" "${pushed_sha}" "${confirm_timeout}" "${confirm_poll_interval}" "${me}"; then

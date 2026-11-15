@@ -6,7 +6,8 @@
 ## AI-Assisted
 
 ## Shared "is the pushed commit actually LIVE on GitHub Pages yet?" check, sourced by the deploy
-## drivers (site-deploy, test-results-deploy) so neither reinvents it and the two cannot drift.
+## drivers (site-deploy, test-results-deploy) and the pages-confirm-published CLI so none reinvents
+## it and they cannot drift.
 ##
 ## A `git push` only QUEUES an ASYNC Pages build, so a successful push is NOT a live site: a build
 ## that fails, or never runs, leaves the previous commit served while the deploy tool already said
@@ -18,27 +19,72 @@
 ## github-pages DEPLOYMENT created for EXACTLY that sha reaching a 'success' status (a legacy branch
 ## build records one too, so this single check covers both models).
 ##
-## Source-only: it defines a function and RUNS nothing, so a consumer keeps its own strict mode.
+## Source-only: it defines functions and RUNS nothing, so a consumer keeps its own strict mode.
 ## style-ok: no-strict -- sourced fragment; the sourcing script owns errexit/nounset/pipefail.
+
+## pages_owner_repo_from_url URL
+##   Extract "owner/repo" from a git remote URL for the Pages API. Handles https / ssh:// / git://
+##   / scp-like forms, an optional "user[:pass]@" userinfo, a host of ANY case, an optional ":port",
+##   and a trailing ".git" / slash / whitespace. STRIPS the userinfo so a credential embedded in the
+##   URL (https://user:TOKEN@host/...) never reaches a log line or the API argument. Keeps only the
+##   LAST two path segments (a GitHub repo is always owner/repo), so an extra host path prefix (a
+##   rewrite/proxy) cannot smuggle a wrong repo. A form it cannot reduce to owner/repo yields a value
+##   the API rejects loudly -- callers can override via the *_PAGES_OWNER_REPO seams.
+pages_owner_repo_from_url() {
+   printf '%s' "$1" | sed -E '
+      s/^[[:space:]]+//; s/[[:space:]]+$//
+      s#^[A-Za-z][A-Za-z0-9+.-]*://##
+      s#^[^/@]*@##
+      s#^[^/:]+(:[0-9]+)?[:/]##
+      s#/+$##; s#\.git$##; s#/+$##
+      s#^.*/([^/]+/[^/]+)$#\1#
+   '
+}
 
 ## pages_confirm_published OWNER_REPO SHA TIMEOUT_SECS POLL_SECS LABEL
 ##   OWNER_REPO  "<owner>/<repo>" for the Pages API.
-##   SHA         the pushed commit that must be the live one.
-##   TIMEOUT_SECS total seconds to wait for the async deploy to land.
-##   POLL_SECS    seconds between deployment-status polls.
+##   SHA         the pushed commit that must be the live one (full lowercase hex commit id).
+##   TIMEOUT_SECS total seconds to wait for the async deploy to land (non-negative integer).
+##   POLL_SECS    seconds between deployment-status polls (non-negative integer).
 ##   LABEL        caller name, prefixed on diagnostics (e.g. "${me}").
 ## Returns 0 once OUR sha's github-pages deployment reports 'success'; 1 on a terminal
-## failure/error deployment, on timeout, or with no owner/repo. Every non-zero path prints WHY -- a
-## caller treats any non-zero as "NOT live". github-api and jq are hard deps of the deploy
-## environment: called directly, they fail loud if ever absent (no has-X preflight).
+## failure/error/inactive deployment, on timeout, on invalid input, or with no owner/repo. Every
+## non-zero path prints WHY -- a caller treats any non-zero as "NOT live". github-api and jq are
+## ASSUMED present (hard deps of the deploy environment); a transient API error or an empty
+## deployment list is tolerated and retried until the deadline (absence manifests as that timeout,
+## never a false 'success').
 pages_confirm_published() {
    local owner_repo="$1" want="$2" timeout="$3" poll="$4" label="$5"
-   local deadline deps dep_id state
+   local deadline deps dep_id state v
    if [ -z "${owner_repo}" ]; then
       printf '%s\n' "${label}: no owner/repo -- cannot confirm the live deploy" >&2
       return 1
    fi
-   deadline=$(( $(date +%s) + timeout ))
+   ## A FULL commit sha is mandatory. An empty or abbreviated sha makes the Pages API treat 'sha='
+   ## as NO filter and return EVERY deployment, so the newest 'success' would FALSE-CONFIRM an
+   ## unrelated commit. Reject anything but a full lowercase hex id, loud and immediate.
+   case "${want}" in
+      '' | *[!0-9a-f]*)
+         printf '%s\n' "${label}: refusing to confirm -- '${want}' is not a lowercase hex commit sha" >&2
+         return 1
+         ;;
+   esac
+   if [ "${#want}" -lt 40 ]; then
+      printf '%s\n' "${label}: refusing to confirm -- '${want}' is abbreviated; pass the full commit sha" >&2
+      return 1
+   fi
+   ## timeout/poll feed bash arithmetic and sleep: require plain non-negative integers so a
+   ## non-numeric value cannot be re-evaluated as an arithmetic expression, and apply base-10 (10#)
+   ## so a zero-padded value is not misread as octal.
+   for v in "${timeout}" "${poll}"; do
+      case "${v}" in
+         '' | *[!0-9]*)
+            printf '%s\n' "${label}: refusing to confirm -- timeout/poll must be non-negative integers (got '${timeout}' / '${poll}')" >&2
+            return 1
+            ;;
+      esac
+   done
+   deadline=$(( $(date +%s) + 10#${timeout} ))
    while :; do
       ## The github-pages deployment(s) for EXACTLY our pushed sha; newest id wins. Empty until the
       ## deploy workflow registers one -- not yet an error, keep polling.
@@ -47,15 +93,16 @@ pages_confirm_published() {
       if [ -n "${dep_id}" ]; then
          ## Latest status of that deployment (statuses are newest-first).
          state="$(github-api GET "/repos/${owner_repo}/deployments/${dep_id}/statuses?per_page=10" 2>/dev/null | jq -r '.[0].state // ""' 2>/dev/null)" || state=""
-         if [ "${state}" = "success" ]; then
-            return 0
-         fi
-         ## A terminal failure of OUR deployment is fatal; a transient (pending/in_progress/queued)
-         ## or absent status keeps polling until the deadline.
-         if [ "${state}" = "failure" ] || [ "${state}" = "error" ]; then
-            printf '%s\n' "${label}: GitHub Pages deployment ${dep_id} for ${want} reported '${state}'" >&2
-            return 1
-         fi
+         [ "${state}" = "success" ] && return 0
+         ## A terminal state of OUR deployment is fatal: 'failure'/'error' (the build broke) and
+         ## 'inactive' (deactivated/superseded -- it will NOT later become success). A transient
+         ## (pending/in_progress/queued) or absent status keeps polling until the deadline.
+         case "${state}" in
+            failure | error | inactive)
+               printf '%s\n' "${label}: GitHub Pages deployment ${dep_id} for ${want} reported '${state}'" >&2
+               return 1
+               ;;
+         esac
       fi
       if [ "$(date +%s)" -ge "${deadline}" ]; then
          printf '%s\n' "${label}: GitHub Pages deployment for ${want} did not reach 'success' within ${timeout}s" >&2

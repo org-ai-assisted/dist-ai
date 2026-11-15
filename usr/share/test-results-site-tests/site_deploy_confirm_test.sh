@@ -89,6 +89,8 @@ chmod +x -- "${gate}"
 
 ## git stub: push succeeds; answer the branch query, the pushed HEAD sha, and the remote URL (so
 ## owner/repo derivation runs); the is-inside-work-tree probe falls through to exit 0.
+## The PUSH url and FETCH url resolve to DIFFERENT owner/repo so the test can prove the confirm
+## keys on the repo we PUSHED to (`remote get-url --push`), not the fetch url (agy finding).
 cat > "${bin}/git" <<'STUB'
 #!/bin/bash
 for a in "$@"; do
@@ -97,7 +99,8 @@ done
 case "$*" in
    *--abbrev-ref*) printf '%s\n' 'master' ;;
    *'rev-parse HEAD'*) printf '%s\n' 'cafe1234cafe1234cafe1234cafe1234cafe1234' ;;
-   *'remote get-url'*) printf '%s\n' 'git@github.com:org-ai-assisted/org-ai-assisted.github.io.git' ;;
+   *'remote get-url --push'*) printf '%s\n' 'git@github.com:org-ai-assisted/org-ai-assisted.github.io.git' ;;
+   *'remote get-url'*) printf '%s\n' 'git@github.com:fetch-mirror/wrong-fetch-repo.git' ;;
 esac
 exit 0
 STUB
@@ -110,7 +113,8 @@ make_ghapi() {
    ## $1 deployments-json, $2 statuses-json
    cat > "${bin}/github-api" <<EOF
 #!/bin/bash
-printf '%s\n' "called" >> "${ghapi_log}"
+## Log the full API path so a test can assert WHICH owner/repo was queried.
+printf '%s\n' "\$2" >> "${ghapi_log}"
 case "\$2" in
    */deployments/*/statuses*) printf '%s\n' '$2' ;;
    */deployments?environment=github-pages*) printf '%s\n' '$1' ;;
@@ -163,6 +167,15 @@ run_deploy 'SITE_DEPLOY_NO_CONFIRM=1'
 check "NO_CONFIRM -> UNVERIFIED notice" "${out}" "UNVERIFIED"
 check_rc "NO_CONFIRM -> exit 0 (push succeeded)" "${rc}" zero
 check "NO_CONFIRM -> confirm API not called" "$([ -s "${ghapi_log}" ] && printf '%s' called || printf '%s' none)" "none"
+
+## 5. The confirm keys on the PUSH url's owner/repo, not the fetch url's. The git stub resolves push
+##    -> org-ai-assisted/org-ai-assisted.github.io but fetch -> fetch-mirror/wrong-fetch-repo; the
+##    github-api path must carry the PUSH repo. CANARY: pre-`--push` code queried the fetch repo.
+make_ghapi '[{"id":105}]' '[{"state":"success"}]'
+run_deploy ''
+check "confirm queries the PUSH url's owner/repo" "$(cat -- "${ghapi_log}")" "org-ai-assisted/org-ai-assisted.github.io/deployments"
+check "confirm does NOT query the fetch url's owner/repo" \
+   "$(grep -c 'fetch-mirror/wrong-fetch-repo' -- "${ghapi_log}" || true)" "0"
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 [ "${fail}" -eq 0 ]

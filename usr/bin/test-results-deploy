@@ -67,8 +67,9 @@ confirm_published() {
    local want="$1" url owner_repo
    owner_repo="${TEST_RESULTS_PAGES_OWNER_REPO:-}"
    if [ -z "${owner_repo}" ]; then
-      url="$(git remote get-url origin 2>/dev/null)" || return 1
-      owner_repo="$(printf '%s' "${url}" | sed -E 's#^.*github\.com[:/]+##; s#\.git$##')"
+      ## --push: confirm the repo we PUSHED to, not the fetch URL (they differ when a push URL is set).
+      url="$(git remote get-url --push origin 2>/dev/null)" || return 1
+      owner_repo="$(pages_owner_repo_from_url "${url}")"
    fi
    pages_confirm_published "${owner_repo}" "${want}" "${confirm_timeout}" "${confirm_poll_interval}" "${me}"
 }
@@ -234,7 +235,11 @@ if [ -n "${remote_tip}" ] && [ "${remote_tip}" = "$(git rev-parse HEAD)" ]; then
    printf '%s\n' "${me}: already pushed; confirming the live site reflects it."
 else
    printf '%s\n' "${me}: publishing via site-deploy"
-   "${site_deploy}" || die "site-deploy failed (results committed locally; not published)"
+   ## SITE_DEPLOY_NO_CONFIRM=1: THIS driver confirms the live deploy below (with the TEST_RESULTS_*
+   ## timeout/owner-repo config), so suppress site-deploy's own confirm -- else it would confirm
+   ## FIRST, with its OWN defaults, ignoring TEST_RESULTS_PAGES_OWNER_REPO and the TEST_RESULTS
+   ## timeout, and a non-github or overridden origin would wrongly fail before our check even runs.
+   SITE_DEPLOY_NO_CONFIRM=1 "${site_deploy}" || die "site-deploy failed (results committed locally; not published)"
 fi
 
 ## A pushed commit is not yet a live site (Pages builds async, and can error): confirm the build

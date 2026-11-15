@@ -97,7 +97,14 @@ chmod +x "${bindir}/rsync"
 ## generate no-op: tree unchanged -> driver skips the commit, reaches confirm via site-deploy.
 printf '%s\n' '#!/bin/bash' 'exit 0' > "${bindir}/generate-noop"
 chmod +x "${bindir}/generate-noop"
-printf '%s\n' '#!/bin/bash' 'exit 0' > "${bindir}/site-deploy-noop"
+## site-deploy no-op: records whether the driver suppressed site-deploy's OWN confirm. THIS driver
+## owns the confirm (with TEST_RESULTS_* config), so it must call site-deploy with
+## SITE_DEPLOY_NO_CONFIRM=1 -- else site-deploy would confirm first, with its own defaults.
+cat > "${bindir}/site-deploy-noop" <<STUB
+#!/bin/bash
+printf '%s\n' "SITE_DEPLOY_NO_CONFIRM=\${SITE_DEPLOY_NO_CONFIRM:-unset}" > "${bindir}/.site-deploy.env"
+exit 0
+STUB
 chmod +x "${bindir}/site-deploy-noop"
 
 ## github-api stub for confirm_published's deployment-status checks. Dispatches on the request
@@ -165,9 +172,14 @@ run_deploy() {
 
 ## 1. github-pages deployment for OUR sha reports success -> confirmed live, exit 0.
 make_ghapi '[{"id":101}]' '[{"state":"success"}]'
+safe-rm --force -- "${bindir}/.site-deploy.env"
 rc=0; out="$(run_deploy)" || rc=$?
 check "deployment success at our commit -> confirmed live" "${out}" "confirmed live at ${head_sha}"
 check_rc "deployment success -> exit 0" "${rc}" zero
+## The publish path must suppress site-deploy's own confirm so only THIS driver's TEST_RESULTS_*
+## confirm runs (no double-confirm, no inner confirm ignoring TEST_RESULTS_PAGES_OWNER_REPO).
+check "publish suppresses site-deploy's own confirm (SITE_DEPLOY_NO_CONFIRM=1)" \
+   "$(cat -- "${bindir}/.site-deploy.env" 2>/dev/null || true)" "SITE_DEPLOY_NO_CONFIRM=1"
 
 ## 2. NO deployment for our sha (another commit deployed, or not registered yet) -> poll times
 ##    out, publish NOT confirmed (no stale false-green). This is the exact live bug: the legacy

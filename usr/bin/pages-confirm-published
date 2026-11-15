@@ -10,6 +10,10 @@
 ## so run this right after the push: it FAILS LOUD unless the github-pages deployment for the sha
 ## reaches 'success', closing the silent "pushed but the live site is stale" gap. site-deploy and
 ## test-results-deploy call the same shared lib directly.
+##
+## The first argument is EITHER a bare "owner/repo" OR a git remote URL (https / ssh / scp-like) --
+## a caller that has the pushed-to remote URL (e.g. `git remote get-url --push`) passes it straight,
+## and this derives owner/repo via the shared lib, so the URL->owner/repo parse lives in ONE place.
 
 set -o errexit
 set -o nounset
@@ -27,11 +31,11 @@ die() {
 }
 
 usage() {
-   printf '%s\n' "usage: ${me} <owner/repo> <sha> [timeout_secs] [poll_secs]" >&2
+   printf '%s\n' "usage: ${me} <owner/repo | remote-url> <sha> [timeout_secs] [poll_secs]" >&2
 }
 
 [ "$#" -ge 2 ] || { usage; exit 64; }
-owner_repo="$1"
+owner_repo_or_url="$1"
 sha="$2"
 timeout="${3:-1200}"
 poll="${4:-15}"
@@ -43,6 +47,17 @@ pages_confirm_lib="${self_dir}/../libexec/dist-ai/pages-confirm.bsh"
    || die "pages-confirm.bsh not found ('${self_dir}/../libexec/dist-ai' / /usr/libexec/dist-ai)"
 # shellcheck source=../libexec/dist-ai/pages-confirm.bsh
 source "${pages_confirm_lib}"
+
+## A bare "owner/repo" is exactly one slash of path-safe characters; anything with a scheme,
+## userinfo, host/port (':' / '@') or an extra path segment is a URL -> derive owner/repo.
+case "${owner_repo_or_url}" in
+   */*/* | *:* | *@* | *[!A-Za-z0-9._/-]*)
+      owner_repo="$(pages_owner_repo_from_url "${owner_repo_or_url}")"
+      ;;
+   *)
+      owner_repo="${owner_repo_or_url}"
+      ;;
+esac
 
 printf '%s\n' "${me}: confirming GitHub Pages deploy of ${sha} (${owner_repo})" >&2
 if pages_confirm_published "${owner_repo}" "${sha}" "${timeout}" "${poll}" "${me}"; then
