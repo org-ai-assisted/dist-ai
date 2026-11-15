@@ -27,6 +27,11 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
+## Hermetic: the resolver reads these from the environment, so a case that does not set one
+## must not inherit a caller's value (a dm build shell exports dist_build_slot). Each case
+## sets exactly what it needs; everything else starts cleared.
+unset LOCAL_APT_REPOSITORY_BASE dist_build_slot DM_SHARED_APT_REPO_ROOT
+
 if [ -n "${DIST_AI_REPO:-}" ]; then
    subject="${DIST_AI_REPO}/usr/bin/dm-shared-apt-repo"
 else
@@ -87,7 +92,11 @@ if [ "${got}" = "${tmp}/aptrepo_local/whonix" ]; then pass "no slot -> flat root
 ## (strip trailing /aptrepo_local/<deriv>) must equal the cache base (strip trailing /aptcache).
 repo_whonix="$(DM_SHARED_APT_REPO_ROOT="${tmp}" dist_build_slot=kick-only "${subject}" repo-path whonix 2>/dev/null || true)"
 cache_path="$(DM_SHARED_APT_REPO_ROOT="${tmp}" dist_build_slot=kick-only "${subject}" cache-path 2>/dev/null || true)"
-if [ "${repo_whonix%/aptrepo_local/whonix}" = "${cache_path%/aptcache}" ]; then pass "repo-path and cache-path share one base (single-share invariant)"; else fail "share split: repo base '${repo_whonix%/aptrepo_local/whonix}' != cache base '${cache_path%/aptcache}'"; fi
+repo_base="${repo_whonix%/aptrepo_local/whonix}"
+cache_base="${cache_path%/aptcache}"
+## Both outputs must actually carry their suffix (strip changed the string) before comparing --
+## else two failed (empty) commands would strip to '' == '' and PASS vacuously.
+if [ "${repo_whonix}" != "${repo_base}" ] && [ "${cache_path}" != "${cache_base}" ] && [ -n "${repo_base}" ] && [ "${repo_base}" = "${cache_base}" ]; then pass "repo-path and cache-path share one base (single-share invariant)"; else fail "share split or invalid path: repo '${repo_whonix}' cache '${cache_path}'"; fi
 
 ## 7. CANARY: a dist_build_slot with a disallowed byte (here a space) is REJECTED -> flat, never
 ## concatenated into a shared/mounted path. OLD (segment check that only rejected ''/./../ and
