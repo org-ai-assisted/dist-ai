@@ -88,7 +88,9 @@ exit 0
 STUB
 chmod +x -- "${bin}/git"
 
-PATH="${bin}:${PATH}" SITE_DEPLOY_WEBSITE_TESTS="${gate}" \
+## NO_CONFIRM: this guards the gate-runs-once + SITE_DEPLOY_SKIP push behaviour, not the post-push
+## live-deploy confirmation (site_deploy_confirm_test covers that); skip it so no github-api poll.
+PATH="${bin}:${PATH}" SITE_DEPLOY_WEBSITE_TESTS="${gate}" SITE_DEPLOY_NO_CONFIRM=1 \
    "${site_deploy}" --repo "${repo_dir}" >/dev/null 2>&1 || true
 
 gate_count="$(wc -l < "${gate_calls}" 2>/dev/null || printf '%s' 0)"

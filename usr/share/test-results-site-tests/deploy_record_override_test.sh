@@ -104,7 +104,9 @@ rc=0
 run_deploy() {
    ## Drive the real site-deploy with the stubs; capture combined output in `out`, exit in `rc`.
    safe-rm --force -- "${push_env}"
-   out="$(PATH="${bin}:${PATH}" SITE_DEPLOY_WEBSITE_TESTS="${gate}" \
+   ## NO_CONFIRM: this guards override/gate semantics, not the post-push live-deploy confirmation
+   ## (which site_deploy_confirm_test covers); skip confirm so the push outcome is the only variable.
+   out="$(PATH="${bin}:${PATH}" SITE_DEPLOY_WEBSITE_TESTS="${gate}" SITE_DEPLOY_NO_CONFIRM=1 \
       "${site_deploy}" --repo "${repo_dir}" "$@" 2>&1)" && rc=0 || rc="$?"
 }
 

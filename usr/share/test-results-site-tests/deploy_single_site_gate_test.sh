@@ -80,7 +80,9 @@ exit 0
 STUB
 chmod +x -- "${bin}/git"
 
-PATH="${bin}:${PATH}" SITE_DEPLOY_WEBSITE_TESTS="${gate}" \
+## NO_CONFIRM: this guards which gate binary runs, not the post-push live-deploy confirmation
+## (site_deploy_confirm_test covers that); skip it so no github-api poll.
+PATH="${bin}:${PATH}" SITE_DEPLOY_WEBSITE_TESTS="${gate}" SITE_DEPLOY_NO_CONFIRM=1 \
    "${site_deploy}" --repo "${repo_dir}" >/dev/null 2>&1 || true
 
 ## CANARY: the gate stub must have been reached, or the assertion below is vacuous.

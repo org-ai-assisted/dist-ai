@@ -1,0 +1,168 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Guards that site-deploy's "published" means the commit is actually LIVE on GitHub Pages, not
+## merely pushed. A push only QUEUES the async Pages build; a build that fails (e.g. the server-side
+## re-gate going red) or never runs leaves the PRIOR commit served while site-deploy already
+## declared success -- the silent stale publish an operator hit on CSR. site-deploy now confirms the
+## github-pages DEPLOYMENT for the pushed sha reaches 'success', else FAILS LOUD.
+##
+## Drives the REAL site-deploy (no copy): the browser gate is stubbed via SITE_DEPLOY_WEBSITE_TESTS,
+## `git` is stubbed (push succeeds, rev-parse/remote answered), and `github-api` is stubbed to a
+## chosen deployment status. CANARY: case 2 -- a FAILED deployment must make site-deploy exit
+## non-zero; the pre-fix code printed "published" and exited 0, so it fails on old code. Hermetic.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+repo_root="$(cd -- "${script_dir}/../../.." && pwd)"
+site_deploy="${repo_root}/usr/bin/site-deploy"
+[ -x "${site_deploy}" ] || site_deploy='/usr/bin/site-deploy'
+if [ ! -x "${site_deploy}" ]; then
+   printf '%s\n' "site-deploy not found" >&2
+   exit 1
+fi
+
+pass=0
+fail=0
+check() {
+   if [[ "$2" == *"$3"* ]]; then
+      printf '%s\n' "PASS: $1"
+      pass=$((pass + 1))
+   else
+      printf '%s\n' "FAIL: $1" "  expected substring: $3" "  actual: $2" >&2
+      fail=$((fail + 1))
+   fi
+}
+check_rc() {
+   ## $1 description, $2 actual rc, $3 want: 'zero' | 'nonzero'
+   local ok=0
+   case "$3" in
+      zero)
+         [ "$2" -eq 0 ] && ok=1
+         ;;
+      nonzero)
+         [ "$2" -ne 0 ] && ok=1
+         ;;
+   esac
+   if [ "${ok}" -eq 1 ]; then
+      printf '%s\n' "PASS: $1"
+      pass=$((pass + 1))
+   else
+      printf '%s\n' "FAIL: $1" "  expected exit: $3" "  actual rc: $2" >&2
+      fail=$((fail + 1))
+   fi
+}
+
+work="$(mktemp --directory)"
+cleanup() {
+   # shellcheck disable=SC2317  ## invoked via the EXIT trap
+   safe-rm --recursive --force -- "${work}"
+}
+trap cleanup EXIT
+
+## A known Pages-site basename so site-deploy resolves its per-site env var; git is stubbed, so the
+## dir only has to exist (never a real repo).
+repo_dir="${work}/org-ai-assisted.github.io"
+mkdir --parents -- "${repo_dir}"
+
+bin="${work}/bin"
+mkdir --parents -- "${bin}"
+
+## Gate stub (via the seam): pass, so site-deploy reaches the push + confirm.
+gate="${work}/gate-stub"
+cat > "${gate}" <<'STUB'
+#!/bin/bash
+exit 0
+STUB
+chmod +x -- "${gate}"
+
+## git stub: push succeeds; answer the branch query, the pushed HEAD sha, and the remote URL (so
+## owner/repo derivation runs); the is-inside-work-tree probe falls through to exit 0.
+cat > "${bin}/git" <<'STUB'
+#!/bin/bash
+for a in "$@"; do
+   [ "$a" = 'push' ] && exit 0
+done
+case "$*" in
+   *--abbrev-ref*) printf '%s\n' 'master' ;;
+   *'rev-parse HEAD'*) printf '%s\n' 'cafe1234cafe1234cafe1234cafe1234cafe1234' ;;
+   *'remote get-url'*) printf '%s\n' 'git@github.com:org-ai-assisted/org-ai-assisted.github.io.git' ;;
+esac
+exit 0
+STUB
+chmod +x -- "${bin}/git"
+
+## Write a github-api stub that reports the given github-pages deployment state for our sha.
+## STATE='' with an empty deployment list exercises the no-deployment (timeout) path.
+ghapi_log="${work}/ghapi.calls"
+make_ghapi() {
+   ## $1 deployments-json, $2 statuses-json
+   cat > "${bin}/github-api" <<EOF
+#!/bin/bash
+printf '%s\n' "called" >> "${ghapi_log}"
+case "\$2" in
+   */deployments/*/statuses*) printf '%s\n' '$2' ;;
+   */deployments?environment=github-pages*) printf '%s\n' '$1' ;;
+   *) printf '%s\n' '[]' ;;
+esac
+EOF
+   chmod +x -- "${bin}/github-api"
+}
+
+run_deploy() {
+   ## $1 extra env assignment ('' or 'SITE_DEPLOY_NO_CONFIRM=1'); sets globals out, rc.
+   local extra="${1:-}"
+   true > "${ghapi_log}"
+   if env PATH="${bin}:${PATH}" \
+      SITE_DEPLOY_WEBSITE_TESTS="${gate}" \
+      SITE_DEPLOY_CONFIRM_TIMEOUT=2 \
+      SITE_DEPLOY_CONFIRM_POLL_INTERVAL=1 \
+      ${extra:+"${extra}"} \
+      "${site_deploy}" --repo "${repo_dir}" > "${work}/out" 2>&1
+   then
+      rc=0
+   else
+      rc=$?
+   fi
+   out="$(cat -- "${work}/out")"
+}
+
+## 1. github-pages deployment for our sha reports success -> published, exit 0.
+make_ghapi '[{"id":101}]' '[{"state":"success"}]'
+run_deploy ''
+check "deployment success -> published (live deploy confirmed)" "${out}" "live deploy confirmed"
+check_rc "deployment success -> exit 0" "${rc}" zero
+
+## 2. CANARY: deployment for our sha reports failure -> FAIL LOUD, non-zero (pre-fix printed
+##    "published" and exited 0).
+make_ghapi '[{"id":102}]' '[{"state":"failure"}]'
+run_deploy ''
+check "deployment failure -> live site NOT updated" "${out}" "live site is NOT updated"
+check_rc "deployment failure -> non-zero exit" "${rc}" nonzero
+
+## 3. No deployment ever registers -> timeout -> FAIL LOUD, non-zero.
+make_ghapi '[]' '[]'
+run_deploy ''
+check_rc "no deployment -> non-zero exit (timeout)" "${rc}" nonzero
+check "no deployment -> NOT updated message" "${out}" "NOT updated"
+
+## 4. SITE_DEPLOY_NO_CONFIRM=1 -> pushed, UNVERIFIED, exit 0, and the confirm API is NOT called.
+make_ghapi '[{"id":104}]' '[{"state":"failure"}]'
+run_deploy 'SITE_DEPLOY_NO_CONFIRM=1'
+check "NO_CONFIRM -> UNVERIFIED notice" "${out}" "UNVERIFIED"
+check_rc "NO_CONFIRM -> exit 0 (push succeeded)" "${rc}" zero
+check "NO_CONFIRM -> confirm API not called" "$([ -s "${ghapi_log}" ] && printf '%s' called || printf '%s' none)" "none"
+
+printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
+[ "${fail}" -eq 0 ]

@@ -1,0 +1,52 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Confirm a pushed commit is actually LIVE on GitHub Pages, for a deploy that is a PLAIN `git push`
+## rather than site-deploy (e.g. the CSR artifacts repo). A push only QUEUES the async Pages build,
+## so run this right after the push: it FAILS LOUD unless the github-pages deployment for the sha
+## reaches 'success', closing the silent "pushed but the live site is stale" gap. site-deploy and
+## test-results-deploy call the same shared lib directly.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+me="${0##*/}"
+
+die() {
+   printf '%s\n' "${me}: ERROR: $*" >&2
+   exit 1
+}
+
+usage() {
+   printf '%s\n' "usage: ${me} <owner/repo> <sha> [timeout_secs] [poll_secs]" >&2
+}
+
+[ "$#" -ge 2 ] || { usage; exit 64; }
+owner_repo="$1"
+sha="$2"
+timeout="${3:-1200}"
+poll="${4:-15}"
+
+self_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+pages_confirm_lib="${self_dir}/../libexec/dist-ai/pages-confirm.bsh"
+[ -r "${pages_confirm_lib}" ] || pages_confirm_lib='/usr/libexec/dist-ai/pages-confirm.bsh'
+[ -r "${pages_confirm_lib}" ] \
+   || die "pages-confirm.bsh not found ('${self_dir}/../libexec/dist-ai' / /usr/libexec/dist-ai)"
+# shellcheck source=../libexec/dist-ai/pages-confirm.bsh
+source "${pages_confirm_lib}"
+
+printf '%s\n' "${me}: confirming GitHub Pages deploy of ${sha} (${owner_repo})" >&2
+if pages_confirm_published "${owner_repo}" "${sha}" "${timeout}" "${poll}" "${me}"; then
+   printf '%s\n' "${me}: published (live deploy confirmed at ${sha})" >&2
+else
+   die "pushed ${sha}, but the GitHub Pages deploy did NOT reach success -- the live site is NOT updated. Resolve the deploy failure and re-run."
+fi

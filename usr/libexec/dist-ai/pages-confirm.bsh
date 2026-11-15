@@ -1,0 +1,66 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Shared "is the pushed commit actually LIVE on GitHub Pages yet?" check, sourced by the deploy
+## drivers (site-deploy, test-results-deploy) so neither reinvents it and the two cannot drift.
+##
+## A `git push` only QUEUES an ASYNC Pages build, so a successful push is NOT a live site: a build
+## that fails, or never runs, leaves the previous commit served while the deploy tool already said
+## "published". That silent stale publish is the false green this closes -- the tool must confirm
+## the live deploy, not merely the push.
+##
+## Pages here is build_type=workflow: the legacy /pages/builds API is FROZEN and never reflects a
+## workflow deploy, so it must NOT be used. The authoritative "live at <sha>" signal is the
+## github-pages DEPLOYMENT created for EXACTLY that sha reaching a 'success' status (a legacy branch
+## build records one too, so this single check covers both models).
+##
+## Source-only: it defines a function and RUNS nothing, so a consumer keeps its own strict mode.
+## style-ok: no-strict -- sourced fragment; the sourcing script owns errexit/nounset/pipefail.
+
+## pages_confirm_published OWNER_REPO SHA TIMEOUT_SECS POLL_SECS LABEL
+##   OWNER_REPO  "<owner>/<repo>" for the Pages API.
+##   SHA         the pushed commit that must be the live one.
+##   TIMEOUT_SECS total seconds to wait for the async deploy to land.
+##   POLL_SECS    seconds between deployment-status polls.
+##   LABEL        caller name, prefixed on diagnostics (e.g. "${me}").
+## Returns 0 once OUR sha's github-pages deployment reports 'success'; 1 on a terminal
+## failure/error deployment, on timeout, or with no owner/repo. Every non-zero path prints WHY -- a
+## caller treats any non-zero as "NOT live". github-api and jq are hard deps of the deploy
+## environment: called directly, they fail loud if ever absent (no has-X preflight).
+pages_confirm_published() {
+   local owner_repo="$1" want="$2" timeout="$3" poll="$4" label="$5"
+   local deadline deps dep_id state
+   if [ -z "${owner_repo}" ]; then
+      printf '%s\n' "${label}: no owner/repo -- cannot confirm the live deploy" >&2
+      return 1
+   fi
+   deadline=$(( $(date +%s) + timeout ))
+   while :; do
+      ## The github-pages deployment(s) for EXACTLY our pushed sha; newest id wins. Empty until the
+      ## deploy workflow registers one -- not yet an error, keep polling.
+      deps="$(github-api GET "/repos/${owner_repo}/deployments?environment=github-pages&sha=${want}&per_page=20" 2>/dev/null)" || deps=""
+      dep_id="$(printf '%s' "${deps}" | jq -r 'map(.id) | max // empty' 2>/dev/null)" || dep_id=""
+      if [ -n "${dep_id}" ]; then
+         ## Latest status of that deployment (statuses are newest-first).
+         state="$(github-api GET "/repos/${owner_repo}/deployments/${dep_id}/statuses?per_page=10" 2>/dev/null | jq -r '.[0].state // ""' 2>/dev/null)" || state=""
+         if [ "${state}" = "success" ]; then
+            return 0
+         fi
+         ## A terminal failure of OUR deployment is fatal; a transient (pending/in_progress/queued)
+         ## or absent status keeps polling until the deadline.
+         if [ "${state}" = "failure" ] || [ "${state}" = "error" ]; then
+            printf '%s\n' "${label}: GitHub Pages deployment ${dep_id} for ${want} reported '${state}'" >&2
+            return 1
+         fi
+      fi
+      if [ "$(date +%s)" -ge "${deadline}" ]; then
+         printf '%s\n' "${label}: GitHub Pages deployment for ${want} did not reach 'success' within ${timeout}s" >&2
+         return 1
+      fi
+      sleep "${poll}"
+   done
+}
