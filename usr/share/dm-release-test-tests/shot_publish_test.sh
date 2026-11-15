@@ -238,15 +238,21 @@ fi
 type -P "${magick_bin}" >/dev/null 2>&1 \
    || { printf '%s\n' "FATAL: ImageMagick (${magick_bin}) required for the blank-gate fixtures" >&2; exit 1; }
 
-## Point the sourced gate at the checkout's image-blank-check (not installed in the test env).
+## Point the sourced gate at the checkout's image-blank-check + image-dup-check (not installed here).
 if [ -f "${test_dir}/../../bin/image-blank-check" ]; then
    # shellcheck disable=SC2034  ## read by the sourced rt_publish_result (dynamic scope)
    IMAGE_BLANK_CHECK="${test_dir}/../../bin/image-blank-check"
 fi
+if [ -f "${test_dir}/../../bin/image-dup-check" ]; then
+   # shellcheck disable=SC2034  ## read by the sourced rt_publish_result (dynamic scope)
+   IMAGE_DUP_CHECK="${test_dir}/../../bin/image-dup-check"
+fi
 
 blank_dir="$(mktemp --directory --tmpdir dm-release-test-blankshots.XXXXXX)"
 content_dir="$(mktemp --directory --tmpdir dm-release-test-contentshots.XXXXXX)"
-all_cleanup() { shot_cap_cleanup; safe-rm --recursive --force -- "${blank_dir}" "${content_dir}"; }
+dup_dir="$(mktemp --directory --tmpdir dm-release-test-dupshots.XXXXXX)"
+twodup_dir="$(mktemp --directory --tmpdir dm-release-test-twodupshots.XXXXXX)"
+all_cleanup() { shot_cap_cleanup; safe-rm --recursive --force -- "${blank_dir}" "${content_dir}" "${dup_dir}" "${twodup_dir}"; }
 trap all_cleanup EXIT
 ## The exact bug shape: ~100% black with a tiny 4x4 grey mark (16 lit px over 1023984 black,
 ## ~0.002% lit, 2 colours) -- a broken/too-early capture that --uniform-only (single-colour) does
@@ -254,6 +260,14 @@ trap all_cleanup EXIT
 "${magick_bin}" -size 1280x800 xc:black -fill '#aaaaaa' -draw 'rectangle 0,0 3,3' "${blank_dir}/20-gateway-booted.png"
 ## A real, content-rich desktop frame (plasma = thousands of colours) must NOT be flagged.
 "${magick_bin}" -size 1280x800 plasma: "${content_dir}/20-gateway-booted.png"
+## STUCK capture: one real frame published byte-identical under 3 milestone names -> dup gate FAILs.
+"${magick_bin}" -size 1280x800 plasma: "${dup_dir}/20-gateway-booted.png"
+cp -- "${dup_dir}/20-gateway-booted.png" "${dup_dir}/25-workstation-booted.png"
+cp -- "${dup_dir}/20-gateway-booted.png" "${dup_dir}/50-workstation-tor-confirmed.png"
+## TWO identical frames (cluster 2) are legitimate here (desktop unchanged boot->tor-confirm) and
+## must NOT fail: the gate tolerates 2, flags only 3+ (matches the calamares dup threshold).
+"${magick_bin}" -size 1280x800 plasma: "${twodup_dir}/25-workstation-booted.png"
+cp -- "${twodup_dir}/25-workstation-booted.png" "${twodup_dir}/50-workstation-tor-confirmed.png"
 
 ## whonix-func, passing rc=0, BLANK dir -> gate flips the published rc to FAIL (5) and threads a
 ## --step-stderr-file so the page states WHY.
@@ -286,6 +300,24 @@ if [ "$(cat -- "${rc_file}")" = '0' ]; then
    printf '%s\n' "ok: a content-rich milestone frame does NOT false-fail the run"
 else
    printf '%s\n' "FAIL: content frame wrongly failed: published rc=$(cat -- "${rc_file}")" >&2
+   failures=$((failures + 1))
+fi
+
+## Stuck capture: 3 byte-identical milestone frames flip a passing whonix run to FAIL.
+rt_publish_result whonix 18.2.4.3 acct whonix-func 0 "${dup_dir}" release-checks >/dev/null
+if [ "$(cat -- "${rc_file}")" = '5' ]; then
+   printf '%s\n' "ok: a stuck/duplicate (3x) capture flips a passing whonix-func run to FAIL"
+else
+   printf '%s\n' "FAIL: duplicate-capture run published rc=$(cat -- "${rc_file}"), expected 5" >&2
+   failures=$((failures + 1))
+fi
+
+## Two identical frames (cluster 2) are legitimate and must NOT fail (matches calamares' 3+ threshold).
+rt_publish_result whonix 18.2.4.3 acct whonix-func 0 "${twodup_dir}" release-checks >/dev/null
+if [ "$(cat -- "${rc_file}")" = '0' ]; then
+   printf '%s\n' "ok: two legitimately-similar frames do NOT false-fail (cluster < 3)"
+else
+   printf '%s\n' "FAIL: two-identical frames wrongly failed: published rc=$(cat -- "${rc_file}")" >&2
    failures=$((failures + 1))
 fi
 

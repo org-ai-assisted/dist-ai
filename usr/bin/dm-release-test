@@ -1161,21 +1161,36 @@ rt_publish_result() {
    ## broken all-black frame from a sparse-but-real console/desktop. Scoped to the whonix lanes --
    ## the calamares lane runs its OWN per-milestone gate (milestone_blank_mode), so gating here too
    ## would double-gate and could false-fail its deliberately-sparse LUKS frames.
-   local rt_blankgate_reason="" rt_blankgate_tmp=""
+   ## Also catch a STUCK capture: image-dup-check FAILs when a frame repeats across >= 3 milestones
+   ## (a grab that never advanced, published under many names), the same cluster size the calamares
+   ## lane tolerates (2 legitimately-similar whonix frames -- e.g. the desktop unchanged between
+   ## boot and Tor-confirm -- must NOT false-fail, only a 3+ stuck cluster does).
+   local rt_shotgate_reason="" rt_shotgate_tmp=""
    case "${mode}" in
       whonix-func | whonix-pair)
          if [ -n "${shot}" ] && [ -d "${shot}" ] && [ ! -L "${shot}" ]; then
-            local rt_blank_out="" rt_blank_rc=0
-            rt_blank_out="$("${IMAGE_BLANK_CHECK:-image-blank-check}" \
+            local rt_shot_out="" rt_shot_rc=0
+            rt_shot_out="$("${IMAGE_BLANK_CHECK:-image-blank-check}" \
                --min-content-frac "${RT_BLANK_MIN_CONTENT_FRAC:-0.0005}" -- "${shot}" 2>&1)" \
-               || rt_blank_rc=$?
-            if [ "${rt_blank_rc}" -ne 0 ]; then
-               rt_blankgate_reason="$(printf '%s\n' \
+               || rt_shot_rc=$?
+            if [ "${rt_shot_rc}" -ne 0 ]; then
+               rt_shotgate_reason="$(printf '%s\n' \
                   "dm-release-test FAILED: blank/near-black milestone screenshot(s) -- a broken capture or a display that never rendered:" \
-                  "${rt_blank_out}")"
-               printf '%s\n' "${me}: ERROR: ${rt_blankgate_reason}" >&2
+                  "${rt_shot_out}")"
+            fi
+            local rt_dup_out="" rt_dup_rc=0
+            rt_dup_out="$("${IMAGE_DUP_CHECK:-image-dup-check}" \
+               --min-cluster "${RT_DUP_MIN_CLUSTER:-3}" -- "${shot}" 2>&1)" \
+               || rt_dup_rc=$?
+            if [ "${rt_dup_rc}" -ne 0 ]; then
+               rt_shotgate_reason="$(printf '%s\n' "${rt_shotgate_reason}" \
+                  "dm-release-test FAILED: stuck/duplicate milestone screenshot(s) -- a grab that did not advance, published under multiple names:" \
+                  "${rt_dup_out}")"
+            fi
+            if [ -n "${rt_shotgate_reason}" ]; then
+               printf '%s\n' "${me}: ERROR: ${rt_shotgate_reason}" >&2
                ## FAIL an otherwise-passing run; an already-failing/inconclusive run keeps its own rc
-               ## (its primary reason stands) but still records the blank frame in the published tail.
+               ## (its primary reason stands) but still records the bad frame(s) in the published tail.
                [ "${rc}" -eq 0 ] && rc="${FAIL_RC}"
             fi
          fi
@@ -1191,17 +1206,17 @@ rt_publish_result() {
       pub_expect+=( --expect "${tok}" )
    done
    ## A lane may hand us the failed check's output (rt_check_log) to publish as the
-   ## step's stderr tail, so the run record explains WHY it failed. Consumed once. When the blank
+   ## step's stderr tail, so the run record explains WHY it failed. Consumed once. When the shot
    ## gate above also fired, COMBINE both into one root-owned temp (the check-log is account-owned;
-   ## do not mutate it), so the page shows the primary failure AND the blank-frame reason together.
-   if [ -n "${rt_blankgate_reason}" ]; then
-      rt_blankgate_tmp="$(mktemp --tmpdir "dm-release-test-blankgate.XXXXXX" 2>/dev/null || true)"
-      if [ -n "${rt_blankgate_tmp}" ]; then
+   ## do not mutate it), so the page shows the primary failure AND the bad-frame reason together.
+   if [ -n "${rt_shotgate_reason}" ]; then
+      rt_shotgate_tmp="$(mktemp --tmpdir "dm-release-test-shotgate.XXXXXX" 2>/dev/null || true)"
+      if [ -n "${rt_shotgate_tmp}" ]; then
          if [ -n "${rt_check_log:-}" ] && [ -s "${rt_check_log}" ]; then
-            cat -- "${rt_check_log}" >> "${rt_blankgate_tmp}" 2>/dev/null || true
+            cat -- "${rt_check_log}" >> "${rt_shotgate_tmp}" 2>/dev/null || true
          fi
-         printf '%s\n' "${rt_blankgate_reason}" >> "${rt_blankgate_tmp}" 2>/dev/null || true
-         pub_stderr=( --step-stderr-file "${rt_blankgate_tmp}" )
+         printf '%s\n' "${rt_shotgate_reason}" >> "${rt_shotgate_tmp}" 2>/dev/null || true
+         pub_stderr=( --step-stderr-file "${rt_shotgate_tmp}" )
       elif [ -n "${rt_check_log:-}" ] && [ -s "${rt_check_log}" ]; then
          ## mktemp failed: still publish the check-log tail so the primary reason is not lost.
          pub_stderr=( --step-stderr-file "${rt_check_log}" )
@@ -1278,8 +1293,8 @@ rt_publish_result() {
       --builder dm-release-test --origin "${rt_origin}" \
       "${pub_expect[@]}" "${pub_stderr[@]}" "${pub_stdout[@]}" "${pub_sha[@]}" "${pub_fw[@]}" "${pub_local_repo[@]}")" \
       || { log warn "results publish failed for ${guest_name} ${interface} ${version} (verdict ${verdict} preserved)"; outdir='(publish-failed)'; }
-   ## Reap the blank-gate stderr temp (root-owned; the emitter has read it by now).
-   [ -n "${rt_blankgate_tmp}" ] && { safe-rm --force -- "${rt_blankgate_tmp}" 2>/dev/null || true; }
+   ## Reap the shot-gate stderr temp (root-owned; the emitter has read it by now).
+   [ -n "${rt_shotgate_tmp}" ] && { safe-rm --force -- "${rt_shotgate_tmp}" 2>/dev/null || true; }
    printf '%s\n' \
       "${me}: ${guest_name} ${interface} ${version} -- ${verdict} (rc=${rc}) -> ${outdir}"
 }
