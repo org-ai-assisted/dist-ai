@@ -81,16 +81,17 @@ if [ "${1:-}" = '--cleanup' ]; then
    exit "${run_rc}"
 fi
 
-optimize_to_webp() {  ## $@=produced PNG shots -> convert each to webp in place
-   ## The site references these shots as .webp; convert a freshly generated PNG (removing it)
-   ## with the bundled image-optimize sibling in THIS bin dir, so a regenerated shot lands
-   ## optimized rather than being caught later by the pre-commit image gate. Required, bundled,
-   ## resolved by path (not PATH -- $0 is readlink-canonicalized, so a ~/.local/bin symlink
-   ## still points script_dir at the real dist-ai/usr/bin); no fallback.
+optimize_shot() {  ## $@=produced PNG shots -> keep-smaller (webp OR avif) in place
+   ## Convert a freshly generated PNG (removing it) to whichever of webp/avif is smaller
+   ## (terminal screenshots usually win as lossless webp) with the bundled image-optimize
+   ## sibling in THIS bin dir, so a regenerated shot lands optimized rather than being caught
+   ## later by the pre-commit image gate. Required, bundled, resolved by path (not PATH -- $0 is
+   ## readlink-canonicalized, so a ~/.local/bin symlink still points script_dir at the real
+   ## dist-ai/usr/bin); no fallback.
    local shot
    for shot in "$@"; do
       [ -f "${shot}" ] || continue
-      "${script_dir}/image-optimize" --webp --quiet -- "${shot}" >/dev/null
+      "${script_dir}/image-optimize" --convert --quiet -- "${shot}" >/dev/null
    done
 }
 
@@ -191,7 +192,7 @@ if [ "${mode}" = 'zoom-verify' ]; then
    run_rc=0
    "${shots_dir}/comparison-capture.sh" --zoom-verify "$@" || run_rc="$?"
    if [ "${run_rc}" = '0' ]; then
-      optimize_to_webp "${shots_dir}/shots/"zoom-verify-*.png
+      optimize_shot "${shots_dir}/shots/"zoom-verify-*.png
       printf '%s\n' "secure-terminal-shots: wrote zoom-verify window-bar shots (webp) to ${shots_dir}/shots"
    fi
    exit "${run_rc}"
@@ -207,7 +208,7 @@ if [ "${mode}" = 'demo-shots' ]; then
    if [ "${run_rc}" = '0' ]; then
       ## webp EVERY captured demo PNG (the lane clears shots/ first, so the glob is exactly
       ## this run's output) -- never a hardcoded name list, which silently drops a new shot.
-      optimize_to_webp "${shots_dir}/shots/"*.png
+      optimize_shot "${shots_dir}/shots/"*.png
       printf '%s\n' "secure-terminal-shots: wrote feature-showcase shots (webp) to ${shots_dir}/shots"
    fi
    exit "${run_rc}"
@@ -236,7 +237,7 @@ if [ "${mode}" = 'compat' ]; then
    if [ "${run_rc}" = '0' ]; then
       ## webp EVERY captured PNG (the lane clears shots/ first, so the glob is exactly this run's
       ## output) -- never a hardcoded name list, which silently drops a new figure.
-      optimize_to_webp "${shots_dir}/shots/"*.png
+      optimize_shot "${shots_dir}/shots/"*.png
       printf '%s\n' "secure-terminal-shots: wrote compatibility program shots (webp) to ${shots_dir}/shots"
    fi
    exit "${run_rc}"
@@ -247,7 +248,7 @@ if [ "${mode}" = 'modes' ] || [ "${mode}" = 'tooltip' ]; then
       ## tooltip is captured on a REAL headless Wayland compositor (tooltip-capture.sh ->
       ## labwc + grim), NOT offscreen: the InfoTip is a frameless popup and the operator
       ## wants the whole shot pipeline on wayland. The orchestrator produces the PNG; the
-      ## optimize_to_webp below converts it, same as the offscreen lanes.
+      ## optimize_shot below converts it, same as the offscreen lanes.
       gen='tooltip-capture.sh'; outfile='tooltip.png'
    else
       gen='display-modes-shot.py'; outfile='display-modes.png'
@@ -261,7 +262,7 @@ if [ "${mode}" = 'modes' ] || [ "${mode}" = 'tooltip' ]; then
    fi
    export PYTHONPATH="${repo}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
    "${shots_dir}/${gen}" "${out_dir}/${outfile}"
-   optimize_to_webp "${out_dir}/${outfile}"
+   optimize_shot "${out_dir}/${outfile}"
    exit 0
 fi
 
@@ -286,7 +287,7 @@ for spec in \
    'copy copy-warning.png'; do
    read -r kind file <<< "${spec}"
    "${shot_script}" "${out_dir}/${file}" "${kind}"
-   optimize_to_webp "${out_dir}/${file}"
+   optimize_shot "${out_dir}/${file}"
 done
 
 printf '%s\n' "secure-terminal-shots: wrote paste-warning + copy-warning shots to ${out_dir}"

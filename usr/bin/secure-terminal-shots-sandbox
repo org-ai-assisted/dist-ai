@@ -238,7 +238,7 @@ pp_begin "${lane}"
 while kill -0 "${capture_pid}" 2>/dev/null; do
    sleep 20
    # shellcheck disable=SC2016  # inner-shell payload: $HOME resolved by the bash run inside the sandbox
-   rendered="$(sandbox "${target_arg[@]}" exec -- bash -c 'ls "$HOME/'"${remote_shots}"'"/*.png "$HOME/'"${remote_shots}"'"/*.webp 2>/dev/null | wc -l' 2>/dev/null || printf '%s' "?")"
+   rendered="$(sandbox "${target_arg[@]}" exec -- bash -c 'ls "$HOME/'"${remote_shots}"'"/*.png "$HOME/'"${remote_shots}"'"/*.webp "$HOME/'"${remote_shots}"'"/*.avif 2>/dev/null | wc -l' 2>/dev/null || printf '%s' "?")"
    pp_capture_tick "${rendered}"
 done
 wait "${capture_pid}" || die "the in-sandbox '${lane}' run failed"
@@ -263,9 +263,9 @@ if [ "${lane}" = 'zoom-live' ]; then
    exit 0
 fi
 
-## The comparison + compat lanes write webp into secure-terminal-shots/shots/; copy only the
-## webp into the site (never the .png/.log noise). comparison lands in comparison/shots, compat
-## in compatibility/shots.
+## The comparison + compat lanes write the keep-smaller output (webp OR avif) into
+## secure-terminal-shots/shots/; copy only those into the site (never the .png/.log noise).
+## comparison lands in comparison/shots, compat in compatibility/shots.
 if [ "${lane}" = 'compat' ]; then
    site_dest="${site}/compatibility/shots"
 elif [ "${lane}" = 'tooltip' ] || [ "${lane}" = 'demo-shots' ]; then
@@ -279,9 +279,9 @@ sandbox "${target_arg[@]}" pull "${remote_shots}" "${pull_tmp}/" \
    || die "pull of the captured shots out of the sandbox failed"
 
 shopt -s nullglob
-webp=("${pull_tmp}/shots/"*.webp)
-[ "${#webp[@]}" -gt 0 ] || die "no .webp shots were produced in the sandbox (capture failed silently?)"
-cp --force -- "${webp[@]}" "${site_dest}/"
+optimized=("${pull_tmp}/shots/"*.webp "${pull_tmp}/shots/"*.avif)
+[ "${#optimized[@]}" -gt 0 ] || die "no optimized (webp/avif) shots were produced in the sandbox (capture failed silently?)"
+cp --force -- "${optimized[@]}" "${site_dest}/"
 
 ## Re-pin every on-page <img> width/height to the freshly pulled assets' intrinsic size. A
 ## capture that changed a shot's dimensions otherwise leaves a stale, layout-shifting pin that
@@ -291,7 +291,7 @@ dims_tool="${script_dir}/secure-terminal-shots-dims"
 [ -x "${dims_tool}" ] || die "required sibling ${dims_tool} not found (broken checkout); cannot re-pin on-page <img> dimensions"
 "${dims_tool}" --fix "${site}" || die "re-pinning on-page <img> dimensions to the pulled assets failed"
 
-pp_done "pulled ${#webp[@]} shot(s) into ${site_dest}/ (on-page dimensions re-pinned)"
+pp_done "pulled ${#optimized[@]} shot(s) into ${site_dest}/ (on-page dimensions re-pinned)"
 
 ## refresh regenerates EVERY gallery, and the tooltip shot is now its OWN native-Wayland lane
 ## (not part of comparison), so a `refresh` must run it too -- else `secure-terminal-shots-sandbox
