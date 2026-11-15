@@ -92,7 +92,7 @@ cat > "${pair_stub}" <<'EOF'
 printf '%s\n' "$*" >> "${PAIR_ARGV}"
 exit 0
 EOF
-## Member-aware repo-path: rt_local_repo_chain / rt_build_local_repo_one call `repo-path <member>`,
+## Member-aware repo-path: rt_local_repo_chain / rt_build_local_repo_snapshot call `repo-path <member>`,
 ## so the stub maps each member to its own fixture repo (<work>/aptrepo_local/<member>). A member with
 ## no fixture dir still prints a path, but its Packages index is unreadable -> omitted from the chain.
 shared_stub="${work}/dm-shared-apt-repo"
@@ -104,7 +104,7 @@ EOF
 chmod +x "${pair_stub}" "${shared_stub}"
 
 export PAIR_ARGV="${pair_argv}"
-## Read as globals by the sourced rt_lane_whonix_inst / rt_build_local_repo_provenance (invisible
+## Read as globals by the sourced rt_lane_whonix_inst / rt_build_local_repo_snapshot (invisible
 ## to shellcheck here).
 # shellcheck disable=SC2034
 DM_WHONIX_PAIR="${pair_stub}"
@@ -364,7 +364,7 @@ tf_rc=0
 check "finding 6 (build awk failure): INCONCLUSIVE, not a block with a silently-empty packages list" \
    "$([ "${tf_rc}" = '2' ] && printf '%s' true || printf '%s' false)" "${tf_rc}"
 
-## gen-id tool failure: a failing sha256sum makes rt_local_repo_gen_id fail -> INCONCLUSIVE, not the
+## gen-id tool failure: a failing sha256sum makes rt_build_local_repo_snapshot fail -> INCONCLUSIVE, not the
 ## benign unverifiable-generation omit (which is only for an UNREADABLE index, a 0-with-empty return).
 sdir="${work}/stub-gen-sha"
 mkdir --parents -- "${sdir}"
@@ -404,6 +404,35 @@ tf_rc=0
 ( export PATH="${sdir}:${PATH}"; rt_lane_whonix_inst persist-inst-whonix 18.2.3.5 ) >/dev/null 2>&1 || tf_rc=$?
 check "finding 6 (pre-upgrade gen-id failure, post OK): INCONCLUSIVE, pre-upgrade status not discarded" \
    "$([ "${tf_rc}" = '2' ] && printf '%s' true || printf '%s' false)" "${tf_rc}"
+
+## --- single-read contract (closes the provenance-vs-generation TOCTOU): rt_build_local_repo_snapshot
+## derives BOTH the generation id AND the provenance from ONE read of each Packages index, so a rebuild
+## mutating an index cannot split the generation from the published package list (not even a mutate-
+## then-restore race a separate gen re-read would miss). Assert the generation equals an INDEPENDENT
+## sha of the SAME bytes the provenance lists -- a second read would break this equality. Fresh
+## fixtures: earlier tests mutate the shared Packages indices. ---
+cat > "${ks_pkgs_dir}/Packages" <<'EOF'
+Package: security-misc
+Version: 3:18.3-1
+Architecture: all
+EOF
+cat > "${pkgs_dir}/Packages" <<'EOF'
+Package: whonix-gw-network-conf
+Version: 3:18.2-1
+Architecture: all
+EOF
+sr_expected_gen="$(printf '%s' "$(cat -- "${ks_pkgs_dir}/Packages")" | sha256sum | awk '{print $1}')$(printf '%s' "$(cat -- "${pkgs_dir}/Packages")" | sha256sum | awk '{print $1}')"
+rt_build_local_repo_snapshot whonix 'kicksecure whonix'
+# shellcheck disable=SC2154  ## set as a global by the sourced rt_build_local_repo_snapshot
+sr_gen="${rt_lr_snapshot_gen}"
+# shellcheck disable=SC2154  ## set as a global by the sourced rt_build_local_repo_snapshot
+sr_json="${rt_lr_snapshot_json}"
+check "single-read: generation id is the concatenated per-member sha of the SAME bytes parsed for provenance" \
+   "$([ "${sr_gen}" = "${sr_expected_gen}" ] && printf '%s' true || printf '%s' false)" "${sr_gen}"
+check "single-read: provenance lists the kicksecure version from that one read" \
+   "$(grep --quiet --fixed-strings -- 'security-misc=3:18.3-1' <<< "${sr_json}" && printf '%s' true || printf '%s' false)"
+check "single-read: provenance lists the whonix version from that one read" \
+   "$(grep --quiet --fixed-strings -- 'whonix-gw-network-conf=3:18.2-1' <<< "${sr_json}" && printf '%s' true || printf '%s' false)"
 
 printf '%s\n' "" "$(basename -- "$0"): ${pass} pass, ${fail} fail, 0 skip"
 [ "${fail}" -eq 0 ] || exit 1

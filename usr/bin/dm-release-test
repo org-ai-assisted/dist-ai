@@ -1611,9 +1611,6 @@ rt_local_repo_source_sha() {
    printf '%s' "${sha}"
 }
 
-## Generation id of the local apt repo under test: the sha256 of its Packages index. Captured BEFORE
-## the guest upgrade (rt_lane_whonix_inst) and re-checked when building provenance, so provenance is
-## bound to the generation the guest actually upgraded from. "" when the index is unreadable.
 ## The DERIVATIVE CHAIN delivered for a --local-repo run, as resident space-separated tokens. Whonix
 ## is built ON Kicksecure, so a whonix guest installs from BOTH the kicksecure base repo AND the
 ## whonix repo -- testing only the whonix repo leaves locally-built kicksecure packages (security-misc,
@@ -1639,80 +1636,60 @@ rt_local_repo_chain() {
    printf '%s' "${chain}"
 }
 
-## Generation id over the WHOLE resident chain: the concatenated Packages-index sha of each member,
-## so a rebuild of EITHER the kicksecure base OR the whonix repo invalidates the generation and
-## rebuilds provenance. Empty + rc 0 when any member's index is unreadable (benign "unverifiable",
-## the single-repo behavior preserved); non-zero only on a real sha256sum/awk tool failure.
-rt_local_repo_gen_id() {
-   ## chain (optional $2): the membership set the caller already resolved + is DELIVERING. Reuse it
-   ## so a derivative becoming resident mid-test cannot slip into the generation id while the guest
-   ## never enables it (the delivered chain is captured once). Falls back to a fresh resolve.
-   local deriv="$1" chain="${2:-}" member repo_path pkgs_file one ids=""
+## SINGLE-READ generation id + provenance for the WHOLE resident chain, host-side (no guest round-
+## trip). For each member, read its Packages index ONCE and derive BOTH the generation sha AND the
+## provenance object from that one content, so the published provenance can NEVER list a different
+## generation than the one the verdict is checked against. The caller compares gen_before (a
+## pre-upgrade snapshot) with gen_after (a post-upgrade snapshot) and publishes rt_lr_snapshot_json
+## only when they match: because each snapshot's gen and packages come from the SAME bytes, a rebuild
+## mutating an index cannot split the generation from the package list -- including the pathological
+## mutate-then-restore race a separate gen re-read would miss. Sets two globals:
+##   rt_lr_snapshot_gen  -- concatenated per-member Packages sha (the generation id).
+##   rt_lr_snapshot_json -- the provenance LIST [{derivative, repoPath, sourceSha, packages:[n=v,...]}],
+##                          one object per resident member (kicksecure base + whonix); '[]' empty chain.
+## repoPath + the index come from dm-shared-apt-repo repo-path (single source -- never re-derive
+## repo_parent here). Benign contract: an UNREADABLE member index yields EMPTY gen + EMPTY provenance
+## and rc 0 (the caller then omits the block as "generation unverifiable" -- gen_before != "" so an
+## empty gen_after never matches). Returns non-zero ONLY on a real cat/sha256sum/awk/jq failure; the
+## caller publishes INCONCLUSIVE for it, never a published-repo masquerade -- jq AND awk both exit 2
+## on an ordinary error, so an exit code could not distinguish a tool failure from the benign omit.
+## NOTE: the caller runs this on the LHS of `|| rc=$?`, which DISABLES errexit throughout the body --
+## so every tool step is explicitly guarded with `|| return 1`; do NOT rely on errexit here.
+## chain (optional $2): the membership the caller already resolved + is DELIVERING -- reuse it so a
+## derivative becoming resident mid-test cannot slip into either the generation or the provenance
+## while the guest never enabled it. Falls back to a fresh resolve.
+rt_build_local_repo_snapshot() {
+   local deriv="$1" chain="${2:-}" member repo_path pkgs_file content src_sha one awk_out pkgs_json obj ids=""
+   local -a objs=()
+   rt_lr_snapshot_gen=""
+   rt_lr_snapshot_json=""
+   src_sha="$(rt_local_repo_source_sha)"
    for member in ${chain:-$(rt_local_repo_chain "${deriv}")}; do
       repo_path="$("${DM_SHARED_APT_REPO}" repo-path "${member}" 2>/dev/null || true)"
       pkgs_file="${repo_path}/dists/local/main/binary-amd64/Packages"
-      [ -n "${repo_path}" ] && [ -r "${pkgs_file}" ] || return 0
-      one="$(sha256sum -- "${pkgs_file}" | awk '{print $1}')" || return 1
+      if [ -z "${repo_path}" ] || [ ! -r "${pkgs_file}" ]; then
+         ## Unreadable member -> benign "generation unverifiable": empty gen + empty provenance, rc 0.
+         rt_lr_snapshot_gen=""
+         rt_lr_snapshot_json=""
+         return 0
+      fi
+      ## ONE read: both the generation sha and the provenance package list derive from THIS content.
+      content="$(cat -- "${pkgs_file}")" || return 1
+      one="$(printf '%s' "${content}" | sha256sum | awk '{print $1}')" || return 1
       ids="${ids}${one}"
-   done
-   printf '%s' "${ids}"
-}
-
-## Build the localRepo provenance JSON (host-side; no guest round-trip) for a --local-repo run:
-## {derivative, repoPath, sourceSha, packages:[name=version,...]}. repoPath + the Packages index come
-## from dm-shared-apt-repo repo-path (single source of the repo path -- never re-derive repo_parent
-## here). Emits the JSON on stdout; an UNREADABLE Packages index degrades to an EMPTY packages list.
-## The "generation unverifiable" decision is DELIBERATELY the caller's (an explicit gen_before vs
-## gen_now compare), NOT signalled through this function's exit code: jq AND awk both exit 2 on an
-## ordinary error, so any sentinel exit code would be indistinguishable from a real tool failure and a
-## tool failure would then masquerade as the benign omit. Here EVERY non-zero exit means a genuine
-## build failure; the caller publishes INCONCLUSIVE for it, never a published-repo masquerade.
-## NOTE: the caller runs this on the LHS of `||` (`x="$(...)" || rc=$?`), which DISABLES errexit
-## throughout this function body -- so an uncaught awk/jq failure would otherwise be swallowed
-## (yielding a block with a silently-empty packages list and a 0 return). Every tool step is therefore
-## guarded with an explicit `|| return 1`; do NOT rely on errexit here.
-## ONE repo's provenance object: {derivative, repoPath, sourceSha, packages:[name=version,...]}.
-rt_build_local_repo_one() {
-   local deriv="$1" repo_path pkgs_file sha pkgs_json awk_out
-   repo_path="$("${DM_SHARED_APT_REPO}" repo-path "${deriv}" 2>/dev/null || true)"
-   pkgs_file="${repo_path}/dists/local/main/binary-amd64/Packages"
-   sha="$(rt_local_repo_source_sha)"
-   if [ -n "${repo_path}" ] && [ -r "${pkgs_file}" ]; then
-      awk_out="$(awk '/^Package: /{p=$2} /^Version: /{if(p!=""){print p"="$2; p=""}}' "${pkgs_file}")" \
-         || return 1
-      pkgs_json="$(printf '%s' "${awk_out}" | jq -R -s -c 'split("\n") | map(select(length>0))')" \
-         || return 1
-   else
-      pkgs_json='[]'
-   fi
-   jq -n -c \
-      --arg deriv "${deriv}" \
-      --arg repo "${repo_path}" \
-      --arg sha "${sha}" \
-      --argjson pkgs "${pkgs_json}" \
-      '{derivative:$deriv, repoPath:$repo, sourceSha:$sha, packages:$pkgs}' \
-      || return 1
-}
-
-## The localRepo provenance JSON for a --local-repo run: a LIST with one object per resident chain
-## member (kicksecure base + whonix), so the results page shows EVERY local repo the verdict applies
-## to -- a derivative needs both. An empty chain (no resident local repo) yields '[]'. See the exit-
-## status caveat on rt_build_local_repo_one's callers: errexit is OFF on the `||` LHS, so every tool
-## step is explicitly `|| return 1`.
-rt_build_local_repo_provenance() {
-   ## chain (optional $2): reuse the caller's already-resolved + delivered membership so provenance
-   ## records exactly the repos the guest enabled, never one that became resident mid-test.
-   local deriv="$1" chain="${2:-}" member obj
-   local -a objs=()
-   for member in ${chain:-$(rt_local_repo_chain "${deriv}")}; do
-      obj="$(rt_build_local_repo_one "${member}")" || return 1
+      awk_out="$(printf '%s' "${content}" | awk '/^Package: /{p=$2} /^Version: /{if(p!=""){print p"="$2; p=""}}')" || return 1
+      pkgs_json="$(printf '%s' "${awk_out}" | jq -R -s -c 'split("\n") | map(select(length>0))')" || return 1
+      obj="$(jq -n -c --arg deriv "${member}" --arg repo "${repo_path}" --arg sha "${src_sha}" \
+         --argjson pkgs "${pkgs_json}" '{derivative:$deriv, repoPath:$repo, sourceSha:$sha, packages:$pkgs}')" || return 1
       objs+=( "${obj}" )
    done
    if [ "${#objs[@]}" -eq 0 ]; then
-      printf '%s' '[]'
-      return 0
+      rt_lr_snapshot_json='[]'
+   else
+      rt_lr_snapshot_json="$(printf '%s\n' "${objs[@]}" | jq -s -c '.')" || return 1
    fi
-   printf '%s\n' "${objs[@]}" | jq -s -c '.' || return 1
+   rt_lr_snapshot_gen="${ids}"
+   return 0
 }
 
 ## inst lane: the functional release-check battery (>= the kicksecure coverage) run on the
@@ -1787,16 +1764,17 @@ rt_lane_whonix_inst() {
       lr_chain="$(rt_local_repo_chain "${local_repo}")"
       lr_args=( --local-repo "${local_repo}" --local-repo-base "${lr_base}" --local-repo-chain "${lr_chain}" )
    fi
-   ## Capture the local repo's generation id BEFORE the guest upgrade, so the provenance read below
-   ## binds to the generation the guest actually upgraded from -- a concurrent rebuild landing in the
-   ## test window otherwise swaps the published package versions under an unchanged verdict.
-   ## Capture BOTH the value AND the exit status: rt_local_repo_gen_id returns 0 + empty for an
-   ## unreadable index (a benign "generation unverifiable") but non-zero if its sha256sum/awk fails
-   ## (a tool error). A bare `&& x="$(...)" ` would discard that status, so a pre-upgrade tool failure
-   ## would collapse to an empty gen and be swallowed as the benign omit below.
+   ## Capture the local repo's generation id BEFORE the guest upgrade, so the provenance published
+   ## below binds to the generation the guest actually upgraded from -- a concurrent rebuild landing in
+   ## the test window otherwise swaps the published package versions under an unchanged verdict.
+   ## Capture BOTH the value AND the exit status: rt_build_local_repo_snapshot returns 0 + empty for an
+   ## unreadable index (a benign "generation unverifiable") but non-zero if its cat/sha256sum/awk/jq
+   ## fails (a tool error). A bare `&& x="$(...)" ` would discard that status, so a pre-upgrade tool
+   ## failure would collapse to an empty gen and be swallowed as the benign omit below.
    local rt_local_repo_gen="" rt_local_repo_gen_rc=0
    if [ -n "${local_repo}" ]; then
-      rt_local_repo_gen="$(rt_local_repo_gen_id "${local_repo}" "${lr_chain}")" || rt_local_repo_gen_rc=$?
+      rt_build_local_repo_snapshot "${local_repo}" "${lr_chain}" || rt_local_repo_gen_rc=$?
+      rt_local_repo_gen="${rt_lr_snapshot_gen}"
       ## Expose the local Debian mirror under this repo's share tree (ROOT bind-mount, ro+nosymfollow)
       ## BEFORE the account-run lane attaches + boots, so the WS can source the Debian base locally
       ## for check 3's full upgrade. Keyed to the SAME base the lane attaches (--local-repo-base).
@@ -1840,31 +1818,27 @@ rt_lane_whonix_inst() {
    ## Consumed once by rt_publish_result; empty on a published-repo run (the key is then omitted).
    rt_local_repo_json=""
    if [ -n "${local_repo}" ]; then
-      ## Classify "generation verifiable" HERE, NOT via the builder's exit code: jq AND awk both
+      ## Classify "generation verifiable" HERE, NOT via the snapshot's exit code: jq AND awk both
       ## exit 2 on an ordinary error, so a tool failure would be indistinguishable from any sentinel
-      ## exit and would masquerade as the benign omit. Two outcomes feed the block:
-      ##  * gen id UNREADABLE or CHANGED (rc 0, empty/mismatched) -- a benign race (a concurrent
-      ##    rebuild landed in the test window): publish the verdict WITHOUT the block.
-      ##  * the PRE- or POST-upgrade gen id computation FAILS (sha256sum/awk error), OR the generation
-      ##    matches but the build FAILS (jq/awk error, read race) -- a real tool/env bug: publish
-      ##    INCONCLUSIVE, never a published-repo masquerade. A missing/empty localRepo block otherwise
-      ##    reads as a published run, so a tool failure must NOT be swallowed as the benign omit.
-      local rt_local_repo_gen_now="" gen_now_rc=0 prov_rc=0 rt_local_repo_gen_after="" gen_after_rc=0
-      rt_local_repo_gen_now="$(rt_local_repo_gen_id "${local_repo}" "${lr_chain}")" || gen_now_rc=$?
-      if [ "${rt_local_repo_gen_rc}" -eq 0 ] && [ "${gen_now_rc}" -eq 0 ] \
-         && [ -n "${rt_local_repo_gen}" ] && [ -n "${rt_local_repo_gen_now}" ] \
-         && [ "${rt_local_repo_gen}" = "${rt_local_repo_gen_now}" ]; then
-         rt_local_repo_json="$(rt_build_local_repo_provenance "${local_repo}" "${lr_chain}")" || prov_rc=$?
-         ## rt_build_local_repo_provenance re-reads the live Packages files a SECOND time, so a rebuild
-         ## landing between the generation match above and that read would record a newer index than the
-         ## generation the verdict was checked against. Re-read the generation AFTER the build: if it
-         ## moved during the read, drop the block (benign race -> omit); a compute FAILURE here is a real
-         ## tool bug, surfaced INCONCLUSIVE with the others below.
-         rt_local_repo_gen_after="$(rt_local_repo_gen_id "${local_repo}" "${lr_chain}")" || gen_after_rc=$?
-         [ "${gen_after_rc}" -ne 0 ] || [ "${rt_local_repo_gen_after}" = "${rt_local_repo_gen}" ] || rt_local_repo_json=""
+      ## exit and would masquerade as the benign omit. A post-upgrade snapshot derives gen_after AND
+      ## the provenance from ONE read of each index, so they can never disagree; compare it to the
+      ## pre-upgrade gen_before. Two outcomes feed the block:
+      ##  * gen UNREADABLE or CHANGED (rc 0, empty/mismatched) -- a benign race (a concurrent rebuild
+      ##    landed in the test window): publish the verdict WITHOUT the block.
+      ##  * the PRE- or POST-upgrade snapshot FAILS (cat/sha256sum/awk/jq error) -- a real tool/env bug:
+      ##    publish INCONCLUSIVE, never a published-repo masquerade. A missing/empty localRepo block
+      ##    otherwise reads as a published run, so a tool failure must NOT be swallowed as the benign omit.
+      local snap_rc=0
+      rt_build_local_repo_snapshot "${local_repo}" "${lr_chain}" || snap_rc=$?
+      if [ "${rt_local_repo_gen_rc}" -eq 0 ] && [ "${snap_rc}" -eq 0 ] \
+         && [ -n "${rt_local_repo_gen}" ] && [ -n "${rt_lr_snapshot_gen}" ] \
+         && [ "${rt_local_repo_gen}" = "${rt_lr_snapshot_gen}" ]; then
+         ## gen_before == gen_after: the index is unchanged since before the guest upgrade, so the
+         ## provenance from THIS snapshot (same read as gen_after) is bound to the checked generation.
+         rt_local_repo_json="${rt_lr_snapshot_json}"
       fi
-      if [ "${rt_local_repo_gen_rc}" -ne 0 ] || [ "${gen_now_rc}" -ne 0 ] || [ "${prov_rc}" -ne 0 ] || [ "${gen_after_rc}" -ne 0 ]; then
-         log error "localRepo provenance for ${local_repo} failed (gen_before_rc ${rt_local_repo_gen_rc}, gen_now_rc ${gen_now_rc}, build_rc ${prov_rc}, gen_after_rc ${gen_after_rc}) -- refusing to publish a local-repo run as a published-repo run"
+      if [ "${rt_local_repo_gen_rc}" -ne 0 ] || [ "${snap_rc}" -ne 0 ]; then
+         log error "localRepo provenance for ${local_repo} failed (gen_before_rc ${rt_local_repo_gen_rc}, snapshot_rc ${snap_rc}) -- refusing to publish a local-repo run as a published-repo run"
          rt_publish_result whonix "${version}" "${account}" whonix-func "${SETUP_RC}" "${shot_dir}" release-checks
          sudo -u "${account}" -- safe-rm --recursive --force -- "${check_log}" "${shot_dir}" 2>/dev/null || true
          if [ -n "${rt_func_log}" ]; then safe-rm --force -- "${rt_func_log}" 2>/dev/null || true; rt_func_log=""; fi
