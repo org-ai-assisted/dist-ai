@@ -103,6 +103,10 @@ check_refused "non-integer timeout"
 run "${full_sha}" 5 'x1'
 check_refused "non-integer poll"
 
+## Zero poll interval -> refuse (a 0s poll would spin a tight API loop / rate-limit storm).
+run "${full_sha}" 5 0
+check_refused "zero poll interval"
+
 ## Zero-padded integer timeout -> MUST work (base-10), confirm success, call the API, exit 0.
 run "${full_sha}" 09 1
 if [ "${rc}" -eq 0 ] && [ "${called}" -eq 1 ]; then
@@ -110,6 +114,24 @@ if [ "${rc}" -eq 0 ] && [ "${called}" -eq 1 ]; then
    pass=$((pass + 1))
 else
    printf '%s\n' "FAIL: zero-padded timeout '09' (rc=${rc}, api-called=${called})" >&2
+   fail=$((fail + 1))
+fi
+
+## timeout is a TOTAL bound: with NO deployment ever registered, a 1s timeout + 5s poll must return
+## in ~1s, NOT sleep the full 5s poll (the sleep is capped to the time remaining).
+cat > "${bin}/github-api" <<'EOF'
+#!/bin/bash
+printf '%s\n' '[]'
+EOF
+chmod +x -- "${bin}/github-api"
+start="$(date +%s)"
+PATH="${bin}:${PATH}" pages_confirm_published 'org/repo' "${full_sha}" 1 5 'test' >/dev/null 2>&1 || true
+elapsed=$(( $(date +%s) - start ))
+if [ "${elapsed}" -le 3 ]; then
+   printf '%s\n' "PASS: timeout is a total bound (returned in ${elapsed}s, not the 5s poll)"
+   pass=$((pass + 1))
+else
+   printf '%s\n' "FAIL: timeout not bounded -- waited ${elapsed}s for a 1s timeout / 5s poll" >&2
    fail=$((fail + 1))
 fi
 

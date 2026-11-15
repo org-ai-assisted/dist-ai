@@ -255,6 +255,11 @@ branch="$(git -C "${repo_dir}" rev-parse --abbrev-ref HEAD)"
 [ "${branch}" != 'HEAD' ] \
    || die 1 'detached HEAD: check out the publishing branch first'
 
+## Capture the sha we are about to push BEFORE pushing, so the live-deploy confirm keys on exactly
+## that commit -- reading HEAD after the push could race a concurrent ref move and confirm the wrong
+## (already-live) sha.
+pushed_sha="$(git -C "${repo_dir}" rev-parse HEAD)"
+
 printf '%s\n' "${me}: pushing ${branch} -> ${remote}/${branch}" >&2
 ## The pre-push hook in each site repo re-runs website-tests via `site-deploy --check-only` on the
 ## publishing remote. This push IS that publish, and the identical suite just ran GREEN above on
@@ -272,7 +277,6 @@ if [ "${SITE_DEPLOY_NO_CONFIRM:-}" = '1' ]; then
    printf '%s\n' "${me}: SITE_DEPLOY_NO_CONFIRM=1 -- pushed ${branch}, the live deploy is UNVERIFIED" >&2
    exit 0
 fi
-pushed_sha="$(git -C "${repo_dir}" rev-parse HEAD)"
 owner_repo="${SITE_DEPLOY_PAGES_OWNER_REPO:-}"
 if [ -z "${owner_repo}" ]; then
    ## --push: confirm the repo we PUSHED to, not the fetch URL (they differ when a push URL is set).

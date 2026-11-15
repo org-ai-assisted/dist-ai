@@ -23,22 +23,48 @@
 ## style-ok: no-strict -- sourced fragment; the sourcing script owns errexit/nounset/pipefail.
 
 ## pages_owner_repo_from_url URL
-##   Extract "owner/repo" from a git remote URL for the Pages API. Handles https / ssh:// / git://
-##   / scp-like forms, an optional "user[:pass]@" userinfo, a host of ANY case, an optional ":port",
-##   and a trailing ".git" / slash / whitespace. STRIPS the userinfo so a credential embedded in the
-##   URL (https://user:TOKEN@host/...) never reaches a log line or the API argument. Keeps only the
-##   LAST two path segments (a GitHub repo is always owner/repo), so an extra host path prefix (a
-##   rewrite/proxy) cannot smuggle a wrong repo. A form it cannot reduce to owner/repo yields a value
-##   the API rejects loudly -- callers can override via the *_PAGES_OWNER_REPO seams.
+##   Extract "owner/repo" from a git remote URL for the Pages API. Handles scheme URLs
+##   (https/ssh/git, with an optional "user[:pass]@" userinfo and ":port") and scp-like
+##   "[user@]host:path". STRIPS the userinfo and any "?query"/"#fragment" so a credential embedded
+##   in the URL never reaches a log line or the API argument, and keeps only the LAST two path
+##   segments (a GitHub repo is always owner/repo) so an extra host path prefix cannot smuggle a
+##   wrong repo. Pure parameter expansion -- no regex port/host guesswork: a scheme URL's host[:port]
+##   is whatever precedes the first path '/', and in scp form the FIRST ':' is the path separator
+##   (never a port, so a numeric owner like 123/123.github.io is not mistaken for a port). A form it
+##   cannot reduce to owner/repo yields a value the API rejects loudly -- callers can override via
+##   the *_PAGES_OWNER_REPO seams.
 pages_owner_repo_from_url() {
-   printf '%s' "$1" | sed -E '
-      s/^[[:space:]]+//; s/[[:space:]]+$//
-      s#^[A-Za-z][A-Za-z0-9+.-]*://##
-      s#^[^/@]*@##
-      s#^[^/:]+(:[0-9]+)?[:/]##
-      s#/+$##; s#\.git$##; s#/+$##
-      s#^.*/([^/]+/[^/]+)$#\1#
-   '
+   local u="$1" path owner repo
+   ## trim surrounding whitespace
+   u="${u#"${u%%[![:space:]]*}"}"
+   u="${u%"${u##*[![:space:]]}"}"
+   case "${u}" in
+      *://*)
+         ## scheme URL: drop scheme, then userinfo, then host[:port] up to the first path '/'
+         u="${u#*://}"
+         u="${u#*@}"
+         path="${u#*/}"
+         ;;
+      *:*)
+         ## scp-like [user@]host:path -- the FIRST ':' is the path separator, never a port
+         u="${u#*@}"
+         path="${u#*:}"
+         ;;
+      *)
+         path="${u}"
+         ;;
+   esac
+   ## drop a "?query"/"#fragment" (can carry a credential), then a trailing slash and ".git"
+   path="${path%%\?*}"
+   path="${path%%#*}"
+   path="${path%/}"
+   path="${path%.git}"
+   path="${path%/}"
+   ## reduce to the LAST two path segments
+   repo="${path##*/}"
+   owner="${path%/*}"
+   owner="${owner##*/}"
+   printf '%s' "${owner}/${repo}"
 }
 
 ## pages_confirm_published OWNER_REPO SHA TIMEOUT_SECS POLL_SECS LABEL
@@ -73,9 +99,10 @@ pages_confirm_published() {
       printf '%s\n' "${label}: refusing to confirm -- '${want}' is abbreviated; pass the full commit sha" >&2
       return 1
    fi
-   ## timeout/poll feed bash arithmetic and sleep: require plain non-negative integers so a
-   ## non-numeric value cannot be re-evaluated as an arithmetic expression, and apply base-10 (10#)
-   ## so a zero-padded value is not misread as octal.
+   ## timeout/poll feed bash arithmetic and sleep: require plain integers so a non-numeric value
+   ## cannot be re-evaluated as an arithmetic expression. Normalize via base-10 (10#) so a
+   ## zero-padded value is not misread as octal. poll must be >= 1 -- poll 0 would spin a tight API
+   ## loop (rate-limit storm); timeout 0 is allowed (one immediate check, then give up).
    for v in "${timeout}" "${poll}"; do
       case "${v}" in
          '' | *[!0-9]*)
@@ -84,7 +111,14 @@ pages_confirm_published() {
             ;;
       esac
    done
-   deadline=$(( $(date +%s) + 10#${timeout} ))
+   timeout=$(( 10#${timeout} ))
+   poll=$(( 10#${poll} ))
+   if [ "${poll}" -lt 1 ]; then
+      printf '%s\n' "${label}: refusing to confirm -- poll interval must be >= 1s (got '${poll}')" >&2
+      return 1
+   fi
+   local now remaining
+   deadline=$(( $(date +%s) + timeout ))
    while :; do
       ## The github-pages deployment(s) for EXACTLY our pushed sha; newest id wins. Empty until the
       ## deploy workflow registers one -- not yet an error, keep polling.
@@ -104,10 +138,18 @@ pages_confirm_published() {
                ;;
          esac
       fi
-      if [ "$(date +%s)" -ge "${deadline}" ]; then
+      ## Bound the TOTAL wait by timeout: stop once the deadline has passed, and never sleep past it
+      ## (a poll larger than the time left is capped to the remaining seconds).
+      now="$(date +%s)"
+      if [ "${now}" -ge "${deadline}" ]; then
          printf '%s\n' "${label}: GitHub Pages deployment for ${want} did not reach 'success' within ${timeout}s" >&2
          return 1
       fi
-      sleep "${poll}"
+      remaining=$(( deadline - now ))
+      if [ "${poll}" -le "${remaining}" ]; then
+         sleep "${poll}"
+      else
+         sleep "${remaining}"
+      fi
    done
 }

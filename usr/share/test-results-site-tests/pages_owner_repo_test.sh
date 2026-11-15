@@ -65,6 +65,13 @@ check "ssh://git@github.com:22/org-ai-assisted/org-ai-assisted.github.io.git" "$
 check "https://github.com/org-ai-assisted/org-ai-assisted.github.io.git/" "${want}"
 check "  git@github.com:org-ai-assisted/org-ai-assisted.github.io.git  " "${want}"
 
+## A NUMERIC owner in scp form must NOT be mistaken for a port (the ':' is the path separator).
+check "git@github.com:123/123.github.io.git" "123/123.github.io"
+
+## A "?query"/"#fragment" (which can carry a credential) must be dropped, not kept in owner/repo.
+check "https://github.com/org-ai-assisted/org-ai-assisted.github.io.git?access_token=ghp_SECRET" "${want}"
+check "https://github.com/org-ai-assisted/org-ai-assisted.github.io#readme" "${want}"
+
 ## No credential must EVER appear in the output (explicit, belt-and-braces on the leak class).
 leaky="$(pages_owner_repo_from_url 'https://alice:ghp_SECRET@GITHUB.COM/org-ai-assisted/org-ai-assisted.github.io.git')"
 case "${leaky}" in
