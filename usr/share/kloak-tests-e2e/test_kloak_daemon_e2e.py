@@ -85,6 +85,21 @@ def _sh(*cmd, **kwargs):
     return subprocess.run(cmd, capture_output=True, text=True, **kwargs)
 
 
+def _u32_delay(stamp, inject):
+    """Scheduled-release delay (ms) from a uint32 CLOCK_MONOTONIC release stamp
+    and a uint32 injection stamp. Both wrap every ~49.7 days and are already
+    masked to 32 bits, so the difference is taken modulo 2**32 and then read as
+    SIGNED: a genuine clock wrap mid-test yields a small positive delay, while a
+    near-zero draw whose release stamp rounds a hair BEFORE the injection read
+    yields a small NEGATIVE value (~0 ms delay), NOT a spurious ~2**32 that
+    red-flags a correct daemon. The caller bounds the delay from ABOVE only, so a
+    small negative passes (it means the event was effectively not delayed)."""
+    delta = (stamp - inject) & 0xffffffff
+    if delta >= 2 ** 31:
+        delta -= 2 ** 32
+    return delta
+
+
 def _kloakwl_procs_owned_by_user():
     ## pids of running 'kloakwl' processes whose owner is the kloakwl user --
     ## i.e. the sandbox child AFTER it dropped privileges.
@@ -106,6 +121,30 @@ def _kloakwl_pids():
                 and parts[-1] == KLOAKWL_USER):
             pids.add(parts[0])
     return pids
+
+
+class U32DelayTest(unittest.TestCase):
+    """Pure-arithmetic regression for _u32_delay (no root/compositor needed).
+    A naive `(stamp - inject) & 0xffffffff` wraps a tiny negative delta to
+    ~2**32 and red-flags a correct daemon; these pin the signed reading."""
+
+    def test_normal_small_positive(self):
+        self.assertEqual(_u32_delay(1050, 1000), 50)
+
+    def test_near_zero_stamp_just_before_inject(self):
+        ## The flake: a ~0 ms draw whose release stamp rounds 1-2 ms before the
+        ## injection read. Must read as a small negative (~0 delay), not ~2**32.
+        self.assertEqual(_u32_delay(999, 1000), -1)
+        self.assertEqual(_u32_delay(998, 1000), -2)
+
+    def test_clock_wrap_during_test(self):
+        ## inject just below 2**32, release stamp wrapped past it: a real 300 ms.
+        self.assertEqual(_u32_delay((2 ** 32 - 100) & 0xffffffff, 2 ** 32 - 400),
+                         300)
+
+    def test_genuine_unbounded_delay_still_large(self):
+        ## A real runaway schedule stays a large positive the bound can catch.
+        self.assertEqual(_u32_delay(6000, 1000), 5000)
 
 
 class KloakDaemonE2E(unittest.TestCase):
@@ -472,7 +511,7 @@ class KloakDaemonE2E(unittest.TestCase):
             ## arrival_mono is set together with rel_stamp above, so the
             ## rel_stamp guard proves it is not None here (mypy cannot see that).
             assert arrival_mono is not None
-            stamp_delays.append((rel_stamp - inj_stamp) & 0xffffffff)
+            stamp_delays.append(_u32_delay(rel_stamp, inj_stamp))
             real_delays.append((arrival_mono - inj_mono) * 1000.0)
         ## Exactly num new releases for num injections. The per-poll `seen`
         ## baseline advances past EVERY new event in a poll, so if one injection
@@ -1373,7 +1412,7 @@ class KloakDaemonE2E(unittest.TestCase):
         ## latency (one event's worth, not the cumulative injection window).
         tol = 80
         for i, stamp in enumerate(stamps):
-            sched_delay = (stamp - inject_ms[i]) & 0xffffffff
+            sched_delay = _u32_delay(stamp, inject_ms[i])
             self.assertLessEqual(
                 sched_delay, max_delay + tol,
                 'flood event %d scheduled %d ms after its own injection, exceeds '
