@@ -855,12 +855,12 @@ def _is_navigational(tag, attr, amap):
     return False
 
 # Content raster references (an <img>/<source> load, a CSS url(), or an <a href>
-# to an image) must be webp -- the site-image-optimize tool converts them, so a
-# leftover .png/.jpg is either unoptimized or a rewrite that missed. og:image /
+# to an image) must be avif -- the site-image-optimize tool converts them, so a
+# leftover .png/.jpg/.webp is either unoptimized or a rewrite that missed. og:image /
 # twitter:image (<meta content=...>) and favicons (<link rel=icon>) are NOT loads
 # in this sense (Extractor sees no href/src for meta, and links are excluded
 # below), so they legitimately stay PNG/JPEG for social-scraper compatibility.
-_RASTER_REF = re.compile(r'\.(?:png|jpe?g)$', re.IGNORECASE)
+_RASTER_REF = re.compile(r'\.(?:png|jpe?g|webp)$', re.IGNORECASE)
 # url() with a quoted value may legitimately contain ')'; match the quoted forms
 # whole, and only forbid ')' in the UNQUOTED form (where it ends the url()).
 _CSS_URL = re.compile(
@@ -989,7 +989,7 @@ def _raster_target(ref_dir, value, root):
 
 
 def check_image_format(root, failures, pages=None):
-    # Content raster references must be webp (except the static allowlist). Covers
+    # Content raster references must be avif (except the static allowlist). Covers
     # <img>/<source> src, srcset candidates, <a href> to a raster, and CSS url()
     # in a .css file or an inline/embedded style.
     # Dedup by resolved target file: the same raster reached from every page (a
@@ -1017,7 +1017,7 @@ def check_image_format(root, failures, pages=None):
             content = (tag in ('img', 'source') and attr == 'src') or a_raster
             if content and _is_raster(value) and not _allowed_raster(value):
                 report(ref_dir, value,
-                       '%s: content image %r must be webp (convert with '
+                       '%s: content image %r must be avif (convert with '
                        'site-image-optimize)' % (rel, value))
         for srcset in ext.srcsets:
             for candidate in srcset.split(','):
@@ -1025,11 +1025,11 @@ def check_image_format(root, failures, pages=None):
                 if token and _is_raster(token[0]) and not _is_external(token[0]) \
                         and not _allowed_raster(token[0]):
                     report(ref_dir, token[0],
-                           '%s: srcset image %r must be webp' % (rel, token[0]))
+                           '%s: srcset image %r must be avif' % (rel, token[0]))
         for value in _css_external_refs('\n'.join(ext.styles)):
             if _is_raster(value) and not _allowed_raster(value):
                 report(ref_dir, value,
-                       '%s: CSS url() image %r must be webp' % (rel, value))
+                       '%s: CSS url() image %r must be avif' % (rel, value))
         # A raster inside an <iframe srcdoc> is a content image too; recurse
         # (nested srcdoc included), consistent with supply-chain/inline-script.
         for srcdoc in ext.srcdocs:
@@ -1057,7 +1057,7 @@ def check_image_format(root, failures, pages=None):
             for value in _css_urls(css):
                 if _is_raster(value) and not _allowed_raster(value):
                     report(base_dir, value,
-                           '%s: CSS url() image %r must be webp' % (rel, value))
+                           '%s: CSS url() image %r must be avif' % (rel, value))
 
 
 # Host-free CSP scheme-sources: they name no external host, so they are allowed --
