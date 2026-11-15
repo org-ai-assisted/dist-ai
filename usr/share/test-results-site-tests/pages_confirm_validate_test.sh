@@ -125,13 +125,17 @@ printf '%s\n' '[]'
 EOF
 chmod +x -- "${bin}/github-api"
 start="$(date +%s)"
-PATH="${bin}:${PATH}" pages_confirm_published 'org/repo' "${full_sha}" 1 5 'test' >/dev/null 2>&1 || true
+rc=0
+PATH="${bin}:${PATH}" pages_confirm_published 'org/repo' "${full_sha}" 1 5 'test' >/dev/null 2>&1 || rc="$?"
 elapsed=$(( $(date +%s) - start ))
-if [ "${elapsed}" -le 3 ]; then
-   printf '%s\n' "PASS: timeout is a total bound (returned in ${elapsed}s, not the 5s poll)"
+## Require BOTH: a nonzero return (the deploy never reached success, so it must TIMEOUT, not
+## false-succeed) AND the total-bound duration. Asserting only elapsed<=3 would also pass an
+## immediate FALSE success (rc 0) against the empty-deployment fixture.
+if [ "${rc}" -ne 0 ] && [ "${elapsed}" -le 3 ]; then
+   printf '%s\n' "PASS: no-deployment times out (rc=${rc}) within the total bound (${elapsed}s, not the 5s poll)"
    pass=$((pass + 1))
 else
-   printf '%s\n' "FAIL: timeout not bounded -- waited ${elapsed}s for a 1s timeout / 5s poll" >&2
+   printf '%s\n' "FAIL: expected a bounded timeout (rc!=0, elapsed<=3); got rc=${rc}, elapsed=${elapsed}s" >&2
    fail=$((fail + 1))
 fi
 
