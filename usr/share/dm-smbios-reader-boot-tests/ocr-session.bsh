@@ -155,9 +155,13 @@ run_check() {
             ## Record the PASS evidence for the per-check story card: the ACTUAL command + a bounded
             ## tail of its in-guest output (read back from the same .out file the failure path reads).
             ## Only when a story is being built (shot_dir set) -- a non-story lane skips the round-trip.
+            ## Bounded in BOTH dimensions: --lines 25 AND a byte cap -- a single pathological
+            ## no-newline line would otherwise defeat the line bound and either overflow the card
+            ## publisher's size limit (card silently dropped) or balloon the buffer. 60s timeout so a
+            ## hung VBoxService read cannot wedge the whole battery on an otherwise-passing check.
             local pass_out=''
             [ -n "${shot_dir:-}" ] \
-               && pass_out="$(gc_run "${session}" "tail --lines 25 /var/tmp/dmcheck-${num}.out 2>/dev/null" 2>/dev/null || true)"
+               && pass_out="$(gc_run "${session}" "tail --lines 25 /var/tmp/dmcheck-${num}.out 2>/dev/null | head --bytes 4000" 60 2>/dev/null || true)"
             release_check_set_evidence "${cmd}" "${pass_out}"
             return 0
          fi

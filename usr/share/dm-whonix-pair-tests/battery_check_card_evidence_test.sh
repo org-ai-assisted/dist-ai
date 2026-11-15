@@ -118,5 +118,30 @@ card="$(card_for 4)"
 assert "a fail card carries the failure reason" \
    grep --quiet --fixed-strings 'FAILED: networking (functional, rc=5)' "${card}"
 
+## --- the local-build verify card's OK-line extraction must NOT abort the whole run -------------
+## Canary: pre-fix, `build_matches="$(... | grep '^OK: ' | ...)"` ran under errexit+pipefail, so a
+## verify output with NO 'OK: ' line at column 0 (a single-package run, or a first OK line glued to
+## prior no-newline apt output) made grep exit 1 and ABORTED ws_func_verify_local_repo_installed
+## before its own ${build_matches:-...} fallback could card the match. Drive the REAL function with a
+## stubbed gc_run returning OK-less-but-successful output; it must return 0 and card the fallback.
+shot_dir="${work}/verify-no-ok"
+mkdir --parents -- "${shot_dir}"
+## Observe whether the REAL function aborts under production strict mode via a separate process
+## (verify_installed_abort_subject.sh): an errexit abort cannot be seen from inside this shell
+## (it would kill the test, or be masked by the errexit-off `if`/`||` context). The `if` captures
+## the child's real exit while the child keeps its own errexit live.
+verify_rc=0
+if bash "${here}/verify_installed_abort_subject.sh" "${tool}" "${shot_dir}"; then
+   verify_rc=0
+else
+   verify_rc=$?
+fi
+assert "an OK-less (single-package/glued) verify output does NOT abort the run" \
+   test "${verify_rc}" -eq 0
+verify_card="$(find "${shot_dir}" -maxdepth 1 -name '*local-build-installed*.card.txt' 2>/dev/null | head -n 1)"
+assert "the local-build card is still written (fallback), not lost to an abort" test -n "${verify_card}"
+assert "the card falls back gracefully when no per-package lines parsed" \
+   grep --quiet --fixed-strings 'per-package lines not captured' "${verify_card}"
+
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 [ "${fail}" -eq 0 ] || exit 1

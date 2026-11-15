@@ -1289,8 +1289,11 @@ ws_func_cli_exec() {
    if [ "${rc}" -eq 0 ]; then
       ## Record the PASS evidence (ACTUAL command + bounded output tail) for the story card BEFORE
       ## the temp is reclaimed -- symmetric with the failure check-log write below. Only in story mode.
+      ## Bounded in bytes as well as lines: a single huge no-newline line must not overflow the
+      ## card publisher limit. `|| true` absorbs the SIGPIPE `tail` takes when `head` closes early
+      ## (pipefail would otherwise make this &&-tail assignment fire errexit).
       local pass_out=''
-      [ -n "${shot_dir:-}" ] && pass_out="$(tail --lines 25 -- "${tmp}" 2>/dev/null)"
+      [ -n "${shot_dir:-}" ] && pass_out="$(tail --lines 25 -- "${tmp}" 2>/dev/null | head --bytes 4000 || true)"
       release_check_set_evidence "$3" "${pass_out}"
       safe-rm --force -- "${tmp}"; cli_capture_tmp=""
       printf '%s\n' "${me}: check $1 PASS"
@@ -1354,7 +1357,7 @@ ws_func_cli_upgrade_detached() {
       ## its detached output (read back from out_f, which the failure path below also reads).
       if [ -n "${shot_dir:-}" ]; then
          local pass_tail
-         pass_tail="$(gc_run "${role}" "tail --lines 25 -- ${out_f} 2>/dev/null" 60 2>/dev/null)" || pass_tail=''
+         pass_tail="$(gc_run "${role}" "tail --lines 25 -- ${out_f} 2>/dev/null | head --bytes 4000" 60 2>/dev/null)" || pass_tail=''
          release_check_set_evidence "${cmd}" "${pass_tail}"
       else
          release_check_set_evidence "${cmd}" ''
@@ -1483,7 +1486,7 @@ ws_cli_console_systemcheck() {
          ## systemcheck's own output -- not a bare "pass". Bounded read-back (the in-guest log is
          ## unbounded by design); best-effort, an unreadable log still cards the command + exit.
          local pass_tail
-         pass_tail="$(gc_run "${acct}" "tail --lines 25 ${log_file} 2>/dev/null || true" 120 2>/dev/null)" || pass_tail=''
+         pass_tail="$(gc_run "${acct}" "tail --lines 25 ${log_file} 2>/dev/null | head --bytes 4000 || true" 120 2>/dev/null)" || pass_tail=''
          story_card 59 check8-systemcheck "Release check 8: systemcheck (pass)" "$(printf '%s\n' \
             "PASS -- command: systemcheck --cli --ci (ran in a real getty logind session as '${acct}' and exited 0; a CLI edition has no logind user manager over guestcontrol, so it is driven via a genuine console login, not the headless battery)." \
             "" "--- systemcheck output (last lines) ---" "${pass_tail:-(no in-guest output captured over guestcontrol)}")"
@@ -1622,7 +1625,7 @@ ws_func_enable_local_repo() {
    ## only; the inline policy_check above is the authoritative gate.
    local repo_policy=''
    if [ -n "${shot_dir:-}" ]; then
-      repo_policy="$(gc_run user "apt-cache ${LOCAL_TEST_APT_OPTS} policy 2>/dev/null | grep --fixed-strings 'aptrepo_local/' | sort -u" 120 2>/dev/null || true)"
+      repo_policy="$(gc_run user "apt-cache ${LOCAL_TEST_APT_OPTS} policy 2>/dev/null | grep --fixed-strings 'aptrepo_local/' | sort -u | head --bytes 4000" 120 2>/dev/null || true)"
    fi
    story_card 55 local-repo-enabled "Local apt repo enabled in the Workstation" "$(printf '%s\n' \
       "The derivative 'local' apt sources (${chain}) plus the Debian base suites (${emitted_suites# }) are live. Check 3 upgrades offline from these file: sources, no Tor." \
@@ -1705,8 +1708,12 @@ GUEST
       || die "${SETUP_RC}" "${ws}: local payload verification failed -- the locally-built packages were not actually installed (INCONCLUSIVE, not a release FAIL)"
    ## Card carries the ACTUAL per-package installed-version matches (the 'OK: <pkg> = <ver>' lines the
    ## guest snippet printed), not a prose "matches the local build" claim -- bounded tail.
+   ## `|| true`: a plain `var="$(pipeline)"` runs the pipeline under errexit+pipefail, so an empty
+   ## grep (no 'OK: ' line -- a single-package run whose line was glued to prior no-newline output)
+   ## exits 1 and would ABORT the whole run here, never reaching the ${build_matches:-...} fallback
+   ## this card is designed to use. Byte-bound too, so one huge line cannot overflow the card.
    local build_matches
-   build_matches="$(printf '%s\n' "${verify_out}" | grep '^OK: ' | sort -u | tail --lines 40)"
+   build_matches="$(printf '%s\n' "${verify_out}" | grep '^OK: ' | sort -u | tail --lines 40 | head --bytes 4000 || true)"
    story_card 56 local-build-installed "Local build payloads installed" "$(printf '%s\n' \
       "Every locally-built package already installed (except the guest-additions installer and dkms packages, whose reinstall would tear down the test transport or rebuild kernel modules) was reinstalled from the local repo; each installed version matches the local build, so check 3's verdict applies to THIS build, not the image's same-version payload." \
       "" "--- installed version == local build (per package) ---" \
