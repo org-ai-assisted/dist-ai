@@ -108,6 +108,23 @@ release_check_cmd() {
 RELEASE_CHECK_FAILED_NUM=''
 RELEASE_CHECK_FAILED_REASON=''
 
+## Per-check PASS evidence for the story card: the ACTUAL command executed + a bounded tail of its
+## in-guest output. An executor sets them on success; the lane's story_fn reads them immediately
+## after (wp_story_check), so a PASS card shows the reviewer "what ran / what it produced" -- not a
+## bare "PASS". The command is the real one RUN (post lane-substitution: check 3 under --local-repo
+## records its apt-get full-upgrade, never a misattributed static RELEASE_CHECK_CMD). Cleared per
+## check in release_check_one so a routed/empty card never inherits a prior check's evidence.
+RELEASE_CHECK_LAST_CMD=''
+RELEASE_CHECK_LAST_OUTPUT=''
+
+## Record the PASS evidence. Called by the executor on success; OUTPUT is already bounded by the
+## caller (a short tail). Best-effort: an empty OUTPUT (a GA-less OCR pass with no exec channel)
+## leaves the card showing the command only, never a fabricated result.
+release_check_set_evidence() {
+   RELEASE_CHECK_LAST_CMD="${1:-}"
+   RELEASE_CHECK_LAST_OUTPUT="${2:-}"
+}
+
 ## Run ONE check. The visual cross-check (verify_fn) runs FIRST ("render-first"):
 ## the screen must look right BEFORE the functional probe, so a "process ok but the
 ## screen is blank/panic" divergence fails HERE, and the executor -- which owns the
@@ -132,6 +149,10 @@ release_check_one() {
    local retry_sleep="${RELEASE_CHECK_RETRY_SLEEP[${num}]:-0}"
    local desktop="${RELEASE_CHECK_DESKTOP[${num}]}"
    local desc="${RELEASE_CHECK_DESC[${num}]}"
+   ## Clear stale PASS evidence so this check's card shows ONLY this check (a failed/routed check
+   ## leaves them empty rather than inheriting the previous check's command + output).
+   RELEASE_CHECK_LAST_CMD=''
+   RELEASE_CHECK_LAST_OUTPUT=''
    ## render-first visual pre-check.
    if [ -n "${verify_fn}" ]; then
       if ! "${verify_fn}" "${num}" "${desktop}"; then

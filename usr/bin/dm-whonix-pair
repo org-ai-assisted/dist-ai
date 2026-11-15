@@ -208,6 +208,11 @@ GW_TORRC_PIN='/usr/local/etc/torrc.d/50_dm-whonix-pair-pin.conf'
 ## a tiny count means an UNDERCOUNTING (dropping) tap or Tor never reached a guard, not a trustworthy
 ## clean. A floor, not an exact expectation.
 GUARD_MIN_PKTS='10'
+## Canary measurements lifted out of canary_gateway_pcap (a function-local scope) so the gw-canary
+## story card can show the reviewer the ACTUAL counts, not a prose "guard traffic present" claim.
+CANARY_TOTAL=''
+CANARY_TOR_SEEN=''
+CANARY_PC_SEEN=''
 
 gw_started='false'
 ws_started='false'
@@ -249,7 +254,7 @@ die() {
 ## the leak flow interleaves GW and WS, so callers name it explicitly.
 story_snap() {
    local nn="$1" name="$2" snap_vm="${3:-${vm}}"
-   [ -n "${shot_dir}" ] || return 0
+   [ -n "${shot_dir:-}" ] || return 0
    "${GUESTCTL}" "${snap_vm}" shot "${shot_dir}/${nn}-${name}.png" >/dev/null 2>&1 || true
 }
 
@@ -258,7 +263,9 @@ story_snap() {
 ## OCR round-trip, no golden; the text is authoritative.
 story_card() {
    local nn="$1" name="$2" title="$3" body="$4" card
-   [ -n "${shot_dir}" ] || return 0
+   ## ${shot_dir:-}: the single card writer must be a safe no-op when shot_dir is unset (a sourced
+   ## unit test under `nounset`), not crash on an unbound variable.
+   [ -n "${shot_dir:-}" ] || return 0
    card="${shot_dir}/${nn}-${name}.card.txt"
    printf '%s\n' "[state card -- rendered text, not a screenshot]" "${title}" "" "${body}" \
       > "${card}" 2>/dev/null || true
@@ -273,7 +280,7 @@ story_card() {
 ## back to the single raw-JSON card. Carded identically on PASS and on FAIL/INCONCLUSIVE.
 story_battery_cards() {
    local base="$1" summary_name="$2" json="$3" records nn name b64title b64body
-   [ -n "${shot_dir}" ] || return 0
+   [ -n "${shot_dir:-}" ] || return 0
    records="$(printf '%s' "${json}" | "${BATTERY_STORY_CARDS}" "${base}" "${summary_name}")" \
       || records=''
    if [ -z "${records}" ]; then
@@ -304,11 +311,18 @@ wp_story_check() {
          body="ROUTED -- not run over this gate's transport: ${RELEASE_CHECK_SKIP_REASON[${num}]:-(routed elsewhere)}"
          ;;
       pass)
-         ## Do NOT assert a verbatim command: a check's in-guest command can be lane-substituted
-         ## (check 3 under --local-repo runs apt-get full-upgrade, not upgrade-nonroot), so naming
-         ## RELEASE_CHECK_CMD here would misattribute it. The published step stdout carries the
-         ## real command; the card title carries the check description.
+         ## Show the reviewer what actually ran and what it produced, not a bare "PASS" (a pass with
+         ## no evidence is a black box). The executor recorded the ACTUAL command executed
+         ## (RELEASE_CHECK_LAST_CMD -- post lane-substitution, so check 3 under --local-repo shows its
+         ## real apt-get full-upgrade, never a misattributed static RELEASE_CHECK_CMD) plus a bounded
+         ## tail of the check's own output (RELEASE_CHECK_LAST_OUTPUT). Empty output (a GA-less OCR
+         ## pass with no exec channel) -> command only; never fabricate a result.
          body="PASS"
+         [ -n "${RELEASE_CHECK_LAST_CMD:-}" ] && body="PASS -- command: ${RELEASE_CHECK_LAST_CMD}"
+         if [ -n "${RELEASE_CHECK_LAST_OUTPUT:-}" ]; then
+            body="$(printf '%s\n' "${body}" "" "--- check output (last lines) ---" \
+               "${RELEASE_CHECK_LAST_OUTPUT}")"
+         fi
          ;;
       fail)
          ## Carry the ACTUAL reason here, not a pointer to another card (a "see the other card"
@@ -1067,6 +1081,10 @@ canary_gateway_pcap() {
    [ -z "${pc_out}" ] || pc_seen="$(printf '%s\n' "${pc_out}" | wc -l)"
    [ "${pc_seen}" -ge 1 ] \
       || die "${SETUP_RC}" "canary: positive-control emit (clearnet user -> reserved guard ${GUARD_PC_IP4}:${GUARD_PC_PORT}) not observed (${pc_seen} pkt) -- capture blind to the deliberate canary or emit failed (inconclusive, not a pass)"
+   ## Publish the measured counts for the gw-canary story card (the reviewer's evidence).
+   CANARY_TOTAL="${total}"
+   CANARY_TOR_SEEN="${tor_seen}"
+   CANARY_PC_SEEN="${pc_seen}"
    printf '%s\n' "${me}: canary OK (GW emitted ${total} pkt(s); ${tor_seen} genuine Tor guard pkt(s), ${pc_seen} positive-control pkt(s); 0 probe-target, 0 non-guard clearnet)"
 }
 
@@ -1269,6 +1287,11 @@ ws_func_cli_exec() {
    ## right after, so there is no lingering disk growth).
    gc_run "$2" "$3" "$4" > "${tmp}" 2>&1 || rc=$?
    if [ "${rc}" -eq 0 ]; then
+      ## Record the PASS evidence (ACTUAL command + bounded output tail) for the story card BEFORE
+      ## the temp is reclaimed -- symmetric with the failure check-log write below. Only in story mode.
+      local pass_out=''
+      [ -n "${shot_dir:-}" ] && pass_out="$(tail --lines 25 -- "${tmp}" 2>/dev/null)"
+      release_check_set_evidence "$3" "${pass_out}"
       safe-rm --force -- "${tmp}"; cli_capture_tmp=""
       printf '%s\n' "${me}: check $1 PASS"
       return 0
@@ -1326,6 +1349,16 @@ ws_func_cli_upgrade_detached() {
       local how='upgrade-nonroot'
       [ -n "${local_repo}" ] && how='apt-get full-upgrade from local repo'
       printf '%s\n' "${me}: check 3 PASS (${how}, detached over guestcontrol)"
+      ## Record the PASS evidence for the story card: the ACTUAL command (the real ${cmd} run -- the
+      ## substituted apt-get full-upgrade under --local-repo, or upgrade-nonroot) + a bounded tail of
+      ## its detached output (read back from out_f, which the failure path below also reads).
+      if [ -n "${shot_dir:-}" ]; then
+         local pass_tail
+         pass_tail="$(gc_run "${role}" "tail --lines 25 -- ${out_f} 2>/dev/null" 60 2>/dev/null)" || pass_tail=''
+         release_check_set_evidence "${cmd}" "${pass_tail}"
+      else
+         release_check_set_evidence "${cmd}" ''
+      fi
       return 0
    fi
    local tail_out
@@ -1393,6 +1426,14 @@ ws_cli_console_systemcheck() {
       printf '%s' "${acct}" | "${GUESTCTL}" "${ws}" type-stdin >/dev/null 2>&1 || true
       "${GUESTCTL}" "${ws}" chord enter >/dev/null 2>&1 || true
       sleep 5
+      ## Story: snap the genuine console login on a CLEAN, settled prompt -- the banner plus the
+      ## `[host user ~]%` prompt (which already carries the logged-in 'user') is the evidence that
+      ## check 8 ran in a real getty session. Snap BEFORE the result-capture command is typed, so the
+      ## frame ends on a standard shell prompt (not a long wrapped one-liner) and is REPRODUCIBLE: the
+      ## per-attempt nonce paths below never appear on screen. The systemcheck result is carried by the
+      ## check-8 card + the .rc file, not this image. Last attempt's frame wins on overwrite --
+      ## best-effort, never changes the verdict.
+      story_snap 58 console-login "${ws}"
       ## Redirect systemcheck to a FILE in-guest (NOT piped into head): a pipe would SIGPIPE-kill
       ## systemcheck on a >1 MiB write, recording rc 141 instead of its real exit (a verbose-but-
       ## passing systemcheck would deterministically FAIL every retry). echo $? captures the REAL
@@ -1402,10 +1443,6 @@ ws_cli_console_systemcheck() {
       printf '%s' "whoami > ${who_file}; systemcheck --cli --ci > ${log_file} 2>&1; echo \$? > ${rc_file}" \
          | "${GUESTCTL}" "${ws}" type-stdin >/dev/null 2>&1 || true
       "${GUESTCTL}" "${ws}" chord enter >/dev/null 2>&1 || true
-      ## Story: the WS text console showing the real logind login + systemcheck running (the
-      ## evidence that check 8 ran in a genuine user session, not over guestcontrol). Last
-      ## attempt's frame wins on overwrite -- best-effort, never changes the verdict.
-      story_snap 58 console-login "${ws}"
       ## Poll (over guestcontrol -- a file read needs no user session) for the rc file; read it.
       deadline=$(( SECONDS + 420 ))
       sc_rc=""
@@ -1442,7 +1479,14 @@ ws_cli_console_systemcheck() {
       fi
       if [ "${sc_rc}" = '0' ]; then
          printf '%s\n' "${me}: check 8 PASS (systemcheck --cli --ci via real console login as ${acct})"
-         story_card 59 check8-systemcheck "Release check 8: systemcheck (pass)" "PASS -- systemcheck --cli --ci ran in a real getty logind session as '${acct}' and exited 0 (a CLI edition has no logind user manager over guestcontrol, so it is driven via a genuine console login, not the headless battery)."
+         ## Card carries the REAL evidence a reviewer needs -- the command, the exit, AND a tail of
+         ## systemcheck's own output -- not a bare "pass". Bounded read-back (the in-guest log is
+         ## unbounded by design); best-effort, an unreadable log still cards the command + exit.
+         local pass_tail
+         pass_tail="$(gc_run "${acct}" "tail --lines 25 ${log_file} 2>/dev/null || true" 120 2>/dev/null)" || pass_tail=''
+         story_card 59 check8-systemcheck "Release check 8: systemcheck (pass)" "$(printf '%s\n' \
+            "PASS -- command: systemcheck --cli --ci (ran in a real getty logind session as '${acct}' and exited 0; a CLI edition has no logind user manager over guestcontrol, so it is driven via a genuine console login, not the headless battery)." \
+            "" "--- systemcheck output (last lines) ---" "${pass_tail:-(no in-guest output captured over guestcontrol)}")"
          return 0
       fi
       ## A genuine non-zero result: retry across the just-booted transient window, else FAIL.
@@ -1573,7 +1617,17 @@ ws_func_enable_local_repo() {
    ## guest's own apt config.
    gc_run user "dsudo install -d -m 0755 ${LOCAL_TEST_SOURCES_DIR} && printf %s '${b64}' | base64 --decode | dsudo tee ${LOCAL_TEST_SOURCES_DIR}/local-apt-repo.sources >/dev/null && dsudo apt-get ${LOCAL_TEST_APT_OPTS} --quiet update${policy_check}" 600 \
       || die "${SETUP_RC}" "${ws}: could not enable the local apt sources in the WS (generate/write/update/policy failed) -- INCONCLUSIVE, not a release FAIL"
-   story_card 55 local-repo-enabled "Local apt repo enabled in the Workstation" "The derivative 'local' apt sources (${chain}) plus the Debian base suites (${emitted_suites# }) are live -- apt-cache policy shows each of: ${chain}. Check 3 upgrades offline from these file: sources, no Tor."
+   ## Evidence for the story card: the ACTUAL apt-cache policy origin lines for the local repo, so a
+   ## reviewer sees each member is live rather than reading a prose claim. Best-effort, story mode
+   ## only; the inline policy_check above is the authoritative gate.
+   local repo_policy=''
+   if [ -n "${shot_dir:-}" ]; then
+      repo_policy="$(gc_run user "apt-cache ${LOCAL_TEST_APT_OPTS} policy 2>/dev/null | grep --fixed-strings 'aptrepo_local/' | sort -u" 120 2>/dev/null || true)"
+   fi
+   story_card 55 local-repo-enabled "Local apt repo enabled in the Workstation" "$(printf '%s\n' \
+      "The derivative 'local' apt sources (${chain}) plus the Debian base suites (${emitted_suites# }) are live. Check 3 upgrades offline from these file: sources, no Tor." \
+      "" "--- apt-cache policy: local repo origins ---" \
+      "${repo_policy:-(policy lines not captured; the enable gate confirmed each member above)}")"
 }
 
 ## Verify the local build payloads were ACTUALLY installed, not merely AVAILABLE. apt-cache policy
@@ -1641,11 +1695,22 @@ for s in \$installed; do
   ## The two are the SAME installed version; a string '=' false-fails the whole lane INCONCLUSIVE.
   ## dpkg --compare-versions is epoch-correct and still fails a genuine mismatch (and an empty got).
   dpkg --compare-versions "\${got:-}" eq "\$v" || { echo "local payload NOT installed: \$n want \$v got \${got:-<none>}" >&2; exit 1; }
+  ## Per-package confirmation to stdout so the story card can SHOW each installed==built match,
+  ## not merely assert it (the reviewer's evidence).
+  echo "OK: \$n = \${got} (matches local build \$v)"
 done
 GUEST
-   gc_run user "${verify_cmd}" 600 \
+   local verify_out
+   verify_out="$(gc_run user "${verify_cmd}" 600)" \
       || die "${SETUP_RC}" "${ws}: local payload verification failed -- the locally-built packages were not actually installed (INCONCLUSIVE, not a release FAIL)"
-   story_card 56 local-build-installed "Local build payloads installed" "Every locally-built package already installed (except the guest-additions installer and dkms packages, whose reinstall would tear down the test transport or rebuild kernel modules) was reinstalled from the local repo and its installed version matches the local build, so check 3's verdict applies to THIS build, not the image's same-version payload."
+   ## Card carries the ACTUAL per-package installed-version matches (the 'OK: <pkg> = <ver>' lines the
+   ## guest snippet printed), not a prose "matches the local build" claim -- bounded tail.
+   local build_matches
+   build_matches="$(printf '%s\n' "${verify_out}" | grep '^OK: ' | sort -u | tail --lines 40)"
+   story_card 56 local-build-installed "Local build payloads installed" "$(printf '%s\n' \
+      "Every locally-built package already installed (except the guest-additions installer and dkms packages, whose reinstall would tear down the test transport or rebuild kernel modules) was reinstalled from the local repo; each installed version matches the local build, so check 3's verdict applies to THIS build, not the image's same-version payload." \
+      "" "--- installed version == local build (per package) ---" \
+      "${build_matches:-(per-package lines not captured; the verify gate confirmed each match above)}")"
 }
 
 ## Everything else runs faithfully headless: user/sysmaint boot-role (checks 1, 2), CLI login
@@ -1946,7 +2011,13 @@ main() {
    ## probe-target packets, with genuine Tor guard traffic + the deliberate positive-control
    ## packet both present (so the capture was not blind). Exact counts are on the canary line
    ## in the run log.
-   story_card 80 gw-canary "Gateway-NIC canary (external-NIC pcap)" "The Gateway's external-NIC trace showed 0 probe-target clearnet packets across every capture window, while carrying genuine Tor guard traffic and the deliberate positive-control packet -- proof the capture was live, not blind, and that nothing egressed to clearnet via the Gateway."
+   story_card 80 gw-canary "Gateway-NIC canary (external-NIC pcap)" "$(printf '%s\n' \
+      "The Gateway's external-NIC trace showed 0 probe-target clearnet packets and 0 non-guard clearnet packets across every capture window." \
+      "" "--- measured on the external-NIC pcap (${TCPDUMP##*/} -nr) ---" \
+      "  total packets captured  : ${CANARY_TOTAL:-?}" \
+      "  genuine Tor guard pkts  : ${CANARY_TOR_SEEN:-?} (>= ${GUARD_MIN_PKTS} liveness floor -- the capture was live, not blind)" \
+      "  positive-control pkts   : ${CANARY_PC_SEEN:-?} (the deliberate clearnet -> reserved-guard canary; proves the tap caught a known-good packet)" \
+      "" "Proof the capture was live, not blind, and that nothing egressed to clearnet via the Gateway.")"
 
    ## Story: the final leak verdict.
    story_card 90 leak-verdict "LEAK TEST PASS" "Workstation egresses ONLY via the Gateway's Tor: the full anon-leak-test battery was clean and the Gateway-NIC canary confirmed no clearnet probe-target egress."

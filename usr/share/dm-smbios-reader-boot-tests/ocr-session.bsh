@@ -152,6 +152,13 @@ run_check() {
       if [[ "${rc_str}" =~ ^[0-9]+$ ]]; then
          if [ "${rc_str}" = "0" ]; then
             printf '%s\n' "${me}: check ${num} PASS"
+            ## Record the PASS evidence for the per-check story card: the ACTUAL command + a bounded
+            ## tail of its in-guest output (read back from the same .out file the failure path reads).
+            ## Only when a story is being built (shot_dir set) -- a non-story lane skips the round-trip.
+            local pass_out=''
+            [ -n "${shot_dir:-}" ] \
+               && pass_out="$(gc_run "${session}" "tail --lines 25 /var/tmp/dmcheck-${num}.out 2>/dev/null" 2>/dev/null || true)"
+            release_check_set_evidence "${cmd}" "${pass_out}"
             return 0
          fi
          printf '%s\n' "${me}: check ${num} FAIL (rc=${rc_str})"
@@ -163,6 +170,8 @@ run_check() {
       text="$(gui_ocr)"
       if [[ "${text,,}" =~ dmchkpassmark ]]; then
          printf '%s\n' "${me}: check ${num} PASS"
+         ## OCR fallback (GA-less image): no exec channel to read the .out back -> command only.
+         release_check_set_evidence "${cmd}" ''
          return 0
       fi
       if [[ "${text,,}" =~ dmchkfailmark ]]; then
