@@ -49,6 +49,9 @@ trap cleanup EXIT
 mkdir --parents -- "${tmp}/aptrepo_local/whonix"             # flat build output
 mkdir --parents -- "${tmp}/laned/aptrepo_local/whonix"       # a laned build output
 mkdir --parents -- "${tmp}/cache-only/aptcache"              # expose side-effect, no repo
+mkdir --parents -- "${tmp}/kick-only/aptrepo_local/kicksecure" # slot holds only the OTHER deriv
+mkdir --parents -- "${tmp}/sub"                              # a repo_root for the traversal case
+mkdir --parents -- "${tmp}/evil/aptrepo_local/whonix"        # a '..' escape target outside ${tmp}/sub
 
 ## 1. LOCAL_APT_REPOSITORY_BASE overrides outright (slot + root ignored).
 got="$(LOCAL_APT_REPOSITORY_BASE=/custom/root dist_build_slot=ignored DM_SHARED_APT_REPO_ROOT="${tmp}" "${subject}" repo-path whonix 2>/dev/null || true)"
@@ -72,6 +75,24 @@ if [ "${got}" = "${tmp}/aptrepo_local/whonix" ]; then pass "slot dir with only a
 ## 5. No slot -> flat (does NOT invent a slot).
 got="$(DM_SHARED_APT_REPO_ROOT="${tmp}" "${subject}" repo-path whonix 2>/dev/null || true)"
 if [ "${got}" = "${tmp}/aptrepo_local/whonix" ]; then pass "no slot -> flat root"; else fail "wrong flat default (got '${got}')"; fi
+
+## 6. CANARY: slot holds ONLY the other derivative (kicksecure). repo-path whonix must NOT be
+## shadowed by it -> flat whonix; repo-path kicksecure -> the slotted kicksecure. The probe is
+## per-derivative. OLD (deriv-agnostic <slot>/aptrepo_local probe) returned the slotted whonix.
+got="$(DM_SHARED_APT_REPO_ROOT="${tmp}" dist_build_slot=kick-only "${subject}" repo-path whonix 2>/dev/null || true)"
+if [ "${got}" = "${tmp}/aptrepo_local/whonix" ]; then pass "slot holds only the other deriv -> flat for whonix"; else fail "other-deriv slot shadowed a flat whonix build (got '${got}')"; fi
+got="$(DM_SHARED_APT_REPO_ROOT="${tmp}" dist_build_slot=kick-only "${subject}" repo-path kicksecure 2>/dev/null || true)"
+if [ "${got}" = "${tmp}/kick-only/aptrepo_local/kicksecure" ]; then pass "same slot -> slotted for the deriv it holds"; else fail "slotted deriv not matched (got '${got}')"; fi
+
+## 7. CANARY: a '..' slot must not escape repo_root. Rejected -> flat (repo_root=${tmp}/sub),
+## never the ${tmp}/evil target. OLD (no segment check) concatenated and followed the escape.
+got="$(DM_SHARED_APT_REPO_ROOT="${tmp}/sub" dist_build_slot=../evil "${subject}" repo-path whonix 2>/dev/null || true)"
+if [ "${got}" = "${tmp}/sub/aptrepo_local/whonix" ]; then pass "traversal slot rejected -> flat (no repo_root escape)"; else fail "slot '..' escaped repo_root (got '${got}')"; fi
+
+## 8. CANARY: a non-absolute LOCAL_APT_REPOSITORY_BASE is rejected (dies, no stdout) rather
+## than rooting the share/mount at a relative or empty (stripped-newline) path. OLD printed it.
+got="$(LOCAL_APT_REPOSITORY_BASE=relative/path "${subject}" repo-path whonix 2>/dev/null || true)"
+if [ -z "${got}" ]; then pass "non-absolute LOCAL_APT_REPOSITORY_BASE rejected"; else fail "accepted a non-absolute base (got '${got}')"; fi
 
 printf '%s\n' "" "${pass_count} pass, ${fail_count} fail, 0 skip"
 [ "${fail_count}" -eq 0 ]
