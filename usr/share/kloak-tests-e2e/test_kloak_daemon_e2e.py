@@ -1291,10 +1291,15 @@ class KloakDaemonE2E(unittest.TestCase):
         baseline = len(_press_stamps())
         num = 40
         inj_mono = time.monotonic()
+        inject_ms = []
         for _ in range(num):
             self._uinput.write(ecodes.EV_KEY, key_a, 1)
             self._uinput.write(ecodes.EV_KEY, key_a, 0)
             self._uinput.syn()
+            ## Per-injection CLOCK_MONOTONIC ms (same clock as the scheduled wev
+            ## `time` stamps), for the per-event Bounded check below.
+            inject_ms.append(
+                int(time.clock_gettime(time.CLOCK_MONOTONIC) * 1000) & 0xffffffff)
             ## Space injections ~2 ms: 40 keys still land inside one max_delay
             ## window (80 ms << 200 ms) so they pile in the release queue and
             ## exercise the prev_release clamp, but the evdev client buffer does
@@ -1357,11 +1362,23 @@ class KloakDaemonE2E(unittest.TestCase):
                 'flood releases are NOT monotonically scheduled -- a later event '
                 'carries an earlier scheduled time (the prev_release_time clamp '
                 'is not enforced; events bunch/reorder under load): %r' % stamps)
-        ## Bounded: the whole burst fits in one max_delay window.
-        self.assertLessEqual(
-            max(stamps) - min(stamps), max_delay + 80,
-            'flood scheduled delays span more than max_delay (%d): %r'
-            % (max_delay, stamps))
+        ## Bounded: each release is scheduled within one max_delay of ITS OWN
+        ## injection. FIFO is preserved (asserted above), so stamps[i] pairs with
+        ## injection i. With the prev_release clamp stamp_i = max_{j<=i}(inject_j +
+        ## d_j) and inject_j <= inject_i, hence stamp_i - inject_i <= max_delay
+        ## structurally. Bounding PER EVENT (not the cross-event span) is what
+        ## keeps this robust to the deliberate ~2 ms injection spacing: a span
+        ## check additively includes the ~80 ms injection spread and would
+        ## red-flag a correct kloak. tol absorbs single-event read/schedule
+        ## latency (one event's worth, not the cumulative injection window).
+        tol = 80
+        for i, stamp in enumerate(stamps):
+            sched_delay = (stamp - inject_ms[i]) & 0xffffffff
+            self.assertLessEqual(
+                sched_delay, max_delay + tol,
+                'flood event %d scheduled %d ms after its own injection, exceeds '
+                'max_delay %d (+%d tol) -- scheduled delays grow unbounded under '
+                'load: stamps=%r' % (i, sched_delay, max_delay, tol, stamps))
 
     def test_apparmor_profiles_load(self):
         """The shipped AppArmor profiles must stay valid + loadable and the proxy
