@@ -7,16 +7,17 @@
 
 ## dm-shared-apt-repo shares a built apt repo from dm's shared repo base under
 ## /srv/derivative-maker. A laned build writes under /srv/derivative-maker/<slot>; a flat
-## build writes directly under /srv/derivative-maker. This READER must resolve repo_parent to
-## whatever lane the build ACTUALLY used -- it must NOT follow an ambient dist_build_slot to a
-## slot dir the build never populated (the flat-build + slotted-run 404 this guards).
-## LOCAL_APT_REPOSITORY_BASE overrides outright. The existence probe keys on
-## <slot>/aptrepo_local (only a real build creates it), so `expose`'s <slot>/aptcache
-## side-effect cannot fool it into picking an empty slot.
+## build writes directly under /srv/derivative-maker. This READER must resolve ONE share base
+## (repo-path, attach, expose, cache-path all agree on it) matching whatever lane the build
+## ACTUALLY used -- it must NOT follow an ambient dist_build_slot to a slot dir the build never
+## populated (the flat-build + slotted-run 404 this guards). LOCAL_APT_REPOSITORY_BASE overrides
+## outright. The existence probe keys on <slot>/aptrepo_local (only a real build creates it), so
+## `expose`'s <slot>/aptcache side-effect cannot fool it into picking an empty slot.
 ##
-## Drives the REAL script's `repo-path` end to end (exercises the full repo_parent selection:
-## ${repo_parent}/aptrepo_local/<deriv>); DM_SHARED_APT_REPO_ROOT relocates the repo root onto
-## a temp fixture tree so slot-vs-flat selection is tested with no root and no /srv writes.
+## Drives the REAL script's `repo-path` / `cache-path` end to end (exercises the full
+## repo_parent selection: ${repo_parent}/aptrepo_local/<deriv>); DM_SHARED_APT_REPO_ROOT
+## relocates the repo root onto a temp fixture tree so slot-vs-flat selection is tested with
+## no root and no /srv writes.
 
 set -o errexit
 set -o nounset
@@ -40,18 +41,20 @@ fail_count=0
 pass() { pass_count=$(( pass_count + 1 )); printf '%s\n' "PASS: $*"; }
 fail() { fail_count=$(( fail_count + 1 )); printf '%s\n' "FAIL: $*"; }
 
-## Fixture repo root: a flat repo, a populated laned repo, and a slot dir that holds ONLY
-## aptcache (the shape `expose` leaves behind when the build was actually flat).
+## Fixture repo root: a flat repo, a populated laned repo, a slot dir that holds ONLY aptcache
+## (the shape `expose` leaves behind when the build was actually flat), a slot dir carrying
+## only the OTHER derivative, and a slot dir whose NAME holds a disallowed byte.
 tmp="$(mktemp --directory)"
 # shellcheck disable=SC2317  # reached only via the EXIT trap
 cleanup() { safe-rm --recursive --force -- "${tmp}"; }
 trap cleanup EXIT
-mkdir --parents -- "${tmp}/aptrepo_local/whonix"             # flat build output
-mkdir --parents -- "${tmp}/laned/aptrepo_local/whonix"       # a laned build output
-mkdir --parents -- "${tmp}/cache-only/aptcache"              # expose side-effect, no repo
+mkdir --parents -- "${tmp}/aptrepo_local/whonix"               # flat build output
+mkdir --parents -- "${tmp}/laned/aptrepo_local/whonix"         # a laned build output
+mkdir --parents -- "${tmp}/cache-only/aptcache"                # expose side-effect, no repo
 mkdir --parents -- "${tmp}/kick-only/aptrepo_local/kicksecure" # slot holds only the OTHER deriv
-mkdir --parents -- "${tmp}/sub"                              # a repo_root for the traversal case
-mkdir --parents -- "${tmp}/evil/aptrepo_local/whonix"        # a '..' escape target outside ${tmp}/sub
+mkdir --parents -- "${tmp}/has space/aptrepo_local/whonix"     # slot name with a disallowed byte
+mkdir --parents -- "${tmp}/sub"                                # a repo_root for the traversal case
+mkdir --parents -- "${tmp}/evil/aptrepo_local/whonix"          # a '..' escape target outside ${tmp}/sub
 
 ## 1. LOCAL_APT_REPOSITORY_BASE overrides outright (slot + root ignored).
 got="$(LOCAL_APT_REPOSITORY_BASE=/custom/root dist_build_slot=ignored DM_SHARED_APT_REPO_ROOT="${tmp}" "${subject}" repo-path whonix 2>/dev/null || true)"
@@ -76,23 +79,38 @@ if [ "${got}" = "${tmp}/aptrepo_local/whonix" ]; then pass "slot dir with only a
 got="$(DM_SHARED_APT_REPO_ROOT="${tmp}" "${subject}" repo-path whonix 2>/dev/null || true)"
 if [ "${got}" = "${tmp}/aptrepo_local/whonix" ]; then pass "no slot -> flat root"; else fail "wrong flat default (got '${got}')"; fi
 
-## 6. CANARY: slot holds ONLY the other derivative (kicksecure). repo-path whonix must NOT be
-## shadowed by it -> flat whonix; repo-path kicksecure -> the slotted kicksecure. The probe is
-## per-derivative. OLD (deriv-agnostic <slot>/aptrepo_local probe) returned the slotted whonix.
-got="$(DM_SHARED_APT_REPO_ROOT="${tmp}" dist_build_slot=kick-only "${subject}" repo-path whonix 2>/dev/null || true)"
-if [ "${got}" = "${tmp}/aptrepo_local/whonix" ]; then pass "slot holds only the other deriv -> flat for whonix"; else fail "other-deriv slot shadowed a flat whonix build (got '${got}')"; fi
-got="$(DM_SHARED_APT_REPO_ROOT="${tmp}" dist_build_slot=kick-only "${subject}" repo-path kicksecure 2>/dev/null || true)"
-if [ "${got}" = "${tmp}/kick-only/aptrepo_local/kicksecure" ]; then pass "same slot -> slotted for the deriv it holds"; else fail "slotted deriv not matched (got '${got}')"; fi
+## 6. CANARY (single-share invariant): repo-path and cache-path MUST agree on ONE base. A slot
+## holding a built repo is chosen deriv-AGNOSTICALLY, so cache-path's aptcache sits beside the
+## repo under the SAME base and the single 'shared' vboxsf carries both. OLD (per-deriv probe)
+## picked the base PER derivative, so a slot holding only kicksecure sent repo-path whonix to
+## flat while cache-path stayed slotted -> the share split, guest aptcache 404. The repo base
+## (strip trailing /aptrepo_local/<deriv>) must equal the cache base (strip trailing /aptcache).
+repo_whonix="$(DM_SHARED_APT_REPO_ROOT="${tmp}" dist_build_slot=kick-only "${subject}" repo-path whonix 2>/dev/null || true)"
+cache_path="$(DM_SHARED_APT_REPO_ROOT="${tmp}" dist_build_slot=kick-only "${subject}" cache-path 2>/dev/null || true)"
+if [ "${repo_whonix%/aptrepo_local/whonix}" = "${cache_path%/aptcache}" ]; then pass "repo-path and cache-path share one base (single-share invariant)"; else fail "share split: repo base '${repo_whonix%/aptrepo_local/whonix}' != cache base '${cache_path%/aptcache}'"; fi
 
-## 7. CANARY: a '..' slot must not escape repo_root. Rejected -> flat (repo_root=${tmp}/sub),
-## never the ${tmp}/evil target. OLD (no segment check) concatenated and followed the escape.
+## 7. CANARY: a dist_build_slot with a disallowed byte (here a space) is REJECTED -> flat, never
+## concatenated into a shared/mounted path. OLD (segment check that only rejected ''/./../ and
+## '*/*') ACCEPTED 'has space' and shared "${tmp}/has space" -> this FAILS on old, passes on new.
+got="$(DM_SHARED_APT_REPO_ROOT="${tmp}" dist_build_slot='has space' "${subject}" repo-path whonix 2>/dev/null || true)"
+if [ "${got}" = "${tmp}/aptrepo_local/whonix" ]; then pass "slot with a disallowed byte rejected -> flat"; else fail "slot charset not enforced (got '${got}')"; fi
+
+## 8. CANARY: a '..' slot must not escape repo_root. Rejected -> flat (repo_root=${tmp}/sub),
+## never the ${tmp}/evil target. A no-segment-check build concatenated and followed the escape.
 got="$(DM_SHARED_APT_REPO_ROOT="${tmp}/sub" dist_build_slot=../evil "${subject}" repo-path whonix 2>/dev/null || true)"
 if [ "${got}" = "${tmp}/sub/aptrepo_local/whonix" ]; then pass "traversal slot rejected -> flat (no repo_root escape)"; else fail "slot '..' escaped repo_root (got '${got}')"; fi
 
-## 8. CANARY: a non-absolute LOCAL_APT_REPOSITORY_BASE is rejected (dies, no stdout) rather
-## than rooting the share/mount at a relative or empty (stripped-newline) path. OLD printed it.
+## 9. CANARY: a non-absolute LOCAL_APT_REPOSITORY_BASE is rejected (dies, no stdout) rather than
+## rooting the share/mount at a relative path.
 got="$(LOCAL_APT_REPOSITORY_BASE=relative/path "${subject}" repo-path whonix 2>/dev/null || true)"
 if [ -z "${got}" ]; then pass "non-absolute LOCAL_APT_REPOSITORY_BASE rejected"; else fail "accepted a non-absolute base (got '${got}')"; fi
+
+## 10. CANARY: a LOCAL_APT_REPOSITORY_BASE carrying whitespace is rejected (dies, no stdout). An
+## embedded newline would survive command substitution mid-string and a space would split an
+## unquoted mount path; dm forbids whitespace in this base too. OLD (absolute check only)
+## ACCEPTED '/a b' and printed it -> this FAILS on old, passes on new.
+got="$(LOCAL_APT_REPOSITORY_BASE='/a b' "${subject}" repo-path whonix 2>/dev/null || true)"
+if [ -z "${got}" ]; then pass "whitespace LOCAL_APT_REPOSITORY_BASE rejected"; else fail "accepted a whitespace base (got '${got}')"; fi
 
 printf '%s\n' "" "${pass_count} pass, ${fail_count} fail, 0 skip"
 [ "${fail_count}" -eq 0 ]

@@ -49,25 +49,26 @@ VBOXMANAGE="${VBOXMANAGE:-VBoxManage}"
 ## local_apt_repository_base), slot-aware like the build dir.
 ##
 ## resolve_repo_parent reads an EXISTING build's repo, so it MUST match whatever lane that
-## build used and must NOT invent a slot a flat build never created. Resolution:
+## build used and must NOT invent a slot a flat build never created. It returns ONE share
+## base that holds BOTH derivatives plus aptcache -- the SAME base repo-path, attach, expose
+## and cache-path all use, so a single run never reports one tree and shares another.
+## Resolution:
 ##   - LOCAL_APT_REPOSITORY_BASE set -> use it verbatim (a caller that already pinned the
 ##     base, e.g. a CI build that kept the repo under binary_build_folder_dist; the
 ##     orchestrator threads the resolved base down this way to attach/expose/cache-path).
-##     Must be ABSOLUTE -- a relative/blank value (command substitution strips a stray
-##     newline to empty) would otherwise yield a '/aptcache'-rooted mount.
+##     Must be ABSOLUTE and whitespace-free: a relative value, or a stray newline command
+##     substitution would strip, would otherwise root a (sudo) mount at '/aptcache' or an
+##     unintended tree (derivative-maker forbids whitespace in this base too, 05_load-config).
 ##   - else, under repo_root (/srv/derivative-maker; DM_SHARED_APT_REPO_ROOT overrides for
-##     tests): prefer the slotted base <root>/<slot> ONLY when it holds the BUILT repo being
-##     asked for -- <slot>/aptrepo_local/<deriv> when a derivative is known, else
-##     <slot>/aptrepo_local -- otherwise fall back to flat <root>.
-## Keying on the aptrepo_local[/<deriv>] subtree, NOT the bare <slot> dir, matters twice:
-## `expose` mkdir's <slot>/aptcache as a side effect (bare slot dir present, no repo), and a
-## stale/cross-lane slot holding only the OTHER derivative must not shadow a flat build of
-## the one requested. So an ambient dist_build_slot left from a different lane (e.g. a
-## session slug) degrades to flat instead of pointing the share at a slot the build never
-## populated (the flat-build + slotted-run 404). The slot comes from the trusted
-## env/command line (same as dm's own --build-slot); a value that is not a single path
-## segment ('..', '/', '.') would escape repo_root, so it is rejected (-> flat), never
-## concatenated into a shared/mounted path.
+##     tests): prefer the slotted base <root>/<slot> ONLY when it holds a BUILT repo (an
+##     aptrepo_local subtree), else fall back to flat <root>. Keying on <slot>/aptrepo_local,
+##     NOT the bare <slot> dir, matters: `expose` mkdir's <slot>/aptcache as a side effect,
+##     so the bare slot dir can exist with no repo. A requested derivative ABSENT from the
+##     chosen base is caught loud by do_prepare's 'repo not found', never silently mis-shared.
+## An ambient dist_build_slot left from a different lane (e.g. a session slug) with no
+## populated slot dir degrades to flat (the flat-build + slotted-run 404 this fixes). The
+## slot is trusted (same as dm's own --build-slot) but restricted to one safe path segment
+## so it cannot traverse or escape repo_root into an attacker-writable path.
 repo_root="${DM_SHARED_APT_REPO_ROOT:-/srv/derivative-maker}"
 
 die() {
@@ -75,10 +76,15 @@ die() {
    exit "$1"
 }
 
-## A forwarded slot must be exactly ONE path segment under repo_root.
+## A forwarded slot must be ONE safe path segment under repo_root: a strict allowlist rejects
+## '', '.', '..' and any character outside [A-Za-z0-9._-] -- so '/', whitespace (incl. a
+## newline command substitution would strip) and other traversal/escape bytes are refused.
 slot_is_single_segment() {
    case "${1}" in
-      ''|.|..|*/*)
+      ''|.|..)
+         return 1
+         ;;
+      *[!A-Za-z0-9._-]*)
          return 1
          ;;
       *)
@@ -88,27 +94,24 @@ slot_is_single_segment() {
 }
 
 resolve_repo_parent() {
-   local deriv="${1:-}" slot probe
    if [ -n "${LOCAL_APT_REPOSITORY_BASE:-}" ]; then
       case "${LOCAL_APT_REPOSITORY_BASE}" in
+         *[[:space:]]*)
+            die 1 "LOCAL_APT_REPOSITORY_BASE must not contain whitespace, got: '${LOCAL_APT_REPOSITORY_BASE}'"
+            ;;
          /*)
             printf '%s' "${LOCAL_APT_REPOSITORY_BASE}"
             return 0
             ;;
+         *)
+            die 1 "LOCAL_APT_REPOSITORY_BASE must be an absolute path, got: '${LOCAL_APT_REPOSITORY_BASE}'"
+            ;;
       esac
-      die 1 "LOCAL_APT_REPOSITORY_BASE must be an absolute path, got: '${LOCAL_APT_REPOSITORY_BASE}'"
    fi
-   slot="${dist_build_slot:-}"
-   if [ -n "${slot}" ] && slot_is_single_segment "${slot}"; then
-      if [ -n "${deriv}" ]; then
-         probe="${repo_root}/${slot}/aptrepo_local/${deriv}"
-      else
-         probe="${repo_root}/${slot}/aptrepo_local"
-      fi
-      if [ -d "${probe}" ]; then
-         printf '%s' "${repo_root}/${slot}"
-         return 0
-      fi
+   if [ -n "${dist_build_slot:-}" ] && slot_is_single_segment "${dist_build_slot}" \
+      && [ -d "${repo_root}/${dist_build_slot}/aptrepo_local" ]; then
+      printf '%s' "${repo_root}/${dist_build_slot}"
+      return 0
    fi
    printf '%s' "${repo_root}"
 }
@@ -150,7 +153,7 @@ check_derivative() {
 
 ## Per-derivative: resolve the base for THIS derivative (so a slot holding only the other
 ## derivative does not shadow a flat build of this one), then its aptrepo_local/<deriv> dir.
-repo_dir_for() { printf '%s' "$(resolve_repo_parent "${1}")/aptrepo_local/${1}"; }
+repo_dir_for() { printf '%s' "${repo_parent}/aptrepo_local/${1}"; }
 
 ## Expose the local Debian mirror under the shared tree (read-only bind-mount) so the guest reaches
 ## it at ${guest_mount}/aptcache via the existing 'shared' vboxsf. Idempotent (mountpoint-guarded)
