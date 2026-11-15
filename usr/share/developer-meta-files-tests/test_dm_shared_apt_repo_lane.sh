@@ -95,8 +95,10 @@ cache_path="$(DM_SHARED_APT_REPO_ROOT="${tmp}" dist_build_slot=kick-only "${subj
 repo_base="${repo_whonix%/aptrepo_local/whonix}"
 cache_base="${cache_path%/aptcache}"
 ## Both outputs must actually carry their suffix (strip changed the string) before comparing --
-## else two failed (empty) commands would strip to '' == '' and PASS vacuously.
-if [ "${repo_whonix}" != "${repo_base}" ] && [ "${cache_path}" != "${cache_base}" ] && [ -n "${repo_base}" ] && [ "${repo_base}" = "${cache_base}" ]; then pass "repo-path and cache-path share one base (single-share invariant)"; else fail "share split or invalid path: repo '${repo_whonix}' cache '${cache_path}'"; fi
+## else two failed (empty) commands would strip to '' == '' and PASS vacuously. Pin the shared
+## base to the expected kick-only slot too: agreement alone passes two WRONG-but-equal bases (both
+## fell to the flat root), which this slot fixture must reject.
+if [ "${repo_whonix}" != "${repo_base}" ] && [ "${cache_path}" != "${cache_base}" ] && [ -n "${repo_base}" ] && [ "${repo_base}" = "${cache_base}" ] && [ "${repo_base}" = "${tmp}/kick-only" ]; then pass "repo-path and cache-path share the expected kick-only base (single-share invariant)"; else fail "share split or invalid path: repo '${repo_whonix}' cache '${cache_path}'"; fi
 
 ## 7. CANARY: a dist_build_slot with a disallowed byte (here a space) is REJECTED -> flat, never
 ## concatenated into a shared/mounted path. OLD (segment check that only rejected ''/./../ and
