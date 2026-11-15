@@ -224,7 +224,7 @@ def run():
         check('UTF-16-BOM CSS url() raster is still integrity-checked (page-scoped)',
               any('bg.png' in f for f in fails), repr(fails))
 
-    # check_image_format: a CONTENT raster reference must be avif; og:image /
+    # check_image_format: a CONTENT raster reference must be avif or webp; og:image /
     # favicon may stay PNG; the static allowlist exempts a basename.
     _page = ('<!doctype html><html><head><title>t</title></head>'
              '<body>%s</body></html>')
@@ -234,14 +234,14 @@ def run():
         check_site.check_image_format(root, failures)
         return failures
 
-    # 8. content .png/.webp flagged; .avif passes (the both-way canary).
+    # 8. content .png flagged (must convert); .webp + .avif both pass -- keep-smaller
+    # emits whichever output is smaller per image, so either is a valid converted form.
     with tempfile.TemporaryDirectory() as root:
         _write(root, 'index.html', _page % '<img src="/demo.png">')
         check('content .png flagged',
               any('demo.png' in f for f in _fmt_failures(root)))
         _write(root, 'index.html', _page % '<img src="/demo.webp">')
-        check('content .webp flagged',
-              any('demo.webp' in f for f in _fmt_failures(root)))
+        check('content .webp passes', _fmt_failures(root) == [])
         _write(root, 'index.html', _page % '<img src="/demo.avif">')
         check('content .avif passes', _fmt_failures(root) == [])
 
