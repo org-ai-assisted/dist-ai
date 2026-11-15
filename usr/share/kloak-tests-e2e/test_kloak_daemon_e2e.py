@@ -63,6 +63,7 @@ user if absent, drives uinput, and runs a compositor. Authorized skip (euid !=
 unit-CI container reports the lane SKIP, never a false pass or a hard failure.
 """
 
+import glob
 import os
 import re
 import shutil
@@ -296,6 +297,42 @@ class KloakDaemonE2E(unittest.TestCase):
     def _read(path):
         with open(path, encoding='utf-8', errors='replace') as handle:
             return handle.read()
+
+    @staticmethod
+    def _proc_state_diag():
+        ## Every live kloak/kloakwl process with its scheduler state and blocking
+        ## point. The WCHAN is the discriminator: a healthy daemon sleeps in
+        ## poll_schedule_timeout; a #50 backpressure stall BLOCKS in pipe_write
+        ## (also state S -- so wchan, not state, tells them apart); a partial-frame
+        ## SPIN shows state R with climbing utime. Separates a real daemon fault
+        ## from a healthy-but-starved compositor/observation path.
+        lines = []
+        for comm_path in sorted(glob.glob('/proc/[0-9]*/comm')):
+            try:
+                with open(comm_path, encoding='utf-8') as handle:
+                    comm = handle.read().strip()
+            except OSError:
+                continue
+            if comm not in ('kloak', 'kloakwl'):
+                continue
+            pid = comm_path.split('/')[2]
+            state = wchan = '?'
+            utime = stime = '?'
+            try:
+                with open('/proc/%s/stat' % pid, encoding='utf-8') as handle:
+                    ## Fields after the (comm) blob: state=f0, utime=f11, stime=f12.
+                    fields = handle.read().rsplit(')', 1)[1].split()
+                state, utime, stime = fields[0], fields[11], fields[12]
+            except (OSError, IndexError):
+                pass
+            try:
+                with open('/proc/%s/wchan' % pid, encoding='utf-8') as handle:
+                    wchan = handle.read().strip() or '0'
+            except OSError:
+                pass
+            lines.append('pid=%s comm=%s state=%s wchan=%s utime=%s stime=%s'
+                         % (pid, comm, state, wchan, utime, stime))
+        return '\n'.join(lines) if lines else '(no kloak/kloakwl processes)'
 
     def _start_wev(self):
         ## A focused Wayland client (wev) that logs every seat event with its
@@ -1179,6 +1216,57 @@ class KloakDaemonE2E(unittest.TestCase):
                     stamps.append(int(match.group(1)) & 0xffffffff)
             return stamps
 
+        ## Prove the FULL kloak path -- grab + release scheduler + kloakwl re-emit +
+        ## delivery to THIS focused wev -- is live BEFORE the burst, not merely that
+        ## "a key round-tripped". A key injected before kloak has EVIOCGRAB'd the
+        ## device passes through RAW and arrives ~immediately, so a bare round-trip
+        ## is satisfied PRE-grab; the burst then races grab/re-emit setup and the
+        ## whole burst is swallowed (observed: got 0 with both daemons idle in
+        ## poll() at zero CPU -- events never reached a grabbed kloak). Only kloak's
+        ## scheduler DELAYS an event, so gate on a round-trip whose REAL wall-clock
+        ## delay is a clear fraction of max_delay: raw passthrough cannot produce
+        ## that, a grabbed+live path reliably does. The one-at-a-time delay lanes do
+        ## not need this (per-event arrival-gating absorbs the grab latency; see
+        ## _measure_delays); the burst, which cannot be arrival-gated, does.
+        seen = len(_press_stamps())
+        warmed_up = False
+        warm_deadline = time.monotonic() + 25
+        min_live_delay = max(max_delay // 2, 1) / 1000.0
+        while time.monotonic() < warm_deadline and not warmed_up:
+            inj = time.monotonic()
+            self._uinput.write(ecodes.EV_KEY, key_a, 1)
+            self._uinput.write(ecodes.EV_KEY, key_a, 0)
+            self._uinput.syn()
+            probe_deadline = inj + (max_delay + 500) / 1000.0
+            while time.monotonic() < probe_deadline:
+                if len(_press_stamps()) > seen:
+                    ## A delayed arrival can ONLY come from kloak's scheduler;
+                    ## detection lag is one poll tick (<=4 ms) << the threshold.
+                    if time.monotonic() - inj >= min_live_delay:
+                        warmed_up = True
+                    seen = len(_press_stamps())
+                    break
+                time.sleep(0.004)
+        if not warmed_up:
+            self.fail('kloak scheduler path never proved live before the flood '
+                      '(no warmup key arrived delayed >=%d ms in 25s -- kloak '
+                      'likely never grabbed the device, or re-emit is not reaching '
+                      'this client):\nproc state:\n%s\nwev:\n%s'
+                      % (max_delay // 2, self._proc_state_diag(),
+                         self._read(wev_log_path)))
+        ## Drain every warmup release until the stream goes quiet (a warmup event
+        ## can be scheduled up to max_delay out, and a slow grab may have queued
+        ## several), so none counts toward the measured baseline.
+        quiet_window = (max_delay + 400) / 1000.0
+        quiet_deadline = time.monotonic() + quiet_window
+        last_count = len(_press_stamps())
+        while time.monotonic() < quiet_deadline:
+            time.sleep(0.05)
+            cur_count = len(_press_stamps())
+            if cur_count != last_count:
+                last_count = cur_count
+                quiet_deadline = time.monotonic() + quiet_window
+
         baseline = len(_press_stamps())
         num = 40
         inj_mono = time.monotonic()
@@ -1186,18 +1274,61 @@ class KloakDaemonE2E(unittest.TestCase):
             self._uinput.write(ecodes.EV_KEY, key_a, 1)
             self._uinput.write(ecodes.EV_KEY, key_a, 0)
             self._uinput.syn()
+            ## Space injections ~2 ms: 40 keys still land inside one max_delay
+            ## window (80 ms << 200 ms) so they pile in the release queue and
+            ## exercise the prev_release clamp, but the evdev client buffer does
+            ## not overflow between kloak reads (a tight 160-event blast can
+            ## SYN_DROPPED the batch -- lost before kloak schedules anything).
+            time.sleep(0.002)
         ## Drain: the last queued event can be scheduled up to max_delay out.
+        ## Snapshot daemon state WHILE the burst should be draining (~max_delay
+        ## after injection): a #50 stall (blocking pipe write / partial-frame spin)
+        ## is LIVE then but has resolved by the final assertion 3s later. A healthy
+        ## path shows wchan poll_schedule_timeout; a stall shows wchan pipe_write
+        ## (state S) or state R with climbing CPU.
         deadline = inj_mono + (max_delay + 3000) / 1000.0
+        stall_snapshot = ''
+        stall_at = inj_mono + (max_delay + 200) / 1000.0
         while time.monotonic() < deadline:
+            if (not stall_snapshot and time.monotonic() >= stall_at
+                    and len(_press_stamps()) - baseline < num):
+                stall_snapshot = self._proc_state_diag()
             if len(_press_stamps()) - baseline >= num:
                 break
             time.sleep(0.01)
         stamps = _press_stamps()[baseline:]
+        kloak_rc = proc.poll()
+        proc_diag = self._proc_state_diag()
+
+        def _kb_focus_state(log):
+            ## Last wl_keyboard enter/leave == current keyboard focus.
+            state = None
+            for line in log.splitlines():
+                if 'wl_keyboard' not in line:
+                    continue
+                if 'enter' in line:
+                    state = 'enter'
+                elif 'leave' in line:
+                    state = 'leave'
+            return state
+        wev_census = []
+        for p in sorted(glob.glob(os.path.join(self._work, 'wev-*.log'))):
+            log = self._read(p)
+            enters = log.count('wl_keyboard] enter')
+            leaves = log.count('wl_keyboard] leave')
+            mark = ' <-THIS' if p == wev_log_path else ''
+            wev_census.append('%s sz=%d kb_enter=%d kb_leave=%d last_kb=%s%s'
+                              % (os.path.basename(p), len(log), enters, leaves,
+                                 _kb_focus_state(log), mark))
+        focus_diag = '\n'.join(wev_census)
         self.assertEqual(
             len(stamps), num,
             'expected exactly %d flood releases, got %d (dropped or duplicated '
-            'under load):\nwev:\n%s'
-            % (num, len(stamps), self._read(wev_log_path)))
+            'under load); kloak exit=%r (None=alive):\nmid-burst proc state:\n%s\n'
+            'final proc state:\n%s\nwev census:\n%s\nkloak log:\n%s\nwev:\n%s'
+            % (num, len(stamps), kloak_rc, stall_snapshot or '(burst drained '
+               'before the mid-burst sample)', proc_diag, focus_diag,
+               self._read(log_path), self._read(wev_log_path)))
         ## FIFO + clamp: scheduled stamps non-decreasing in arrival order.
         for earlier, later in zip(stamps, stamps[1:]):
             self.assertGreaterEqual(
