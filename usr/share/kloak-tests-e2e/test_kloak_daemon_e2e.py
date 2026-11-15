@@ -100,6 +100,30 @@ def _u32_delay(stamp, inject):
     return delta
 
 
+def _delay_bound_error(sched_delay, max_delay, tol, rounding_tol):
+    """Reason string if a SIGNED scheduled delay (ms, from _u32_delay) is outside
+    the band [-rounding_tol, max_delay + tol], else None.
+
+    - upper (max_delay + tol): catches a schedule growing past max_delay
+      (unbounded release times under load); tol absorbs one event's read/schedule
+      latency.
+    - lower (-rounding_tol): catches a release scheduled BEFORE its injection (a
+      negative-delay scheduler bug). _u32_delay reads the masked delta as SIGNED,
+      so a genuine large negative returns e.g. -1000 instead of the old wrapped
+      ~2**32 -- without this floor it would read as a small value and slip through
+      as a false GREEN. rounding_tol only absorbs sub-ms clock-read/truncation
+      slack, NOT a real negative schedule."""
+    if sched_delay > max_delay + tol:
+        return ('scheduled %d ms after injection, exceeds max_delay %d (+%d tol) '
+                '-- scheduled delays grow unbounded'
+                % (sched_delay, max_delay, tol))
+    if sched_delay < -rounding_tol:
+        return ('scheduled %d ms BEFORE its injection (negative delay beyond the '
+                '%d ms rounding tolerance) -- released before it was injected'
+                % (sched_delay, rounding_tol))
+    return None
+
+
 def _kloakwl_procs_owned_by_user():
     ## pids of running 'kloakwl' processes whose owner is the kloakwl user --
     ## i.e. the sandbox child AFTER it dropped privileges.
@@ -145,6 +169,38 @@ class U32DelayTest(unittest.TestCase):
     def test_genuine_unbounded_delay_still_large(self):
         ## A real runaway schedule stays a large positive the bound can catch.
         self.assertEqual(_u32_delay(6000, 1000), 5000)
+
+
+class DelayBoundTest(unittest.TestCase):
+    """Pure regression for _delay_bound_error (no root/compositor needed). The
+    signed _u32_delay read passes a tiny rounding-negative as ~0, so the band
+    must still REJECT a genuine large negative (release scheduled before its
+    injection) -- the false GREEN the signed read opened -- and an over-max
+    delay."""
+
+    MAXD = 200
+    TOL = 80
+    RTOL = 20
+
+    def _err(self, delay):
+        return _delay_bound_error(delay, self.MAXD, self.TOL, self.RTOL)
+
+    def test_in_band_ok(self):
+        self.assertIsNone(self._err(0))
+        self.assertIsNone(self._err(self.MAXD))
+        self.assertIsNone(self._err(self.MAXD + self.TOL))
+
+    def test_small_rounding_negative_ok(self):
+        self.assertIsNone(self._err(-1))
+        self.assertIsNone(self._err(-self.RTOL))
+
+    def test_large_negative_rejected(self):
+        ## Scheduled well before injection -- must not pass as a small signed value.
+        self.assertIsNotNone(self._err(-1000))
+        self.assertIsNotNone(self._err(-(self.RTOL + 1)))
+
+    def test_over_max_rejected(self):
+        self.assertIsNotNone(self._err(self.MAXD + self.TOL + 1))
 
 
 class KloakDaemonE2E(unittest.TestCase):
@@ -538,11 +594,11 @@ class KloakDaemonE2E(unittest.TestCase):
         ## Shared assertions for the three delay lanes.
         ## stamp bound + spread: the SCHEDULE is bounded by max_delay and random.
         tol = 80
+        rounding_tol = 20
         for delay in stamp_delays:
-            self.assertLessEqual(
-                delay, max_delay + tol,
-                'released %s scheduled delay %d ms exceeds max_delay %d (+%d '
-                'tol); delays=%r' % (what, delay, max_delay, tol, stamp_delays))
+            err = _delay_bound_error(delay, max_delay, tol, rounding_tol)
+            self.assertIsNone(
+                err, 'released %s %s; delays=%r' % (what, err, stamp_delays))
         self.assertGreater(
             max(stamp_delays) - min(stamp_delays), max_delay // 4,
             '%s scheduled delays show no spread (jitter not randomised): %r'
@@ -1411,13 +1467,12 @@ class KloakDaemonE2E(unittest.TestCase):
         ## red-flag a correct kloak. tol absorbs single-event read/schedule
         ## latency (one event's worth, not the cumulative injection window).
         tol = 80
+        rounding_tol = 20
         for i, stamp in enumerate(stamps):
             sched_delay = _u32_delay(stamp, inject_ms[i])
-            self.assertLessEqual(
-                sched_delay, max_delay + tol,
-                'flood event %d scheduled %d ms after its own injection, exceeds '
-                'max_delay %d (+%d tol) -- scheduled delays grow unbounded under '
-                'load: stamps=%r' % (i, sched_delay, max_delay, tol, stamps))
+            err = _delay_bound_error(sched_delay, max_delay, tol, rounding_tol)
+            self.assertIsNone(
+                err, 'flood event %d %s: stamps=%r' % (i, err, stamps))
 
     def test_apparmor_profiles_load(self):
         """The shipped AppArmor profiles must stay valid + loadable and the proxy
