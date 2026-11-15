@@ -115,8 +115,26 @@ for hc_spec in debian:trixie debian:trixie-updates debian-security:trixie-securi
    printf '%s\n' "SHA256:" " ${hc_mh} 123 main/binary-amd64/Packages" \
       > "${host_cache_fixture}/${hc_nick}/dists/${hc_suite}/InRelease"
 done
+## Per-member derivative local-repo fixtures the stub's 'repo-path' resolves to. The enable reads
+## component residency from the HOST repo path (the guest mount is unreadable here): kicksecure is a
+## full base repo (main+contrib+non-free populated); whonix carries ONLY main, with 0-byte contrib/
+## non-free Packages (reprepro's configured-but-unpopulated components) -- those MUST be dropped or
+## apt hard-fails fetching the empty index over the file: + vboxsf path.
+member_repo_fixture="$(mktemp --directory)"
+for mr_comp in main contrib non-free; do
+   mkdir --parents -- "${member_repo_fixture}/kicksecure/dists/local/${mr_comp}/binary-amd64"
+   printf '%s' 'xxxx' > "${member_repo_fixture}/kicksecure/dists/local/${mr_comp}/binary-amd64/Packages"
+done
+for mr_comp in main contrib non-free; do
+   mkdir --parents -- "${member_repo_fixture}/whonix/dists/local/${mr_comp}/binary-amd64"
+   if [ "${mr_comp}" = 'main' ]; then
+      printf '%s' 'xxxx' > "${member_repo_fixture}/whonix/dists/local/${mr_comp}/binary-amd64/Packages"
+   else
+      true > "${member_repo_fixture}/whonix/dists/local/${mr_comp}/binary-amd64/Packages"
+   fi
+done
 # shellcheck disable=SC2317  ## runs via the EXIT trap
-cleanup() { safe-rm --recursive --force -- "${rec_attach}" "${rec_exec}" "${shared_stub}" "${exec_stub}" "${host_cache_fixture}"; }
+cleanup() { safe-rm --recursive --force -- "${rec_attach}" "${rec_exec}" "${shared_stub}" "${exec_stub}" "${host_cache_fixture}" "${member_repo_fixture}"; }
 trap cleanup EXIT
 
 ## Stub dm-shared-apt-repo: print the host-read mirror path (cache-path) and the guest URI root
@@ -127,6 +145,7 @@ cat > "${shared_stub}" <<STUB
 case "\$1" in
   cache-path) printf 'cachepath-base=%s\n' "\${LOCAL_APT_REPOSITORY_BASE:-}" >> "\${REC_ATTACH}"; printf '%s\n' '${host_cache_fixture}' ;;
   guest-cache-path) printf '%s\n' '/mnt/shared/aptcache' ;;
+  repo-path) printf 'repo-path member=%s\n' "\$2" >> "\${REC_ATTACH}"; printf '%s\n' '${member_repo_fixture}/'"\$2" ;;
   *) printf 'base=%s args=%s\n' "\${LOCAL_APT_REPOSITORY_BASE:-}" "\$*" >> "\${REC_ATTACH}" ;;
 esac
 exit 0
@@ -200,6 +219,20 @@ assert "chain enable writes the kicksecure base local source" \
    grep -q 'aptrepo_local/kicksecure' "${rec_exec}"
 assert "chain enable writes the whonix local source" \
    grep -q 'aptrepo_local/whonix' "${rec_exec}"
+## The enable reads each member's component residency from the HOST repo path (resolved via
+## 'repo-path <member>'); the guest mount is unreadable here. Decode the base64 sources blob and
+## assert the REGRESSION: whonix drops its 0-byte contrib/non-free (apt hard-fails on an empty
+## component over file:+vboxsf), kicksecure keeps all populated components.
+assert "chain enable resolves each member host repo via repo-path" \
+   grep -q 'repo-path member=whonix' "${rec_attach}"
+chain_b64="$(sed -n "s/.*printf %s '\\([A-Za-z0-9+/=]*\\)'.*/\\1/p" "${rec_exec}" | tail -1)"
+chain_decoded="$(printf '%s' "${chain_b64}" | base64 --decode)"
+whonix_comp="$(grep -A2 'aptrepo_local/whonix$' <<< "${chain_decoded}" | sed -n 's/^Components: //p')"
+ks_comp="$(grep -A2 'aptrepo_local/kicksecure$' <<< "${chain_decoded}" | sed -n 's/^Components: //p')"
+assert "chain enable: whonix stanza drops empty contrib/non-free (Components: main)" \
+   test "${whonix_comp}" = 'main'
+assert "chain enable: kicksecure stanza keeps all populated components" \
+   test "${ks_comp}" = 'contrib main non-free'
 ## an untrusted chain token never reaches a path/grep -- rejected SETUP_RC before any guest op.
 badchain_rc=0
 local_repo_chain='kicksecure whonix; rm -rf /'

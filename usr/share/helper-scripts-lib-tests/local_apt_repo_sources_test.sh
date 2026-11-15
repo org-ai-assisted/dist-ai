@@ -64,28 +64,100 @@ check_eq() {
    fi
 }
 
-## --- exact stanza: /srv vm-created repo -------------------------------------
-expected_srv="Types: deb
-URIs: file:/srv/derivative-maker/aptrepo_local/kicksecure
-Suites: local
-Components: main contrib non-free
-Enabled: yes
-Trusted: yes"
-actual_srv="$(local_apt_repo_sources_stanza 'file:/srv/derivative-maker/aptrepo_local/kicksecure' 'local')"
-check_eq "exact stanza for a /srv file: URI, suite 'local'" "${expected_srv}" "${actual_srv}"
+nl=$'\n'
 
-## --- exact stanza: /mnt host-injected repo, whonix --------------------------
-expected_mnt="Types: deb
-URIs: file:/mnt/local-apt-repo/whonix
+## Build a reprepro-shaped local repo fixture under <root>/dists/local. Each
+## remaining arg is 'component[:all]:<bytes>': <bytes>=0 writes a 0-byte Packages
+## (reprepro's configured-but-unpopulated component); 'all' puts the index under
+## binary-all instead of binary-amd64 (arch-independent payload).
+mk_local_repo() {
+   local root suite comp arch target spec bytes
+   root="$1"; suite="$2"; shift 2
+   for spec in "$@"; do
+      comp="${spec%%:*}"; spec="${spec#*:}"
+      if [ "${spec%%:*}" = 'all' ]; then
+         arch='all'; bytes="${spec#*:}"
+      else
+         arch='amd64'; bytes="${spec}"
+      fi
+      target="${root}/dists/${suite}/${comp}/binary-${arch}"
+      mkdir --parents -- "${target}"
+      if [ "${bytes}" = '0' ]; then
+         true > "${target}/Packages"
+      else
+         head --bytes="${bytes}" /dev/zero | tr '\0' 'x' > "${target}/Packages"
+      fi
+   done
+}
+
+repo_fix="$(mktemp --directory)"
+
+## --- full repo: all three components populated ------------------------------
+## Component order is the LC_ALL=C glob order of the on-disk dists/<suite>/*/
+## dirs (contrib main non-free) -- deterministic, and apt is order-agnostic.
+mk_local_repo "${repo_fix}/kicksecure" local main:120 contrib:40 non-free:30
+expected_full="Types: deb
+URIs: file:${repo_fix}/kicksecure
 Suites: local
-Components: main contrib non-free
+Components: contrib main non-free
 Enabled: yes
 Trusted: yes"
-actual_mnt="$(local_apt_repo_sources_stanza 'file:/mnt/local-apt-repo/whonix' 'local')"
-check_eq "exact stanza for a /mnt file: URI, derivative whonix" "${expected_mnt}" "${actual_mnt}"
+actual_full="$(local_apt_repo_sources_stanza "file:${repo_fix}/kicksecure" 'local')"
+check_eq "full repo: all populated components listed" "${expected_full}" "${actual_full}"
+
+## --- whonix-shaped repo: contrib/non-free EMPTY (0-byte) --------------------
+## REGRESSION: reprepro writes a 0-byte Packages for a configured-but-unpopulated
+## component; apt on a file: source HARD-FAILS fetching that empty index (ENOENT
+## on the vboxsf guest), so an empty component MUST be dropped. Pre-fix this
+## hardcoded 'main contrib non-free' and the whonix local-repo lane aborted at
+## apt-get update. (Component DIRS exist on disk, Packages is 0 bytes.)
+mk_local_repo "${repo_fix}/whonix" local main:60 contrib:0 non-free:0
+expected_whonix="Types: deb
+URIs: file:${repo_fix}/whonix
+Suites: local
+Components: main
+Enabled: yes
+Trusted: yes"
+actual_whonix="$(local_apt_repo_sources_stanza "file:${repo_fix}/whonix" 'local')"
+check_eq "whonix repo: empty contrib/non-free dropped, only main listed" \
+   "${expected_whonix}" "${actual_whonix}"
+if [[ "${actual_whonix}" != *contrib* ]] && [[ "${actual_whonix}" != *non-free* ]]; then
+   pass_count=$(( pass_count + 1 ))
+   printf '%s\n' "PASS: canary: no empty component (contrib/non-free) slipped into the whonix stanza"
+else
+   fail_count=$(( fail_count + 1 ))
+   printf '%s\n' "FAIL: canary: an empty component leaked into the whonix stanza -- apt-get update will hard-fail"
+fi
+
+## --- binary-all residency: a component resident only via binary-all/Packages -
+mk_local_repo "${repo_fix}/archindep" local main:0 contrib:all:50
+actual_archindep="$(local_apt_repo_sources_stanza "file:${repo_fix}/archindep" 'local')"
+check_eq "binary-all index counts as resident; empty binary-amd64 main dropped" \
+   "contrib" "$(printf '%s\n' "${actual_archindep}" | sed -n 's/^Components: //p')"
+
+## --- read_root override: emit guest URI, read residency from host path ------
+## A host-side caller (dm-whonix-pair) emits the GUEST mount URI but must probe
+## residency at the readable HOST path.
+actual_override="$(local_apt_repo_sources_stanza 'file:/mnt/shared/aptrepo_local/whonix' 'local' "${repo_fix}/whonix")"
+if [[ "${nl}${actual_override}${nl}" == *"${nl}URIs: file:/mnt/shared/aptrepo_local/whonix${nl}"* ]] \
+   && [[ "${nl}${actual_override}${nl}" == *"${nl}Components: main${nl}"* ]]; then
+   pass_count=$(( pass_count + 1 ))
+   printf '%s\n' "PASS: read_root override emits the guest URI while reading residency from the host path"
+else
+   fail_count=$(( fail_count + 1 ))
+   printf '%s\n' "FAIL: read_root override wrong -- got: ${actual_override}"
+fi
+
+## --- unreadable repo path -> safe fallback 'main' ---------------------------
+## Residency undeterminable (path absent): fall back to 'main' -- always present
+## in a derivative local repo -- never the over-broad set that breaks on an empty
+## component.
+actual_absent="$(local_apt_repo_sources_stanza 'file:/nonexistent/local-apt-repo/kicksecure' 'local')"
+check_eq "absent repo path falls back to Components: main" \
+   "main" "$(printf '%s\n' "${actual_absent}" | sed -n 's/^Components: //p')"
 
 ## --- no leading blank line (caller owns multi-stanza separation) ------------
-if [ "${actual_srv:0:1}" = $'\n' ]; then
+if [ "${actual_full:0:1}" = $'\n' ]; then
    fail_count=$(( fail_count + 1 ))
    printf '%s\n' "FAIL: stanza starts with a blank line; the generator must not add a separator"
 else
@@ -101,21 +173,19 @@ check_eq "missing suite returns 2" "2" "${rc}"
 rc=0; local_apt_repo_sources_stanza '' 'local' >/dev/null 2>&1 || rc=$?
 check_eq "empty uri returns 2" "2" "${rc}"
 
-## --- CANARY: the trust + component contract --------------------------------
+## --- CANARY: the trust contract --------------------------------------------
 ## This stanza MUST carry 'Trusted: yes' (apt 3.0 fatally refuses the unsigned
-## local repo without it) and the full 'main contrib non-free' component set. If
-## either is dropped or altered, the two consumers silently diverge from apt's
-## expectations -- that is exactly the drift this single source of truth exists
-## to prevent, so assert them explicitly rather than trusting the block above.
-nl=$'\n'
-if [[ "${nl}${actual_srv}${nl}" == *"${nl}Trusted: yes${nl}"* ]] \
-   && [[ "${nl}${actual_srv}${nl}" == *"${nl}Components: main contrib non-free${nl}"* ]]; then
+## local repo without it). If dropped, the two consumers silently diverge from
+## apt's expectations -- assert it explicitly rather than trusting the block above.
+if [[ "${nl}${actual_full}${nl}" == *"${nl}Trusted: yes${nl}"* ]]; then
    pass_count=$(( pass_count + 1 ))
-   printf '%s\n' "PASS: canary: Trusted: yes and the full component set are present"
+   printf '%s\n' "PASS: canary: Trusted: yes is present"
 else
    fail_count=$(( fail_count + 1 ))
-   printf '%s\n' "FAIL: canary: missing 'Trusted: yes' or the 'main contrib non-free' components"
+   printf '%s\n' "FAIL: canary: missing 'Trusted: yes'"
 fi
+
+rm --recursive --force -- "${repo_fix}"
 
 ## --- local_apt_repo_base_stanza + local_apt_repo_pin: Debian-base mirror sources ----------------
 ## A local Debian mirror stores the COMPRESSED index (Packages.gz/.xz) and typically NO uncompressed

@@ -1495,7 +1495,7 @@ ws_func_enable_local_repo() {
    ## inputs are trusted (local_repo is enum-validated, the paths come from dm-shared-apt-repo), and
    ## the stanzas reach the guest base64-encoded, so nothing untrusted hits the guest shell.
    local host_cache guest_cache guest_repo sources_content emitted_suites b64 nick suite spec base_stanza
-   local chain member policy_check
+   local chain member policy_check member_host_repo
    if [ "$(type -t local_apt_repo_base_stanza)" != 'function' ] || [ "$(type -t local_apt_repo_sources_stanza)" != 'function' ]; then
       die "${SETUP_RC}" "${ws}: helper-scripts local-apt-repo-sources.bsh not loaded (set HELPER_SCRIPTS_PATH / install helper-scripts) -- cannot generate the local apt sources (INCONCLUSIVE)"
    fi
@@ -1524,10 +1524,15 @@ ws_func_enable_local_repo() {
             ;;
       esac
       guest_repo="${GUEST_SHARE_MOUNT}/aptrepo_local/${member}"
+      ## The stanza must list ONLY components whose Packages index is non-empty -- reprepro writes a
+      ## 0-byte Packages for an unpopulated component (whonix has no contrib/non-free packages) and
+      ## apt HARD-FAILS fetching an empty component over the file: + vboxsf path. The URI is the GUEST
+      ## mount path (unreadable here), so pass the HOST repo path for the residency probe.
+      member_host_repo="$(LOCAL_APT_REPOSITORY_BASE="${local_repo_base}" "${DM_SHARED_APT_REPO}" repo-path "${member}" 2>/dev/null || true)"
       if [ -z "${sources_content}" ]; then
-         sources_content="$(local_apt_repo_sources_stanza "file:${guest_repo}" local)"
+         sources_content="$(local_apt_repo_sources_stanza "file:${guest_repo}" local "${member_host_repo}" "${LOCAL_MIRROR_ARCH}")"
       else
-         sources_content="${sources_content}"$'\n\n'"$(local_apt_repo_sources_stanza "file:${guest_repo}" local)"
+         sources_content="${sources_content}"$'\n\n'"$(local_apt_repo_sources_stanza "file:${guest_repo}" local "${member_host_repo}" "${LOCAL_MIRROR_ARCH}")"
       fi
    done
    [ -n "${sources_content}" ] \
