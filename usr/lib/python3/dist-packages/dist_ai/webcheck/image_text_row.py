@@ -80,10 +80,19 @@ IMAGE_TEXT_ROW_JS = r"""
   const rows = Array.from(document.querySelectorAll('.left-right-image-text'));
   const round = (x) => Math.round(x * 100) / 100;
   const measured = [];
+  let malformed = 0;
   rows.forEach((row, i) => {
+    // A non-rendered row (display:none / hidden attr) has no client rects: ignore it, so a
+    // conditionally-hidden promo row cannot FALSE-FAIL the page. A RENDERED row that lacks a
+    // direct .image/.text pair is unmeasurable -- count it malformed and FAIL-CLOSED below, never
+    // silently skip (a promo row the gate cannot measure must not pass). The real generator always
+    // emits .image/.text as direct children with explicit <img> dimensions, so each container box
+    // measured here equals its rendered content; the gate intentionally measures those container
+    // boxes for that known DOM.
+    if (!row.getClientRects().length) return;
     const image = row.querySelector(':scope > .image');
     const text = row.querySelector(':scope > .text');
-    if (!image || !text) return;
+    if (!image || !text) { malformed++; return; }
     const rr = row.getBoundingClientRect();
     const ir = image.getBoundingClientRect();
     const tr = text.getBoundingClientRect();
@@ -208,12 +217,12 @@ IMAGE_TEXT_ROW_JS = r"""
   let pass;
   if (mode === 'mobile') {
     worst = round(maxOverlap);
-    pass = haveRows && maxOverlap <= tol && allStacked;
+    pass = haveRows && maxOverlap <= tol && allStacked && malformed === 0;
   } else {
-    pass = worst <= tol && lefts.length > 0 && rights.length > 0;
+    pass = worst <= tol && lefts.length > 0 && rights.length > 0 && malformed === 0;
   }
 
-  return { mode, pass, worst: round(worst), tol, rows: measured, metrics, align, mobile,
+  return { mode, pass, worst: round(worst), tol, rows: measured, metrics, align, mobile, malformed,
            counts: { left: lefts.length, right: rights.length } };
 }
 """
@@ -271,6 +280,9 @@ _VIEWPORTS = (
 
 def _describe(path: str, result: dict) -> str:
     """One-line offender reason for a failing page/mode (the numbers that broke it)."""
+    if result.get('malformed'):
+        return ('%s: %d rendered image-text row(s) lack a direct .image/.text pair '
+                '(unmeasurable -> FAIL-CLOSED)' % (result['mode'], result['malformed']))
     if result['mode'] == 'mobile':
         mob = result['mobile']
         if not result['rows']:

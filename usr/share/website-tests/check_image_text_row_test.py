@@ -76,6 +76,15 @@ def run():
     check('probe returns a per-mode pass',
           "mode === 'mobile'" in js and "lefts.length > 0 && rights.length > 0" in js
           and "maxOverlap <= tol && allStacked" in js)
+    # Fail-closed on an unmeasurable row: a non-rendered row is skipped (no false-fail), a
+    # RENDERED promo row lacking a direct .image/.text pair is counted malformed, and BOTH
+    # pass branches require malformed === 0 (a row the gate cannot measure must not pass).
+    check('probe skips non-rendered rows',
+          "getClientRects().length" in js)
+    check('probe counts malformed rendered rows',
+          "malformed++" in js and "malformed," in js)
+    check('both pass branches gate on malformed === 0',
+          js.count("malformed === 0") == 2)
 
     # 2. Budget + viewport constants sane.
     check('SYM_MAX_PX is a sane positive px budget',
