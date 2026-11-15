@@ -204,27 +204,34 @@ def run():
     check('open-state runs at EVERY width (before the VIEWPORT-only continue)',
           main_body.index('_open_state_failures') < main_body.index('if width != VIEWPORT:'))
     # Flake/false-green fix: a fixed wait after the trigger races a panel revealed by a
-    # transition-delayed :hover handler -- it opens AFTER the wait, so a closed (non-
-    # overflowing) measurement passes. The lane must POLL until the panel opens and its
-    # width settles, and fail loud if it never opens. Canary: fails on the pre-fix code,
-    # which had only a fixed wait_for_timeout(80) here.
+    # transition-delayed handler -- it widens AFTER the wait, so a closed (non-overflowing)
+    # measurement passes. The lane must POLL until scrollWidth moves off the closed width and
+    # settles. Canary: fails on the pre-fix code, which had only a fixed wait_for_timeout(80).
     check('open-state polls for the reveal to land before measuring (no fixed wait)',
           '_wait_open_settled' in _osf_src and 'wait_for_timeout(80)' not in _osf_src)
+    # The baseline is captured BEFORE _open_one so a synchronous reveal's width change is a
+    # detectable delta (not already baked into the reading) -- caught fast, not after the full
+    # bound. Canary: fails on the read-after-trigger cut.
+    check('open-state captures the closed width BEFORE opening the panel',
+          '_SCROLLWIDTH_JS' in _osf_src
+          and _osf_src.index('base_sw = ') < _osf_src.index('_open_one('))
     _wos_src = inspect.getsource(cm._wait_open_settled)
-    check('open-settle wait is bounded and keys on a landed-from-initial + settled signal',
-          'OPEN_SETTLE_POLLS' in _wos_src and 'init_sw' in _wos_src
-          and 'landed' in _wos_src and 'prev_sw' in _wos_src)
-    # The landed signal keys ONLY on scrollWidth (the overflow-relevant dimension) + the
-    # unambiguous reveal states popover-open / :target -- NOT a raw visible-element count
-    # (which opacity/transform/max-height reveals leave unchanged -> false "never opened"),
-    # and NOT scrollHeight (which an unrelated async vertical reflow -- a web-font swap -- can
-    # trip before a width-delayed reveal opens, breaking the settle loop early on the closed
-    # width -> false green). Canary: fails on the count-based and the scrollHeight-gated cuts.
-    check('open-probe keys on scrollWidth + popover/:target only (no count, no scrollHeight)',
-          'scrollWidth' in cm._OPEN_PROBE_JS and 'popover-open' in cm._OPEN_PROBE_JS
-          and ':target' in cm._OPEN_PROBE_JS
-          and 'scrollHeight' not in cm._OPEN_PROBE_JS
-          and 'getBoundingClientRect' not in cm._OPEN_PROBE_JS)
+    # Landed keys ONLY on the scrollWidth delta from the pre-trigger baseline -- NOT on any
+    # reveal-STARTED signal (:target / :popover-open / a scrollHeight reflow), each of which
+    # becomes true before a transition-delayed panel has widened and would settle the loop early
+    # on the closed width (false green). Canary: fails on the count-based, scrollHeight-gated,
+    # and :target/popover-gated cuts.
+    check('open-settle keys on the scrollWidth delta from a pre-trigger baseline, bounded',
+          'OPEN_SETTLE_POLLS' in _wos_src and 'base_sw' in _wos_src
+          and 'sw != base_sw' in _wos_src and 'prev_sw' in _wos_src)
+    # The loop body evaluates ONLY the scrollWidth probe, and the old multi-signal probe that
+    # carried :target / popover-open / scrollHeight is gone -- so no reveal-started signal can
+    # re-enter the landed decision. (Checks the attribute, not the docstring prose, which names
+    # the excluded signals to explain the choice.)
+    check('open-settle reads only scrollWidth; the multi-signal probe is removed',
+          _wos_src.count('op.evaluate(') == 1
+          and 'evaluate(_SCROLLWIDTH_JS)' in _wos_src
+          and not hasattr(cm, '_OPEN_PROBE_JS'))
     # The fragile nav assertion was dropped (navless standalone views + links in a
     # sibling list outside header/nav both false-fail); it must not come back.
     check('no-JS has no fragile nav assertion',
