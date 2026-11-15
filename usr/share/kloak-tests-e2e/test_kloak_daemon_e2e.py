@@ -567,6 +567,24 @@ class KloakDaemonE2E(unittest.TestCase):
             _kloakwl_procs_owned_by_user(),
             'no kloakwl process owned by the kloakwl user (privsep drop failed)')
 
+        ## Issue #49 regression: the intermediate privsep fork must be REAPED
+        ## after the handshake (the kloak.c.in waitpid), not left as <defunct>
+        ## (state Z) for the daemon's lifetime. No child of kloak may be a zombie.
+        zombies = []
+        for stat_path in glob.glob('/proc/[0-9]*/stat'):
+            try:
+                with open(stat_path, encoding='utf-8') as handle:
+                    post = handle.read().rsplit(')', 1)[1].split()
+            except (OSError, IndexError):
+                continue
+            ## post-comm fields: state(0) ppid(1) ...
+            if len(post) >= 2 and post[1] == str(proc.pid) and post[0] == 'Z':
+                zombies.append(os.path.basename(os.path.dirname(stat_path)))
+        self.assertEqual(
+            zombies, [],
+            'kloak left an unreaped zombie child (issue #49 regression): '
+            'pids %r' % zombies)
+
         ## Inject a keystroke through the grabbed virtual keyboard; the daemon
         ## must process + forward it without crashing.
         ecodes = self._evdev.ecodes
