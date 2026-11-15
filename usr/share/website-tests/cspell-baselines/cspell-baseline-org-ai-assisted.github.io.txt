@@ -3,8 +3,6 @@
 # adding to the shared project dictionary). The gate flags only a NEWLY-unknown word.
 # A word for EVERY site belongs in cspell-assets/project-dictionary.txt instead. Prune
 # when the prose changes.
-antispam-email-reveal/index.html:clippable
-antispam-email-reveal/index.html:organisation
 automated-test-results/kicksecure-lxqt-18-2-3-0-262-gb1dd5133f52d3b8094a66a517b3cd6420a8870f7-20261008T125235Z/index.html:privleapd
 automated-test-results/kicksecure-lxqt-bios-18-2-3-3-369-g669cd966b3489b529d98da09626083d2bda36930-20261008T191754Z/index.html:pkexec
 automated-test-results/kicksecure-lxqt-bios-18-2-3-3-373-g61410325329e944b3dab1341c19ffa262668e5a3-20261008T212258Z/index.html:dpkg
@@ -83,6 +81,8 @@ automated-test-results/kicksecure-lxqt-efi-ai-1974-g8f5fa3b0-20261011T145744Z/in
 automated-test-results/kicksecure-lxqt-efi-ai-1974-g8f5fa3b0-20261011T145744Z/index.html:mokutil
 automated-test-results/kicksecure-lxqt-efi-ai-1974-g8f5fa3b0-20261011T145744Z/index.html:trixie
 automated-test-results/kicksecure-lxqt-efi-ai-1974-g8f5fa3b0-20261011T145744Z/index.html:uefi
+css-vs-popover/index.html:clippable
+css-vs-popover/index.html:organisation
 index.html:adrelanos
 index.html:arti
 index.html:coverity
