@@ -113,6 +113,10 @@ local_repo=""
 ## so a re-derivation there would map a DIFFERENT (slot-less) repo than the root-side provenance
 ## records -- a false signal. Empty => dm-shared-apt-repo derives it from the env (non-slotted case).
 local_repo_base=""
+## The resident derivative CHAIN to deliver (space-separated: 'kicksecure whonix' for a whonix run),
+## resolved host-side by dm-release-test (--local-repo-chain). Empty => fall back to just ${local_repo}
+## (a standalone invocation), so the single-derivative delivery is unchanged when no chain is given.
+local_repo_chain=""
 ## Active CLI-check capture temp (set by ws_func_cli_exec); on_exit removes it so a signal or
 ## lock-timeout mid-check cannot leave the host mktemp file behind across repeated interruptions.
 cli_capture_tmp=""
@@ -501,6 +505,15 @@ parse_args() {
             ## the attach's --hostpath so the account-run attach does not re-derive a slot-less path.
             [ "$#" -ge 2 ] || die "${SETUP_RC}" "--local-repo-base needs a value"
             local_repo_base="$2"
+            shift 2
+            ;;
+         --local-repo-chain)
+            ## The resident derivative CHAIN to deliver (space-separated: 'kicksecure whonix' for a
+            ## whonix run), resolved host-side by dm-release-test. A whonix guest upgrades from BOTH
+            ## the kicksecure base repo AND the whonix repo, so every member gets a 'local' source.
+            ## Each token is enum-checked (kicksecure|whonix) -- nothing untrusted reaches a path.
+            [ "$#" -ge 2 ] || die "${SETUP_RC}" "--local-repo-chain needs a value"
+            local_repo_chain="$2"
             shift 2
             ;;
          --print-guards)
@@ -1482,6 +1495,7 @@ ws_func_enable_local_repo() {
    ## inputs are trusted (local_repo is enum-validated, the paths come from dm-shared-apt-repo), and
    ## the stanzas reach the guest base64-encoded, so nothing untrusted hits the guest shell.
    local host_cache guest_cache guest_repo sources_content emitted_suites b64 nick suite spec base_stanza
+   local chain member policy_check
    if [ "$(type -t local_apt_repo_base_stanza)" != 'function' ] || [ "$(type -t local_apt_repo_sources_stanza)" != 'function' ]; then
       die "${SETUP_RC}" "${ws}: helper-scripts local-apt-repo-sources.bsh not loaded (set HELPER_SCRIPTS_PATH / install helper-scripts) -- cannot generate the local apt sources (INCONCLUSIVE)"
    fi
@@ -1491,12 +1505,33 @@ ws_func_enable_local_repo() {
    ## expose. The guest path (/mnt/shared/aptcache) is slot-independent, so it needs no base.
    host_cache="$(LOCAL_APT_REPOSITORY_BASE="${local_repo_base}" "${DM_SHARED_APT_REPO}" cache-path)"
    guest_cache="$("${DM_SHARED_APT_REPO}" guest-cache-path)"
-   guest_repo="${GUEST_SHARE_MOUNT}/aptrepo_local/${local_repo}"
    [ -d "${host_cache}" ] \
       || die "${SETUP_RC}" "${ws}: Debian mirror not exposed at ${host_cache} (host: run 'dm-shared-apt-repo expose' before the lane) -- cannot source the base locally (INCONCLUSIVE)"
-   ## Build the sources in a plain variable (derivative 'local' repo + each RESIDENT Debian base
-   ## suite), tracking which base suites resolved. deb822 separates stanzas by a blank line.
-   sources_content="$(local_apt_repo_sources_stanza "file:${guest_repo}" local)"
+   ## Build the sources in a plain variable (the derivative 'local' repo CHAIN + each RESIDENT Debian
+   ## base suite), tracking which base suites resolved. deb822 separates stanzas by a blank line.
+   ## chain = every resident derivative member delivered to the guest: a whonix WS installs from BOTH
+   ## the kicksecure base repo AND the whonix repo, so dm-release-test passes --local-repo-chain
+   ## "kicksecure whonix"; a standalone call falls back to the single --local-repo member. One 'local'
+   ## stanza per member. Each token is enum-validated before it feeds a path (defence in depth).
+   chain="${local_repo_chain:-${local_repo}}"
+   sources_content=""
+   for member in ${chain}; do
+      case "${member}" in
+         kicksecure|whonix)
+            ;;
+         *)
+            die "${SETUP_RC}" "${ws}: invalid local-repo chain member '${member}' (kicksecure|whonix) -- refusing to build an apt source from an untrusted token (INCONCLUSIVE)"
+            ;;
+      esac
+      guest_repo="${GUEST_SHARE_MOUNT}/aptrepo_local/${member}"
+      if [ -z "${sources_content}" ]; then
+         sources_content="$(local_apt_repo_sources_stanza "file:${guest_repo}" local)"
+      else
+         sources_content="${sources_content}"$'\n\n'"$(local_apt_repo_sources_stanza "file:${guest_repo}" local)"
+      fi
+   done
+   [ -n "${sources_content}" ] \
+      || die "${SETUP_RC}" "${ws}: empty local-repo delivery chain -- nothing to enable (INCONCLUSIVE)"
    emitted_suites=""
    for spec in debian:trixie debian:trixie-updates debian-security:trixie-security; do
       nick="${spec%%:*}"
@@ -1521,12 +1556,19 @@ ws_func_enable_local_repo() {
       esac
    done
    b64="$(printf '%s\n' "${sources_content}" | base64 --wrap=0)"
+   ## EVERY chain member's source must show up live in apt-cache policy, not just the first: a whonix
+   ## WS that silently dropped the kicksecure base repo would upgrade from an incomplete set. Grep
+   ## once per member; any missing one fails the enable (INCONCLUSIVE).
+   policy_check=""
+   for member in ${chain}; do
+      policy_check="${policy_check} && apt-cache ${LOCAL_TEST_APT_OPTS} policy | grep --quiet --fixed-strings 'aptrepo_local/${member}'"
+   done
    ## Write the sources into the DEDICATED guest dir, then update + policy-check reading ONLY that
    ## dir -- so check 3 upgrades offline from the local file: sources with no pin and no edit to the
    ## guest's own apt config.
-   gc_run user "dsudo install -d -m 0755 ${LOCAL_TEST_SOURCES_DIR} && printf %s '${b64}' | base64 --decode | dsudo tee ${LOCAL_TEST_SOURCES_DIR}/local-apt-repo.sources >/dev/null && dsudo apt-get ${LOCAL_TEST_APT_OPTS} --quiet update && apt-cache ${LOCAL_TEST_APT_OPTS} policy | grep --quiet --fixed-strings 'aptrepo_local/${local_repo}'" 600 \
+   gc_run user "dsudo install -d -m 0755 ${LOCAL_TEST_SOURCES_DIR} && printf %s '${b64}' | base64 --decode | dsudo tee ${LOCAL_TEST_SOURCES_DIR}/local-apt-repo.sources >/dev/null && dsudo apt-get ${LOCAL_TEST_APT_OPTS} --quiet update${policy_check}" 600 \
       || die "${SETUP_RC}" "${ws}: could not enable the local apt sources in the WS (generate/write/update/policy failed) -- INCONCLUSIVE, not a release FAIL"
-   story_card 55 local-repo-enabled "Local apt repo enabled in the Workstation" "The derivative 'local' apt source plus the Debian base suites (${emitted_suites# }) are live -- apt-cache policy shows aptrepo_local/${local_repo}. Check 3 upgrades offline from these file: sources, no Tor."
+   story_card 55 local-repo-enabled "Local apt repo enabled in the Workstation" "The derivative 'local' apt sources (${chain}) plus the Debian base suites (${emitted_suites# }) are live -- apt-cache policy shows each of: ${chain}. Check 3 upgrades offline from these file: sources, no Tor."
 }
 
 ## Verify the local build payloads were ACTUALLY installed, not merely AVAILABLE. apt-cache policy
@@ -1538,19 +1580,34 @@ ws_func_enable_local_repo() {
 ## already installed (--reinstall --allow-downgrades pins the exact local version regardless of
 ## version equality or ordering) and assert the installed version matches the local build. ANY
 ## mismatch, or no local package installed at all -> SETUP_RC (INCONCLUSIVE), never a release PASS:
-## the lane must never claim a local-build upgrade it did not install. local_repo is enum-validated
-## (kicksecure|whonix) and GUEST_SHARE_MOUNT is a fixed constant, so both are safe to interpolate;
-## the guest-side $-vars stay literal (escaped in the heredoc), evaluated in the WS.
+## the lane must never claim a local-build upgrade it did not install. Every chain member is
+## enum-validated (kicksecure|whonix) and GUEST_SHARE_MOUNT is a fixed constant, so both are safe to
+## interpolate; the guest-side $-vars stay literal (escaped in the heredoc), evaluated in the WS.
+## The whole chain's payloads count: a whonix WS exercises BOTH the kicksecure base build and the
+## whonix build, so both indices feed the installed-set to reinstall + version-match.
 ws_func_verify_local_repo_installed() {
    vm="${ws}"
-   local pkgs_path verify_cmd
-   pkgs_path="${GUEST_SHARE_MOUNT}/aptrepo_local/${local_repo}/dists/local/main/binary-amd64/Packages"
+   local pkgs_paths verify_cmd member
+   pkgs_paths=""
+   for member in ${local_repo_chain:-${local_repo}}; do
+      case "${member}" in
+         kicksecure|whonix)
+            ;;
+         *)
+            die "${SETUP_RC}" "${ws}: invalid local-repo chain member '${member}' (kicksecure|whonix) -- refusing to verify an untrusted token (INCONCLUSIVE)"
+            ;;
+      esac
+      pkgs_paths="${pkgs_paths} ${GUEST_SHARE_MOUNT}/aptrepo_local/${member}/dists/local/main/binary-amd64/Packages"
+   done
    read -r -d '' verify_cmd <<GUEST || true
 set -eu
-pkgs='${pkgs_path}'
-[ -r "\$pkgs" ] || { echo "local Packages index not readable in the guest: \$pkgs" >&2; exit 1; }
-specs=\$(awk '/^Package: /{p=\$2} /^Version: /{if(p!=""){print p"="\$2; p=""}}' "\$pkgs")
-[ -n "\$specs" ] || { echo 'local repo lists no packages' >&2; exit 1; }
+specs=''
+for pkgs in ${pkgs_paths# }; do
+  [ -r "\$pkgs" ] || { echo "local Packages index not readable in the guest: \$pkgs" >&2; exit 1; }
+  specs="\$specs \$(awk '/^Package: /{p=\$2} /^Version: /{if(p!=""){print p"="\$2; p=""}}' "\$pkgs")"
+done
+specs=\$(echo \$specs)
+[ -n "\$specs" ] || { echo 'local repos list no packages' >&2; exit 1; }
 installed=''
 for s in \$specs; do
   n=\${s%%=*}

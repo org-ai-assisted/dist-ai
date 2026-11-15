@@ -189,6 +189,24 @@ assert "enable policy-checks the derivative local repo is live" \
 assert "enable resolves the host cache under the orchestrator-pinned base (slot-threaded, not slot-less)" \
    grep -q 'cachepath-base=/srv/derivative-maker/SLOT' "${rec_attach}"
 
+## CHAIN: a whonix WS installs from BOTH the kicksecure base repo AND the whonix repo, so
+## dm-release-test passes --local-repo-chain "kicksecure whonix". Enable must emit a 'local' source
+## AND a policy check for EVERY chain member -- a derivative dropping the kicksecure base silently
+## upgrades from an incomplete set.
+true > "${rec_exec}"
+local_repo_chain='kicksecure whonix'
+ws_func_enable_local_repo >/dev/null 2>&1
+assert "chain enable writes the kicksecure base local source" \
+   grep -q 'aptrepo_local/kicksecure' "${rec_exec}"
+assert "chain enable writes the whonix local source" \
+   grep -q 'aptrepo_local/whonix' "${rec_exec}"
+## an untrusted chain token never reaches a path/grep -- rejected SETUP_RC before any guest op.
+badchain_rc=0
+local_repo_chain='kicksecure whonix; rm -rf /'
+( ws_func_enable_local_repo ) >/dev/null 2>&1 || badchain_rc=$?
+assert "chain enable rejects an invalid member token (SETUP_RC)" test "${badchain_rc}" -eq 2
+local_repo_chain=''
+
 ## CANARY (fix D): an INCOMPLETE mirror (a base suite missing) must be INCONCLUSIVE (SETUP_RC), never
 ## a pass -- check 3 upgrades from local-ONLY sources, so a missing trixie-security would otherwise
 ## SILENTLY exclude security updates. Drop debian-security and re-run enable; expect rc 2 BEFORE the
@@ -294,6 +312,28 @@ true > "${DPKG_MAP}"
 none_rc=0
 ( ws_func_verify_local_repo_installed ) >/dev/null 2>&1 || none_rc=$?
 assert "verify FAILS SETUP_RC when no local-repo package is installed" test "${none_rc}" -eq 2
+
+## CHAIN: with --local-repo-chain "kicksecure whonix" the verify reads BOTH members' Packages indices
+## and reinstalls payloads from EACH, so a locally-built kicksecure package (security-misc, ...) is
+## version-matched too -- not just the whonix build.
+ks_dir="${vstub}/mnt/aptrepo_local/kicksecure/dists/local/main/binary-amd64"
+mkdir --parents -- "${ks_dir}"
+cat > "${ks_dir}/Packages" <<'EOF'
+Package: security-misc
+Version: 3:18.3-1
+Architecture: all
+EOF
+true > "${APT_LOG}"
+printf '%s\n' 'anon-apps-config 7:18.1-1' 'whonix-gw-network-conf 3:18.2-1' 'security-misc 3:18.3-1' > "${DPKG_MAP}"
+# shellcheck disable=SC2034  ## read as a global by the sourced ws_func_verify_local_repo_installed
+local_repo_chain='kicksecure whonix'
+cv_rc=0
+( ws_func_verify_local_repo_installed ) >/dev/null 2>&1 || cv_rc=$?
+assert "chain verify passes with both members' payloads installed at the local versions" test "${cv_rc}" -eq 0
+assert "chain verify force-installs the kicksecure base payload" \
+   grep -q -- 'security-misc=3:18.3-1' "${APT_LOG}"
+assert "chain verify force-installs the whonix payload" \
+   grep -q -- 'anon-apps-config=7:18.1-1' "${APT_LOG}"
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 [ "${fail}" -eq 0 ] || exit 1

@@ -366,21 +366,34 @@ def validate(result):
     ## Must be null or an object, so a malformed one lands as NO-DATA, not a crash (like firmware).
     local_repo = provenance.get("localRepo") if provenance is not None else None
     if local_repo is not None:
-        if not isinstance(local_repo, dict):
-            raise ModelError("provenance.localRepo must be null or an object: %r" % (local_repo,))
-        ## packages feeds '\n'.join(pkgs) in the site renderer; a non-list or a non-str
-        ## entry raises TypeError there and aborts the whole site -> reject it here so the
-        ## run lands NO-DATA instead. The scalar identity fields are rendered verbatim too.
-        pkgs = local_repo.get("packages")
-        if pkgs is not None and (not isinstance(pkgs, list)
-                                 or any(not isinstance(p, str) for p in pkgs)):
+        ## Accept a LIST of repo objects (a derivative run delivers its whole chain -- kicksecure
+        ## base + whonix) OR a single object (older single-repo result.json). Anything else is
+        ## malformed -> NO-DATA, never a crash in the generator (which reads it outside a try).
+        if isinstance(local_repo, list):
+            repo_objs = local_repo
+        elif isinstance(local_repo, dict):
+            repo_objs = [local_repo]
+        else:
             raise ModelError(
-                "provenance.localRepo.packages must be a list of strings: %r" % (pkgs,))
-        for key in ("derivative", "repoPath", "sourceSha"):
-            val = local_repo.get(key)
-            if val is not None and not isinstance(val, str):
+                "provenance.localRepo must be null, an object, or a list of objects: %r"
+                % (local_repo,))
+        for repo_obj in repo_objs:
+            if not isinstance(repo_obj, dict):
                 raise ModelError(
-                    "provenance.localRepo.%s must be a string: %r" % (key, val))
+                    "provenance.localRepo entries must be objects: %r" % (repo_obj,))
+            ## packages feeds '\n'.join(pkgs) in the site renderer; a non-list or a non-str
+            ## entry raises TypeError there and aborts the whole site -> reject it here so the
+            ## run lands NO-DATA instead. The scalar identity fields are rendered verbatim too.
+            pkgs = repo_obj.get("packages")
+            if pkgs is not None and (not isinstance(pkgs, list)
+                                     or any(not isinstance(p, str) for p in pkgs)):
+                raise ModelError(
+                    "provenance.localRepo.packages must be a list of strings: %r" % (pkgs,))
+            for key in ("derivative", "repoPath", "sourceSha"):
+                val = repo_obj.get(key)
+                if val is not None and not isinstance(val, str):
+                    raise ModelError(
+                        "provenance.localRepo.%s must be a string: %r" % (key, val))
     steps = result.get("steps")
     if not isinstance(steps, list):
         raise ModelError("steps must be a list")

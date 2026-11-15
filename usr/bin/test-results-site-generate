@@ -1027,24 +1027,36 @@ def _firmware_block(f):
 
 
 def _local_repo_block(f):
-    ## Provenance for a --local-repo build-iteration run: the exact local build the verdict applies
-    ## to -- derivative, host repo path, build sourceSha, and the delivered name=version package
-    ## list. {} when not a local-repo run (published-repo / old results), so no panel is rendered.
+    ## Provenance for a --local-repo build-iteration run: the COMPLETE name=version manifest of each
+    ## local apt repo DELIVERED to the guest. Whonix is a Kicksecure DERIVATIVE, so a whonix run
+    ## delivers BOTH the kicksecure base repo AND the whonix repo -- each renders its own panel.
+    ## This is a MANIFEST (what the guest could install), NOT a build log: the explicit package count
+    ## in the heading makes completeness obvious so it never reads as a truncated log (the confusion
+    ## a bare alphabetical list caused). {} / [] -> no panel (published-repo / non-local run).
     ## An absent sourceSha or empty package list is shown honestly as such, never fabricated.
+    ## Accepts a LIST of repo objects (new multi-repo shape) OR a single object (older single-repo
+    ## result.json) -- normalised to a list so historical runs still render.
     lr = f["lr"]
     if not lr:
         return ""
-    deriv = lr.get("derivative", "") or ""
-    repo = lr.get("repoPath", "") or ""
-    sha = lr.get("sourceSha", "") or ""
-    pkgs = lr.get("packages") or []
-    sha_html = ('<code class="runid">%s</code>' % esc(sha)) if sha else "<em>unverified</em>"
-    pkg_html = steplog_pre("\n".join(pkgs)) or "<p>no package versions recorded</p>"
-    return (
-        '<div class="issue"><h3>Local apt repo build</h3>'
-        "<p>derivative <code>%s</code> &middot; source %s</p>"
-        "<p>repo <code>%s</code></p>%s</div>"
-    ) % (esc(deriv or "?"), sha_html, esc(repo or "?"), pkg_html)
+    repos = lr if isinstance(lr, list) else [lr]
+    panels = []
+    for repo_obj in repos:
+        if not repo_obj:
+            continue
+        deriv = repo_obj.get("derivative", "") or ""
+        repo = repo_obj.get("repoPath", "") or ""
+        sha = repo_obj.get("sourceSha", "") or ""
+        pkgs = repo_obj.get("packages") or []
+        sha_html = ('<code class="runid">%s</code>' % esc(sha)) if sha else "<em>unverified</em>"
+        pkg_html = steplog_pre("\n".join(pkgs)) or "<p>no package versions recorded</p>"
+        panels.append((
+            '<div class="issue"><h3>Local apt repo manifest: %s (%d package%s)</h3>'
+            "<p>complete name=version manifest delivered to the guest &middot; source %s</p>"
+            "<p>repo <code>%s</code></p>%s</div>"
+        ) % (esc(deriv or "?"), len(pkgs), "" if len(pkgs) == 1 else "s",
+             sha_html, esc(repo or "?"), pkg_html))
+    return "".join(panels)
 
 
 def _validation_tally_line(view):

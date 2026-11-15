@@ -50,8 +50,10 @@ check() {
 }
 
 ## --- fixtures ---
-## A local reprepro 'local' repo whose Packages index lists two derivative packages (name/version
-## with epochs + dpkg-shaped versions, to prove the extractor is not naive).
+## Whonix is a Kicksecure DERIVATIVE: a whonix guest installs from BOTH the kicksecure base repo AND
+## the whonix repo, so the local-repo CHAIN for a whonix run is "kicksecure whonix" and the provenance
+## is a LIST with one object per resident member. Two 'local' reprepro repos, each with an epoch'd
+## dpkg-shaped Packages index (to prove the extractor is not naive).
 repo_dir="${work}/aptrepo_local/whonix"
 pkgs_dir="${repo_dir}/dists/local/main/binary-amd64"
 mkdir --parents -- "${pkgs_dir}"
@@ -62,6 +64,14 @@ Architecture: all
 
 Package: whonix-gw-network-conf
 Version: 3:18.2-1
+Architecture: all
+EOF
+ks_repo_dir="${work}/aptrepo_local/kicksecure"
+ks_pkgs_dir="${ks_repo_dir}/dists/local/main/binary-amd64"
+mkdir --parents -- "${ks_pkgs_dir}"
+cat > "${ks_pkgs_dir}/Packages" <<'EOF'
+Package: security-misc
+Version: 3:18.3-1
 Architecture: all
 EOF
 
@@ -82,10 +92,13 @@ cat > "${pair_stub}" <<'EOF'
 printf '%s\n' "$*" >> "${PAIR_ARGV}"
 exit 0
 EOF
+## Member-aware repo-path: rt_local_repo_chain / rt_build_local_repo_one call `repo-path <member>`,
+## so the stub maps each member to its own fixture repo (<work>/aptrepo_local/<member>). A member with
+## no fixture dir still prints a path, but its Packages index is unreadable -> omitted from the chain.
 shared_stub="${work}/dm-shared-apt-repo"
 cat > "${shared_stub}" <<EOF
 #!/bin/bash
-[ "\$1" = 'repo-path' ] && printf '%s\n' "${repo_dir}"
+[ "\$1" = 'repo-path' ] && printf '%s\n' "${work}/aptrepo_local/\$2"
 exit 0
 EOF
 chmod +x "${pair_stub}" "${shared_stub}"
@@ -155,6 +168,10 @@ lane_rc=0
 check "inst lane returns 0" "$([ "${lane_rc}" = '0' ] && printf '%s' true || printf '%s' false)" "${lane_rc}"
 check "threads --local-repo whonix to dm-whonix-pair" \
    "$(grep --quiet -- '--local-repo whonix' "${pair_argv}" && printf '%s' true || printf '%s' false)"
+## The whole resident derivative chain is threaded down so the pair delivers a 'local' source per
+## member (whonix WS needs the kicksecure base repo AND the whonix repo).
+check "threads --local-repo-chain \"kicksecure whonix\" to dm-whonix-pair" \
+   "$(grep --quiet -- '--local-repo-chain kicksecure whonix' "${pair_argv}" && printf '%s' true || printf '%s' false)"
 ## The resolved SHARE HOST PATH (repo-path stripped of /aptrepo_local/<deriv>) is passed down so the
 ## account-run attach pins it rather than re-deriving a slot-less path. repo_dir=<work>/aptrepo_local/
 ## whonix, so the base is <work>.
@@ -165,17 +182,44 @@ check "still runs --mode functional --interface cli" \
 check "forwards a --provenance-local-repo block to the publisher" \
    "$([ -s "${prov_file}" ] && printf '%s' true || printf '%s' false)"
 
-## localRepo JSON shape (host-side read; single-source repoPath from dm-shared-apt-repo repo-path).
-check "localRepo.derivative = whonix" \
-   "$([ "$(jq -r '.derivative' -- "${prov_file}" 2>/dev/null)" = 'whonix' ] && printf '%s' true || printf '%s' false)"
-check "localRepo.repoPath = the dm-shared-apt-repo repo dir" \
-   "$([ "$(jq -r '.repoPath' -- "${prov_file}" 2>/dev/null)" = "${repo_dir}" ] && printf '%s' true || printf '%s' false)"
-check "localRepo.sourceSha = dm-source-state first line" \
-   "$([ "$(jq -r '.sourceSha' -- "${prov_file}" 2>/dev/null)" = 'deadbeefcafe1234' ] && printf '%s' true || printf '%s' false)"
-check "localRepo.packages carries anon-apps-config=7:18.1-1" \
-   "$(jq -e '.packages | index("anon-apps-config=7:18.1-1")' -- "${prov_file}" >/dev/null 2>&1 && printf '%s' true || printf '%s' false)"
-check "localRepo.packages carries whonix-gw-network-conf=3:18.2-1" \
-   "$(jq -e '.packages | index("whonix-gw-network-conf=3:18.2-1")' -- "${prov_file}" >/dev/null 2>&1 && printf '%s' true || printf '%s' false)"
+## localRepo provenance is a LIST (one object per resident chain member; single-source repoPath from
+## dm-shared-apt-repo repo-path). base-first order: kicksecure before whonix.
+check "localRepo is a 2-element list (kicksecure base + whonix)" \
+   "$([ "$(jq -r 'length' -- "${prov_file}" 2>/dev/null)" = '2' ] && printf '%s' true || printf '%s' false)"
+check "localRepo[0].derivative = kicksecure (base first)" \
+   "$([ "$(jq -r '.[0].derivative' -- "${prov_file}" 2>/dev/null)" = 'kicksecure' ] && printf '%s' true || printf '%s' false)"
+check "localRepo[1].derivative = whonix" \
+   "$([ "$(jq -r '.[1].derivative' -- "${prov_file}" 2>/dev/null)" = 'whonix' ] && printf '%s' true || printf '%s' false)"
+check "localRepo whonix repoPath = the dm-shared-apt-repo repo dir" \
+   "$([ "$(jq -r '.[] | select(.derivative=="whonix") | .repoPath' -- "${prov_file}" 2>/dev/null)" = "${repo_dir}" ] && printf '%s' true || printf '%s' false)"
+check "localRepo kicksecure repoPath = the kicksecure fixture repo dir" \
+   "$([ "$(jq -r '.[] | select(.derivative=="kicksecure") | .repoPath' -- "${prov_file}" 2>/dev/null)" = "${ks_repo_dir}" ] && printf '%s' true || printf '%s' false)"
+check "localRepo sourceSha = dm-source-state first line (both members)" \
+   "$([ "$(jq -r '[.[].sourceSha] | unique | .[0]' -- "${prov_file}" 2>/dev/null)" = 'deadbeefcafe1234' ] && printf '%s' true || printf '%s' false)"
+check "localRepo whonix packages carry anon-apps-config=7:18.1-1" \
+   "$(jq -e '.[] | select(.derivative=="whonix") | .packages | index("anon-apps-config=7:18.1-1")' -- "${prov_file}" >/dev/null 2>&1 && printf '%s' true || printf '%s' false)"
+check "localRepo whonix packages carry whonix-gw-network-conf=3:18.2-1" \
+   "$(jq -e '.[] | select(.derivative=="whonix") | .packages | index("whonix-gw-network-conf=3:18.2-1")' -- "${prov_file}" >/dev/null 2>&1 && printf '%s' true || printf '%s' false)"
+check "localRepo kicksecure packages carry security-misc=3:18.3-1 (the base build is recorded too)" \
+   "$(jq -e '.[] | select(.derivative=="kicksecure") | .packages | index("security-misc=3:18.3-1")' -- "${prov_file}" >/dev/null 2>&1 && printf '%s' true || printf '%s' false)"
+
+## --- include-if-present: a whonix rebuild with NO resident kicksecure local repo stays testable --
+## the chain degrades to just whonix (delivered + recorded honestly), never a hard failure. Hide the
+## kicksecure fixture, re-run, expect a 1-element provenance + a whonix-only chain thread. ---
+mv -- "${ks_repo_dir}" "${work}/aptrepo_local/kicksecure.hidden"
+true > "${pair_argv}"
+true > "${prov_file}"
+# shellcheck disable=SC2034
+local_repo='whonix'
+inc_rc=0
+( rt_lane_whonix_inst persist-inst-whonix 18.2.3.5 ) >/dev/null 2>&1 || inc_rc=$?
+check "include-if-present: lane returns 0 with no resident kicksecure repo" \
+   "$([ "${inc_rc}" = '0' ] && printf '%s' true || printf '%s' false)" "${inc_rc}"
+check "include-if-present: chain degrades to --local-repo-chain whonix (no kicksecure)" \
+   "$(grep --quiet -- '--local-repo-chain whonix' "${pair_argv}" && ! grep --quiet -- '--local-repo-chain kicksecure' "${pair_argv}" && printf '%s' true || printf '%s' false)"
+check "include-if-present: provenance is a 1-element whonix-only list" \
+   "$([ "$(jq -r 'length' -- "${prov_file}" 2>/dev/null)" = '1' ] && [ "$(jq -r '.[0].derivative' -- "${prov_file}" 2>/dev/null)" = 'whonix' ] && printf '%s' true || printf '%s' false)"
+mv -- "${work}/aptrepo_local/kicksecure.hidden" "${ks_repo_dir}"
 
 ## --- run WITHOUT --local-repo: no thread, no provenance block (byte-unchanged path) ---
 true > "${pair_argv}"
@@ -271,8 +315,10 @@ DM_SHARED_APT_REPO="${shared_stub}"
 ## the builder on the LHS of `||`, which DISABLES errexit inside it, so each tool step needs an
 ## explicit `|| return 1` / status capture -- these cases canary every such path. Each uses its OWN
 ## clean stub dir on PATH; the generation is UNCHANGED (non-mutating pair). ---
-real_awk="$(command -v awk)"
-real_sha="$(command -v sha256sum)"
+## 'type -P' not R-090's 'has': what is wanted is the real tool's PATH (to exec from a stub that
+## shadows it on PATH), not a presence check.
+real_awk="$(type -P awk || true)"
+real_sha="$(type -P sha256sum || true)"
 
 ## build jq failure, BOTH error codes -- exit 2 especially (an earlier design reused 2 as the
 ## "generation omit" sentinel, so a real jq error, which also exits 2, masqueraded as the benign omit).
@@ -286,6 +332,7 @@ for jq_rc in 1 2; do
    # shellcheck disable=SC2034  ## read as a global by the sourced rt_lane_whonix_inst
    local_repo='whonix'
    tf_rc=0
+   # shellcheck disable=SC2030,SC2031  # PATH scoped to this subshell on purpose (stub shadows one call)
    ( export PATH="${sdir}:${PATH}"; rt_lane_whonix_inst persist-inst-whonix 18.2.3.5 ) >/dev/null 2>&1 || tf_rc=$?
    check "finding 6 (build jq exit ${jq_rc}): dm-whonix-pair WAS invoked (lane reached the provenance build)" \
       "$(grep --quiet -- '--local-repo whonix' "${pair_argv}" && printf '%s' true || printf '%s' false)"
@@ -312,6 +359,7 @@ true > "${prov_file}"
 # shellcheck disable=SC2034
 local_repo='whonix'
 tf_rc=0
+# shellcheck disable=SC2030,SC2031  # PATH scoped to this subshell on purpose (stub shadows one call)
 ( export PATH="${sdir}:${PATH}"; rt_lane_whonix_inst persist-inst-whonix 18.2.3.5 ) >/dev/null 2>&1 || tf_rc=$?
 check "finding 6 (build awk failure): INCONCLUSIVE, not a block with a silently-empty packages list" \
    "$([ "${tf_rc}" = '2' ] && printf '%s' true || printf '%s' false)" "${tf_rc}"
@@ -327,6 +375,7 @@ true > "${prov_file}"
 # shellcheck disable=SC2034
 local_repo='whonix'
 tf_rc=0
+# shellcheck disable=SC2030,SC2031  # PATH scoped to this subshell on purpose (stub shadows one call)
 ( export PATH="${sdir}:${PATH}"; rt_lane_whonix_inst persist-inst-whonix 18.2.3.5 ) >/dev/null 2>&1 || tf_rc=$?
 check "finding 6 (gen-id sha256sum failure): INCONCLUSIVE, not the benign omit" \
    "$([ "${tf_rc}" = '2' ] && printf '%s' true || printf '%s' false)" "${tf_rc}"
@@ -351,6 +400,7 @@ true > "${prov_file}"
 # shellcheck disable=SC2034
 local_repo='whonix'
 tf_rc=0
+# shellcheck disable=SC2030,SC2031  # PATH scoped to this subshell on purpose (stub shadows one call)
 ( export PATH="${sdir}:${PATH}"; rt_lane_whonix_inst persist-inst-whonix 18.2.3.5 ) >/dev/null 2>&1 || tf_rc=$?
 check "finding 6 (pre-upgrade gen-id failure, post OK): INCONCLUSIVE, pre-upgrade status not discarded" \
    "$([ "${tf_rc}" = '2' ] && printf '%s' true || printf '%s' false)" "${tf_rc}"
