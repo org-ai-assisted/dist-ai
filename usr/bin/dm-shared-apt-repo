@@ -46,14 +46,36 @@ VBOXMANAGE="${VBOXMANAGE:-VBoxManage}"
 ## dm's LOCAL apt repo store is the share host path; the reprepro repos live in its
 ## aptrepo_local/<derivative> subdirs, codename `local`. dm serves it from a
 ## build-user-owned, FHS-served /srv dir (variables.d/05_load-config.bsh's
-## local_apt_repository_base), slot-aware like the build dir. Follow the slot when set
-## in the env; LOCAL_APT_REPOSITORY_BASE overrides outright (e.g. a CI build that kept
-## the repo under binary_build_folder_dist). This reads an EXISTING build's repo, so it
-## does NOT invent a slot (that could miss a flat build) -- it matches whatever lane the
-## build used. The slot comes from the trusted env/command line (same as dm's own
-## --build-slot), used as-is -- a broken value is a caller error with worse consequences
-## elsewhere.
-repo_parent="${LOCAL_APT_REPOSITORY_BASE:-/srv/derivative-maker${dist_build_slot:+/${dist_build_slot}}}"
+## local_apt_repository_base), slot-aware like the build dir.
+##
+## repo_parent reads an EXISTING build's repo, so it MUST match whatever lane that build
+## used and must NOT invent a slot a flat build never created. Resolution:
+##   - LOCAL_APT_REPOSITORY_BASE set -> use it verbatim (a caller that already pinned the
+##     base, e.g. a CI build that kept the repo under binary_build_folder_dist; the
+##     orchestrator also threads the resolved base down this way).
+##   - else, under repo_root (/srv/derivative-maker; DM_SHARED_APT_REPO_ROOT overrides for
+##     tests): prefer the slotted base <root>/<slot> ONLY when it actually holds a built
+##     repo (an aptrepo_local subtree), else fall back to flat <root>.
+## The existence probe keys on <slot>/aptrepo_local, NOT the bare <slot> dir: `expose`
+## mkdir's <slot>/aptcache as a side effect, so the bare slot dir can exist with no repo --
+## only a real laned BUILD creates <slot>/aptrepo_local. This way an ambient dist_build_slot
+## left from a different lane (e.g. a session slug) degrades to the flat base instead of
+## pointing the share at a slot dir the flat build never populated (the flat-build +
+## slotted-run 404). The slot still comes from the trusted env/command line (same as dm's
+## own --build-slot).
+repo_root="${DM_SHARED_APT_REPO_ROOT:-/srv/derivative-maker}"
+resolve_repo_parent() {
+   if [ -n "${LOCAL_APT_REPOSITORY_BASE:-}" ]; then
+      printf '%s' "${LOCAL_APT_REPOSITORY_BASE}"
+      return 0
+   fi
+   if [ -n "${dist_build_slot:-}" ] && [ -d "${repo_root}/${dist_build_slot}/aptrepo_local" ]; then
+      printf '%s' "${repo_root}/${dist_build_slot}"
+      return 0
+   fi
+   printf '%s' "${repo_root}"
+}
+repo_parent="$(resolve_repo_parent)"
 codename="local"
 
 share_name="shared"
