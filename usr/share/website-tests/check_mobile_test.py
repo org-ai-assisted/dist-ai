@@ -203,6 +203,21 @@ def run():
           and '_open_state_failures' in main_body and 'open-state overflow' in main_body)
     check('open-state runs at EVERY width (before the VIEWPORT-only continue)',
           main_body.index('_open_state_failures') < main_body.index('if width != VIEWPORT:'))
+    # Flake/false-green fix: a fixed wait after the trigger races a panel revealed by a
+    # transition-delayed :hover handler -- it opens AFTER the wait, so a closed (non-
+    # overflowing) measurement passes. The lane must POLL until the panel opens and its
+    # width settles, and fail loud if it never opens. Canary: fails on the pre-fix code,
+    # which had only a fixed wait_for_timeout(80) here.
+    check('open-state polls for the panel to open before measuring (no fixed wait)',
+          '_wait_open_settled' in _osf_src and 'wait_for_timeout(80)' not in _osf_src)
+    _wos_src = inspect.getsource(cm._wait_open_settled)
+    check('open-settle wait is bounded and keys on an opened+settled signal',
+          'OPEN_SETTLE_POLLS' in _wos_src and 'base_visible' in _wos_src)
+    check('open-state fails loud when a panel never opens within the bound',
+          'never opened within bound' in _osf_src)
+    check('open-probe reports visible-count + scrollWidth (mode-agnostic opened signal)',
+          'getBoundingClientRect' in cm._OPEN_PROBE_JS
+          and 'scrollWidth' in cm._OPEN_PROBE_JS)
     # The fragile nav assertion was dropped (navless standalone views + links in a
     # sibling list outside header/nav both false-fail); it must not come back.
     check('no-JS has no fragile nav assertion',

@@ -72,6 +72,14 @@ NAV_TIMEOUT_MS = 60000
 # CSS_APPLY_POLLS * CSS_APPLY_POLL_MS; the page is measured anyway if it never settles.
 CSS_APPLY_POLLS = 100
 CSS_APPLY_POLL_MS = 50
+# Open-state overflow lane: after a trigger action, poll until the reveal panel has
+# actually OPENED (a newly-visible element) AND its layout has settled, before measuring
+# scrollWidth. A fixed wait races a panel revealed by a transition-delayed :hover handler
+# (it opens AFTER the wait -> a closed, non-overflowing measurement -> false green). Bounded
+# by OPEN_SETTLE_POLLS * OPEN_SETTLE_POLL_MS; a panel that never opens inside the bound is a
+# LOUD failure (a broken trigger or a too-tight bound, not a pass).
+OPEN_SETTLE_POLLS = 40
+OPEN_SETTLE_POLL_MS = 50
 VIEWPORT = 390                       # primary phone width (used in messages/checks)
 # Body must never scroll sideways from a narrow phone up to a small tablet.
 OVERFLOW_WIDTHS = (320, 390, 768)
@@ -108,6 +116,19 @@ _OPEN_SPECS_JS = (
     "+(el.id?'#'+el.id:(el.className?'.'+String(el.className).trim().split(/\\s+/)[0]:''))}))"
 )
 _OPEN_HAS_JS = "()=>!!document.querySelector('[data-webcheck-open]')"
+# Open-state "opened + settled" probe. Returns [visible_count, scrollWidth]:
+#  - visible_count: elements with a non-empty box and not display:none / visibility:hidden.
+#    A reveal (popover top layer, :target panel, :hover/:focus-within panel) makes at least
+#    one previously-hidden element visible, so the count RISES above the closed baseline --
+#    a mode-agnostic positive "opened" signal (independent of whether the panel overflows).
+#  - scrollWidth: the measurement; polled until it stops changing (the panel has settled).
+_OPEN_PROBE_JS = (
+    "()=>{let v=0;const a=document.body.getElementsByTagName('*');"
+    "for(let i=0;i<a.length;i++){const e=a[i],s=getComputedStyle(e);"
+    "if(s.display==='none'||s.visibility==='hidden'||s.visibility==='collapse')continue;"
+    "const r=e.getBoundingClientRect();if(r.width<=0||r.height<=0)continue;v++;}"
+    "return [v, document.documentElement.scrollWidth];}"
+)
 
 # Height the sticky <header> occupies at the top of the viewport (null if none).
 _HEADER_JS = (
@@ -663,6 +684,27 @@ def _open_one(page, handle, mode):
         handle.hover()
 
 
+def _wait_open_settled(op, base_visible):
+    """After a trigger action, poll until the reveal has OPENED (visible-element count
+    risen above the closed baseline) AND its layout has SETTLED (scrollWidth unchanged
+    across a poll). Returns (opened, scrollWidth). opened=False means no panel appeared
+    within OPEN_SETTLE_POLLS -- the caller fails LOUD rather than measure a still-closed
+    page (a transition-delayed :hover reveal opens after a naive fixed wait; a never-open
+    panel is a broken trigger). scrollWidth is the last reading either way."""
+    opened = False
+    prev_sw = None
+    vis, sw = op.evaluate(_OPEN_PROBE_JS)
+    for _ in range(OPEN_SETTLE_POLLS):
+        vis, sw = op.evaluate(_OPEN_PROBE_JS)
+        if vis > base_visible:
+            opened = True
+        if opened and sw == prev_sw:   # opened and the width has stopped moving
+            break
+        prev_sw = sw
+        op.wait_for_timeout(OPEN_SETTLE_POLL_MS)
+    return opened, sw
+
+
 def _open_state_failures(browser, base, width):
     """Open each opt-in reveal panel on the page and report any that overflow the body.
     Returns a list of (selector-label, mode, scrollWidth) for the overflowing ones.
@@ -684,9 +726,14 @@ def _open_state_failures(browser, base, width):
             if i >= len(handles):
                 continue
             try:
+                base_visible = op.evaluate(_OPEN_PROBE_JS)[0]   # closed-state baseline
                 _open_one(op, handles[i], spec['mode'])
-                op.wait_for_timeout(80)
-                sw = op.evaluate('document.documentElement.scrollWidth')
+                opened, sw = _wait_open_settled(op, base_visible)
+                if not opened:
+                    # Never opened inside the bound: a broken/mis-annotated trigger, or a
+                    # bound too tight for its reveal delay -- loud, never a silent pass.
+                    hits.append((spec['sel'], spec['mode'] + ' (never opened within bound)', 0))
+                    continue
                 iw = op.evaluate('window.innerWidth')
                 if sw > iw + 1:
                     hits.append((spec['sel'], spec['mode'], sw))
