@@ -214,13 +214,16 @@ def run():
     check('open-settle wait is bounded and keys on a landed-from-initial + settled signal',
           'OPEN_SETTLE_POLLS' in _wos_src and 'init_sw' in _wos_src
           and 'landed' in _wos_src and 'prev_sw' in _wos_src)
-    # The landed signal keys ONLY on overflow-relevant scroll geometry + unambiguous reveal
-    # state (popover-open / :target) -- NOT a raw visible-element count, which a reveal via
-    # opacity/transform/max-height leaves unchanged (false "never opened") and which an
-    # unrelated element can spuriously trip. Canary: fails on the count-based first cut.
-    check('open-probe keys on scroll geometry + popover/:target, not a visible-count',
-          'scrollWidth' in cm._OPEN_PROBE_JS and 'scrollHeight' in cm._OPEN_PROBE_JS
-          and 'popover-open' in cm._OPEN_PROBE_JS and ':target' in cm._OPEN_PROBE_JS
+    # The landed signal keys ONLY on scrollWidth (the overflow-relevant dimension) + the
+    # unambiguous reveal states popover-open / :target -- NOT a raw visible-element count
+    # (which opacity/transform/max-height reveals leave unchanged -> false "never opened"),
+    # and NOT scrollHeight (which an unrelated async vertical reflow -- a web-font swap -- can
+    # trip before a width-delayed reveal opens, breaking the settle loop early on the closed
+    # width -> false green). Canary: fails on the count-based and the scrollHeight-gated cuts.
+    check('open-probe keys on scrollWidth + popover/:target only (no count, no scrollHeight)',
+          'scrollWidth' in cm._OPEN_PROBE_JS and 'popover-open' in cm._OPEN_PROBE_JS
+          and ':target' in cm._OPEN_PROBE_JS
+          and 'scrollHeight' not in cm._OPEN_PROBE_JS
           and 'getBoundingClientRect' not in cm._OPEN_PROBE_JS)
     # The fragile nav assertion was dropped (navless standalone views + links in a
     # sibling list outside header/nav both false-fail); it must not come back.

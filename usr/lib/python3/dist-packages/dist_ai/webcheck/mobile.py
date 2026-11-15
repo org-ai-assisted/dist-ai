@@ -72,14 +72,14 @@ NAV_TIMEOUT_MS = 60000
 # CSS_APPLY_POLLS * CSS_APPLY_POLL_MS; the page is measured anyway if it never settles.
 CSS_APPLY_POLLS = 100
 CSS_APPLY_POLL_MS = 50
-# Open-state overflow lane: after a trigger action, poll until the reveal's effect on the
-# document has LANDED and its width has SETTLED, before measuring scrollWidth. A fixed wait
-# races a panel revealed by a transition-delayed :hover handler (it opens AFTER the wait ->
-# a closed, non-overflowing measurement -> false green). "Landed" = the document scroll size
-# changed from the immediate post-trigger reading, or a popover/:target reveal is present.
-# A reveal with NO layout effect (opacity / transform / max-height) keeps its box -- hence
-# any horizontal overflow -- in the CLOSED state too, where the closed-state audit already
-# catches it, so such a page simply exhausts the bound and is measured as-is (never failed).
+# Open-state overflow lane: after a trigger action, poll until the reveal's effect has LANDED
+# and the width has SETTLED, before measuring scrollWidth. A fixed wait races a panel revealed
+# by a transition-delayed :hover handler (it opens AFTER the wait -> a closed, non-overflowing
+# measurement -> false green). "Landed" = scrollWidth changed from the immediate post-trigger
+# reading, or a popover/:target reveal is present. A reveal with NO horizontal-layout effect
+# (opacity / transform / max-height, or a vertical-only expansion) never trips "landed" and
+# simply exhausts the bound, then is measured as-is: correct, since any horizontal overflow of
+# such a reveal already exists in the CLOSED state where the closed-state audit catches it.
 # Bounded by OPEN_SETTLE_POLLS * OPEN_SETTLE_POLL_MS.
 OPEN_SETTLE_POLLS = 40
 OPEN_SETTLE_POLL_MS = 50
@@ -119,18 +119,19 @@ _OPEN_SPECS_JS = (
     "+(el.id?'#'+el.id:(el.className?'.'+String(el.className).trim().split(/\\s+/)[0]:''))}))"
 )
 _OPEN_HAS_JS = "()=>!!document.querySelector('[data-webcheck-open]')"
-# Open-state "landed + settled" probe. Returns [scrollWidth, scrollHeight, popoverOpen, target]:
+# Open-state "landed + settled" probe. Returns [scrollWidth, popoverOpen, target]:
 #  - scrollWidth: the measurement; also, a CHANGE in it signals a horizontal reveal landed.
-#  - scrollHeight: a CHANGE signals an in-flow panel (display:none -> block) has appeared --
-#    covers reveals that grow the page vertically without (yet) overflowing sideways.
 #  - popoverOpen: count of open top-layer popovers (the B / B3 reveals) -- a reliable open
 #    signal even though a constrained popover changes neither scroll dimension.
 #  - target: 1 if a :target element exists (the A3 click-to-#fragment reveal) -- likewise.
-# These are page-global but every member is overflow-relevant or an unambiguous reveal state,
-# so (unlike a raw visible-element count) an unrelated element cannot spuriously trip it.
+# Every member is overflow-relevant (scrollWidth) or an unambiguous reveal STATE caused only
+# by the trigger (popover-open / :target). scrollHeight is deliberately NOT a signal: an
+# unrelated async vertical reflow (a web-font swap changing line-box heights) would trip it
+# before a width-delayed reveal has opened, breaking the settle loop early on the still-closed
+# width -- a false green, the exact miss this lane exists to catch.
 _OPEN_PROBE_JS = (
     "()=>{const d=document.documentElement;return ["
-    "d.scrollWidth, d.scrollHeight,"
+    "d.scrollWidth,"
     "document.querySelectorAll('[popover]:popover-open').length,"
     "document.querySelector(':target')?1:0];}"
 )
@@ -690,19 +691,21 @@ def _open_one(page, handle, mode):
 
 
 def _wait_open_settled(op):
-    """After a trigger action, poll until the reveal's effect has LANDED (the document scroll
-    size changed from the immediate post-trigger reading, or a popover/:target reveal is
-    present) AND scrollWidth has SETTLED (unchanged across a poll), then return scrollWidth.
-    This waits out a transition-delayed reveal that a naive fixed wait would measure closed.
-    A reveal with no layout effect (opacity / transform / max-height) never trips "landed" and
-    simply exhausts the bound -- correct, since its box (and any horizontal overflow) already
-    exists closed and is caught by the closed-state audit; it is never failed."""
-    init_sw, init_sh, _, _ = op.evaluate(_OPEN_PROBE_JS)   # the immediate post-trigger state
+    """After a trigger action, poll until the reveal's effect has LANDED (scrollWidth changed
+    from the immediate post-trigger reading, or a popover/:target reveal is present) AND
+    scrollWidth has SETTLED (unchanged across a poll), then return scrollWidth. This waits out
+    a transition-delayed reveal that a naive fixed wait would measure closed. A reveal with no
+    horizontal-layout effect (opacity / transform / max-height, or a vertical-only expansion)
+    never trips "landed" and simply exhausts the bound -- correct, since any horizontal overflow
+    of such a reveal already exists closed and is caught by the closed-state audit; never failed.
+    scrollHeight is intentionally not a signal: an unrelated async vertical reflow (e.g. a web-
+    font swap) must not satisfy "landed" before a width-delayed reveal has opened."""
+    init_sw, _, _ = op.evaluate(_OPEN_PROBE_JS)   # the immediate post-trigger state
     prev_sw = None
     sw = init_sw
     for _ in range(OPEN_SETTLE_POLLS):
-        sw, sh, pop, tgt = op.evaluate(_OPEN_PROBE_JS)
-        landed = sw != init_sw or sh != init_sh or pop or tgt
+        sw, pop, tgt = op.evaluate(_OPEN_PROBE_JS)
+        landed = sw != init_sw or pop or tgt
         if landed and sw == prev_sw:   # the reveal took effect and the width stopped moving
             break
         prev_sw = sw
