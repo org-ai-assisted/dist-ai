@@ -694,24 +694,34 @@ function searchBox() {
 
 test("search: opening the magnifier focuses the field immediately (keyboard pops on touch)", () => {
   const { w, toggle, input } = searchBox();
-  w.requestAnimationFrame = (cb) => { cb(0); return 0; };   // run the transition-restore inline
+  // CAPTURE frame callbacks rather than running them inline: the whole point of the fix is that the
+  // focus + transition drop happen SYNCHRONOUSLY in the tap gesture (deferring either into a frame
+  // breaks the iOS keyboard). A synchronous rAF mock would hide exactly that regression.
+  const rafs = [];
+  w.requestAnimationFrame = (cb) => { rafs.push(cb); return rafs.length; };
   const timers = [];
-  w.setTimeout = (cb) => { timers.push(cb); return 0; };    // capture the deferred re-focus
-  // The lens label dispatches a click to the toggle with .checked ALREADY flipped -> the handler
-  // drops the width transition so the field is focusable at once, then focuses synchronously inside
-  // the tap gesture, which is what makes iOS Safari open the keyboard.
+  w.setTimeout = (cb) => { timers.push(cb); return 0; };    // capture the deferred re-focus too
+  // The lens label dispatches a click to the toggle with .checked ALREADY flipped.
   toggle.checked = true;
   toggle.dispatchEvent(new w.Event("click"));
+  // BEFORE draining any frame callback: focus must have landed AND the width transition must have
+  // been dropped, both synchronously. A handler that deferred the focus (or the transition drop)
+  // into the rAF would fail here, since rafs are still pending.
   assert.equal(w.document.activeElement, input,
-    "the search field is focused the moment the magnifier opens it, on touch and desktop alike");
+    "the field is focused synchronously on open, inside the gesture (not deferred to a frame)");
+  assert.equal(input.style.transition, "none",
+    "the width transition is dropped synchronously so the field is focusable at once");
+  assert.ok(rafs.length > 0, "a frame callback was scheduled to restore the transition");
+  // Now drain the frame callback -> the transition is restored so the box still animates on close.
+  rafs.forEach((cb) => cb(0));
   assert.equal(input.style.transition, "",
     "the width transition is restored after focus so the box still animates on close");
-  // The deferred re-focus re-asserts the caret past desktop Safari's label->checkbox focus steal,
-  // so a desktop user types with no second click.
+  // The deferred re-focus re-asserts the caret past WebKit's label->checkbox focus steal, so the
+  // user types with no second click.
   input.blur();
   timers.forEach((cb) => cb());
   assert.equal(w.document.activeElement, input,
-    "the deferred re-focus lands the caret in the field (beats the Safari label-focus steal)");
+    "the deferred re-focus lands the caret in the field (beats the label-focus steal)");
 });
 
 test("search: the deferred re-focus is skipped if the box was closed before it fires", () => {
