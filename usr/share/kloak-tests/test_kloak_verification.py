@@ -249,6 +249,30 @@ class KloakVerification(unittest.TestCase):
             result.returncode, 0,
             'make failed (WARN_CFLAGS is -Werror):\n%s' % result.stderr[-3000:])
 
+    def test_make_build_clang_werror(self) -> None:
+        ## clang is a maintainer-supported CC (the Makefile special-cases its
+        ## warning set), and it is built with the same -Werror as gcc. clang
+        ## rejects GCC-only '#pragma GCC diagnostic ignored' groups
+        ## (-Wanalyzer-fd-leak, -Wdiscarded-qualifiers) as -Wunknown-warning-option
+        ## and flags the real const-discard the GCC pragma hid, so a
+        ## gcc-only build gate misses a broken `make CC=clang`. Drive the REAL
+        ## Makefile with CC=clang; the build must stay clean. RED on the pre-fix
+        ## source (clang -Werror build failed).
+        make = _require('make')
+        repo = _repo()
+        self.addCleanup(subprocess.run, [make, '-C', repo, 'clean'],
+                        capture_output=True, text=True, check=True)
+        subprocess.run([make, '-C', repo, 'clean'], capture_output=True,
+                       text=True, check=True)
+        result = subprocess.run(
+            [make, '-C', repo, 'CC=%s' % self.clang],
+            capture_output=True, text=True)
+        self.assertEqual(
+            result.returncode, 0,
+            'make CC=clang failed (WARN_CFLAGS is -Werror); a GCC-only pragma '
+            'group or a clang-only diagnostic broke the clang build:\n%s'
+            % result.stderr[-3000:])
+
     def test_unsigned_char_portability(self) -> None:
         ## char's signedness is implementation-defined: signed on x86, UNSIGNED
         ## on arm64. fill_with_rand_alphabetic (kloak-shared.h) normalizes a
