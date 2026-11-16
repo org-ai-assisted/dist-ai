@@ -393,10 +393,119 @@ test("per-heading share: the visible (x) in .menu-wrapper closes the menu (setOp
   assert.ok(!tip.classList.contains("share-open"), "the (x) drops .share-open");
   assert.equal(tip.querySelector(".headline-anchor").getAttribute("aria-expanded"), "false",
     "aria-expanded reset on close");
+  // BUG3: the (x) also pins an inline display:none on .menu-wrapper so the sticky desktop :hover
+  // (@media(hover:hover) .share-tooltip:hover .menu-wrapper{display:block}) cannot re-reveal it;
+  // moving the pointer off the tooltip clears the override so a fresh hover can re-open.
+  assert.equal(tip.querySelector(".menu-wrapper").style.display, "none",
+    "the (x) pins display:none to beat the sticky :hover");
+  tip.dispatchEvent(new w.Event("pointerleave"));
+  assert.equal(tip.querySelector(".menu-wrapper").style.display, "",
+    "pointerleave clears the display override so hover can re-open");
   // a stray .menu-close outside any .share-tooltip -> tip is null -> no-op, never throws
   const w2 = load('<button type="button" class="menu-close">x</button>');
   assert.doesNotThrow(() => w2.document.querySelector(".menu-close")
     .dispatchEvent(new w2.MouseEvent("click", { bubbles: true, cancelable: true })));
+});
+
+// ---- native [popover] JS tether (BUG1 + #152: share "open in" confirm, (i) info, antispam) --
+// CSS anchor() positioning is Chromium-only; initPopoverTether re-positions the top-layer
+// popovers via CSSOM on their `toggle` event. jsdom has no layout (offsetWidth/Height = 0, and
+// clientWidth defaults to 0), so these DRIVE THE BRANCHES (below / flip-above / phone-centre /
+// clamp, opener resolution, teardown) and assert the CSSOM writes, not pixel-exact geometry.
+// A ToggleEvent is synthesized (jsdom does not fire the Popover API's); the capturing document
+// listener receives it on the (connected) popover element.
+
+test("popover tether: geometry -- below the opener + clamp, flip above, no-room fallback (desktop)", () => {
+  const w = load('<button id="b1" popovertarget="p1">Open</button><div id="p1" popover>hi</div>');
+  Object.defineProperty(w.document.documentElement, "clientWidth", { value: 1000, configurable: true });
+  Object.defineProperty(w, "innerHeight", { value: 768, configurable: true });
+  const pop = w.document.getElementById("p1");
+  const open = (rect) => {
+    w.document.getElementById("b1").getBoundingClientRect = () => rect;
+    const e = new w.Event("toggle"); e.newState = "open"; pop.dispatchEvent(e);
+  };
+  // room below -> placed just below; opener off the left edge -> left clamped to the 8px margin
+  open({ top: 100, bottom: 120, left: -50, right: -10, width: 40, height: 20 });
+  assert.equal(pop.style.position, "fixed", "owns position:fixed over the UA top-layer centring");
+  assert.equal(pop.style.transform, "none", "clears the phone-rule translate");
+  assert.equal(pop.style.top, "126px", "below the opener (bottom 120 + 6 gap)");
+  assert.equal(pop.style.left, "8px", "left clamped into the viewport");
+  // no room below, room above -> flip above
+  open({ top: 740, bottom: 760, left: 50, right: 90, width: 40, height: 20 });
+  assert.ok(parseFloat(pop.style.top) < 740, "flipped above the low opener");
+  // no room below AND none above -> stays below, clamped down to the bottom margin
+  open({ top: 5, bottom: 762, left: 50, right: 90, width: 40, height: 20 });
+  assert.ok(parseFloat(pop.style.top) <= 760, "clamped to the bottom margin when neither side has room");
+});
+
+test("popover tether: centres the confirm on a phone viewport", () => {
+  const w = load('<button id="b1" popovertarget="p1">Open</button><div id="p1" popover>hi</div>');
+  Object.defineProperty(w.document.documentElement, "clientWidth", { value: 400, configurable: true });
+  Object.defineProperty(w, "innerHeight", { value: 800, configurable: true });
+  w.document.getElementById("b1").getBoundingClientRect =
+    () => ({ top: 100, bottom: 120, left: 10, right: 50, width: 40, height: 20 });
+  const pop = w.document.getElementById("p1");
+  const e = new w.Event("toggle"); e.newState = "open"; pop.dispatchEvent(e);
+  // pw/ph are 0 in jsdom -> centre = (vw/2, vh/2)
+  assert.equal(pop.style.left, "200px", "centred horizontally on the phone");
+  assert.equal(pop.style.top, "400px", "centred vertically on the phone");
+});
+
+test("popover tether: finds the opener past the hide control, follows it on scroll, stops on close", () => {
+  // hide control FIRST in document order -> openerFor must skip it and take the real opener
+  const w = load('<div id="p1" popover><button popovertarget="p1" popovertargetaction="hide">x</button></div>' +
+    '<button id="b1" popovertarget="p1">Open</button>');
+  Object.defineProperty(w.document.documentElement, "clientWidth", { value: 1000, configurable: true });
+  Object.defineProperty(w, "innerHeight", { value: 768, configurable: true });
+  const pop = w.document.getElementById("p1");
+  const opener = w.document.getElementById("b1");
+  opener.getBoundingClientRect = () => ({ top: 100, bottom: 120, left: 200, right: 240, width: 40, height: 20 });
+  const o = new w.Event("toggle"); o.newState = "open"; pop.dispatchEvent(o);
+  assert.equal(pop.style.top, "126px", "positioned off the opener, skipping the hide control");
+  // scroll while open -> reposition tracks the opener's new rect
+  opener.getBoundingClientRect = () => ({ top: 200, bottom: 220, left: 200, right: 240, width: 40, height: 20 });
+  w.dispatchEvent(new w.Event("scroll"));
+  assert.equal(pop.style.top, "226px", "reposition follows the opener on scroll while open");
+  // close -> stop tracking: a later scroll does not reposition
+  const c = new w.Event("toggle"); c.newState = "closed"; pop.dispatchEvent(c);
+  opener.getBoundingClientRect = () => ({ top: 500, bottom: 520, left: 200, right: 240, width: 40, height: 20 });
+  w.dispatchEvent(new w.Event("scroll"));
+  assert.equal(pop.style.top, "226px", "no reposition after close (listener detached)");
+});
+
+test("popover tether: ignores non-popover toggles + un-invoked popovers; CSS.escape present or absent", () => {
+  const w = load('<details id="d1"><summary>s</summary>x</details>' +
+    '<div id="p2" popover>no opener</div>' +
+    '<div popover class="noid">no id</div>' +
+    '<button id="b3" popovertarget="p3">Open</button><div id="p3" popover>hi</div>');
+  Object.defineProperty(w.document.documentElement, "clientWidth", { value: 1000, configurable: true });
+  Object.defineProperty(w, "innerHeight", { value: 768, configurable: true });
+  // a <details> ToggleEvent carries no popover attribute -> ignored
+  const de = new w.Event("toggle"); de.newState = "open";
+  assert.doesNotThrow(() => w.document.getElementById("d1").dispatchEvent(de));
+  // CSS.escape ABSENT -> openerFor builds the selector from the raw id (fallback). p2 has an id
+  // but no invoker -> left at the native default (no CSSOM write).
+  w.CSS = undefined;
+  const p2 = w.document.getElementById("p2");
+  const e2 = new w.Event("toggle"); e2.newState = "open"; p2.dispatchEvent(e2);
+  assert.equal(p2.style.position, "", "no opener -> popover left at the native default");
+  // close while nothing is tracked -> no-op (active is null)
+  const e2c = new w.Event("toggle"); e2c.newState = "closed";
+  assert.doesNotThrow(() => p2.dispatchEvent(e2c));
+  // a popover with NO id -> openerFor bails immediately -> native default
+  const noid = w.document.querySelector(".noid");
+  const en = new w.Event("toggle"); en.newState = "open"; noid.dispatchEvent(en);
+  assert.equal(noid.style.position, "", "no id -> no tether");
+  // CSS.escape PRESENT -> used to build the opener selector; p3 tethers
+  w.CSS = { escape: (s) => s };
+  w.document.getElementById("b3").getBoundingClientRect =
+    () => ({ top: 100, bottom: 120, left: 200, right: 240, width: 40, height: 20 });
+  const p3 = w.document.getElementById("p3");
+  const e3 = new w.Event("toggle"); e3.newState = "open"; p3.dispatchEvent(e3);
+  assert.equal(p3.style.position, "fixed", "tethered via the CSS.escape'd id selector");
+  // close a DIFFERENT popover than the tracked one (p3) -> active.pop mismatch -> no untrack
+  const e2c2 = new w.Event("toggle"); e2c2.newState = "closed";
+  assert.doesNotThrow(() => p2.dispatchEvent(e2c2));
 });
 
 test("hash navigation reveals + scrolls a closed-<details> target; a plain target needs no JS scroll", () => {
@@ -950,6 +1059,66 @@ test("fly-in toast: test-settings forces it to show, close button hides + persis
   assert.ok(stored <= now && now - stored < DAY, "rounded value is within the dismissal day");
 });
 
+// fly-in robust close (#169): the toast must never get stuck visible if its transition is zeroed
+// (reduced-motion), interrupted (transitioncancel), or never fires. Visible geometry is verified
+// in-browser; here we drive the duration-aware hide() branches.
+const FLYIN = '<div id="fly-in-notification-panel" hidden><button class="close-panel">x</button></div>' +
+  '<div id="fly-in-notification-test-settings" data-waitinseconds="0" data-dismissfordays="3" data-now="1700000500000"></div>';
+
+test("fly-in toast: no transition -> hides synchronously (reduced-motion / jsdom)", async () => {
+  const w = load(FLYIN);
+  await tick();
+  const panel = w.document.getElementById("fly-in-notification-panel");
+  assert.equal(panel.hidden, false, "shown after the 0s wait");
+  panel.querySelector(".close-panel").dispatchEvent(new w.Event("click", { bubbles: true }));
+  assert.equal(panel.hidden, true, "no transition duration -> hidden synchronously");
+});
+
+test("fly-in toast: a real transition defers the hide; bubbled child transitions are ignored; hide is idempotent", async () => {
+  const w = load(FLYIN);
+  await tick();
+  const panel = w.document.getElementById("fly-in-notification-panel");
+  w.getComputedStyle = () => ({ transitionDuration: "0.2s", transitionDelay: "0s" });
+  panel.querySelector(".close-panel").dispatchEvent(new w.Event("click", { bubbles: true }));
+  assert.equal(panel.hidden, false, "a real transition defers the hide");
+  // a child's transitionend bubbles to the panel but must be ignored (e.target !== panel)
+  panel.querySelector(".close-panel").dispatchEvent(new w.Event("transitionend", { bubbles: true }));
+  assert.equal(panel.hidden, false, "a bubbled child transitionend does not hide the panel");
+  // the panel's OWN transitionend hides it; a second event is a no-op (idempotent)
+  panel.dispatchEvent(new w.Event("transitionend"));
+  assert.equal(panel.hidden, true, "the panel's own transitionend completes the hide");
+  assert.doesNotThrow(() => panel.dispatchEvent(new w.Event("transitionend")), "double-fire is a no-op");
+});
+
+test("fly-in toast: transitioncancel hides it; a wall-clock fallback hides it if nothing fires", async () => {
+  const w = load(FLYIN);
+  await tick();
+  const panel = w.document.getElementById("fly-in-notification-panel");
+  w.getComputedStyle = () => ({ transitionDuration: "0.2s", transitionDelay: "0s" });
+  panel.querySelector(".close-panel").dispatchEvent(new w.Event("click", { bubbles: true }));
+  panel.dispatchEvent(new w.Event("transitioncancel"));
+  assert.equal(panel.hidden, true, "transitioncancel also completes the hide");
+  // separate window: no transition event at all -> the timeout fallback fires
+  const w2 = load(FLYIN);
+  await tick();
+  const panel2 = w2.document.getElementById("fly-in-notification-panel");
+  w2.getComputedStyle = () => ({ transitionDuration: "0.01s", transitionDelay: "0s" });
+  panel2.querySelector(".close-panel").dispatchEvent(new w2.Event("click", { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 90));   // > 0.01s*1000 + 50ms fallback
+  assert.equal(panel2.hidden, true, "the wall-clock fallback hides it when no transitionend fires");
+});
+
+test("fly-in toast: Escape dismisses it while shown; a 2nd Escape after hide is a no-op", async () => {
+  const w = load(FLYIN);
+  await tick();
+  const panel = w.document.getElementById("fly-in-notification-panel");
+  w.document.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  assert.equal(panel.hidden, true, "Escape dismisses the shown toast");
+  assert.doesNotThrow(() => w.document.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Escape", bubbles: true })),
+    "a 2nd Escape once hidden is a no-op");
+  assert.equal(panel.hidden, true, "still hidden");
+});
+
 // ---- modals (generic / download / table-expand) --------------------------------------------
 
 test("generic modal: a trigger opens it, Escape closes it", () => {
@@ -1134,6 +1303,52 @@ test("hovercards: reference card has a 'Footnote N' headline, nav on top, arrow 
   // Escape dismisses the card
   w.document.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   assert.ok(w.document.querySelector(".hovercard").hidden, "Escape hides the card");
+});
+
+test("hovercards: a FOCUSED citation opens the same card (keyboard parity, WCAG 2.1.1)", async () => {
+  const w = load('<div class="wiki-content"><sup class="reference"><a href="#fn1">[1]</a></sup>' +
+    '<li id="fn1">A footnote.</li></div>');
+  w.document.querySelector("sup.reference a").dispatchEvent(new w.Event("focusin", { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 260));   // same 200ms showTimer as hover
+  const card = w.document.querySelector(".hovercard .hovercard-ref");
+  assert.ok(card, "focus opens the reference card");
+  assert.ok(/A footnote/.test(card.textContent), "footnote text carried over");
+});
+
+test("hovercards: focus into the card keeps it; focus away dismisses it; no relatedTarget is handled", async () => {
+  const w = load('<div class="wiki-content"><sup class="reference"><a href="#fn1">[1]</a></sup>' +
+    '<li id="fn1">A footnote.</li></div>');
+  const a = w.document.querySelector("sup.reference a");
+  a.dispatchEvent(new w.Event("focusin", { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 260));
+  const card = w.document.querySelector(".hovercard");
+  assert.ok(card && !card.hidden, "focus opened the card");
+  // focus moves INTO the card -> stays open (relatedTarget inside the card)
+  const into = new w.Event("focusout", { bubbles: true });
+  Object.defineProperty(into, "relatedTarget", { value: card, configurable: true });
+  a.dispatchEvent(into);
+  await new Promise((r) => setTimeout(r, 260));
+  assert.ok(!card.hidden, "focus entering the card does not dismiss it");
+  // focus moves to an element OUTSIDE the card -> dismiss
+  const away = new w.Event("focusout", { bubbles: true });
+  Object.defineProperty(away, "relatedTarget", { value: w.document.body, configurable: true });
+  a.dispatchEvent(away);
+  await new Promise((r) => setTimeout(r, 260));
+  assert.ok(card.hidden, "focus leaving the card dismisses it");
+  // a focusout with no relatedTarget is handled too (no throw, stays hidden)
+  const none = new w.Event("focusout", { bubbles: true });
+  Object.defineProperty(none, "relatedTarget", { value: null, configurable: true });
+  assert.doesNotThrow(() => a.dispatchEvent(none));
+  assert.ok(card.hidden, "still hidden");
+});
+
+test("hovercards: a focusout before any card is built is a no-op", () => {
+  const w = load('<div class="wiki-content"><sup class="reference"><a href="#fn1">[1]</a></sup>' +
+    '<li id="fn1">A footnote.</li></div>');
+  const a = w.document.querySelector("sup.reference a");
+  const e = new w.Event("focusout", { bubbles: true });
+  Object.defineProperty(e, "relatedTarget", { value: null, configurable: true });
+  assert.doesNotThrow(() => a.dispatchEvent(e), "no card yet -> focusout does not throw");
 });
 
 test("hovercards: hovering an internal link builds a page card from the fetched preview index", async () => {
