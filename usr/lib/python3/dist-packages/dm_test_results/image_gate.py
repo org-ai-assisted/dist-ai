@@ -31,23 +31,22 @@ def iter_images(paths):
             yield path
 
 
-def is_allowed(base, allow):
-    """Whether basename BASE is exempted by an --allow value.
-
-    Match the frame NAME as a whole or a dash-delimited suffix token of the stem
-    (e.g. 'firmware-logo' matches '43-installed-firmware-logo.png'), never a raw
-    substring: a bare substring is fail-OPEN -- '' or '.' is a substring of every
-    basename, so it would silently exempt EVERY frame and pass a check that checked
-    nothing. A token with no alphanumeric character (so '', '.', '-') is not a real
-    frame name and matches NOTHING -- otherwise '.' would still match a stem ending
-    in '-.' (e.g. 'shot-..png'). Fail-closed."""
+def name_matches(base, name):
+    """Whether basename BASE is named NAME, matched as the whole stem or a dash-delimited
+    suffix token of it (e.g. 'firmware-logo' matches '43-installed-firmware-logo.png'),
+    never a raw substring: a bare substring is fail-OPEN -- '' or '.' is a substring of
+    every basename, so it would silently match EVERY frame. A token with no alphanumeric
+    character (so '', '.', '-') is not a real frame name and matches NOTHING -- otherwise
+    '.' would still match a stem ending in '-.' (e.g. 'shot-..png'). Fail-closed."""
+    if not any(c.isalnum() for c in name):
+        return False
     stem = os.path.splitext(base)[0]
-    for name in allow:
-        if not any(c.isalnum() for c in name):
-            continue
-        if stem == name or stem.endswith("-" + name):
-            return True
-    return False
+    return stem == name or stem.endswith("-" + name)
+
+
+def is_allowed(base, allow):
+    """Whether basename BASE is exempted by any of the --allow values (see name_matches)."""
+    return any(name_matches(base, name) for name in allow)
 
 
 def content_hash(path):

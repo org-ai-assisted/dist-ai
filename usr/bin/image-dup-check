@@ -20,7 +20,8 @@ same content under distinct milestones is almost always a capture bug, so a huma
 investigates rather than trusting the duplicates.
 
 Usage:
-  image-dup-check [--allow NAME]... [--min-cluster N] PATH...
+  image-dup-check [--allow NAME]... [--min-cluster N]
+                  [--require-distinct LIVE BASELINE]... PATH...
 
 PATH is a PNG/WEBP file or a directory (scanned for *.png/*.webp, non-recursive). Frames
 are compared by their decoded-RGB content hash (a PNG and a lossless WEBP of the same
@@ -31,7 +32,17 @@ may LEGITIMATELY repeat an unchanging view (an idle terminal, a static VirtualBo
 panel), and say why. An allowed frame never participates in a cluster. --min-cluster
 sets how many identical frames constitute a failure (default 2: any duplicate).
 
-Exit: 0 no un-allowed duplicate cluster; 1 at least one; 2 usage/read error."""
+--require-distinct LIVE BASELINE asserts two named frames (matched as --allow matches)
+are NOT byte-identical: a frame that MUST be live (LIVE) against an idle baseline
+(BASELINE). For a static-view lane (a CLI getty console) every milestone frame
+legitimately repeats, so the cluster gate cannot run -- but the capture can still FREEZE,
+and a frame driven to a visibly different state (a console LOGIN) must therefore differ
+from the idle baseline; identical == a frozen/stuck capture -> fail. Either frame absent
+== not applicable (no assertion). Repeatable; independent of --allow / --min-cluster.
+
+Exit: 0 no un-allowed duplicate cluster and every require-distinct pair differs; 1 a
+duplicate cluster and/or a frozen-capture (identical required-distinct) pair; 2 usage/read
+error."""
 
 import argparse
 import os
@@ -43,7 +54,8 @@ _LIB = os.path.join(
 if os.path.isdir(_LIB) and _LIB not in sys.path:
     sys.path.insert(0, _LIB)
 
-from dm_test_results.image_gate import content_hash, is_allowed, iter_images  # noqa: E402
+from dm_test_results.image_gate import (  # noqa: E402
+    content_hash, is_allowed, iter_images, name_matches)
 
 
 def parse_args(argv):
@@ -52,48 +64,115 @@ def parse_args(argv):
                         help="exclude a shot whose name equals this, or whose stem ends "
                              "with '-'+this (a dash-delimited suffix token), from the "
                              "duplicate comparison; an empty value never matches")
-    parser.add_argument("--min-cluster", type=int, default=2,
+    parser.add_argument("--min-cluster", type=int, default=None,
                         help="how many identical frames constitute a duplicate cluster "
                              "(default 2: any duplicate fails)")
+    parser.add_argument("--require-distinct", action="append", nargs=2, default=[],
+                        metavar=("LIVE", "BASELINE"),
+                        help="fail if the two named frames are byte-identical (a frozen "
+                             "capture): a frame that must be live vs an idle baseline. "
+                             "Names match as --allow does. Either absent -> not applicable. "
+                             "Repeatable.")
+    parser.add_argument("--no-cluster", action="store_true",
+                        help="skip the duplicate-cluster scan; only the --require-distinct "
+                             "assertions run (for a lane whose idle frames legitimately "
+                             "repeat). Requires --require-distinct; conflicts with "
+                             "--min-cluster/--allow.")
     parser.add_argument("paths", nargs="+")
     return parser.parse_args(argv[1:])
 
 
 def main(argv):
     args = parse_args(argv)
-    if args.min_cluster < 2:
+    if args.no_cluster:
+        ## Liveness-only: the lane's idle frames legitimately repeat, so a cluster scan
+        ## would false-fail. --min-cluster/--allow only shape the cluster scan, so pairing
+        ## them with --no-cluster is contradictory; and with no --require-distinct there is
+        ## nothing left to check (a silent vacuous pass).
+        if args.min_cluster is not None or args.allow:
+            sys.stderr.write(
+                "image-dup-check: --no-cluster conflicts with --min-cluster/--allow\n")
+            return 2
+        if not args.require_distinct:
+            sys.stderr.write(
+                "image-dup-check: --no-cluster requires --require-distinct "
+                "(nothing to check otherwise)\n")
+            return 2
+    min_cluster = 2 if args.min_cluster is None else args.min_cluster
+    if min_cluster < 2:
         sys.stderr.write("image-dup-check: --min-cluster must be >= 2\n")
         return 2
 
-    ## hash -> list of basenames sharing it (allowed frames are excluded entirely, so
-    ## an allow-listed frame can never create or join a cluster).
-    clusters = {}
-    checked = 0
+    ## Decode each frame once: (basename, content hash). A list (not a dict keyed by
+    ## basename) so that two paths sharing a basename are each counted, as the cluster
+    ## scan always has.
+    frames = []
     for path in iter_images(args.paths):
         base = os.path.basename(path)
-        if is_allowed(base, args.allow):
-            continue
         try:
             digest = content_hash(path)
         except (OSError, ValueError) as exc:
             ## An unreadable/corrupt frame is itself a bad capture -> fail loud.
             sys.stderr.write("image-dup-check: unreadable %s -- %s\n" % (path, exc))
             return 2
+        frames.append((base, digest))
+
+    failed = False
+
+    ## --- liveness: named frame pairs that MUST differ --------------------------------
+    ## Catches a FROZEN capture on a lane whose milestone frames legitimately repeat (a
+    ## static CLI console), where the cluster gate cannot run. Independent of --allow:
+    ## a positive "these two differ" assertion never drops a frame from clustering, so it
+    ## cannot weaken a cluster gate the way an --allow exemption could.
+    for live, baseline in args.require_distinct:
+        live_frames = [(b, h) for b, h in frames if name_matches(b, live)]
+        base_frames = [(b, h) for b, h in frames if name_matches(b, baseline)]
+        if not live_frames or not base_frames:
+            sys.stdout.write(
+                "image-dup-check: require-distinct %s/%s: not applicable (%s absent)\n"
+                % (live, baseline, live if not live_frames else baseline))
+            continue
+        collisions = sorted(
+            "%s == %s" % (lb, bb)
+            for lb, lh in live_frames for bb, bh in base_frames
+            if lb != bb and lh == bh)
+        if collisions:
+            failed = True
+            sys.stderr.write(
+                "image-dup-check: FROZEN CAPTURE -- frames that must differ are identical: "
+                "%s\n" % "; ".join(collisions))
+
+    ## --- cluster: too many byte-identical frames under distinct milestone names -------
+    if args.no_cluster:
+        sys.stdout.write(
+            "image-dup-check: %d frame(s), liveness-only (%d require-distinct pair(s))\n"
+            % (len(frames), len(args.require_distinct)))
+        return 1 if failed else 0
+
+    ## hash -> list of basenames sharing it (allowed frames are excluded entirely, so an
+    ## allow-listed frame can never create or join a cluster).
+    clusters = {}
+    checked = 0
+    for base, digest in frames:
+        if is_allowed(base, args.allow):
+            continue
         checked += 1
         clusters.setdefault(digest, []).append(base)
 
     dup_clusters = sorted(
-        (names for names in clusters.values() if len(names) >= args.min_cluster),
+        (names for names in clusters.values() if len(names) >= min_cluster),
         key=len, reverse=True)
     dup_frames = sum(len(names) for names in dup_clusters)
     for names in dup_clusters:
         sys.stderr.write(
             "image-dup-check: DUPLICATE (%d identical frames): %s\n"
             % (len(names), ", ".join(sorted(names))))
+    if dup_clusters:
+        failed = True
     sys.stdout.write(
         "image-dup-check: %d checked, %d duplicate cluster(s), %d duplicate frame(s)\n"
         % (checked, len(dup_clusters), dup_frames))
-    return 1 if dup_clusters else 0
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

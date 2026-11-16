@@ -126,6 +126,21 @@ expect_rc "2-dup below --min-cluster 3 is NOT flagged"       0 --min-cluster 3 "
 expect_rc "3-dup meets --min-cluster 3"                      1 --min-cluster 3 "${workdir}/triple"
 expect_rc "--min-cluster 1 is a usage error"                 2 --min-cluster 1 "${workdir}/dups"
 
+## --require-distinct: two named frames that MUST differ (a live frame vs an idle baseline).
+## Catches a FROZEN capture on a lane whose idle frames legitimately repeat, where the cluster
+## gate cannot run. --no-cluster runs ONLY that assertion (the triple dir's t1=t2=t3 cluster must
+## not false-fail it). Names match by the same whole-stem / dash-suffix-token rule as --allow.
+expect_rc "require-distinct: distinct frames pass (no-cluster)"   0 --no-cluster --require-distinct u t1 "${workdir}/triple"
+expect_rc "require-distinct: identical frames fail (frozen)"      1 --no-cluster --require-distinct t1 t2 "${workdir}/triple"
+expect_rc "require-distinct: absent frame is not applicable"      0 --no-cluster --require-distinct nope t1 "${workdir}/triple"
+## --no-cluster guards: it must pair with --require-distinct and not with cluster-only flags.
+expect_rc "--no-cluster without --require-distinct is usage err"  2 --no-cluster "${workdir}/triple"
+expect_rc "--no-cluster with --min-cluster is usage err"          2 --no-cluster --min-cluster 3 --require-distinct u t1 "${workdir}/triple"
+expect_rc "--no-cluster with --allow is usage err"                2 --no-cluster --allow t1 --require-distinct u t1 "${workdir}/triple"
+## require-distinct WITHOUT --no-cluster still runs the cluster scan (the two are combinable).
+expect_rc "require-distinct + cluster: cluster still fails"       1 --require-distinct u t1 "${workdir}/triple"
+expect_rc "require-distinct + cluster: all-distinct passes"       0 --require-distinct d1 d2 "${workdir}/distinct"
+
 ## CANARY: a detector that flagged NOTHING would fail every '1' case above; one that
 ## flagged EVERYTHING would fail every '0' case (all-distinct, different-size, single
 ## file, the --allow and --min-cluster-3-on-2-dup exemptions). Both directions asserted.

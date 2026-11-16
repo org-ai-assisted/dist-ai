@@ -5,19 +5,24 @@
 
 ## AI-Assisted
 
-## image-dup-check FAILs a run when >= 3 milestone frames are byte-identical (a capture that did
-## not advance, published under many names). That premise -- frames SHOULD advance -- holds only
-## for a GUI lane whose desktop visibly changes. A CLI edition has NO graphical session: every
-## milestone is the SAME static getty console by design (func: workstation-booted/-tor-confirmed/
-## -final; leak: workstation-desktop/-tor-confirmed), so the gate can only FALSE-FAIL it (seen
-## live: a CLI inst lane published FAIL rc=5 on 3 byte-identical console frames). So
-## rt_dup_check_enabled SKIPS the gate for interface=cli and keeps it for the GUI lanes -- not a
-## per-name --allow, which can drop a GENUINE stuck cluster below --min-cluster and silently weaken
-## the gate on a different lane.
+## The milestone-screenshot integrity gate, by lane (dm-release-test rt_cluster_gate_enabled +
+## the exact image-dup-check command each branch runs):
+##  - GUI: the CLUSTER gate. A desktop visibly advances, so N byte-identical milestone frames ==
+##    a stuck capture published under many names (image-dup-check --min-cluster 3).
+##  - CLI: NOT the cluster gate -- a CLI edition has no graphical session, so every idle milestone
+##    is the SAME static getty console by design and the cluster gate can only FALSE-FAIL. But a
+##    CLI capture can still FREEZE, and the check-8 verdict is driven over guestcontrol (blind of
+##    the screen), so a frozen grab would pass undetected. The console-login frame is DRIVEN to a
+##    logged-in shell, so on any live run it must differ from the idle workstation-booted frame;
+##    identical == a frozen capture. So the CLI branch runs a capture-LIVENESS assertion
+##    (image-dup-check --no-cluster --require-distinct console-login workstation-booted) in place
+##    of the cluster gate -- NOT a per-name --allow, which can drop a genuine stuck cluster below
+##    --min-cluster and silently weaken a GUI lane.
 ##
-## Drives the REAL dm-release-test helper (sourced, no VM/root) AND the REAL image-dup-check: the
-## gate is proven to still FIRE when enabled (the GUI canary), so "skip for cli" is not a vacuous
-## pass.
+## Drives the REAL dm-release-test helper (sourced, no VM/root) AND the REAL image-dup-check with
+## the EXACT arguments each branch passes: the CLI liveness gate PASSES a live run whose idle frames
+## legitimately repeat, FAILS a four-frame frozen capture (console-login frozen onto the idle
+## frames), and the GUI cluster gate still FIRES -- so neither gate is a vacuous pass.
 
 set -o errexit
 set -o nounset
@@ -70,6 +75,18 @@ assert() {
       printf '%s\n' "FAIL: ${label}" >&2
    fi
 }
+## $2 = expected rc of the REAL image-dup-check invoked with $3.. (the exact gate argv).
+expect_gate() {
+   local label="$1" want="$2"
+   shift 2
+   local got=0
+   "${checker}" "$@" >/dev/null 2>&1 || got=$?
+   if [ "${got}" -eq "${want}" ]; then
+      pass=$((pass + 1)); printf '%s\n' "PASS: ${label}"
+   else
+      fail=$((fail + 1)); printf '%s\n' "FAIL: ${label} (rc=${got}, want ${want})" >&2
+   fi
+}
 
 workdir="$(mktemp --directory --tmpdir cli-milestone-dup-test.XXXXXX)"
 # shellcheck disable=SC2317  ## invoked via the EXIT trap
@@ -78,24 +95,43 @@ trap cleanup EXIT
 
 ## --- the gate decision, by interface ----------------------------------------------------------
 ## assert checks for SUCCESS, so the negative (cli must return non-zero) is an explicit if/else.
-if rt_dup_check_enabled cli; then
-   fail=$((fail + 1)); printf '%s\n' "FAIL: cli must SKIP the milestone dup gate" >&2
+if rt_cluster_gate_enabled cli; then
+   fail=$((fail + 1)); printf '%s\n' "FAIL: cli must NOT get the cluster gate" >&2
 else
-   pass=$((pass + 1)); printf '%s\n' "PASS: cli SKIPS the milestone dup gate (static console, no advance)"
+   pass=$((pass + 1)); printf '%s\n' "PASS: cli does NOT get the cluster gate (static console; liveness instead)"
 fi
-assert "lxqt KEEPS the milestone dup gate" rt_dup_check_enabled lxqt
+assert "lxqt GETS the cluster gate" rt_cluster_gate_enabled lxqt
 
-## --- CANARY: when enabled (GUI), the REAL gate still FAILS 3 identical frames ------------------
-## Proves "skip for cli" is a real behavior difference, not a gate that never fired anyway.
-shot="${workdir}/shot"
-mkdir -- "${shot}"
-"${magick_bin}" -size 128x96 xc:'#101418' "${shot}/25-workstation-booted.png"
-cp -- "${shot}/25-workstation-booted.png" "${shot}/50-workstation-tor-confirmed.png"
-cp -- "${shot}/25-workstation-booted.png" "${shot}/95-workstation-final.png"
-gui_rc=0
-"${checker}" --min-cluster 3 -- "${shot}" >/dev/null 2>&1 || gui_rc=$?
-assert "the enabled gate FAILS a 3-identical-frame cluster (GUI canary)" \
-   test "${gui_rc}" -eq 1
+## --- CLI liveness gate: the EXACT argv the CLI branch runs ------------------------------------
+## A live func-CLI run: 3 idle frames legitimately identical (booted/tor-confirmed/final) + a
+## DISTINCT driven console-login + a distinct gateway. The liveness gate must PASS it (the cluster
+## gate would FALSE-FAIL on the 3 identical idle frames -- see the GUI canary below).
+live="${workdir}/cli-live"
+mkdir -- "${live}"
+"${magick_bin}" -size 128x96 xc:'#101418' "${live}/25-workstation-booted.png"
+cp -- "${live}/25-workstation-booted.png" "${live}/50-workstation-tor-confirmed.png"
+cp -- "${live}/25-workstation-booted.png" "${live}/95-workstation-final.png"
+"${magick_bin}" -size 128x96 xc:'#2a3340' "${live}/58-console-login.png"       ## logged-in shell
+"${magick_bin}" -size 128x96 xc:'#181c10' "${live}/20-gateway-booted.png"
+expect_gate "CLI liveness PASSES a live run (idle frames legitimately repeat)" 0 \
+   --no-cluster --require-distinct console-login workstation-booted -- "${live}"
+
+## FROZEN capture: the grab stuck, so console-login is byte-identical to the idle frames (four
+## identical frames). The verdict is guestcontrol-driven and would pass; the liveness gate FAILS it.
+frozen="${workdir}/cli-frozen"
+mkdir -- "${frozen}"
+"${magick_bin}" -size 128x96 xc:'#101418' "${frozen}/25-workstation-booted.png"
+cp -- "${frozen}/25-workstation-booted.png" "${frozen}/50-workstation-tor-confirmed.png"
+cp -- "${frozen}/25-workstation-booted.png" "${frozen}/58-console-login.png"    ## frozen onto idle
+cp -- "${frozen}/25-workstation-booted.png" "${frozen}/95-workstation-final.png"
+expect_gate "CLI liveness FAILS a four-frame frozen capture (console-login == booted)" 1 \
+   --no-cluster --require-distinct console-login workstation-booted -- "${frozen}"
+
+## --- GUI CANARY: the cluster gate the GUI branch runs still FIRES -----------------------------
+## Proves "CLI uses liveness instead of cluster" is a real behavior difference, not a gate that
+## never fired anyway: the SAME 3 identical idle frames FAIL the GUI cluster gate.
+expect_gate "GUI cluster gate FAILS 3 identical frames (--min-cluster 3)" 1 \
+   --min-cluster 3 -- "${live}"
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 [ "${fail}" -eq 0 ] || exit 1
