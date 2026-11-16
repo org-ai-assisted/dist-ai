@@ -2918,6 +2918,44 @@ test("a shard batch resolving AFTER close does not reopen the search panel", asy
   assert.equal(results.querySelectorAll("li a").length, 0, "no stale body rows appended after close");
 });
 
+test("search combobox: Stage-1 Escape invalidates an in-flight shard so a late batch cannot reopen the panel", async () => {
+  // Regression: the input-keydown Stage-1 Escape (dismiss dropdown, keep query) stopPropagation's
+  // the document handler, so closeSearch never runs -- the branch must bump queryGen ITSELF, else a
+  // full-text shard batch still in flight resolves and reopens the panel the user just dismissed.
+  // Two pages: a title hit (page 0 "Anonymity") OPENS the panel, so Escape is Stage 1; the shard
+  // holds a BODY-ONLY hit for a DIFFERENT page (page 1 "Download", not in the title results'
+  // shownIds), so the late batch has a row to append -- that is what reopens the panel on old code.
+  const idx = [{ t: "Anonymity", u: "wiki/Anonymity/" }, { t: "Download", u: "wiki/Download/" }];
+  const name = pad3(bktOf.anonymity);
+  const sh = {}; sh[name] = "h1";
+  const manifest = { v: 1, buckets: FX.buckets, docs: 2, avgdl: 10, dl: [10, 10], base: "search/ft/", sh };
+  const w = load('<div class="site-search"><input type="checkbox" id="search-toggle">' +
+    '<input id="search-input"></div>', { searchIndex: idx, manifest });
+  let releaseShard;
+  const shardGate = new Promise((r) => { releaseShard = r; });
+  w.fetch = (u) => {
+    u = String(u);
+    if (/fulltext-manifest/.test(u)) return Promise.resolve({ ok: true, json: () => Promise.resolve(manifest) });
+    if (/\/ft\/\d+\.json/.test(u)) return shardGate.then(() => ({ ok: true, json: () => Promise.resolve({ anonymity: [[1, 0, [5]]] }) }));
+    if (/search-index/.test(u)) return Promise.resolve({ ok: true, json: () => Promise.resolve(idx) });
+    return Promise.resolve({ ok: false, json: () => Promise.resolve(undefined) });
+  };
+  const input = w.document.getElementById("search-input");
+  const results = w.document.querySelector(".search-results");
+  input.value = "anonymity";                   // title-hits page 0; the shard (body hit on page 1) stays pending on the gate
+  input.dispatchEvent(new w.Event("input"));
+  await tick();
+  assert.ok(!results.hidden, "panel open on the title hit while the shard is in flight");
+  // Stage-1 Escape ON THE INPUT (dropdown open) -- stopPropagation keeps closeSearch from running.
+  input.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  assert.ok(results.hidden, "Stage-1 Escape closes the panel");
+  assert.equal(input.getAttribute("aria-expanded"), "false", "aria-expanded cleared on Stage-1 Escape");
+  releaseShard();                              // the body shard arrives LATE
+  await tick(); await tick();
+  assert.ok(results.hidden, "a late shard batch must NOT reopen the Escape-dismissed panel");
+  assert.equal(results.querySelectorAll("li a").length, 0, "no stale body rows appended after Stage-1 Escape");
+});
+
 test("hovercards: a citation anchor with no href resolves to no footnote (href defaults to empty)", async () => {
   const w = load('<div class="wiki-content"><sup class="reference"><a>no href</a></sup>' +
     '<li id="fn1">note</li></div>');
