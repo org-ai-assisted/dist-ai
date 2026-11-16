@@ -685,65 +685,72 @@ test("search: unchecking the magnifier toggle hides AND clears the results dropd
 
 function searchBox() {
   const w = load(
-    '<span class="site-search"><input type="checkbox" id="search-toggle"><input id="search-input"></span>',
+    '<span class="site-search"><input type="checkbox" id="search-toggle">' +
+    '<label for="search-toggle" class="search-icon"></label><input id="search-input"></span>',
     { searchIndex: [] });
-  return { w: w, toggle: w.document.getElementById("search-toggle"), input: w.document.getElementById("search-input") };
+  return { w: w, toggle: w.document.getElementById("search-toggle"), input: w.document.getElementById("search-input"),
+           label: w.document.querySelector('label[for="search-toggle"]') };
 }
 
-test("search: on a precise-pointer (mouse) device, opening the magnifier focuses the field", () => {
+test("search: opening the magnifier focuses the field immediately (keyboard pops on touch)", () => {
   const { w, toggle, input } = searchBox();
-  w.matchMedia = () => ({ matches: true });   // (hover:hover) and (pointer:fine) -> desktop/mouse
+  w.requestAnimationFrame = (cb) => { cb(0); return 0; };   // run the transition-restore inline
+  const timers = [];
+  w.setTimeout = (cb) => { timers.push(cb); return 0; };    // capture the deferred re-focus
+  // The lens label dispatches a click to the toggle with .checked ALREADY flipped -> the handler
+  // drops the width transition so the field is focusable at once, then focuses synchronously inside
+  // the tap gesture, which is what makes iOS Safari open the keyboard.
   toggle.checked = true;
-  toggle.dispatchEvent(new w.Event("change"));
+  toggle.dispatchEvent(new w.Event("click"));
   assert.equal(w.document.activeElement, input,
-    "the search field is focused the moment the magnifier opens it on a mouse device");
+    "the search field is focused the moment the magnifier opens it, on touch and desktop alike");
+  assert.equal(input.style.transition, "",
+    "the width transition is restored after focus so the box still animates on close");
+  // The deferred re-focus re-asserts the caret past desktop Safari's label->checkbox focus steal,
+  // so a desktop user types with no second click.
+  input.blur();
+  timers.forEach((cb) => cb());
+  assert.equal(w.document.activeElement, input,
+    "the deferred re-focus lands the caret in the field (beats the Safari label-focus steal)");
 });
 
-test("search: on a touch device (coarse pointer) opening the magnifier does NOT auto-focus", () => {
+test("search: the deferred re-focus is skipped if the box was closed before it fires", () => {
   const { w, toggle, input } = searchBox();
-  w.matchMedia = () => ({ matches: false });   // not (hover:hover and pointer:fine) -> touch
+  w.requestAnimationFrame = (cb) => { cb(0); return 0; };
+  const timers = [];
+  w.setTimeout = (cb) => { timers.push(cb); return 0; };
   toggle.checked = true;
-  toggle.dispatchEvent(new w.Event("change"));
+  toggle.dispatchEvent(new w.Event("click"));
+  // user collapses the box again before the 0ms re-focus timer runs
+  toggle.checked = false;
+  input.blur();
+  timers.forEach((cb) => cb());
   assert.notEqual(w.document.activeElement, input,
-    "no auto-focus on touch, so the soft keyboard never pops + shifts the page on open/collapse");
+    "no re-focus once the box is closed (the guard short-circuits)");
 });
 
-test("search: focus retries across frames until the reveal transition settles", () => {
-  const { w, toggle, input } = searchBox();
-  w.matchMedia = () => ({ matches: true });
-  w.requestAnimationFrame = (cb) => { cb(0); return 0; };   // run the retries inline
-  // the field is not focusable mid-reveal: focus() no-ops for the first two calls, then works
-  let n = 0;
-  const realFocus = input.focus.bind(input);
-  input.focus = () => { if (n++ >= 2) realFocus(); };
-  toggle.checked = true;
-  toggle.dispatchEvent(new w.Event("change"));
-  assert.equal(w.document.activeElement, input, "retry eventually focuses once the field is focusable");
-  assert.ok(n >= 3, "focus was retried across frames: " + n);
+test("search: a mouse pointerdown on the lens is prevented (stops the desktop focus-steal); touch is left alone", () => {
+  const { w, label } = searchBox();
+  function fire(pointerType) {
+    const e = new w.Event("pointerdown", { bubbles: true, cancelable: true });
+    Object.defineProperty(e, "pointerType", { value: pointerType });
+    label.dispatchEvent(e);
+    return e.defaultPrevented;
+  }
+  assert.ok(fire("mouse"),
+    "a mouse pointerdown is prevented so the label does not move focus to the hidden checkbox");
+  assert.ok(!fire("touch"),
+    "a touch pointerdown is NOT prevented, else the tap would never toggle the box open on mobile");
 });
 
-test("search: focus retry is capped (~20 frames) so a never-focusable field cannot loop forever", () => {
+test("search: a closing click (toggle now unchecked) does NOT focus the field", () => {
   const { w, toggle, input } = searchBox();
-  w.matchMedia = () => ({ matches: true });
-  w.requestAnimationFrame = (cb) => { cb(0); return 0; };
-  let n = 0;
-  input.focus = () => { n++; };   // never actually focuses
-  toggle.checked = true;
-  toggle.dispatchEvent(new w.Event("change"));
-  assert.ok(n >= 20 && n <= 22, "capped at ~20 attempts then stops, no hang: " + n);
-  assert.notEqual(w.document.activeElement, input, "still not focused (focus() was a no-op)");
-});
-
-test("search: a focus retry short-circuits if the box is re-closed before it lands", () => {
-  const { w, toggle, input } = searchBox();
-  w.matchMedia = () => ({ matches: true });
-  w.requestAnimationFrame = (cb) => { cb(0); return 0; };
-  let n = 0;
-  input.focus = () => { n++; toggle.checked = false; };   // user closes the box after the 1st attempt
-  toggle.checked = true;
-  toggle.dispatchEvent(new w.Event("change"));
-  assert.equal(n, 1, "only one focus attempt: the reclose short-circuits the retry");
-  assert.notEqual(w.document.activeElement, input);
+  // Tapping the lens again collapses the box: .checked is false by the time the click lands, so
+  // focus must be left alone (re-focusing a closing field would re-pop the keyboard).
+  toggle.checked = false;
+  toggle.dispatchEvent(new w.Event("click"));
+  assert.notEqual(w.document.activeElement, input,
+    "collapsing the search box must not re-focus the field");
 });
 
 test("search hides namespaced (n:1) pages unless the query is namespace-qualified", async () => {
