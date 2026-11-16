@@ -1694,6 +1694,160 @@ test("search hides and clears results for a sub-2-character query", async () => 
   assert.ok(results().hidden && results().children.length === 0, "short query hides and clears the results");
 });
 
+// ---- search combobox keyboard navigation (ARIA list-autocomplete) --------------------------
+// Open a 3-result dropdown ("al" hits Alpha, Alfred, Album in index order) and return the pieces.
+// Forces document.readyState=complete so app.js's ready() takes the IMMEDIATE single-init path:
+// jsdom otherwise fires its OWN DOMContentLoaded on top of the harness's manual one, double-running
+// initSearch into two widgets (two keydown handlers) -- a harness artifact, not production (where
+// the script inits once). The combobox logic is identical on either ready() branch.
+async function comboOpen(extra) {
+  extra = extra || {};
+  const userPre = extra.preEval;
+  const opts = Object.assign({
+    searchIndex: [{ t: "Alpha", u: "wiki/Alpha/" }, { t: "Alfred", u: "wiki/Alfred/" },
+                  { t: "Album", u: "wiki/Album/" }],
+  }, extra);
+  opts.preEval = (win) => {
+    Object.defineProperty(win.document, "readyState", { value: "complete", configurable: true });
+    if (userPre) userPre(win);
+  };
+  const w = load('<input id="search-input">', opts);
+  const input = w.document.getElementById("search-input");
+  input.value = "al";
+  input.dispatchEvent(new w.Event("input"));
+  await tick();
+  return { w: w, input: input, results: w.document.querySelector(".search-results") };
+}
+const keydown = (w, el, key, extra) => {
+  const e = new w.KeyboardEvent("keydown", { key: key, bubbles: true, cancelable: true });
+  if (extra) for (const k of Object.keys(extra)) Object.defineProperty(e, k, { value: extra[k] });
+  el.dispatchEvent(e);
+  return e;
+};
+
+test("search combobox: ARIA roles/attrs wire up and aria-expanded tracks the dropdown", async () => {
+  const { w, input, results } = await comboOpen();
+  assert.equal(input.getAttribute("role"), "combobox");
+  assert.equal(input.getAttribute("aria-autocomplete"), "list");
+  assert.equal(input.getAttribute("aria-controls"), results.id, "input points at the listbox");
+  assert.equal(results.getAttribute("role"), "listbox");
+  assert.ok(results.getAttribute("aria-label"), "the listbox has an accessible name");
+  assert.equal(input.getAttribute("aria-expanded"), "true", "expanded while results show");
+  const first = results.children[0];
+  assert.equal(first.getAttribute("role"), "option");
+  assert.equal(first.getAttribute("aria-selected"), "false", "options start unselected");
+  assert.ok(first.id, "each option carries an id for aria-activedescendant");
+  assert.equal(input.getAttribute("aria-activedescendant"), "", "nothing active until an arrow press");
+  input.value = "a"; input.dispatchEvent(new w.Event("input")); await tick();
+  assert.equal(input.getAttribute("aria-expanded"), "false", "collapsed for a sub-2-char query");
+});
+
+test("search combobox: ArrowDown cycles none -> first .. last -> none -> first, painting the active option", async () => {
+  // Stub scrollIntoView (jsdom omits it) so the active-option "scroll into view" call runs here;
+  // the other arrow tests leave it absent, covering the guard's other branch.
+  let scrolled = 0;
+  const { w, input, results } = await comboOpen({
+    preEval: (win) => { win.Element.prototype.scrollIntoView = function (o) { scrolled++; this.__arg = o; }; },
+  });
+  const a0 = results.children[0].firstElementChild;
+  keydown(w, input, "ArrowDown");
+  assert.equal(input.getAttribute("aria-activedescendant"), results.children[0].id, "first ArrowDown activates option 0");
+  assert.equal(results.children[0].getAttribute("aria-selected"), "true");
+  assert.ok(scrolled > 0, "the active option is scrolled into view");
+  assert.equal(results.children[0].__arg.block, "nearest", "scrolled with block:nearest (minimal scroll)");
+  assert.equal(a0.style.outlineOffset, "-2px", "active option painted with the inset ring (offset reliably stored)");
+  keydown(w, input, "ArrowDown");
+  assert.equal(input.getAttribute("aria-activedescendant"), results.children[1].id, "steps to option 1");
+  assert.equal(results.children[0].getAttribute("aria-selected"), "false", "previous option deselected");
+  assert.equal(a0.style.outlineOffset, "", "previous option's paint cleared");
+  keydown(w, input, "ArrowDown");   // option 2 (last)
+  assert.equal(input.getAttribute("aria-activedescendant"), results.children[2].id);
+  keydown(w, input, "ArrowDown");   // wrap off the end -> none (the typed query)
+  assert.equal(input.getAttribute("aria-activedescendant"), "", "stepping past the last option returns to the query");
+  assert.equal(results.querySelectorAll('[aria-selected="true"]').length, 0, "no option selected at the none step");
+  keydown(w, input, "ArrowDown");   // re-enter at the top
+  assert.equal(input.getAttribute("aria-activedescendant"), results.children[0].id, "re-enters the list at the first option");
+});
+
+test("search combobox: ArrowUp enters at the last option and steps back up to none", async () => {
+  const { w, input, results } = await comboOpen();
+  keydown(w, input, "ArrowUp");
+  assert.equal(input.getAttribute("aria-activedescendant"),
+    results.children[results.children.length - 1].id, "ArrowUp from none activates the LAST option");
+  keydown(w, input, "ArrowUp"); keydown(w, input, "ArrowUp");   // -> option 1, option 0
+  assert.equal(input.getAttribute("aria-activedescendant"), results.children[0].id, "stepped up to the first option");
+  keydown(w, input, "ArrowUp");                                  // -> none
+  assert.equal(input.getAttribute("aria-activedescendant"), "", "ArrowUp from the first option returns to the query");
+});
+
+test("search combobox: Enter follows the active option's href, overriding the bestMatch", async () => {
+  // root="" (no app.js-like script) -> bare-hash hrefs, which jsdom actually navigates.
+  const { w, input, results } = await comboOpen({
+    appSrc: "../../vendor-bundle.js",
+    searchIndex: [{ t: "Alpha", u: "#alpha" }, { t: "Alfred", u: "#alfred" }, { t: "Album", u: "#album" }],
+  });
+  keydown(w, input, "ArrowDown"); keydown(w, input, "ArrowDown");   // activate option 1 (Alfred)
+  assert.equal(input.getAttribute("aria-activedescendant"), results.children[1].id, "Alfred is the active option");
+  keydown(w, input, "Enter");
+  await tick();
+  assert.equal(w.location.hash, "#alfred", "Enter navigates to the highlighted option, not the first-row bestMatch");
+});
+
+test("search combobox: Escape dismisses the dropdown keeping the query; a 2nd Escape collapses the lens", async () => {
+  // The full lens (a toggle) so stage 2 -- the document-level Escape collapsing the box -- is observable.
+  // readyState=complete -> single init (see comboOpen), so one widget / one document Escape handler.
+  const w = load(
+    '<span class="site-search"><input type="checkbox" id="search-toggle"><input id="search-input"></span>',
+    { searchIndex: [{ t: "Alpha", u: "wiki/Alpha/" }, { t: "Album", u: "wiki/Album/" }],
+      preEval: (win) => Object.defineProperty(win.document, "readyState", { value: "complete", configurable: true }) });
+  const toggle = w.document.getElementById("search-toggle");
+  const input = w.document.getElementById("search-input");
+  const results = w.document.querySelector(".search-results");
+  toggle.checked = true;
+  input.value = "al"; input.dispatchEvent(new w.Event("input")); await tick();
+  assert.ok(!results.hidden, "dropdown open after a query");
+  keydown(w, input, "Escape");
+  assert.ok(results.hidden, "first Escape hides the dropdown");
+  assert.equal(results.children.length, 0, "and clears its rows");
+  assert.equal(input.value, "al", "the typed query is preserved");
+  assert.equal(input.getAttribute("aria-expanded"), "false");
+  assert.equal(toggle.checked, true, "the lens stays open on the first Escape (stopPropagation)");
+  keydown(w, input, "Escape");
+  assert.equal(toggle.checked, false, "a second Escape collapses the search lens");
+});
+
+test("search combobox: mouse hover syncs the active option; hovering the panel padding is a no-op", async () => {
+  const { w, input, results } = await comboOpen();
+  const second = results.children[1];
+  const mousemove = (target) => target.dispatchEvent(new w.MouseEvent("mousemove", { bubbles: true }));
+  mousemove(second.firstElementChild);   // hover the <a> inside option 1
+  assert.equal(input.getAttribute("aria-activedescendant"), second.id, "hover makes the pointed row the active option");
+  assert.equal(second.getAttribute("aria-selected"), "true");
+  assert.equal(second.firstElementChild.style.outlineOffset, "-2px", "hovered row shares the keyboard highlight");
+  mousemove(results);   // target is the <ul> itself -> no <li> ancestor -> ignored
+  assert.equal(input.getAttribute("aria-activedescendant"), second.id, "moving over the panel padding does not change the active option");
+});
+
+test("search combobox: a new query resets the active option (no dangling aria-activedescendant)", async () => {
+  const { w, input, results } = await comboOpen();
+  keydown(w, input, "ArrowDown");
+  assert.ok(input.getAttribute("aria-activedescendant"), "an option is active after ArrowDown");
+  input.value = "alb"; input.dispatchEvent(new w.Event("input")); await tick();   // narrows to Album
+  assert.equal(input.getAttribute("aria-activedescendant"), "", "active option reset on the new render");
+  assert.equal(results.querySelectorAll('[aria-selected="true"]').length, 0, "no stale selection survives the re-render");
+});
+
+test("search combobox: arrows are inert while hidden and ignored mid-IME (keyCode 229)", async () => {
+  const { w, input, results } = await comboOpen();
+  input.value = "a"; input.dispatchEvent(new w.Event("input")); await tick();   // collapse (short query)
+  assert.ok(results.hidden, "dropdown hidden for the short query");
+  keydown(w, input, "ArrowDown");
+  assert.equal(input.getAttribute("aria-activedescendant"), "", "ArrowDown is inert while the dropdown is hidden");
+  input.value = "al"; input.dispatchEvent(new w.Event("input")); await tick();   // reopen
+  keydown(w, input, "ArrowDown", { keyCode: 229 });   // IME keydown
+  assert.equal(input.getAttribute("aria-activedescendant"), "", "a 229-keyCode ArrowDown does not move the highlight");
+});
+
 // ---- storage resilience (every localStorage access is try/caught) ---------------------------
 
 test("storage failures are swallowed: theme, banners, sitenotice and the viewer all degrade", () => {
