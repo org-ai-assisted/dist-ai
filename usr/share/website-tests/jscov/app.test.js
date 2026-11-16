@@ -375,17 +375,27 @@ test("per-heading share: no-op without data-sh-direct, without a proto, or witho
   assert.ok(!tip3.getAttribute("data-sh-built"), "no .menu -> not built");
 });
 
-test("per-heading share: the visible (x) in .menu-wrapper closes the menu (setOpen false)", () => {
+const SHARE_MENU =
+  '<span class="share-tooltip share-open" data-anchor="Sec">' +
+  '<button type="button" class="headline-anchor" aria-expanded="true">s</button>' +
+  '<span class="menu-wrapper">' +
+  '<button type="button" class="menu-close" aria-label="Close"><i>x</i></button>' +
+  '<span class="menu"><span class="code-select" data-code="X">p</span></span></span></span>';
+// jsdom has no :hover, so stub matches(":hover") (native matches handles every other selector --
+// the handler's closest()/matches() on other elements is untouched). Returns a live reading of `on`.
+function stubHover(tip, on) {
+  const real = tip.matches.bind(tip);
+  tip.matches = (sel) => sel === ":hover" ? on() : real(sel);
+}
+
+test("per-heading share: the visible (x) closes the menu (setOpen false); display override only while :hover", () => {
   // The (x) is the discoverable, mobile-friendly close -- a tap outside / a 2nd tap on the trigger
   // also close, but neither is obvious on touch. It is a SIBLING of .menu (survives the proto clone).
-  const w = load(
-    '<span class="share-tooltip share-open" data-anchor="Sec">' +
-    '<button type="button" class="headline-anchor" aria-expanded="true">s</button>' +
-    '<span class="menu-wrapper">' +
-    '<button type="button" class="menu-close" aria-label="Close"><i>x</i></button>' +
-    '<span class="menu"><span class="code-select" data-code="X">p</span></span></span></span>');
+  const w = load(SHARE_MENU);
   const tip = w.document.querySelector(".share-tooltip");
   assert.ok(tip.classList.contains("share-open"), "starts open");
+  let hovered = true;
+  stubHover(tip, () => hovered);
   // click the <i> inside the (x): closest(".menu-close") still resolves to the button, then its
   // .share-tooltip -> setOpen(tip,false) drops .share-open and resets aria-expanded.
   tip.querySelector(".menu-close i")
@@ -393,14 +403,38 @@ test("per-heading share: the visible (x) in .menu-wrapper closes the menu (setOp
   assert.ok(!tip.classList.contains("share-open"), "the (x) drops .share-open");
   assert.equal(tip.querySelector(".headline-anchor").getAttribute("aria-expanded"), "false",
     "aria-expanded reset on close");
-  // BUG3: the (x) also pins an inline display:none on .menu-wrapper so the sticky desktop :hover
-  // (@media(hover:hover) .share-tooltip:hover .menu-wrapper{display:block}) cannot re-reveal it;
-  // moving the pointer off the tooltip clears the override so a fresh hover can re-open.
+  // BUG3: while :hover, the (x) pins an inline display:none on .menu-wrapper so the sticky desktop
+  // :hover (@media(hover:hover) .share-tooltip:hover .menu-wrapper{display:block}) cannot re-reveal it.
   assert.equal(tip.querySelector(".menu-wrapper").style.display, "none",
     "the (x) pins display:none to beat the sticky :hover");
+  // a pointerleave fired WHILE still :hover (the collapse-churn leave Firefox emits) must NOT clear it
   tip.dispatchEvent(new w.Event("pointerleave"));
+  assert.equal(tip.querySelector(".menu-wrapper").style.display, "none",
+    "a spurious leave while still :hover keeps the override (no re-reveal flicker)");
+  // a GENUINE leave (no longer :hover) clears it so a fresh hover re-opens; Firefox delivers the
+  // genuine leave as mouseleave, not pointerleave
+  hovered = false;
+  tip.dispatchEvent(new w.Event("mouseleave"));
   assert.equal(tip.querySelector(".menu-wrapper").style.display, "",
-    "pointerleave clears the display override so hover can re-open");
+    "a genuine leave (mouseleave, not :hover) clears the override so hover can re-open");
+
+  // keyboard (x) with the pointer OUTSIDE the tooltip: not :hover -> NO override is pinned (setOpen's
+  // blur + the hover:hover guard already hide it), so the menu is never left permanently stuck hidden.
+  const wk = load(SHARE_MENU);
+  const tk = wk.document.querySelector(".share-tooltip");
+  stubHover(tk, () => false);
+  tk.querySelector(".menu-close i")
+    .dispatchEvent(new wk.MouseEvent("click", { bubbles: true, cancelable: true }));
+  assert.ok(!tk.classList.contains("share-open"), "(x) still drops .share-open when not hovered");
+  assert.equal(tk.querySelector(".menu-wrapper").style.display, "",
+    "no override when not :hover -> never stuck hidden (keyboard activation / pointer outside)");
+
+  // a .share-tooltip whose menu has no .menu-wrapper -> wrap is null -> override skipped, no throw
+  const wn = load('<span class="share-tooltip share-open">' +
+    '<button type="button" class="headline-anchor">s</button>' +
+    '<button type="button" class="menu-close">x</button></span>');
+  assert.doesNotThrow(() => wn.document.querySelector(".menu-close")
+    .dispatchEvent(new wn.MouseEvent("click", { bubbles: true, cancelable: true })));
   // a stray .menu-close outside any .share-tooltip -> tip is null -> no-op, never throws
   const w2 = load('<button type="button" class="menu-close">x</button>');
   assert.doesNotThrow(() => w2.document.querySelector(".menu-close")
@@ -1108,12 +1142,24 @@ test("fly-in toast: transitioncancel hides it; a wall-clock fallback hides it if
   assert.equal(panel2.hidden, true, "the wall-clock fallback hides it when no transitionend fires");
 });
 
-test("fly-in toast: Escape dismisses it while shown; a 2nd Escape after hide is a no-op", async () => {
+test("fly-in toast: Escape dismisses it (no multi-day suppression); ignores defaultPrevented / non-Escape / post-hide", async () => {
   const w = load(FLYIN);
   await tick();
   const panel = w.document.getElementById("fly-in-notification-panel");
+  // an Escape already consumed by a higher layer (modal/menu/search) must not also eat the toast
+  const consumed = new w.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+  consumed.preventDefault();
+  w.document.dispatchEvent(consumed);
+  assert.equal(panel.hidden, false, "a defaultPrevented Escape is ignored");
+  // a non-Escape key is ignored
+  w.document.dispatchEvent(new w.KeyboardEvent("keydown", { key: "a", bubbles: true }));
+  assert.equal(panel.hidden, false, "a non-Escape key is ignored");
+  // a real Escape dismisses THIS view but must NOT write the multi-day suppression (that is the x's
+  // job); an incidental Esc meant for another layer otherwise suppressed the toast for days.
   w.document.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   assert.equal(panel.hidden, true, "Escape dismisses the shown toast");
+  assert.equal(w.localStorage.getItem("flyin-last-dismissed"), null,
+    "an incidental Escape does NOT persist the multi-day suppression");
   assert.doesNotThrow(() => w.document.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Escape", bubbles: true })),
     "a 2nd Escape once hidden is a no-op");
   assert.equal(panel.hidden, true, "still hidden");
