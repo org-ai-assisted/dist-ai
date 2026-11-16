@@ -1141,17 +1141,18 @@ rt_eph_reclaim() {
 ## exit 0 -- a false green the calling runner reads as success.
 rt_effective_rc=0
 
-## The image-dup-check --allow tokens for the WS milestone frames, by interface. A CLI
-## edition has NO graphical Workstation session: its booted / tor-confirmed / final frames
-## are all the SAME static getty login console (the release-check battery logs in
-## programmatically over guestcontrol, never on the console), so they are legitimately
-## byte-identical -- the idle-terminal case --allow exists for, not a stuck grab. The lxqt
-## WS DESKTOP advances between milestones, so GUI emits NO tokens and keeps the full gate.
-## One token per line; empty output = allow nothing. Pure (testable without a VM).
-rt_dup_allow_tokens() {
-   local iface="$1"
-   [ "${iface}" = 'cli' ] || return 0
-   printf '%s\n' workstation-booted workstation-tor-confirmed workstation-final
+## Whether image-dup-check runs for an interface. It assumes milestone frames SHOULD advance
+## (a GUI desktop visibly changes between boot, Tor-confirm and final). A CLI edition has NO
+## graphical session -- every milestone is the SAME static getty console by design (func:
+## workstation-booted/-tor-confirmed/-final; leak: workstation-desktop/-tor-confirmed) -- so the
+## check can only FALSE-FAIL there (seen live: a CLI inst lane published FAIL rc=5 on 3
+## byte-identical console frames). A per-name --allow is wrong: exempting some of a lane's frames
+## can drop a GENUINE stuck cluster below --min-cluster, silently weakening the gate. CLI liveness
+## is proven by the release-check battery (a real console login must succeed) + the blank gate (no
+## all-black frame), not by frame advance. Exit 0 = run the gate (GUI); non-zero = skip (cli).
+## Pure (testable without a VM).
+rt_dup_check_enabled() {
+   [ "$1" != 'cli' ]
 }
 
 rt_publish_result() {
@@ -1197,19 +1198,16 @@ rt_publish_result() {
                   "dm-release-test FAILED: blank/near-black milestone screenshot(s) -- a broken capture or a display that never rendered:" \
                   "${rt_shot_out}")"
             fi
-            local rt_dup_out="" rt_dup_rc=0 rt_allow_tok
-            local -a rt_dup_toks=() rt_dup_allow=()
-            mapfile -t rt_dup_toks < <(rt_dup_allow_tokens "${interface}")
-            for rt_allow_tok in "${rt_dup_toks[@]}"; do
-               [ -n "${rt_allow_tok}" ] && rt_dup_allow+=( --allow "${rt_allow_tok}" )
-            done
-            rt_dup_out="$("${IMAGE_DUP_CHECK:-image-dup-check}" \
-               --min-cluster "${RT_DUP_MIN_CLUSTER:-3}" "${rt_dup_allow[@]}" -- "${shot}" 2>&1)" \
-               || rt_dup_rc=$?
-            if [ "${rt_dup_rc}" -ne 0 ]; then
-               rt_shotgate_reason="$(printf '%s\n' "${rt_shotgate_reason}" \
-                  "dm-release-test FAILED: stuck/duplicate milestone screenshot(s) -- a grab that did not advance, published under multiple names:" \
-                  "${rt_dup_out}")"
+            if rt_dup_check_enabled "${interface}"; then
+               local rt_dup_out="" rt_dup_rc=0
+               rt_dup_out="$("${IMAGE_DUP_CHECK:-image-dup-check}" \
+                  --min-cluster "${RT_DUP_MIN_CLUSTER:-3}" -- "${shot}" 2>&1)" \
+                  || rt_dup_rc=$?
+               if [ "${rt_dup_rc}" -ne 0 ]; then
+                  rt_shotgate_reason="$(printf '%s\n' "${rt_shotgate_reason}" \
+                     "dm-release-test FAILED: stuck/duplicate milestone screenshot(s) -- a grab that did not advance, published under multiple names:" \
+                     "${rt_dup_out}")"
+               fi
             fi
             if [ -n "${rt_shotgate_reason}" ]; then
                printf '%s\n' "${me}: ERROR: ${rt_shotgate_reason}" >&2

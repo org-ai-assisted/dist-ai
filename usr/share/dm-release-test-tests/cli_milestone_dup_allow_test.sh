@@ -5,18 +5,19 @@
 
 ## AI-Assisted
 
-## The CLI whonix lane's Workstation milestone frames (booted / tor-confirmed / final) are the
-## SAME static getty login console: a CLI edition has NO graphical WS session, so the
-## release-check battery logs in programmatically over guestcontrol and the on-screen console
-## never advances. image-dup-check's 3-cluster gate would then FALSE-FAIL an otherwise-passing
-## run (seen live: the CLI lane published FAIL rc=5 on 3 byte-identical console frames), so
-## rt_dup_allow_tokens emits the WS-milestone --allow tokens for interface=cli and NOTHING for
-## lxqt (whose desktop genuinely advances and must keep the full gate).
+## image-dup-check FAILs a run when >= 3 milestone frames are byte-identical (a capture that did
+## not advance, published under many names). That premise -- frames SHOULD advance -- holds only
+## for a GUI lane whose desktop visibly changes. A CLI edition has NO graphical session: every
+## milestone is the SAME static getty console by design (func: workstation-booted/-tor-confirmed/
+## -final; leak: workstation-desktop/-tor-confirmed), so the gate can only FALSE-FAIL it (seen
+## live: a CLI inst lane published FAIL rc=5 on 3 byte-identical console frames). So
+## rt_dup_check_enabled SKIPS the gate for interface=cli and keeps it for the GUI lanes -- not a
+## per-name --allow, which can drop a GENUINE stuck cluster below --min-cluster and silently weaken
+## the gate on a different lane.
 ##
-## Drives the REAL dm-release-test helper (sourced, no VM/root) AND the REAL image-dup-check, so
-## the test proves the emitted tokens actually exempt those frame STEMS (a name drift in either
-## place breaks it) and -- the canary -- that WITHOUT the tokens (the lxqt path) the same three
-## identical frames still FAIL the 3-cluster gate.
+## Drives the REAL dm-release-test helper (sourced, no VM/root) AND the REAL image-dup-check: the
+## gate is proven to still FIRE when enabled (the GUI canary), so "skip for cli" is not a vacuous
+## pass.
 
 set -o errexit
 set -o nounset
@@ -70,44 +71,30 @@ assert() {
    fi
 }
 
-workdir="$(mktemp --directory --tmpdir cli-milestone-dup-allow-test.XXXXXX)"
+workdir="$(mktemp --directory --tmpdir cli-milestone-dup-test.XXXXXX)"
 # shellcheck disable=SC2317  ## invoked via the EXIT trap
 cleanup() { safe-rm --recursive --force -- "${workdir}"; }
 trap cleanup EXIT
 
-## --- the pure helper emits the right tokens, by interface -------------------------------------
-assert "cli emits the three WS milestone --allow tokens" \
-   test "$(rt_dup_allow_tokens cli)" = "$(printf '%s\n' workstation-booted workstation-tor-confirmed workstation-final)"
-assert "lxqt emits NO tokens (keeps the full gate)" \
-   test -z "$(rt_dup_allow_tokens lxqt)"
+## --- the gate decision, by interface ----------------------------------------------------------
+## assert checks for SUCCESS, so the negative (cli must return non-zero) is an explicit if/else.
+if rt_dup_check_enabled cli; then
+   fail=$((fail + 1)); printf '%s\n' "FAIL: cli must SKIP the milestone dup gate" >&2
+else
+   pass=$((pass + 1)); printf '%s\n' "PASS: cli SKIPS the milestone dup gate (static console, no advance)"
+fi
+assert "lxqt KEEPS the milestone dup gate" rt_dup_check_enabled lxqt
 
-## --- the tokens actually exempt those frame stems in the REAL image-dup-check -----------------
-## Three byte-identical WS console frames (named as the whonix lane publishes them) + one
-## distinct gateway frame -> a 3-cluster that trips --min-cluster 3.
+## --- CANARY: when enabled (GUI), the REAL gate still FAILS 3 identical frames ------------------
+## Proves "skip for cli" is a real behavior difference, not a gate that never fired anyway.
 shot="${workdir}/shot"
 mkdir -- "${shot}"
-"${magick_bin}" -size 128x96 xc:'#101418' "${shot}/whonix-func-25-workstation-booted.png"
-cp -- "${shot}/whonix-func-25-workstation-booted.png" "${shot}/whonix-func-50-workstation-tor-confirmed.png"
-cp -- "${shot}/whonix-func-25-workstation-booted.png" "${shot}/whonix-func-95-workstation-final.png"
-"${magick_bin}" -size 128x96 xc:'#3a2e14' "${shot}/whonix-func-20-gateway-booted.png"
-
-## Build the --allow args the gate builds, from the REAL helper, for each interface.
-cli_allow=()
-tok=''
-while IFS= read -r tok; do
-   [ -n "${tok}" ] && cli_allow+=( --allow "${tok}" )
-done < <(rt_dup_allow_tokens cli)
-
-cli_rc=0
-"${checker}" --min-cluster 3 "${cli_allow[@]}" -- "${shot}" >/dev/null 2>&1 || cli_rc=$?
-assert "cli allow set exempts the static WS console milestones (no false FAIL)" \
-   test "${cli_rc}" -eq 0
-
-## CANARY: the lxqt path emits no tokens, so the SAME three identical frames must still FAIL --
-## otherwise the test would pass even if the helper emitted nothing and the fix were a no-op.
+"${magick_bin}" -size 128x96 xc:'#101418' "${shot}/25-workstation-booted.png"
+cp -- "${shot}/25-workstation-booted.png" "${shot}/50-workstation-tor-confirmed.png"
+cp -- "${shot}/25-workstation-booted.png" "${shot}/95-workstation-final.png"
 gui_rc=0
 "${checker}" --min-cluster 3 -- "${shot}" >/dev/null 2>&1 || gui_rc=$?
-assert "lxqt (no allow set) still FAILS the 3-identical-frame cluster" \
+assert "the enabled gate FAILS a 3-identical-frame cluster (GUI canary)" \
    test "${gui_rc}" -eq 1
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
