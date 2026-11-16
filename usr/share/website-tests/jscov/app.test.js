@@ -2323,6 +2323,24 @@ test("tab pill: no heading id -> href '#'; a tcc-image img is adopted; share/edi
   assert.equal(pill.textContent.trim(), "Plain", "share-tooltip and mw-editsection are stripped from the pill label");
 });
 
+test("tab pill: a tcc-image with both <i> and <img> adopts the <img>, not the decorative <i>", () => {
+  const w = load('<div class="tab-content-controller"><div class="mininav"></div><div class="tcc-content">' +
+    '<div class="tcc-section"><div class="tcc-image"><i class="fa-solid fa-cubes"></i><img src="a.webp" alt="A"></div>' +
+    '<div class="tcc-title"><h3 id="h">H</h3></div></div></div></div>');
+  const pill = w.document.querySelector(".mininav .tcc-tab");
+  assert.ok(pill.querySelector("img"), "the authored <img> is adopted into the pill");
+  assert.equal(pill.querySelector("i"), null, "the decorative <i> is NOT adopted (img preferred over DOM order)");
+});
+
+test("tab pill: an <i> icon is adopted but a nested <a> inside it is stripped (no anchor-in-anchor)", () => {
+  const w = load('<div class="tab-content-controller"><div class="mininav"></div><div class="tcc-content">' +
+    '<div class="tcc-section"><div class="tcc-image"><i class="fa-solid fa-cubes"><a href="/wiki/X">L</a></i></div>' +
+    '<div class="tcc-title"><h3 id="h">H</h3></div></div></div></div>');
+  const pill = w.document.querySelector(".mininav .tcc-tab");
+  assert.ok(pill.querySelector("i"), "the <i> icon is adopted into the pill");
+  assert.equal(pill.querySelector("a"), null, "the nested <a> inside the icon is stripped (pill stays a single anchor)");
+});
+
 test("tab click falls back to location.hash when history.replaceState throws", () => {
   const w = load('<div class="tab-content-controller"><div class="mininav"></div><div class="tcc-content">' +
     '<div class="tcc-section"><div class="tcc-title"><h3 id="one">One</h3></div></div>' +
