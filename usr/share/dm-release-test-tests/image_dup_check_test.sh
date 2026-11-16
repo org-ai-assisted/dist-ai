@@ -133,6 +133,11 @@ expect_rc "--min-cluster 1 is a usage error"                 2 --min-cluster 1 "
 expect_rc "require-distinct: distinct frames pass (no-cluster)"   0 --no-cluster --require-distinct u t1 "${workdir}/triple"
 expect_rc "require-distinct: identical frames fail (frozen)"      1 --no-cluster --require-distinct t1 t2 "${workdir}/triple"
 expect_rc "require-distinct: absent frame is not applicable"      0 --no-cluster --require-distinct nope t1 "${workdir}/triple"
+## Overlapping selectors (one frame matches BOTH names -- 'login' is a suffix token of
+## 'console-login') would compare a frame only to itself and vacuously pass -> usage error.
+mkdir -- "${workdir}/overlap"
+"${magick_bin}" -size 40x30 xc:'#334455' "${workdir}/overlap/58-console-login.png"
+expect_rc "require-distinct: overlapping selectors is a usage error"  2 --no-cluster --require-distinct login console-login "${workdir}/overlap"
 ## --no-cluster guards: it must pair with --require-distinct and not with cluster-only flags.
 expect_rc "--no-cluster without --require-distinct is usage err"  2 --no-cluster "${workdir}/triple"
 expect_rc "--no-cluster with --min-cluster is usage err"          2 --no-cluster --min-cluster 3 --require-distinct u t1 "${workdir}/triple"

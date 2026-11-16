@@ -38,11 +38,14 @@ are NOT byte-identical: a frame that MUST be live (LIVE) against an idle baselin
 legitimately repeats, so the cluster gate cannot run -- but the capture can still FREEZE,
 and a frame driven to a visibly different state (a console LOGIN) must therefore differ
 from the idle baseline; identical == a frozen/stuck capture -> fail. Either frame absent
-== not applicable (no assertion). Repeatable; independent of --allow / --min-cluster.
+== not applicable (no assertion). Frames are matched by POSITION, so a pair sharing a
+basename across scanned dirs is still compared; LIVE and BASELINE selectors that pick the
+SAME frame (overlapping suffix tokens) are a usage error. Repeatable; independent of
+--allow / --min-cluster.
 
 Exit: 0 no un-allowed duplicate cluster and every require-distinct pair differs; 1 a
 duplicate cluster and/or a frozen-capture (identical required-distinct) pair; 2 usage/read
-error."""
+error (incl. overlapping require-distinct selectors)."""
 
 import argparse
 import os
@@ -106,7 +109,7 @@ def main(argv):
     ## Decode each frame once: (basename, content hash). A list (not a dict keyed by
     ## basename) so that two paths sharing a basename are each counted, as the cluster
     ## scan always has.
-    frames = []
+    frames: list = []
     for path in iter_images(args.paths):
         base = os.path.basename(path)
         try:
@@ -125,17 +128,31 @@ def main(argv):
     ## a positive "these two differ" assertion never drops a frame from clustering, so it
     ## cannot weaken a cluster gate the way an --allow exemption could.
     for live, baseline in args.require_distinct:
-        live_frames = [(b, h) for b, h in frames if name_matches(b, live)]
-        base_frames = [(b, h) for b, h in frames if name_matches(b, baseline)]
-        if not live_frames or not base_frames:
+        ## Identity is the frame's POSITION, not its basename: two distinct files can share
+        ## a basename (the same milestone from two scanned dirs), and comparing by basename
+        ## would wrongly treat such a frozen pair as "the same frame" and skip it.
+        live_idx = [i for i, (b, _h) in enumerate(frames) if name_matches(b, live)]
+        base_idx = [i for i, (b, _h) in enumerate(frames) if name_matches(b, baseline)]
+        if not live_idx or not base_idx:
             sys.stdout.write(
                 "image-dup-check: require-distinct %s/%s: not applicable (%s absent)\n"
-                % (live, baseline, live if not live_frames else baseline))
+                % (live, baseline, live if not live_idx else baseline))
             continue
+        ## A frame matching BOTH names (overlapping suffix tokens -- e.g. 'login' is a
+        ## suffix token of 'console-login', so one file matches both) makes the assertion
+        ## degenerate: it would compare a frame only to itself and vacuously pass. That is a
+        ## misuse of the two selectors, not a live run, so fail loud rather than pass.
+        overlap = sorted(frames[i][0] for i in set(live_idx) & set(base_idx))
+        if overlap:
+            sys.stderr.write(
+                "image-dup-check: require-distinct %s/%s selects the same frame(s) under "
+                "both names (%s) -- the selectors overlap\n"
+                % (live, baseline, ", ".join(overlap)))
+            return 2
         collisions = sorted(
-            "%s == %s" % (lb, bb)
-            for lb, lh in live_frames for bb, bh in base_frames
-            if lb != bb and lh == bh)
+            "%s == %s" % (frames[li][0], frames[bi][0])
+            for li in live_idx for bi in base_idx
+            if frames[li][1] == frames[bi][1])
         if collisions:
             failed = True
             sys.stderr.write(
@@ -151,7 +168,7 @@ def main(argv):
 
     ## hash -> list of basenames sharing it (allowed frames are excluded entirely, so an
     ## allow-listed frame can never create or join a cluster).
-    clusters = {}
+    clusters: dict = {}
     checked = 0
     for base, digest in frames:
         if is_allowed(base, args.allow):

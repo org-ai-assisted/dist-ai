@@ -1211,8 +1211,14 @@ rt_publish_result() {
             else
                ## CLI: the static idle frames legitimately repeat, so skip the cluster scan
                ## (--no-cluster) and instead assert the DRIVEN console-login frame is not
-               ## frozen onto the idle workstation-booted frame (absent on a lane without it
-               ## -> the assertion is a no-op there).
+               ## frozen onto the idle workstation-booted frame. A frozen capture still
+               ## PRODUCES a (stale) console-login grab, so it is caught here. console-login
+               ## ABSENT is a deliberate no-op, NOT a fail: the leak lane (whonix-pair) has no
+               ## login frame by design, and check 8 -- a real console login driven over
+               ## guestcontrol, which FAILS the lane if the guest is not drivable -- is the
+               ## AUTHORITATIVE liveness proof; this screenshot assertion is a supplementary
+               ## evidence cross-check, so requiring presence would only false-fail a valid
+               ## run whose best-effort grab happened to error.
                rt_dup_out="$("${IMAGE_DUP_CHECK:-image-dup-check}" --no-cluster \
                   --require-distinct console-login workstation-booted -- "${shot}" 2>&1)" \
                   || rt_dup_rc=$?
