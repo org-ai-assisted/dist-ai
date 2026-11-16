@@ -441,6 +441,21 @@ test("per-heading share: the visible (x) closes the menu (setOpen false); displa
     .dispatchEvent(new w2.MouseEvent("click", { bubbles: true, cancelable: true })));
 });
 
+test("per-heading share: a keyboard reopen (focusin) clears the (x) override even while :hover", () => {
+  // grok#1: the override is pinned for a KEYBOARD (x) too when the mouse happens to rest on the
+  // tooltip. A focus return (Shift+Tab to the trigger -> :focus-within) must then reopen the menu
+  // WITHOUT needing the mouse to move -- so focusin clears the override unconditionally.
+  const w = load(SHARE_MENU);
+  const tip = w.document.querySelector(".share-tooltip");
+  stubHover(tip, () => true);                            // the mouse rests on the tooltip throughout
+  tip.querySelector(".menu-close i")
+    .dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true }));
+  assert.equal(tip.querySelector(".menu-wrapper").style.display, "none", "override pinned while :hover");
+  tip.dispatchEvent(new w.Event("focusin", { bubbles: true }));
+  assert.equal(tip.querySelector(".menu-wrapper").style.display, "",
+    "focusin clears the override so :focus-within can reopen, even while still :hover");
+});
+
 // ---- native [popover] JS tether (BUG1 + #152: share "open in" confirm, (i) info, antispam) --
 // CSS anchor() positioning is Chromium-only; initPopoverTether re-positions the top-layer
 // popovers via CSSOM on their `toggle` event. jsdom has no layout (offsetWidth/Height = 0, and
@@ -1163,6 +1178,30 @@ test("fly-in toast: Escape dismisses it (no multi-day suppression); ignores defa
   assert.doesNotThrow(() => w.document.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Escape", bubbles: true })),
     "a 2nd Escape once hidden is a no-op");
   assert.equal(panel.hidden, true, "still hidden");
+});
+
+test("fly-in toast: a dismiss landing before the show frame cancels it (no slide-in)", async () => {
+  // grok#2: the show timer queues a rAF to add .flyin-shown; dismiss must cancel it, else the SHOW
+  // animation slides the just-dismissed toast in. Capture the rAF without running it, record cancel.
+  const w = load(FLYIN);
+  let rafId = 0, cancelled = null;
+  w.requestAnimationFrame = () => (rafId = 77);
+  w.cancelAnimationFrame = (id) => { cancelled = id; };
+  await tick();                                          // the 0s show timer fires: hidden=false + showRaf set
+  const panel = w.document.getElementById("fly-in-notification-panel");
+  assert.equal(panel.hidden, false, "shown after the 0s wait");
+  w.document.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  assert.equal(cancelled, rafId, "dismiss cancels the pending show rAF");
+  assert.ok(!panel.classList.contains("flyin-shown"), "the show animation never starts");
+});
+
+test("fly-in toast: a dismiss before the show timer fires has no frame to cancel (no throw)", async () => {
+  // showRaf is still 0 (timer not awaited) -> dismiss takes the no-cancel branch; the clearTimeout
+  // also cancels the not-yet-fired show. (The x inside a still-hidden panel dispatches in jsdom.)
+  const w = load(FLYIN);
+  const panel = w.document.getElementById("fly-in-notification-panel");
+  assert.doesNotThrow(() => panel.querySelector(".close-panel")
+    .dispatchEvent(new w.Event("click", { bubbles: true })));
 });
 
 // ---- modals (generic / download / table-expand) --------------------------------------------
