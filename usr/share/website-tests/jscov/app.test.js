@@ -3017,3 +3017,100 @@ test("app.js registers no unload/beforeunload listener (bfcache stays eligible)"
   assert.deepEqual(hits, [],
     "a bfcache-breaking (before)unload listener was added to app.js; use pagehide/pageshow instead");
 });
+
+// ---- #158 book-nav keyboard page-turn (guarded Left/Right over the WikiBookIndex chain) --------
+// Target read from <link rel=prev/next> in <head> (the Material for MkDocs / Sphinx mechanism);
+// the handler is a PROGRESSIVE layer over the visible .wiki-book-index buttons. Observable: the
+// handler calls preventDefault ONLY when it navigates, so e.defaultPrevented == "it acted". jsdom
+// cannot spy location.assign (see the app.js note), so direction is proven via single-sided link
+// presence: with only rel=next, ArrowRight acts and ArrowLeft no-ops -> Right=next, Left=prev.
+
+// Dispatch a keydown at `target` (bubbles to document) and report whether the handler acted.
+function bookKey(w, target, key, opts) {
+  const ev = new w.KeyboardEvent("keydown", Object.assign({ key, bubbles: true, cancelable: true }, opts || {}));
+  target.dispatchEvent(ev);
+  return ev.defaultPrevented;
+}
+const BK_BOTH = '<link rel="prev" href="/wiki/Prev"><link rel="next" href="/wiki/Next">';
+const BK_NEXT = '<link rel="next" href="/wiki/Next">';
+const BK_PREV = '<link rel="prev" href="/wiki/Prev">';
+
+test("book-nav: Left/Right turn the page when a <link rel=prev/next> target exists", () => {
+  const w = load("<p>body</p>", { headExtra: BK_BOTH });
+  assert.equal(bookKey(w, w.document.body, "ArrowRight"), true, "ArrowRight navigates to rel=next");
+  assert.equal(bookKey(w, w.document.body, "ArrowLeft"), true, "ArrowLeft navigates to rel=prev");
+});
+
+test("book-nav: direction maps Right->next, Left->prev (single-sided link presence)", () => {
+  const wn = load("<p>b</p>", { headExtra: BK_NEXT });
+  assert.equal(bookKey(wn, wn.document.body, "ArrowRight"), true, "next present: Right acts");
+  assert.equal(bookKey(wn, wn.document.body, "ArrowLeft"), false, "no prev link: Left no-ops");
+  const wp = load("<p>b</p>", { headExtra: BK_PREV });
+  assert.equal(bookKey(wp, wp.document.body, "ArrowLeft"), true, "prev present: Left acts");
+  assert.equal(bookKey(wp, wp.document.body, "ArrowRight"), false, "no next link: Right no-ops");
+});
+
+test("book-nav: rtl swaps the arrows (Left->next on a rtl document)", () => {
+  const w = load("<p>b</p>", { headExtra: BK_NEXT, preEval: (win) => { win.document.documentElement.dir = "rtl"; } });
+  assert.equal(bookKey(w, w.document.body, "ArrowLeft"), true, "rtl: Left goes to rel=next");
+  assert.equal(bookKey(w, w.document.body, "ArrowRight"), false, "rtl: Right has no prev target");
+});
+
+test("book-nav: no-op on an un-indexed page (no rel links -> no navigation)", () => {
+  const w = load("<p>b</p>");
+  assert.equal(bookKey(w, w.document.body, "ArrowRight"), false, "no target: never navigates");
+  assert.equal(bookKey(w, w.document.body, "ArrowLeft"), false);
+});
+
+test("book-nav: ignored in an editable field or when a modifier is held", () => {
+  const w = load('<input id="q"><textarea id="t"></textarea><div id="ce" contenteditable="true">x</div>',
+    { headExtra: BK_BOTH });
+  const d = w.document;
+  assert.equal(bookKey(w, d.getElementById("q"), "ArrowRight"), false, "input focus: no turn");
+  assert.equal(bookKey(w, d.getElementById("t"), "ArrowRight"), false, "textarea focus: no turn");
+  assert.equal(bookKey(w, d.getElementById("ce"), "ArrowRight"), false, "contenteditable: no turn");
+  assert.equal(bookKey(w, d.body, "ArrowRight", { ctrlKey: true }), false, "Ctrl held: browser keeps it");
+  assert.equal(bookKey(w, d.body, "ArrowLeft", { altKey: true }), false, "Alt+Arrow is back/forward");
+  assert.equal(bookKey(w, d.body, "ArrowRight", { shiftKey: true }), false, "Shift+Arrow selects text");
+  assert.equal(bookKey(w, d.body, "ArrowRight", { metaKey: true }), false, "Meta held: browser keeps it");
+});
+
+test("book-nav: ignored mid-IME-composition (isComposing / keyCode 229)", () => {
+  const w = load("<p>b</p>", { headExtra: BK_BOTH });
+  assert.equal(bookKey(w, w.document.body, "ArrowRight", { isComposing: true }), false, "isComposing: no turn");
+  assert.equal(bookKey(w, w.document.body, "ArrowRight", { keyCode: 229 }), false, "keyCode 229: no turn");
+});
+
+test("book-nav: leaves vertical-scroll keys alone (Up/Down/PageUp/PageDown/Space/Home/End)", () => {
+  const w = load("<p>b</p>", { headExtra: BK_BOTH });
+  for (const k of ["ArrowUp", "ArrowDown", "PageUp", "PageDown", " ", "Home", "End"]) {
+    assert.equal(bookKey(w, w.document.body, k), false, k + " must stay with the browser (scroll)");
+  }
+});
+
+test("book-nav: yields to a focused tablist/menubar and to an open modal/lightbox/hovercard", () => {
+  const wt = load('<ul role="tablist"><li id="tb" tabindex="0">t</li></ul>', { headExtra: BK_BOTH });
+  wt.document.getElementById("tb").focus();
+  assert.equal(bookKey(wt, wt.document.getElementById("tb"), "ArrowRight"), false, "tablist owns arrows");
+  const wm = load('<ul role="menubar"><li id="mb" tabindex="0">m</li></ul>', { headExtra: BK_BOTH });
+  wm.document.getElementById("mb").focus();
+  assert.equal(bookKey(wm, wm.document.getElementById("mb"), "ArrowLeft"), false, "menubar owns arrows");
+  const wd = load("<p>b</p>", { headExtra: BK_BOTH });
+  wd.document.body.classList.add("mini-modal-active");
+  assert.equal(bookKey(wd, wd.document.body, "ArrowRight"), false, "an open modal/lightbox keeps arrows");
+  const wh = load('<div class="hovercard"></div>', { headExtra: BK_BOTH });
+  assert.equal(bookKey(wh, wh.document.body, "ArrowRight"), false, "an open hovercard keeps arrows");
+});
+
+test("book-nav: yields to a FOCUSED horizontally-scrollable region (wide code/table)", () => {
+  // jsdom has no layout, so stage the scroll geometry explicitly on the focused tabindex region.
+  const w = load('<span id="vp" class="viewport" tabindex="0">wide</span>'
+    + '<span id="plain" tabindex="0">narrow</span>', { headExtra: BK_BOTH });
+  const vp = w.document.getElementById("vp");
+  Object.defineProperty(vp, "scrollWidth", { value: 800, configurable: true });
+  Object.defineProperty(vp, "clientWidth", { value: 200, configurable: true });
+  assert.equal(bookKey(w, vp, "ArrowRight"), false, "a focused h-scroll region keeps Left/Right for scroll");
+  // a focusable but NON-scrollable region (scrollWidth == clientWidth) still turns the page
+  assert.equal(bookKey(w, w.document.getElementById("plain"), "ArrowRight"), true,
+    "a focusable non-scrollable [tabindex] still navigates");
+});
