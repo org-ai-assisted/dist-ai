@@ -108,13 +108,13 @@ const syncRaf = (w) => { w.requestAnimationFrame = (cb) => { cb(0); return 0; };
 // ---- code-select / copy widgets ------------------------------------------------------------
 
 test("code-select is enriched: copy button + viewport + .code, once", () => {
-  const w = load('<span class="code-select" data-code="sudo apt update">x</span>');
+  const w = load('<span class="code-select" data-code="sudo apt update">sudo apt update</span>');
   const cs = w.document.querySelector(".code-select");
   assert.ok(cs.classList.contains("js-fully-loaded"), "marked js-fully-loaded");
   assert.ok(cs.querySelector(".cbutton"), "has a copy button");
   const code = cs.querySelector(".viewport > .code");
   assert.ok(code, "code is wrapped in a .viewport");
-  assert.equal(code.textContent, "sudo apt update", "code text preserved from data-code");
+  assert.equal(code.textContent, "sudo apt update", "server-rendered code preserved in the viewport");
   assert.equal(cs.querySelector(".viewport").getAttribute("tabindex"), "0",
     "viewport is keyboard-focusable so a long value can be scrolled (scrollable-region-focusable)");
   w.document.dispatchEvent(new w.Event("DOMContentLoaded"));
@@ -124,6 +124,17 @@ test("code-select is enriched: copy button + viewport + .code, once", () => {
 test("code-select without data-code falls back to its textContent", () => {
   const w = load('<span class="code-select">echo hi</span>');
   assert.equal(w.document.querySelector(".viewport > .code").textContent, "echo hi");
+});
+
+test("code-select preserves build-time syntax-highlight token spans (JS does not highlight)", () => {
+  // Highlighting is done at BUILD time (Pygments -> token spans in the STATIC html). Enrichment
+  // must MOVE those spans into the viewport intact, not flatten them to data-code text -- so the
+  // colors survive with JS, exactly as they already render WITHOUT JS; copy still uses the raw code.
+  const w = load('<span class="code-select code-highlighted" data-code="echo hi">'
+    + '<span class="nb">echo</span><span class="w"> </span>hi</span>');
+  const code = w.document.querySelector(".code-select .viewport > .code");
+  assert.ok(code.querySelector("span.nb"), "the .nb token span survived enrichment (not flattened to text)");
+  assert.equal(code.textContent, "echo hi", "displayed text is the highlighted code, intact");
 });
 
 test("code-select copy button: clicking marks .copied then clears (fallback path)", () => {
