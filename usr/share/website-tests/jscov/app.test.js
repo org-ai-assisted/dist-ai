@@ -1990,6 +1990,7 @@ test("search combobox: ARIA roles/attrs wire up and aria-expanded tracks the dro
   const { w, input, results } = await comboOpen();
   assert.equal(input.getAttribute("role"), "combobox");
   assert.equal(input.getAttribute("aria-autocomplete"), "list");
+  assert.ok(results.id, "listbox has an id");
   assert.equal(input.getAttribute("aria-controls"), results.id, "input points at the listbox");
   assert.equal(results.getAttribute("role"), "listbox");
   assert.ok(results.getAttribute("aria-label"), "the listbox has an accessible name");
@@ -3584,4 +3585,23 @@ test("book-nav: yields to a FOCUSED horizontally-scrollable region (wide code/ta
   // a focusable but NON-scrollable region (scrollWidth == clientWidth) still turns the page
   assert.equal(bookKey(w, w.document.getElementById("plain"), "ArrowRight"), true,
     "a focusable non-scrollable [tabindex] still navigates");
+});
+
+test("book-nav: yields to a focused native media player (<video>/<audio> own Left/Right seek)", () => {
+  const w = load('<video id="v" controls></video><audio id="a" controls></audio>', { headExtra: BK_BOTH });
+  assert.equal(bookKey(w, w.document.getElementById("v"), "ArrowRight"), false, "focused <video> keeps Left/Right for seek");
+  assert.equal(bookKey(w, w.document.getElementById("a"), "ArrowLeft"), false, "focused <audio> keeps Left/Right for seek");
+});
+
+test("book-nav: an empty rel=next href does not self-navigate (reads getAttribute, not resolved .href)", () => {
+  // .href would resolve href="" to the document URL (a self-reload); getAttribute keeps it "" -> bail.
+  const w = load("<p>b</p>", { headExtra: '<link rel="next" href="">' });
+  assert.equal(bookKey(w, w.document.body, "ArrowRight"), false, 'href="" -> no page turn (not a reload)');
+});
+
+test("book-nav: a cross-origin rel=next is not navigated (navSafe same-origin -> no Referer/onion leak)", () => {
+  const wabs = load("<p>b</p>", { headExtra: '<link rel="next" href="https://evil.example/x">' });
+  assert.equal(bookKey(wabs, wabs.document.body, "ArrowRight"), false, "absolute cross-origin dest: no navigation");
+  const wproto = load("<p>b</p>", { headExtra: '<link rel="next" href="//evil.example/x">' });
+  assert.equal(bookKey(wproto, wproto.document.body, "ArrowRight"), false, "protocol-relative dest: no navigation");
 });
