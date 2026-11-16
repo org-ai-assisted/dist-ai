@@ -1125,6 +1125,51 @@ test("hovercards: hovering an internal link builds a page card from the fetched 
   assert.ok(/Blocks unwanted traffic/.test(card.textContent), "summary carried over");
 });
 
+test("hovercards: page-preview summary renders whitelisted inline formatting as DOM (the {{os}} <u>)", async () => {
+  // A summary may carry a tiny whitelist of inline tags ({{os}} -> "<u>o</u>perating"); page-
+  // previews.js rebuilds them as REAL DOM (createElement/createTextNode, TT-safe) so the underline
+  // shows instead of a literal tag, and decodes the &amp; the generator emitted.
+  const w = load('<div class="wiki-content"><p><a href="Download/">Download</a></p></div>',
+    { appSrc: "../app.min.js",
+      previews: { "wiki/Download/": { t: "Download",
+        d: "host <u>o</u>perating <u>s</u>ystem (OS) &amp; more" } } });
+  const a = w.document.querySelector(".wiki-content a");
+  a.dispatchEvent(new w.MouseEvent("mouseover", { bubbles: true }));
+  await tick();
+  await new Promise((r) => setTimeout(r, 260));
+  const extract = w.document.querySelector(".hovercard-extract");
+  assert.ok(extract, "page-preview card shown");
+  const us = extract.querySelectorAll("u");
+  assert.equal(us.length, 2, "both <u> rendered as real elements");
+  assert.equal(us[0].textContent, "o");
+  assert.equal(us[1].textContent, "s");
+  assert.ok(/operating system \(OS\) & more/.test(extract.textContent),
+    "visible text is clean and the &amp; is decoded");
+  assert.ok(!/<u>/.test(extract.textContent), "no literal tag in the visible text");
+});
+
+test("hovercards: page-preview summary drops non-whitelisted tags + tolerates unbalanced ones (XSS-safe)", async () => {
+  // A tampered index entry: a non-whitelisted event-handler tag is dropped (text kept, no element,
+  // no attribute leaked); a whitelisted close with no open on the stack is ignored; a close of a
+  // DIFFERENT open tag does not pop it; an already-escaped <x> stays literal text, never an element.
+  const w = load('<div class="wiki-content"><p><a href="X/">X</a></p></div>',
+    { appSrc: "../app.min.js",
+      previews: { "wiki/X/": { t: "X",
+        d: '</u>a<span class=c onmouseover="evil()">b</span><b>c</u>d <em>&lt;x&gt;</em>' } } });
+  const a = w.document.querySelector(".wiki-content a");
+  a.dispatchEvent(new w.MouseEvent("mouseover", { bubbles: true }));
+  await tick();
+  await new Promise((r) => setTimeout(r, 260));
+  const extract = w.document.querySelector(".hovercard-extract");
+  assert.ok(extract, "card shown");
+  assert.equal(extract.querySelectorAll("span").length, 0, "non-whitelisted span dropped");
+  assert.ok(!/onmouseover/.test(extract.innerHTML), "no attribute/handler leaked");
+  assert.equal(extract.querySelectorAll("b").length, 1, "the <b> still opens");
+  assert.equal(extract.querySelectorAll("em").length, 1, "whitelisted <em> kept");
+  assert.equal(extract.textContent.replace(/\s+/g, ""), "abcd<x>", "text preserved across dropped tags");
+  assert.ok(/<x>/.test(extract.textContent), "escaped angle brackets stay literal text, not an element");
+});
+
 test("storage viewer: renders a row per registry key; shows VALUES; Delete-all clears", () => {
   // Use a value that is NOT a substring of any registry label, so the assertion proves the
   // value cell renders (a label like "Color theme (dark / light)" would match a naive /dark/).
