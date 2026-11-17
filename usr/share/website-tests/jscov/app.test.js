@@ -451,7 +451,9 @@ test("per-heading share: a keyboard reopen (focusin) clears the (x) override eve
   tip.querySelector(".menu-close i")
     .dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true }));
   assert.equal(tip.querySelector(".menu-wrapper").style.display, "none", "override pinned while :hover");
-  tip.dispatchEvent(new w.Event("focusin", { bubbles: true }));
+  // focus RETURNS to the trigger (Shift+Tab) -> a bubbling focusin reaches the tooltip's handler;
+  // dispatch on the trigger, not the tooltip, so a future target-scoped handler cannot pass vacuously
+  tip.querySelector(".headline-anchor").dispatchEvent(new w.Event("focusin", { bubbles: true }));
   assert.equal(tip.querySelector(".menu-wrapper").style.display, "",
     "focusin clears the override so :focus-within can reopen, even while still :hover");
 });
@@ -1190,18 +1192,24 @@ test("fly-in toast: a dismiss landing before the show frame cancels it (no slide
   await tick();                                          // the 0s show timer fires: hidden=false + showRaf set
   const panel = w.document.getElementById("fly-in-notification-panel");
   assert.equal(panel.hidden, false, "shown after the 0s wait");
+  assert.equal(rafId, 77, "the show frame was actually requested (else the cancel assert is vacuous)");
   w.document.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   assert.equal(cancelled, rafId, "dismiss cancels the pending show rAF");
   assert.ok(!panel.classList.contains("flyin-shown"), "the show animation never starts");
 });
 
-test("fly-in toast: a dismiss before the show timer fires has no frame to cancel (no throw)", async () => {
-  // showRaf is still 0 (timer not awaited) -> dismiss takes the no-cancel branch; the clearTimeout
-  // also cancels the not-yet-fired show. (The x inside a still-hidden panel dispatches in jsdom.)
-  const w = load(FLYIN);
+test("fly-in toast: a dismiss before the show timer fires persists the dismissal (no-cancel branch)", async () => {
+  // showRaf is still 0: await init (so the close handler IS attached) but keep the show timer 30s
+  // out (unfired), so dismiss takes the no-frame-to-cancel branch. The persisted dismissal proves
+  // the real handler ran -- a no-op click on a missing handler (the vacuous case) would not persist.
+  const w = load(FLYIN.replace('data-waitinseconds="0"', 'data-waitinseconds="30"'));
+  await tick();                                          // init runs; show timer scheduled 30s out, unfired
   const panel = w.document.getElementById("fly-in-notification-panel");
-  assert.doesNotThrow(() => panel.querySelector(".close-panel")
-    .dispatchEvent(new w.Event("click", { bubbles: true })));
+  assert.equal(panel.hidden, true, "not shown yet (30s show timer still pending)");
+  panel.querySelector(".close-panel").dispatchEvent(new w.Event("click", { bubbles: true }));
+  assert.equal(panel.hidden, true, "dismiss leaves it hidden");
+  assert.ok(w.localStorage.getItem("flyin-last-dismissed"),
+    "the dismissal persisted -> the real handler ran, not a no-op click");
 });
 
 // ---- modals (generic / download / table-expand) --------------------------------------------
