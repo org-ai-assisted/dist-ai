@@ -39,8 +39,10 @@ unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 
 ## Isolate git config so the fixture commit cannot pick up the operator's global
 ## core.hooksPath (the style gate) -- the test exercises the library, not the host hooks.
-isolated_gitconfig="$(mktemp)"
-export GIT_CONFIG_GLOBAL="${isolated_gitconfig}"
+## /dev/null, not a mktemp file: nothing writes the global config here (sbom_archive_commit
+## sets identity with 'git -c user.name/email'), so there is no temp file to leak if the
+## script exits before the cleanup trap is armed.
+export GIT_CONFIG_GLOBAL=/dev/null
 export GIT_CONFIG_SYSTEM=/dev/null
 
 if [ -n "${DERIVATIVE_MAKER_DIR:-}" ]; then
@@ -83,7 +85,7 @@ source "${subject}"
 
 workdir="$(mktemp --directory)"
 cleanup() {
-   safe-rm --recursive --force -- "${workdir}" "${isolated_gitconfig}"
+   safe-rm --recursive --force -- "${workdir}"
 }
 trap cleanup EXIT
 
@@ -105,6 +107,7 @@ mkdir --parents -- "${binary_dir}"
 ## path and the epoch-stripped-filename convention.
 allpkg='sbomfixture-all'
 allversion='3:1.5-2'
+allsha256='4444444444444444444444444444444444444444444444444444444444444444'
 cat > "${binary_dir}/Packages" <<EOF
 Package: ${pkg}
 Version: ${version}
@@ -126,7 +129,7 @@ Maintainer: Test <test@example.com>
 Installed-Size: 10
 Filename: pool/${component}/s/${allpkg}/${allpkg}_1.5-2_all.deb
 Size: 4321
-SHA256: 4444444444444444444444444444444444444444444444444444444444444444
+SHA256: ${allsha256}
 SHA1: 5555555555555555555555555555555555555555
 MD5sum: 66666666666666666666666666666666
 Description: hermetic SBOM fixture (arch all, epoch)
@@ -255,18 +258,21 @@ else
 fi
 
 ## Resolution GUARD: a version that is not in the index must FAIL loud (non-zero) AND must
-## leave no unresolved file behind (else a later 'git add --all' would commit it).
+## leave NO file behind (else a later 'git add --all' would commit it). A SEPARATE empty
+## archive dir, so 'nothing was created' is checked as an EMPTY dir -- not just the absence
+## of one known filename, which would miss any stray file under a different name.
+guard_dir="${workdir}/guard"
 if sbom_archive_one \
       "${repo}" "${codename}" "${pkg}" "9.9-9" "${arch}" "${arch}" \
-      "${source_date_epoch}" "${archive_dir}" >/dev/null 2>&1; then
+      "${source_date_epoch}" "${guard_dir}" >/dev/null 2>&1; then
    fail "guard: an unresolved package (wrong version) was archived instead of failing"
 else
    pass "guard rejects an unresolved package (no hashes -> non-zero)"
 fi
-if [ -e "${archive_dir}/${pkg}_9.9-9_${arch}.cdx.json" ]; then
-   fail "guard left the unresolved SBOM file behind (would be committed later)"
+if [ -n "$(ls -A -- "${guard_dir}" 2>/dev/null)" ]; then
+   fail "guard left a file behind (would be committed later)"
 else
-   pass "guard discarded the unresolved SBOM file"
+   pass "guard discarded the unresolved SBOM (archive dir empty)"
 fi
 
 ## Commit: a local commit is made and the SBOM is in the HEAD tree (committed, not merely
@@ -301,15 +307,15 @@ else
    fail "arch-all filename not epoch-stripped: $(basename -- "${all_out}")"
 fi
 if jq --exit-status \
-      --arg n "${allpkg}" --arg v "${allversion}" \
+      --arg n "${allpkg}" --arg v "${allversion}" --arg h "${allsha256}" \
       '[.components[]?
         | select(.name == $n and .version == $v
                  and ((.purl // "") | test("[?&]arch=all(&|$)"))
-                 and ((.hashes // []) | length > 0))] | length > 0' \
+                 and ((.hashes // []) | any(.alg == "SHA-256" and .content == $h)))] | length > 0' \
       "${all_out}" >/dev/null; then
-   pass "arch-all package resolved (name, arch=all, full epoched version, hashes)"
+   pass "arch-all package resolved with the index SHA-256 (name, arch=all, epoched version)"
 else
-   fail "arch-all package did not resolve as ${allpkg} arch=all ${allversion}"
+   fail "arch-all package did not resolve with the fixture SHA-256"
 fi
 
 ## Codename detection: the single codename under dists/ (no literal '*' glob leak).
@@ -348,10 +354,13 @@ if [ -f "${present_dir}/${pkg}_${version}_${arch}.cdx.json" ]; then
 else
    fail "sbom_archive_if_present did not archive a present package"
 fi
+## Absent-arch negative case in a SEPARATE empty dir, so 'no SBOM created' is an empty dir,
+## not just the absence of one known filename.
+absent_dir="${workdir}/ifpresent-absent"
 if sbom_archive_if_present \
       "${repo}" "${codename}" "${pkg}" "${version}" arm64 arm64 \
-      "${source_date_epoch}" "${present_dir}" \
-      && [ ! -e "${present_dir}/${pkg}_${version}_arm64.cdx.json" ]; then
+      "${source_date_epoch}" "${absent_dir}" \
+      && [ -z "$(ls -A -- "${absent_dir}" 2>/dev/null)" ]; then
    pass "sbom_archive_if_present skips (rc 0, no file) an arch not in the index"
 else
    fail "sbom_archive_if_present did not cleanly skip an absent arch"

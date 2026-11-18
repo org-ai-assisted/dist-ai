@@ -96,31 +96,38 @@ def main():
         f"binary SHA-256 {binary and sha256_of(binary)} != index {expected_sha256}",
     )
 
-    ## 3. The binary->source EDGE: a source component for the same source, AND a dependency
-    ## edge from the binary ref to the source ref (not merely 'a source component exists').
+    ## 3. The binary->source EDGE. The source component is the fixture's OWN source, matched
+    ## by NAME (sbomfixture has no Source: field, so source name == binary name) -- not merely
+    ## 'some source-arch component', so an edge to an unrelated source cannot pass. The edge
+    ## must run binary-ref -> source-ref with DISTINCT refs, so a degenerate self-reference
+    ## ({"ref": X, "dependsOn": [X]}) cannot satisfy it.
     source = next(
         (
             component
             for component in components
             if purl_arch(component.get("purl")) == "source"
+            and component.get("name") == name
         ),
         None,
     )
     check(
         source is not None,
-        "source component emitted",
-        "no source component",
+        f"source component is exactly {name} (arch=source)",
+        f"no source component named {name}",
     )
     edges = {
         dependency.get("ref"): dependency.get("dependsOn", [])
         for dependency in document.get("dependencies", [])
     }
+    binary_ref = binary.get("bom-ref") if binary else None
+    source_ref = source.get("bom-ref") if source else None
     check(
-        binary is not None
-        and source is not None
-        and source.get("bom-ref") in edges.get(binary.get("bom-ref"), []),
-        "binary->source dependency edge present",
-        "no dependency edge from the binary to its source",
+        binary_ref is not None
+        and source_ref is not None
+        and binary_ref != source_ref
+        and source_ref in edges.get(binary_ref, []),
+        "binary->source dependency edge present (distinct refs)",
+        "no binary->source edge, or binary and source share a bom-ref",
     )
 
     ## 4. No closure expansion: exactly the binary and its source, nothing else -- so a
