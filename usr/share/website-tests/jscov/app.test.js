@@ -2106,6 +2106,34 @@ test("search Enter: substring fallback; short, non-Enter, IME and no-match press
     "no navigation from a short query, a non-Enter key, an IME-composing Enter, or a no-match query");
 });
 
+test("search Enter unifies with the dropdown: an unsafe top-ranked target is skipped, not a dead Enter", async () => {
+  // bestMatch and the dropdown share ONE source of truth (rankedTitleIds + navSafe): the
+  // top-ranked id ("Xy", exact) has a cross-origin (unsafe) target, so the dropdown drops it
+  // AND Enter falls through to the next ranked NAV-SAFE row ("XyZ"). The old split bestMatch
+  // returned the unsafe href (exact-returns-first, no navSafe filter) and Enter no-op'd when
+  // location.assign's navSafe gate rejected it -- Enter and the visible first row disagreed.
+  const w = load('<input id="search-input">', {
+    appSrc: "../../vendor-bundle.js",   // rootPrefix "" -> bare hrefs; the absolute one stays cross-origin
+    searchIndex: [
+      { t: "Xy", u: "https://evil.example/" },   // exact tier 0, ranks first, but navSafe(false) rejects it
+      { t: "XyZ", u: "#safe" },                  // prefix tier 1, the first NAV-SAFE row
+    ],
+  });
+  const input = w.document.getElementById("search-input");
+  input.focus();
+  await tick();
+  input.value = "xy";
+  input.dispatchEvent(new w.Event("input"));
+  await tick();
+  assert.equal(w.document.querySelector(".search-results li a").getAttribute("href"), "#safe",
+    "dropdown drops the unsafe top-ranked row; its first row is the safe one");
+  w.location.hash = "#sentinel";
+  input.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Enter" }));
+  await tick();
+  assert.equal(w.location.hash, "#safe",
+    "Enter navigates to the dropdown's first safe row, not a no-op on the unsafe top match");
+});
+
 test("search hides and clears results for a sub-2-character query", async () => {
   const w = load('<input id="search-input">', { searchIndex: [{ t: "Firewall", u: "wiki/Firewall/" }] });
   const input = w.document.getElementById("search-input");
