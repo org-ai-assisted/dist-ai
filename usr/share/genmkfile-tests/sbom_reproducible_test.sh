@@ -76,8 +76,11 @@ EOF
 
 sbom_file="${workdir}/usr/share/sbom/sbomreprodemo.cdx.json"
 
+## Unset SOURCE_DATE_EPOCH in the subshell: a reproducible-build CI exports it, and make_sbom
+## honors it over the changelog date -- which would not match this test's changelog-derived
+## expectation. Unsetting forces the changelog-date path the assertion checks.
 run_sbom() {
-   ( cd -- "${workdir}" && "${genmkfile_bin}" sbom ) >/dev/null 2>&1
+   ( unset SOURCE_DATE_EPOCH; cd -- "${workdir}" && "${genmkfile_bin}" sbom ) >/dev/null 2>&1
 }
 
 if ! run_sbom; then
