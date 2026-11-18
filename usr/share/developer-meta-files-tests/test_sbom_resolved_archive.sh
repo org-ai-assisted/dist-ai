@@ -68,6 +68,9 @@ if [ -z "${subject}" ]; then
    printf '%s\n' "FATAL: sbom-archive.bsh not found (set SBOM_ARCHIVE_BSH)." >&2
    exit 1
 fi
+## Absolute path: the standalone-exec assertions invoke it from inside a cd'd subshell, where
+## a relative SBOM_ARCHIVE_BSH would resolve against the wrong directory.
+subject="$(readlink --canonicalize -- "${subject}")"
 for tool in debsbom jq uuidgen git safe-rm dpkg; do
    if ! command -v "${tool}" >/dev/null; then
       printf '%s\n' "FATAL: '${tool}' missing; a hard requirement of the test." >&2
@@ -266,12 +269,11 @@ else
    pass "guard discarded the unresolved SBOM file"
 fi
 
-## Commit: a local commit is made and the SBOM is tracked.
+## Commit: a local commit is made and the SBOM is in the HEAD tree (committed, not merely
+## staged -- 'cat-file -e HEAD:<path>' reads the commit, whereas 'ls-files' reads the index).
 DEBFULLNAME='Test' DEBEMAIL='test@example.com' \
    sbom_archive_commit "${archive_dir}" "sbom: fixture ${version}"
-if git -C "${archive_dir}" rev-parse --verify --quiet HEAD >/dev/null \
-      && git -C "${archive_dir}" ls-files --error-unmatch \
-            "$(basename -- "${out}")" >/dev/null 2>&1; then
+if git -C "${archive_dir}" cat-file -e "HEAD:$(basename -- "${out}")" 2>/dev/null; then
    pass "sbom_archive_commit created a local commit tracking the SBOM"
 else
    fail "sbom_archive_commit did not commit the SBOM"
@@ -369,55 +371,66 @@ if [ -f "${run_archive_dir}/runbin_1.0-1_${arch}.cdx.json" ] \
 else
    fail "sbom_archive_run did not archive both binaries"
 fi
-## Explicit-Source edge: the binary's source component is 'runpkg' (Source: field), not its
-## own name, and the binary->source edge points at it.
-if jq --exit-status \
-      '[.components[]? | select(.name == "runpkg" and ((.purl // "") | test("[?&]arch=source(&|$)")))] | length == 1' \
-      "${run_archive_dir}/runbin_1.0-1_${arch}.cdx.json" >/dev/null; then
-   pass "sbom_archive_run resolves the Source: field to the source component"
+## Explicit-Source edge: the binary's source component is 'runpkg' (Source: field, not its
+## own name) AND a dependency edge runs from the binary's bom-ref to the source's bom-ref.
+if jq --exit-status '
+      (first(.components[] | select(.name == "runbin") | .["bom-ref"])) as $bin
+      | (first(.components[] | select((.purl // "") | test("[?&]arch=source(&|$)")))) as $src
+      | ($src.name == "runpkg")
+        and ([.dependencies[]?
+              | select(.ref == $bin and ((.dependsOn // []) | index($src["bom-ref"])))]
+             | length == 1)
+   ' "${run_archive_dir}/runbin_1.0-1_${arch}.cdx.json" >/dev/null; then
+   pass "sbom_archive_run links the binary to its 'runpkg' source (edge present)"
 else
-   fail "sbom_archive_run did not emit the 'runpkg' source component"
+   fail "sbom_archive_run did not emit the binary->runpkg source edge"
 fi
-if git -C "${run_archive_dir}" rev-parse --verify --quiet HEAD >/dev/null \
-      && git -C "${run_archive_dir}" ls-files --error-unmatch \
-            "runbin_1.0-1_${arch}.cdx.json" "rundata_1.0-1_all.cdx.json" >/dev/null 2>&1; then
+## Committed (HEAD tree), not merely staged: cat-file -e reads the commit.
+if git -C "${run_archive_dir}" cat-file -e "HEAD:runbin_1.0-1_${arch}.cdx.json" 2>/dev/null \
+      && git -C "${run_archive_dir}" cat-file -e "HEAD:rundata_1.0-1_all.cdx.json" 2>/dev/null; then
    pass "sbom_archive_run commits every binary's SBOM"
 else
    fail "sbom_archive_run did not commit both SBOMs"
 fi
-## An arch the package was not built for is skipped, not fatal: build list widened to an
-## absent arch leaves only the present one archived.
+## Honors make_cross_build_platform_list: a list of ONLY an unbuilt arch archives no
+## arch-dependent binary -- it must NOT fall back to the native arch, which IS in the index.
+## The 'all' package still archives (arch-independent), proving the run itself ran.
 run_skip_dir="${workdir}/run-skip"
 (
    cd -- "${pkgdir}"
-   make_cross_build_platform_list="${arch} arm64" DEBFULLNAME='Test' DEBEMAIL='test@example.com' \
+   make_cross_build_platform_list='ppc64el' DEBFULLNAME='Test' DEBEMAIL='test@example.com' \
       sbom_archive_run "${repo}" "${run_skip_dir}" runpkg
 )
-if [ -f "${run_skip_dir}/runbin_1.0-1_${arch}.cdx.json" ] \
-      && [ ! -e "${run_skip_dir}/runbin_1.0-1_arm64.cdx.json" ]; then
-   pass "sbom_archive_run skips an unbuilt arch, archives the built one"
+if [ ! -e "${run_skip_dir}/runbin_1.0-1_ppc64el.cdx.json" ] \
+      && [ ! -e "${run_skip_dir}/runbin_1.0-1_${arch}.cdx.json" ] \
+      && [ -f "${run_skip_dir}/rundata_1.0-1_all.cdx.json" ]; then
+   pass "sbom_archive_run honors the build list (unbuilt arch -> no native fallback)"
 else
-   fail "sbom_archive_run mishandled a build list with an absent arch"
+   fail "sbom_archive_run did not honor the build list"
 fi
 
-## Standalone EXECUTABLE: run the script itself (main + was_executed), not sourced.
+## Standalone EXECUTABLE: run the script itself (main + was_executed), not sourced; both
+## binaries must end up committed in the HEAD tree.
 exec_archive_dir="${workdir}/exec-archive"
 (
    cd -- "${pkgdir}"
    make_cross_build_platform_list="${arch}" DEBFULLNAME='Test' DEBEMAIL='test@example.com' \
       "${subject}" "${repo}" "${exec_archive_dir}" runpkg
 )
-if [ -f "${exec_archive_dir}/runbin_1.0-1_${arch}.cdx.json" ] \
-      && git -C "${exec_archive_dir}" rev-parse --verify --quiet HEAD >/dev/null; then
-   pass "executed as a script (main/was_executed) archives and commits"
+if git -C "${exec_archive_dir}" cat-file -e "HEAD:runbin_1.0-1_${arch}.cdx.json" 2>/dev/null \
+      && git -C "${exec_archive_dir}" cat-file -e "HEAD:rundata_1.0-1_all.cdx.json" 2>/dev/null; then
+   pass "executed as a script (main/was_executed) commits every binary"
 else
-   fail "standalone execution did not produce a committed archive"
+   fail "standalone execution did not commit both SBOMs"
 fi
-## Wrong argument count fails loud (the main() usage guard).
-if "${subject}" "${repo}" "${exec_archive_dir}" >/dev/null 2>&1; then
-   fail "main did not reject a wrong argument count"
+## Wrong argument count fails loud via the main() usage guard -- assert the Usage: message,
+## not merely a nonzero exit (nounset on a missing arg, or a non-exec file, also exits nonzero).
+usage_rc=0
+usage_err="$("${subject}" "${repo}" "${exec_archive_dir}" 2>&1 1>/dev/null)" || usage_rc=$?
+if [ "${usage_rc}" -ne 0 ] && grep --quiet 'Usage:' <<< "${usage_err}"; then
+   pass "main rejects a wrong argument count with a usage message"
 else
-   pass "main rejects a wrong argument count (usage guard)"
+   fail "main did not emit the usage guard on a wrong argument count"
 fi
 
 printf '%s\n' "RESULT: ${pass_count} pass, ${fail_count} fail, 0 skip"
