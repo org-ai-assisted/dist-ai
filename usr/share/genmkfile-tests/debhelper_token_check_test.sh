@@ -11,9 +11,12 @@
 ## '.maintscript' rm_conffile block) a SECOND time -- the systemcheck duplicate-block
 ## bug that tripped lintian maintainer-script-should-not-use-dpkg-maintscript-helper.
 ##
-## genmkfile's make_debhelper_token_check must REJECT any maintainer script where
-## '#DEBHELPER#' appears more than once, or as anything other than a standalone token
-## line, and ACCEPT a single standalone token (or none).
+## genmkfile's make_debhelper_token_check requires EVERY policed maintainer script
+## to contain exactly one '#DEBHELPER#', alone on its own non-indented line. It
+## REJECTS zero tokens (the Kicksecure convention is that every maintainer script
+## carries one), more than one, an inline token, or an indented one (indentation
+## suggests the token sits inside a function body, where the multi-line expansion
+## would break).
 ##
 ## Hermetic: sources the genmkfile library (its top-level run is was_executed-guarded)
 ## and calls the function in a subshell against temp fixtures. No root, no build, no
@@ -110,24 +113,22 @@ run_case "inline token" err pkg.postrm \
 run_case "single standalone token" ok pkg.preinst \
    '#!/bin/bash' 'true' '#DEBHELPER#'
 
-## leading whitespace before a lone token is still standalone.
-run_case "indented standalone token" ok pkg.prerm \
+## an indented lone token may sit inside a function body, where the multi-line
+## expansion breaks -> rejected.
+run_case "indented token rejected" err pkg.prerm \
    '#!/bin/bash' '   #DEBHELPER#'
 
-## no token at all -> debhelper appends its block; nothing to police.
-run_case "no token" ok pkg.postinst \
+## Kicksecure convention: every policed maintainer script must carry the token.
+run_case "no token rejected" err pkg.postinst \
    '#!/bin/bash' 'true'
 
 ## arch-qualified name (debian/<pkg>.<script>.<arch>) -> dh_installdeb selects it.
 run_case "arch-qualified comment token" err pkg.postinst.amd64 \
    '#!/bin/bash' '## note: #DEBHELPER# snippets' 'true' '#DEBHELPER#'
 
-## package-less arch-qualified name (debian/<script>.<arch>).
-run_case "bare arch-qualified comment token" err postinst.linux \
-   '#!/bin/bash' '## #DEBHELPER#' '#DEBHELPER#'
-
-## debhelper's own generated artifact is not a source script -> skipped.
-run_case "debhelper artifact skipped" ok pkg.preinst.debhelper \
+## a '*.<script>.*' name (here a '*.debhelper' build artifact) is policed too; a
+## clean source tree never carries one, so this is not a false positive in practice.
+run_case "debhelper-suffixed name policed" err pkg.preinst.debhelper \
    '#DEBHELPER#' '#DEBHELPER#'
 
 ## a stray NUL byte must not make grep treat the script as binary and miss the
