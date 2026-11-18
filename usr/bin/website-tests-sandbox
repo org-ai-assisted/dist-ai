@@ -175,6 +175,15 @@ for runner in check_mobile.py check_width.py check_footer.py check_console.py \
    [ -f "${tests_dir}/${runner}" ] || die "missing runner: ${tests_dir}/${runner}"
    cp --archive -- "${tests_dir}/${runner}" "${staged_wt}/${runner}"
 done
+## A baseline-using runner reads its per-site baselines from a <name>-baselines/ sibling (its
+## _BASELINE_DIR, resolved relative to the shim). Stage EVERY such dir beside the shims: without
+## it load_baseline() finds nothing and every grandfathered finding false-REDs the gate. Generic,
+## not per-runner, so a future sandbox baseline runner needs no new staging line here. Only
+## check_forced_reflow runs in the sandbox today; staging the host-only runners' dirs is harmless.
+for baseline_dir in "${tests_dir}"/*-baselines; do
+   [ -d "${baseline_dir}" ] || continue
+   cp --archive -- "${baseline_dir}" "${staged_wt}/$(basename -- "${baseline_dir}")"
+done
 ## The runners are CLI shims over dist_ai.webcheck; stage the package so the shim's
 ## `../../lib/python3/dist-packages` insert resolves inside the sandbox. Required, not
 ## optional: its absence is a broken install, not a skip.
