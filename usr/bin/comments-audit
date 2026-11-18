@@ -24,7 +24,7 @@ Heuristic categories the script emits:
                     '# end of <X>', '# fi', '# close <X>'
 
   R151-RESTATE      comment uses the same identifier as the code
-                    line below AND the comment is short (<= 6
+                    line below AND the comment is short (<= 8
                     tokens) AND the verb is from a fixed
                     'restate' list (set, get, init, declare,
                     install, return, exit, print, echo, loop,
@@ -39,7 +39,7 @@ Heuristic categories the script emits:
                     header as above a statement.
 
 Usage:  python3 comments-audit.py <repo_root>
-Exits:  always 0 - this is an audit, not a gate.
+Exits:  0 for any run regardless of findings (an audit, not a gate); a usage error exits 2.
 """
 
 import os
