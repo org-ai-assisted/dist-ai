@@ -1632,6 +1632,34 @@ test("wide tables: the ResizeObserver callback measures SYNCHRONOUSLY (post-layo
     "fitting table gets no rail");
 });
 
+test("wide tables: a not-yet-loaded in-table image is observed (free post-layout re-measure, not rAF)", () => {
+  const w = load('<div class="wiki-content"><table id="wide"><tbody><tr><td>' +
+    '<img id="late" src="/late.webp"><img id="done" src="/done.webp"></td></tr></tbody></table></div>', {
+    preEval: (win) => {
+      const d = win.document;
+      Object.defineProperty(d.getElementById("late"), "complete", { get() { return false; } });
+      Object.defineProperty(d.getElementById("done"), "complete", { get() { return true; } });
+    },
+  });
+  const ro = w.__resizeObservers[0];
+  const late = w.document.getElementById("late");
+  const done = w.document.getElementById("done");
+  // REGRESSION (PageSpeed "forced reflow", sync()): a late in-table image grows the table's
+  // scrollWidth without changing its (max-width-capped) border box, so the table RO alone misses
+  // it. The image itself is observed, so its decode (box 0 -> intrinsic) re-measures through the
+  // post-layout RO callback -- a FREE read. The old img.load -> requestAnimationFrame path read
+  // scrollWidth PRE-layout and forced the reflow (it outlived the homepage fix on image-heavy
+  // pages like Dev/wikitest); observing the image, not a rAF, is the full fix.
+  assert.ok(ro.targets.includes(late), "a not-yet-loaded in-table image is observed for a free re-measure");
+  assert.ok(!ro.targets.includes(done), "an already-complete image is not observed (no pending load)");
+  const wide = w.document.getElementById("wide");
+  stubTableGeom(w.document, wide, 400, 200);
+  ro.cb();
+  const rail = wide.previousElementSibling;
+  assert.ok(rail && rail.classList.contains("table-scroll-top"),
+    "the RO callback builds the rail synchronously (post-layout read, never rAF-deferred)");
+});
+
 // ---- totality ------------------------------------------------------------------------------
 
 test("init is total on a minimal document (no throw)", () => {
@@ -2588,9 +2616,15 @@ test("storage viewer: lists an unrecognized key and a per-item Delete removes ju
 
 // ---- wide tables: resize fallback, scroll-sync lock, fits-after-overwide --------------------
 
-test("wide tables: without ResizeObserver, build via sync() and re-sync on a coalesced resize", async () => {
-  const w = load('<div class="wiki-content"><table id="wide"><tbody><tr><td>x</td></tr></tbody></table></div>', {
-    preEval: (win) => { win.ResizeObserver = undefined; },
+test("wide tables: without ResizeObserver, build via sync(), re-sync on a coalesced resize + image load", async () => {
+  const w = load('<div class="wiki-content"><table id="wide"><tbody><tr><td>x' +
+    '<img id="late" src="/wide.webp"></td></tr></tbody></table></div>', {
+    preEval: (win) => {
+      win.ResizeObserver = undefined;
+      // jsdom does not load images; force the fixture image not-complete so the no-RO fallback
+      // wires its load/error re-sync listeners (the legacy rAF path).
+      Object.defineProperty(win.document.getElementById("late"), "complete", { get() { return false; } });
+    },
   });
   const wide = w.document.getElementById("wide");
   // geometry is read during the deferred sync(); stub it so the table reads as overwide.
@@ -2598,8 +2632,14 @@ test("wide tables: without ResizeObserver, build via sync() and re-sync on a coa
   w.dispatchEvent(new w.Event("resize"));
   w.dispatchEvent(new w.Event("resize"));   // coalesced by the rAF guard
   await new Promise((r) => setTimeout(r, 30));
-  const rail = wide.previousElementSibling;
+  let rail = wide.previousElementSibling;
   assert.ok(rail && rail.classList.contains("table-scroll-top"), "the fallback built the top rail on resize");
+  // A late in-table image load also re-syncs on the no-RO path (the legacy rAF read).
+  rail.remove(); wide.style.marginTop = "";
+  w.document.getElementById("late").dispatchEvent(new w.Event("load"));
+  await new Promise((r) => setTimeout(r, 30));
+  rail = wide.previousElementSibling;
+  assert.ok(rail && rail.classList.contains("table-scroll-top"), "a late image load re-syncs on the no-RO fallback");
 });
 
 test("wide tables: the top rail and the table mirror each other's scrollLeft (re-entrancy guarded)", async () => {
