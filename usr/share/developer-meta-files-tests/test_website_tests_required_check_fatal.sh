@@ -34,28 +34,60 @@ if [ ! -r "${runner}" ]; then
    exit 1
 fi
 
-## For each required check, the fix adds an else arm printing a distinct FATAL message
-## immediately followed by overall=1. Assert both are present and adjacent: grep the
-## FATAL-message line and confirm the NEXT line is overall=1. Also confirm the `-f`
-## guard itself still exists (so the check is real, not a dangling message). On the
-## pre-fix runner (bare `-f` guard, no else) the FATAL message is absent -> fail.
-check_guard_fatal() {
-   local check="$1"
-   if ! grep --quiet --fixed-strings "[ -f \"\${tests_dir}/${check}\" ]" "${runner}"; then
-      fail "${check}: its -f guard is gone (test stale, or the check was removed)"
-      return
-   fi
-   local ctx
-   ctx="$(grep --after-context=1 --fixed-strings "FATAL: ${check} not found" "${runner}" || true)"
-   if grep --quiet --extended-regexp 'overall=1' <<< "${ctx}"; then
-      pass "${check}: absent required test is FATAL (message + overall=1), not a silent skip"
-   else
-      fail "${check}: -f guard has no FATAL else -> a missing required test reads as a green PASS (silent green)"
-   fi
-}
+## The browser-lane checkers (mobile/width/footer/console/webplatform/forced_reflow) are co-located
+## SHIPPED tests. Their presence (install integrity) MUST be verified up front, before the browser
+## probe/dispatch -- so a missing one FATALs as a broken install even on a host with no browser,
+## where it used to read as a plain "browser SKIP" (silent green). Assert the single up-front loop,
+## that it FATALs, that it precedes the browser dispatch, and that no browser-lane checker's
+## integrity is gated behind the browser-present branch. On the pre-fix runner (existence checked
+## only inside the browser-present branch) the up-front loop is absent -> fail.
+browser_lane_checks=(check_mobile.py check_width.py check_footer.py check_console.py \
+                     check_webplatform.py check_forced_reflow.py)
 
-check_guard_fatal 'check_mobile.py'
-check_guard_fatal 'check_width.py'
+## (1) the up-front integrity loop exists and lists every browser-lane checker.
+loop_body="$(sed -n '/^for _req in check_mobile\.py/,/^done$/p' -- "${runner}")"
+if [ -n "${loop_body}" ]; then
+   pass 'browser-lane integrity: an up-front for-_req loop over the browser-lane checkers exists'
+else
+   fail 'browser-lane integrity: no up-front for-_req loop (a missing checker reads as a browser SKIP, silent green)'
+fi
+missing_from_loop=0
+for chk in "${browser_lane_checks[@]}"; do
+   grep --quiet --fixed-strings "${chk}" <<< "${loop_body}" \
+      || { fail "browser-lane integrity: ${chk} missing from the up-front loop"; missing_from_loop=1; }
+done
+[ "${missing_from_loop}" -eq 0 ] \
+   && pass 'browser-lane integrity: every browser-lane checker is covered by the up-front loop'
+
+## (2) the loop FATALs (message + overall=1 + install_intact=false) on an absent checker.
+if grep --quiet --fixed-strings 'required browser-lane test missing' <<< "${loop_body}" \
+      && grep --quiet --extended-regexp 'overall=1' <<< "${loop_body}" \
+      && grep --quiet --fixed-strings "install_intact='false'" <<< "${loop_body}"; then
+   pass 'browser-lane integrity: a missing checker FATALs (message + overall=1 + install_intact=false)'
+else
+   fail 'browser-lane integrity: the up-front loop does not FATAL on an absent checker'
+fi
+
+## (3) integrity precedes browser dispatch: the loop is ABOVE the "Local browser present" branch.
+loop_ln="$(grep --line-number --max-count=1 --fixed-strings 'for _req in check_mobile.py' "${runner}" | cut -d: -f1)"
+disp_ln="$(grep --line-number --max-count=1 --fixed-strings 'Local browser present' "${runner}" | cut -d: -f1)"
+if [ -n "${loop_ln}" ] && [ -n "${disp_ln}" ] && [ "${loop_ln}" -lt "${disp_ln}" ]; then
+   pass 'browser-lane integrity: the up-front loop precedes the browser-present dispatch'
+else
+   fail 'browser-lane integrity: integrity is not verified before the browser dispatch'
+fi
+
+## (4) no per-lane browser-gated FATAL remains for a browser-lane checker (the old silent-skip shape:
+## a literal 'FATAL: check_<x>.py not found' that fires only inside the browser-present branch).
+leftover=0
+for chk in "${browser_lane_checks[@]}"; do
+   if grep --quiet --fixed-strings "FATAL: ${chk} not found" "${runner}"; then
+      fail "browser-lane integrity: a per-lane 'FATAL: ${chk} not found' remains (integrity still browser-gated)"
+      leftover=1
+   fi
+done
+[ "${leftover}" -eq 0 ] \
+   && pass 'browser-lane integrity: no per-lane browser-gated FATAL remains for a browser-lane checker'
 
 ## The five *_test.py unit regressions run via the run_required_unit_test helper, which
 ## FATALs on an absent shipped test. Assert: (a) the helper exists and FATALs on absence,

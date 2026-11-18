@@ -64,6 +64,6 @@ test('unicode chip without <b> and without #umcap: if-absent branches', function
   win.document.querySelector('.chip.set').click();
 });
 
-test('no collapsebtn and no #chat: if-cb false + final scroll catch', function () {
+test('no collapsebtn: if-cb false branch', function () {
   loadScript(JS, '<div id="app"></div>', {});
 });

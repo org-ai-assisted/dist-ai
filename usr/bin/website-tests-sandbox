@@ -175,15 +175,6 @@ for runner in check_mobile.py check_width.py check_footer.py check_console.py \
    [ -f "${tests_dir}/${runner}" ] || die "missing runner: ${tests_dir}/${runner}"
    cp --archive -- "${tests_dir}/${runner}" "${staged_wt}/${runner}"
 done
-## A baseline-using runner reads its per-site baselines from a <name>-baselines/ sibling (its
-## _BASELINE_DIR, resolved relative to the shim). Stage EVERY such dir beside the shims: without
-## it load_baseline() finds nothing and every grandfathered finding false-REDs the gate. Generic,
-## not per-runner, so a future sandbox baseline runner needs no new staging line here. Only
-## check_forced_reflow runs in the sandbox today; staging the host-only runners' dirs is harmless.
-for baseline_dir in "${tests_dir}"/*-baselines; do
-   [ -d "${baseline_dir}" ] || continue
-   cp --archive -- "${baseline_dir}" "${staged_wt}/$(basename -- "${baseline_dir}")"
-done
 ## The runners are CLI shims over dist_ai.webcheck; stage the package so the shim's
 ## `../../lib/python3/dist-packages` insert resolves inside the sandbox. Required, not
 ## optional: its absence is a broken install, not a skip.
@@ -236,10 +227,9 @@ run_lane check_mobile.py  || overall=1
 run_lane check_width.py   || overall=1
 run_lane check_footer.py  || overall=1
 run_lane check_console.py || overall=1
-## PageSpeed "forced reflow": load each page under a chromium perf trace and fail on any NEW
-## synchronous layout first-party JS forces (a read-after-write reflow thrash). Pre-existing
-## reflows are grandfathered per-site in forced-reflow-baselines/. Needs real chromium + a loopback
-## origin, exactly like the sibling lanes.
+## PageSpeed "forced reflow": load each page under a chromium perf trace and fail on any
+## synchronous layout first-party JS forces (a read-after-write reflow thrash). Budget 0, no
+## grandfathering. Needs real chromium + a loopback origin, exactly like the sibling lanes.
 run_lane check_forced_reflow.py || overall=1
 ## Functional Speculation Rules + View Transitions proof over CDP (ruleset accepted + prefetch
 ## fires, @view-transition applied + a same-origin nav runs clean). Needs real chromium + a

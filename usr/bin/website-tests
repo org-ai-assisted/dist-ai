@@ -278,9 +278,10 @@ run_required_unit_test check_svg_safety_test.py
 run_required_unit_test check_console_test.py
 
 ## Unit regression for check_forced_reflow's browser-free logic (forced-event detection, first-party
-## stack attribution, ?h= buster strip, URL join, page enumeration, the two required argparse groups,
-## and the baseline key/load/write). The chromium trace runs only inside check(), so this unit runs
-## everywhere.
+## stack attribution, ?h= buster strip, URL join, percent-encoded page enumeration, the two required
+## argparse groups, classify_probe's post-settle verdict incl. redirect/final-404/trace-loss fail-closed,
+## _is_engine_absent, and empty-paths rejection). The chromium trace runs only inside check(), so this
+## unit runs everywhere.
 run_required_unit_test check_forced_reflow_test.py
 
 ## Unit regression for the Speculation Rules + View Transitions gate's browser-free logic
@@ -450,6 +451,20 @@ fi
 ## nothing to remember. Only a context with neither a local browser nor the sandbox
 ## (e.g. a minimal CI runner) SKIPs, and it says so.
 
+## Install integrity BEFORE any browser probe/dispatch: the browser lanes are co-located SHIPPED
+## tests (usr/share/website-tests/). A missing required checker is a BROKEN INSTALL (FATAL),
+## independent of whether a local browser exists -- otherwise, on a host with no browser and no
+## sandbox, a missing checker read as a plain "browser SKIP" (silent green) instead of an incomplete
+## install. Checked here once; the per-lane invocations below only guard execution, never integrity.
+for _req in check_mobile.py check_width.py check_footer.py check_console.py \
+            check_webplatform.py check_forced_reflow.py; do
+   if [ ! -f "${tests_dir}/${_req}" ]; then
+      printf '%s\n' "website-tests: FATAL: ${_req} not found in ${tests_dir} (required browser-lane test missing)" >&2
+      overall=1
+      install_intact='false'
+   fi
+done
+
 ## Probe the local browser once by attempting the mobile lane; its own exit 77 means
 ## Playwright/chromium is absent (covers both the module and the engine). Capture the
 ## probe's stderr (FAIL detail + the SKIP notice) into a variable while its stdout
@@ -465,14 +480,9 @@ if [ -f "${tests_dir}/check_mobile.py" ]; then
    if [ "${mobile_rc}" != '77' ] && [ -n "${probe_err}" ]; then
       printf '%s\n' "${probe_err}" >&2
    fi
-else
-   ## check_mobile.py is a co-located, SHIPPED test (usr/share/website-tests/): its absence
-   ## is a broken install, not an optional skip. A bare '-f' guard let a missing required
-   ## test read as a full PASS (silent green) -- FATAL instead.
-   printf '%s\n' "website-mobile-tests: FATAL: check_mobile.py not found in ${tests_dir} (required test missing)" >&2
-   overall=1
-   install_intact='false'
 fi
+## (integrity already FATAL'd above if check_mobile.py is absent; the -f guard only avoids
+## executing a missing probe.)
 
 if [ "${mobile_rc}" = '77' ]; then
    ## No local browser. Delegate BOTH lanes to the sandbox when it is available.
@@ -516,87 +526,50 @@ if [ "${mobile_rc}" = '77' ]; then
       env_unmet=1
    fi
 else
-   ## Local browser present -- mobile ran here. Gate it, then run the width lane too.
+   ## Local browser present -- mobile ran here. Gate it, then run the sibling lanes. Each checker's
+   ## presence is already guaranteed by the up-front integrity loop (a missing one FATAL'd there), so
+   ## these invocations carry no -f guard: that is why a 77 means "no browser for this lane" (SKIP),
+   ## never "missing install". A missing file here would surface as a non-77 rc -> overall=1 anyway.
    [ "${mobile_rc}" = '0' ] || overall=1
-   if [ -f "${tests_dir}/check_width.py" ]; then
-      width_rc=0
-      "${tests_dir}/check_width.py" "${roots[@]}" || width_rc="$?"
-      if [ "${width_rc}" = '77' ]; then
-         printf '%s\n' 'website-width-tests: SKIP (no Playwright/chromium)' >&2
-         env_unmet=1
-      elif [ "${width_rc}" != '0' ]; then
-         overall=1
-      fi
-   else
-      ## Same as check_mobile.py above: a shipped required test whose absence must FATAL,
-      ## not silently skip the width lane to a green pass.
-      printf '%s\n' "website-width-tests: FATAL: check_width.py not found in ${tests_dir} (required test missing)" >&2
+   width_rc=0
+   "${tests_dir}/check_width.py" "${roots[@]}" || width_rc="$?"
+   if [ "${width_rc}" = '77' ]; then
+      printf '%s\n' 'website-width-tests: SKIP (no Playwright/chromium)' >&2
+      env_unmet=1
+   elif [ "${width_rc}" != '0' ]; then
       overall=1
-      install_intact='false'
    fi
-   if [ -f "${tests_dir}/check_footer.py" ]; then
-      footer_rc=0
-      "${tests_dir}/check_footer.py" "${roots[@]}" || footer_rc="$?"
-      if [ "${footer_rc}" = '77' ]; then
-         printf '%s\n' 'website-footer-tests: SKIP (no Playwright/chromium)' >&2
-         env_unmet=1
-      elif [ "${footer_rc}" != '0' ]; then
-         overall=1
-      fi
-   else
-      ## Same as check_width.py above: a shipped required test whose absence must FATAL,
-      ## not silently skip the footer lane to a green pass.
-      printf '%s\n' "website-footer-tests: FATAL: check_footer.py not found in ${tests_dir} (required test missing)" >&2
+   footer_rc=0
+   "${tests_dir}/check_footer.py" "${roots[@]}" || footer_rc="$?"
+   if [ "${footer_rc}" = '77' ]; then
+      printf '%s\n' 'website-footer-tests: SKIP (no Playwright/chromium)' >&2
+      env_unmet=1
+   elif [ "${footer_rc}" != '0' ]; then
       overall=1
-      install_intact='false'
    fi
-   if [ -f "${tests_dir}/check_console.py" ]; then
-      console_rc=0
-      "${tests_dir}/check_console.py" "${roots[@]}" || console_rc="$?"
-      if [ "${console_rc}" = '77' ]; then
-         printf '%s\n' 'website-console-tests: SKIP (no Playwright/chromium)' >&2
-         env_unmet=1
-      elif [ "${console_rc}" != '0' ]; then
-         overall=1
-      fi
-   else
-      ## Same as check_footer.py above: a shipped required lane whose absence must FATAL,
-      ## not silently skip the console-error gate to a green pass.
-      printf '%s\n' "website-console-tests: FATAL: check_console.py not found in ${tests_dir} (required test missing)" >&2
+   console_rc=0
+   "${tests_dir}/check_console.py" "${roots[@]}" || console_rc="$?"
+   if [ "${console_rc}" = '77' ]; then
+      printf '%s\n' 'website-console-tests: SKIP (no Playwright/chromium)' >&2
+      env_unmet=1
+   elif [ "${console_rc}" != '0' ]; then
       overall=1
-      install_intact='false'
    fi
-   if [ -f "${tests_dir}/check_webplatform.py" ]; then
-      webplatform_rc=0
-      "${tests_dir}/check_webplatform.py" "${roots[@]}" || webplatform_rc="$?"
-      if [ "${webplatform_rc}" = '77' ]; then
-         printf '%s\n' 'website-webplatform-tests: SKIP (no Playwright/chromium)' >&2
-         env_unmet=1
-      elif [ "${webplatform_rc}" != '0' ]; then
-         overall=1
-      fi
-   else
-      ## Same as check_console.py above: a shipped required lane whose absence must FATAL,
-      ## not silently skip the speculation-rules/view-transitions functional gate to green.
-      printf '%s\n' "website-webplatform-tests: FATAL: check_webplatform.py not found in ${tests_dir} (required test missing)" >&2
+   webplatform_rc=0
+   "${tests_dir}/check_webplatform.py" "${roots[@]}" || webplatform_rc="$?"
+   if [ "${webplatform_rc}" = '77' ]; then
+      printf '%s\n' 'website-webplatform-tests: SKIP (no Playwright/chromium)' >&2
+      env_unmet=1
+   elif [ "${webplatform_rc}" != '0' ]; then
       overall=1
-      install_intact='false'
    fi
-   if [ -f "${tests_dir}/check_forced_reflow.py" ]; then
-      forced_reflow_rc=0
-      "${tests_dir}/check_forced_reflow.py" "${roots[@]}" || forced_reflow_rc="$?"
-      if [ "${forced_reflow_rc}" = '77' ]; then
-         printf '%s\n' 'website-forced-reflow-tests: SKIP (no Playwright/chromium)' >&2
-         env_unmet=1
-      elif [ "${forced_reflow_rc}" != '0' ]; then
-         overall=1
-      fi
-   else
-      ## Same as check_console.py above: a shipped required lane whose absence must FATAL,
-      ## not silently skip the forced-reflow (PageSpeed) gate to a green pass.
-      printf '%s\n' "website-forced-reflow-tests: FATAL: check_forced_reflow.py not found in ${tests_dir} (required test missing)" >&2
+   forced_reflow_rc=0
+   "${tests_dir}/check_forced_reflow.py" "${roots[@]}" || forced_reflow_rc="$?"
+   if [ "${forced_reflow_rc}" = '77' ]; then
+      printf '%s\n' 'website-forced-reflow-tests: SKIP (no Playwright/chromium)' >&2
+      env_unmet=1
+   elif [ "${forced_reflow_rc}" != '0' ]; then
       overall=1
-      install_intact='false'
    fi
 fi
 

@@ -8,9 +8,13 @@
 """Regression tests for webcheck.forced_reflow's pure (browser-free) logic: forced-event
 detection (a Layout/UpdateLayoutTree with a JS stack is forced; without one it is a pipeline
 layout), first-party stack attribution (only a frame from the page's own origin counts), the
-?h= buster strip in the frame label, URL join, off-origin detection, page enumeration, and the
-two required mutually-exclusive argparse groups. Run by the website-tests launcher (a required
-unit) or directly: ./check_forced_reflow_test.py"""
+full-URL-path frame label with its ?h= buster stripped, URL join, off-origin detection, page
+enumeration (filesystem names percent-encoded into URL paths), the post-settle verdict
+(classify_probe: same-host error validation, off-host redirect still gating pre-redirect forced
+layouts, fail-closed on a lossy/incomplete trace), the engine-absent-vs-launch-failure classifier,
+the empty-page-list rejection, and the two required mutually-exclusive argparse groups. Run by the
+website-tests launcher (a required unit) or directly: ./check_forced_reflow_test.py"""
+import asyncio
 import os
 import sys
 import tempfile
@@ -39,6 +43,9 @@ THIRD = {"url": "https://cdn.example.com/x.js", "lineNumber": 1, "columnNumber":
          "functionName": "ext"}
 NATIVE = {"url": "", "lineNumber": 0, "columnNumber": 0, "functionName": ""}
 
+# A completed, lossless trace -- the only state classify_probe may read as a pass.
+TRACE_OK = {"loss": False, "done": True}
+
 
 def _layout(stack=None):
     """A 'Layout' trace event; with a stackTrace under beginData it is FORCED."""
@@ -66,8 +73,8 @@ def run() -> int:
     forced = fr.attribute_forced_layouts([_layout([OURS])], BASE)
     ck(len(forced) == 1 and abs(forced[0][1] - 3.3) < 1e-6,
        "a Layout with a first-party stack is a forced reflow (dur in ms)")
-    ck(forced and forced[0][0] == "app.min.js:168:93 (sync)",
-       "frame label is basename:line:col (function), ?h= buster stripped")
+    ck(forced and forced[0][0] == "/app.min.js:168:93 (sync)",
+       "frame label is the full URL path:line:col (function), ?h= buster stripped")
 
     ck(fr.attribute_forced_layouts([_layout(None)], BASE) == [],
        "a Layout WITHOUT a JS stack is a pipeline layout, not counted")
@@ -85,6 +92,14 @@ def run() -> int:
     ck(fr.attribute_forced_layouts([{"name": "Paint", "args": {}}], BASE) == [],
        "a non-layout trace event is ignored")
 
+    # --- frame label keeps the SCRIPT PATH, so same-basename scripts stay distinct ---
+    a = fr._frame_label({"url": BASE + "/assets/checkout/ui.js?h=1",
+                         "lineNumber": 5, "columnNumber": 1, "functionName": "sync"})
+    b = fr._frame_label({"url": BASE + "/assets/search/ui.js?h=2",
+                         "lineNumber": 5, "columnNumber": 1, "functionName": "sync"})
+    ck(a == "/assets/checkout/ui.js:5:1 (sync)" and a != b,
+       "two same-basename scripts under different dirs get DISTINCT labels (path kept)")
+
     # --- is_first_party / is_off_origin (host identity) ---
     ck(fr.is_first_party(BASE + "/a.js", BASE) is True, "same-host frame is first-party")
     ck(fr.is_first_party("https://evil.test/a.js", BASE) is False, "other-host frame is not")
@@ -96,7 +111,7 @@ def run() -> int:
     ck(fr.page_url("http://h", "/wiki/A") == "http://h/wiki/A", "page_url joins a rooted path")
     ck(fr.page_url("http://h/", "wiki/A") == "http://h/wiki/A", "page_url tolerates a bare path")
 
-    # --- enumerate_paths over a built tree ---
+    # --- enumerate_paths over a built tree (filesystem names percent-encoded) ---
     with tempfile.TemporaryDirectory() as d:
         tree = Path(d)
         (tree / "index.html").write_text("x")
@@ -104,11 +119,51 @@ def run() -> int:
         (tree / "wiki" / "About.html").write_text("x")
         (tree / "wiki" / "Dev").mkdir()
         (tree / "wiki" / "Dev" / "wikitest.html").write_text("x")
+        # a title whose name would become a URL fragment / needs escaping
+        (tree / "wiki" / "Example#Notes.html").write_text("x")
+        (tree / "wiki" / "A B.html").write_text("x")
         paths = fr.enumerate_paths(tree)
     ck("/" in paths and "/wiki/About" in paths and "/wiki/Dev/wikitest" in paths,
        "enumerate_paths finds root + flat extensionless wiki pages (recursive)")
+    ck("/wiki/Example%23Notes" in paths,
+       "enumerate_paths percent-encodes '#' so it cannot become a URL fragment (wrong-page pass)")
+    ck("/wiki/A%20B" in paths and all("/" in p or p == "/" for p in paths),
+       "enumerate_paths percent-encodes a space while preserving '/' separators")
 
-    # --- argparse: each required mutually-exclusive group is enforced ---
+    # --- classify_probe: the post-settle PASS/FAIL verdict (fail-closed + redirect handling) ---
+    ev = [_layout([OURS])]
+    r = fr.classify_probe(ev, BASE, 200, BASE + "/", 200, TRACE_OK)
+    ck(r.get("forced") and abs(r["ms"] - 3.3) < 1e-6 and "bad_status" not in r,
+       "classify_probe: a clean same-host page reports its forced layouts")
+    ck(fr.classify_probe([], BASE, 200, BASE + "/", 404, TRACE_OK) == {"bad_status": 404},
+       "classify_probe: a 200 that redirects to a same-host 404 during settle FAILS (quiet-404)")
+    ck(fr.classify_probe([], BASE, 200, BASE + "/", None, TRACE_OK).get("forced") == [],
+       "classify_probe: no post-load navigation -> judged on the initial status (clean)")
+    off = fr.classify_probe(ev, BASE, 200, "https://moved.example/", None, TRACE_OK)
+    ck(off.get("external") == "https://moved.example/" and len(off.get("forced") or []) == 1,
+       "classify_probe: an off-host redirect still carries the pre-redirect first-party forced layout")
+    ck(fr.classify_probe([], BASE, 200, "https://moved.example/", None, TRACE_OK).get("forced") == [],
+       "classify_probe: a pure off-host redirect (no first-party forced) is external only")
+    ck(fr.classify_probe(ev, BASE, 200, BASE + "/", 200, {"loss": True, "done": True})
+       == {"trace_bad": "data loss"},
+       "classify_probe: a lossy trace fails CLOSED (never read as a within-budget pass)")
+    ck(fr.classify_probe(ev, BASE, 200, BASE + "/", 200, {"loss": False, "done": False})
+       == {"trace_bad": "tracingComplete never arrived"},
+       "classify_probe: an incomplete trace (no tracingComplete) fails CLOSED")
+
+    # --- engine-absent vs launch-failure: only a missing engine is a SKIP ---
+    ck(fr._is_engine_absent(Exception("Executable doesn't exist at /ms-playwright/chrome")) is True,
+       "_is_engine_absent: a missing chromium executable is an absent-engine SKIP (77)")
+    ck(fr._is_engine_absent(Exception("Timeout 30000ms exceeded.")) is False,
+       "_is_engine_absent: a launch TIMEOUT is a real failure, not an absent-engine SKIP")
+    ck(fr._is_engine_absent(Exception("Failed to create a sandbox: namespace unavailable")) is False,
+       "_is_engine_absent: a sandbox/namespace launch error is a real failure, not a SKIP")
+
+    # --- empty page list is rejected, not a zero-page PASS (browser-free: guard precedes launch) ---
+    ck(asyncio.run(fr.check(BASE, [])) == 1,
+       "check(): an empty page list FAILS (an HTML-less site must not pass as zero pages gated)")
+
+    # --- argparse: each required mutually-exclusive group is enforced WITH a usage-error exit ---
     for argv, label in [
         ([], "no origin + no page-source errors"),
         (["--base", "http://h"], "no page-source errors"),
@@ -119,9 +174,11 @@ def run() -> int:
     ]:
         try:
             fr.build_parser().parse_args(argv)
-            ck(False, label)
-        except SystemExit:
-            ck(True, label)
+            ck(False, label + " (parsed instead of exiting)")
+        except SystemExit as e:
+            # argparse exits 2 on a usage error; a 0 (or any non-2) exit would wrongly pass a test
+            # that is meant to assert REJECTION, so require the usage-error status explicitly.
+            ck(e.code == 2, label + " (exits with the usage-error status 2)")
 
     # --- terminal safety: untrusted path/frame/exception text is stripped of control bytes ---
     ck(fr.safe_terminal("a\x1b]52;c;SGFja2Vk\x07b") == "a?]52;c;SGFja2Vk?b",
@@ -130,33 +187,6 @@ def run() -> int:
        "safe_terminal strips newline so a crafted path cannot forge a second output line")
     ck(fr.safe_terminal("/wiki/Normal_Page") == "/wiki/Normal_Page",
        "safe_terminal leaves ordinary printable text untouched")
-
-    # --- baseline: stable key drops line:col, keeps script + function ---
-    ck(fr._stable_frame("app.min.js:168:93 (sync)") == "app.min.js (sync)",
-       "_stable_frame drops :line:col, keeps script + function")
-    ck(fr._stable_frame("mockup.js:47:3 ((anonymous))") == "mockup.js ((anonymous))",
-       "_stable_frame handles an anonymous frame")
-    ck(fr.baseline_key("/chat-view/", "mockup.js:47:3 (atBottom)")
-       == "/chat-view/\tmockup.js (atBottom)",
-       "baseline_key joins path + stable frame with a tab")
-    ck(fr.baseline_key("/a/", "x.js:1:1 (f)") != fr.baseline_key("/b/", "x.js:1:1 (f)"),
-       "same frame on two pages is two distinct keys")
-    ck(fr.baseline_key("/a/", "x.js:1:1 (f)") == fr.baseline_key("/a/", "x.js:9:9 (f)"),
-       "a line shift does not change the key (stable across unrelated edits)")
-
-    # --- baseline: file round-trip, missing-file, comment/blank handling ---
-    with tempfile.TemporaryDirectory() as d:
-        bp = Path(d) / "secure-terminal.github.io.txt"
-        keys = {"/chat-view/\tmockup.js (atBottom)", "/paste/\tcopy.js (onClick)"}
-        fr.write_baseline(bp, keys)
-        ck(fr.load_baseline(bp) == frozenset(keys), "write_baseline/load_baseline round-trips keys")
-        ck(all(not k.startswith("#") for k in fr.load_baseline(bp)),
-           "load_baseline drops the header comment lines")
-        ck(fr.load_baseline(Path(d) / "absent.txt") == frozenset(),
-           "a missing baseline file means no accepted findings")
-        bp.write_text("# just a comment\n\n   \n/x/\ta.js (f)\n")
-        ck(fr.load_baseline(bp) == frozenset({"/x/\ta.js (f)"}),
-           "load_baseline ignores comment + blank lines")
 
     sys.stdout.write(
         f"check_forced_reflow_test: {stats['pass']} pass, {stats['fail']} fail, 0 skip\n")

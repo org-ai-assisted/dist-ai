@@ -1,6 +1,0 @@
-# forced-reflow baseline: accepted pre-existing first-party forced reflows for this site,
-# one per line as '<path>\t<script (function)>'. The gate FAILS only on a NEW forced
-# reflow not listed here; a listed page+frame is reported KNOWN, not a failure. Burn this
-# list down (fix the reflow, drop the line). Regenerate after a deliberate change with
-# WEBCHECK_UPDATE_FORCED_REFLOW_BASELINE=1.
-/chat-view/	mockup.js ((anonymous))
