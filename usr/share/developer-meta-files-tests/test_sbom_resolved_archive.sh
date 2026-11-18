@@ -433,5 +433,22 @@ else
    fail "main did not emit the usage guard on a wrong argument count"
 fi
 
+## No debian/control -> clean no-op (rc 0), BEFORE any repo check: a non-package dir has
+## nothing to archive, so a bad/unset repo path is irrelevant and must not abort. (The hook's
+## pkg_sbom_archive guards control likewise, so an unset derivative_repository_name under
+## nounset cannot abort the packaging shell.)
+nocontrol_dir="${workdir}/nocontrol"
+mkdir --parents -- "${nocontrol_dir}"
+nocontrol_rc=0
+(
+   cd -- "${nocontrol_dir}"
+   sbom_archive_run '/no/such/repo' "${workdir}/nocontrol-archive" runpkg
+) || nocontrol_rc=$?
+if [ "${nocontrol_rc}" -eq 0 ] && [ ! -e "${workdir}/nocontrol-archive" ]; then
+   pass "sbom_archive_run is a clean no-op when debian/control is absent"
+else
+   fail "sbom_archive_run did not no-op on a missing debian/control (rc ${nocontrol_rc})"
+fi
+
 printf '%s\n' "RESULT: ${pass_count} pass, ${fail_count} fail, 0 skip"
 [ "${fail_count}" -eq 0 ]
