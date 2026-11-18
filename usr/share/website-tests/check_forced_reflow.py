@@ -25,5 +25,11 @@ if os.path.isdir(_dist_packages) and _dist_packages not in sys.path:
 
 from dist_ai.webcheck import forced_reflow as _forced_reflow
 
+## Per-site accepted-finding baselines ship beside this shim (like axe-baselines/): a site's
+## pre-existing first-party forced reflows are recorded in forced-reflow-baselines/<site>.txt and
+## reported KNOWN, so the gate fails only on a NEW regression. Refresh with
+## WEBCHECK_UPDATE_FORCED_REFLOW_BASELINE=1 after a deliberate change.
+_BASELINE_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'forced-reflow-baselines')
+
 if __name__ == '__main__':
-    sys.exit(_forced_reflow.check_roots(sys.argv[1:]))
+    sys.exit(_forced_reflow.check_roots(sys.argv[1:], baseline_dir=_BASELINE_DIR))

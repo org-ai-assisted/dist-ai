@@ -39,6 +39,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import functools
+import re
 import socket
 import subprocess
 import sys
@@ -49,6 +50,22 @@ from urllib.parse import urlsplit
 
 from dist_ai.webcheck.mobile import (
     _MountHandler, _MountingTCPServer, _page_urls, _skip, SUBSITES)
+
+# Lighthouse mobile user agent (Moto G Power), paired with is_mobile + has_touch in the mobile
+# context so a reflow gated on navigator.userAgent / a touch or pointer query -- which PageSpeed
+# mobile WOULD trigger -- is not silently missed under a desktop UA.
+_MOBILE_UA = ("Mozilla/5.0 (Linux; Android 11; moto g power (2022)) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36")
+
+_CTRL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def safe_terminal(s) -> str:
+    """Strip C0/C1 control bytes from any UNTRUSTED string -- a checked page's path, a trace frame's
+    function name, an exception message -- before printing it, so a crafted site (or a title crafted
+    into a trace frame) cannot emit OSC-52 / ANSI to rewrite the operator's clipboard or forge gate
+    output. Mirrors the console lane's identical terminal-safety guard."""
+    return _CTRL_CHARS.sub("?", str(s))
 
 # Mirror the console / mobile / check-cls viewports so every browser gate measures the same two
 # renders. The CPU throttle matches Lighthouse: mobile emulates a slow phone (4x), desktop a fast
@@ -121,6 +138,43 @@ def _frame_label(frame) -> str:
     )
 
 
+def _stable_frame(frame_label: str) -> str:
+    """A frame_label with the :line:col dropped, so a baseline key survives an unrelated edit that
+    shifts the offending line. 'file.js:168:93 (sync)' -> 'file.js (sync)'."""
+    head, sep, func = frame_label.partition(" (")
+    script = head.rsplit(":", 2)[0]
+    return script + sep + func if sep else script
+
+
+def baseline_key(path: str, frame_label: str) -> str:
+    """Stable identity of one accepted forced reflow: '<page path>\\t<script (function)>'. Line/col
+    excluded so the key does not churn on every unrelated edit; path included so the same helper on
+    two pages is two independent entries to burn down."""
+    return path + "\t" + _stable_frame(frame_label)
+
+
+def load_baseline(path: Path) -> frozenset:
+    """Accepted-finding keys from a baseline file (blank + '#'-comment lines ignored). A missing
+    file means no accepted findings -> budget-0 clean required (the common, desired state)."""
+    if not path.is_file():
+        return frozenset()
+    return frozenset(
+        ln.rstrip("\n") for ln in path.read_text().splitlines()
+        if ln.strip() and not ln.lstrip().startswith("#"))
+
+
+def write_baseline(path: Path, keys) -> None:
+    """(Re)write a site's baseline from the keys a record run observed. One key per line, sorted."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    header = (
+        "# forced-reflow baseline: accepted pre-existing first-party forced reflows for this site,\n"
+        "# one per line as '<path>\\t<script (function)>'. The gate FAILS only on a NEW forced\n"
+        "# reflow not listed here; a listed page+frame is reported KNOWN, not a failure. Burn this\n"
+        "# list down (fix the reflow, drop the line). Regenerate after a deliberate change with\n"
+        "# WEBCHECK_UPDATE_FORCED_REFLOW_BASELINE=1.\n")
+    path.write_text(header + "".join(k + "\n" for k in sorted(keys)))
+
+
 def attribute_forced_layouts(events, base_url: str):
     """From raw trace events, the first-party forced layouts as (frame_label, duration_ms) pairs.
     A non-forced layout (no JS stack) or one whose top JS frame is not first-party is excluded, so
@@ -156,15 +210,29 @@ async def _probe(browser, url, settle_ms, base_url, viewport):
     N}. forced_list is the first-party forced layouts; total_ms their summed duration. A trace is
     captured via CDP exactly as Lighthouse does."""
     _label, vw, vh, dpr, cpu = viewport
-    ctx = await browser.new_context(viewport={"width": vw, "height": vh}, device_scale_factor=dpr)
+    ctx_kwargs = {"viewport": {"width": vw, "height": vh}, "device_scale_factor": dpr}
+    if _label == "mobile":
+        ctx_kwargs.update(is_mobile=True, has_touch=True, user_agent=_MOBILE_UA)
+    ctx = await browser.new_context(**ctx_kwargs)
     try:
         page = await ctx.new_page()
         cdp = await ctx.new_cdp_session(page)
         collected: list = []
         complete = asyncio.Event()
+        # A trace is only trustworthy once tracingComplete fires AND reports no data loss: ReportEvents
+        # can still drop events (buffer wrap), and a never-arriving tracingComplete means dataCollected
+        # may be truncated. Either way a forced Layout could be the missing event, so track both and
+        # fail CLOSED below rather than read a partial/lossy trace as a clean PASS.
+        trace = {"loss": False, "done": False}
         loop = asyncio.get_event_loop()
         cdp.on("Tracing.dataCollected", lambda p: collected.extend(p.get("value", [])))
-        cdp.on("Tracing.tracingComplete", lambda _p: loop.call_soon_threadsafe(complete.set))
+
+        def _on_complete(payload):
+            trace["loss"] = bool((payload or {}).get("dataLossOccurred"))
+            trace["done"] = True
+            loop.call_soon_threadsafe(complete.set)
+
+        cdp.on("Tracing.tracingComplete", _on_complete)
         if cpu > 1:
             await cdp.send("Emulation.setCPUThrottlingRate", {"rate": cpu})
         await cdp.send("Tracing.start",
@@ -182,9 +250,11 @@ async def _probe(browser, url, settle_ms, base_url, viewport):
         try:
             await asyncio.wait_for(complete.wait(), timeout=20)
         except asyncio.TimeoutError:
-            pass  # use whatever dataCollected arrived; a partial trace cannot fake a PASS
+            pass
         if is_off_origin(final, base_url):
             return {"external": final}
+        if trace["loss"] or not trace["done"]:
+            return {"trace_bad": "data loss" if trace["loss"] else "tracingComplete never arrived"}
         forced = attribute_forced_layouts(collected, base_url)
         return {"forced": forced, "ms": sum(d for _f, d in forced)}
     finally:
@@ -194,7 +264,8 @@ async def _probe(browser, url, settle_ms, base_url, viewport):
             pass
 
 
-async def check(base, paths, settle_ms=3000, budget=0, hard_timeout=70):
+async def check(base, paths, settle_ms=3000, budget=0, hard_timeout=70,
+                accepted=frozenset(), record_into=None):
     from playwright.async_api import async_playwright
     bad = 0
     wedged: list = []
@@ -216,7 +287,8 @@ async def check(base, paths, settle_ms=3000, budget=0, hard_timeout=70):
                             _probe(browser, url, settle_ms, base, viewport), timeout=hard_timeout)
                     except Exception as e:  # noqa: BLE001 -- a wedge must fail, not pass
                         wedge = True
-                        print("WEDGE     %s [%s]: %s: %s" % (path, label, type(e).__name__, e),
+                        print("WEDGE     %s [%s]: %s: %s"
+                              % (safe_terminal(path), label, type(e).__name__, safe_terminal(e)),
                               flush=True)
                         try:
                             await asyncio.wait_for(browser.close(), timeout=5)
@@ -228,26 +300,57 @@ async def check(base, paths, settle_ms=3000, budget=0, hard_timeout=70):
                         ext = True
                         continue
                     if "bad_status" in res:
-                        print("HTTP %-4s %s [%s]" % (res["bad_status"], path, label), flush=True)
+                        print("HTTP %-4s %s [%s]" % (res["bad_status"], safe_terminal(path), label),
+                              flush=True)
+                        wedge = True
+                        continue
+                    if "trace_bad" in res:
+                        print("TRACE?    %s [%s]: %s -- failing closed"
+                              % (safe_terminal(path), label, res["trace_bad"]), flush=True)
                         wedge = True
                         continue
                     results.append((label, res["forced"], res["ms"]))
-                if ext and not results:
-                    print("REDIR-EXT %s" % path, flush=True)
+                # A page that wedged on EITHER viewport fails even if the other redirected off-origin:
+                # the external short-circuit fires only when nothing else went wrong, so a real error
+                # (HTTP 500, lossy trace, hang) is never masked by an external redirect on the sibling.
+                if ext and not results and not wedge:
+                    print("REDIR-EXT %s" % safe_terminal(path), flush=True)
                     external.append(path)
                     continue
-                if wedge:
-                    bad += 1
-                offenders = [(vp, f, ms) for vp, f, ms in results if len(f) > budget]
-                mark = "FORCED" if offenders else "ok"
-                print("%-6s %s" % (mark, path), flush=True)
+                # Split each viewport's forced layouts into KNOWN (baselined -- accepted, not a
+                # failure) and NEW (gated). record_into, when set, collects every key so a refresh
+                # run can rewrite the baseline from exactly what is present.
+                offenders = False
+                annotated = []  # (vp, new_list, known_count, ms)
                 for vp, forced, ms in results:
-                    if forced:
-                        print("          [%s] %d forced layout(s), %.1f ms" % (vp, len(forced), ms),
+                    new, known = [], 0
+                    for frame, dur in forced:
+                        key = baseline_key(path, frame)
+                        if record_into is not None:
+                            record_into.add(key)
+                        if key in accepted:
+                            known += 1
+                        else:
+                            new.append((frame, dur))
+                    annotated.append((vp, new, known, ms))
+                    if len(new) > budget:
+                        offenders = True
+                mark = "FORCED" if offenders else "ok"
+                print("%-6s %s" % (mark, safe_terminal(path)), flush=True)
+                for vp, new, known, _ms in annotated:
+                    if known:
+                        print("          [%s] %d KNOWN baselined forced layout(s)" % (vp, known),
                               flush=True)
-                        for frame, dur in forced:
-                            print("            -> %6.1f ms  %s" % (dur, frame), flush=True)
-                if offenders:
+                    if new:
+                        print("          [%s] %d forced layout(s), %.1f ms"
+                              % (vp, len(new), sum(d for _f, d in new)), flush=True)
+                        for frame, dur in new:
+                            print("            -> %6.1f ms  %s" % (dur, safe_terminal(frame)),
+                                  flush=True)
+                # One failing page counts ONCE (the summary is a page count), whatever mix of a wedge
+                # and a NEW forced layout it hit. A wedge always fails; a new forced layout fails
+                # unless we are only recording a baseline.
+                if wedge or (offenders and record_into is None):
                     bad += 1
         finally:
             try:
@@ -272,10 +375,14 @@ async def check(base, paths, settle_ms=3000, budget=0, hard_timeout=70):
     return 0
 
 
-def check_roots(roots: list, settle_ms: int = 3000, budget: int = 0) -> int:
+def check_roots(roots: list, settle_ms: int = 3000, budget: int = 0, baseline_dir=None) -> int:
     """FAMILY entry: serve each local site checkout from a localhost mount (reusing mobile.py's
     harness, incl. SUBSITES mounting) and run the forced-reflow gate against it. SKIPs (exit 77)
-    when Playwright/chromium is absent, exactly like the sibling browser lanes."""
+    when Playwright/chromium is absent, exactly like the sibling browser lanes.
+
+    baseline_dir: if given, each served site's pre-existing forced reflows are read from
+    <baseline_dir>/<site>.txt and reported KNOWN (the gate fails only on a NEW one). Setting
+    WEBCHECK_UPDATE_FORCED_REFLOW_BASELINE=1 REWRITES those files from the current findings."""
     import os
     roots = [os.path.abspath(r) for r in roots if os.path.isdir(r)]
     if not roots:
@@ -304,8 +411,16 @@ def check_roots(roots: list, settle_ms: int = 3000, budget: int = 0) -> int:
             entry = docroots.setdefault(root, {'mounts': {}, 'urls': []})
             entry['urls'] += _page_urls(root, '')
 
+    update = os.environ.get("WEBCHECK_UPDATE_FORCED_REFLOW_BASELINE") == "1"
     overall = 0
     for docroot, entry in docroots.items():
+        site = os.path.basename(docroot)
+        accepted, baseline_path, record_into = frozenset(), None, None
+        if baseline_dir is not None:
+            baseline_path = Path(baseline_dir) / (site + ".txt")
+            accepted = load_baseline(baseline_path)
+            if update:
+                record_into = set()
         handler = functools.partial(_MountHandler, directory=docroot)
         httpd = _MountingTCPServer(('127.0.0.1', 0), handler)
         httpd.mounts = entry['mounts']
@@ -315,10 +430,16 @@ def check_roots(roots: list, settle_ms: int = 3000, budget: int = 0) -> int:
         try:
             base = 'http://127.0.0.1:%d' % port
             paths = sorted(set(entry['urls']))
-            if asyncio.run(check(base, paths, settle_ms, budget)) != 0:
+            rc = asyncio.run(check(base, paths, settle_ms, budget, accepted=accepted,
+                                   record_into=record_into))
+            if rc != 0:
                 overall = 1
         finally:
             httpd.shutdown()
+        if record_into is not None and baseline_path is not None:
+            write_baseline(baseline_path, record_into)
+            print("baseline refreshed: %s (%d accepted finding(s))"
+                  % (baseline_path, len(record_into)), flush=True)
     return overall
 
 
@@ -368,6 +489,10 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--budget", type=int, default=0,
                     help="max forced layouts first-party JS may trigger per page per viewport "
                          "(default 0)")
+    ap.add_argument("--baseline", type=Path, default=None,
+                    help="accepted-finding file: a listed '<path>\\t<script (function)>' is reported "
+                         "KNOWN and the gate fails only on a NEW forced reflow. "
+                         "WEBCHECK_UPDATE_FORCED_REFLOW_BASELINE=1 rewrites it from current findings.")
     src = ap.add_mutually_exclusive_group(required=True)
     src.add_argument("--paths", nargs="*", default=None, help="explicit page paths to check")
     src.add_argument("--paths-file", type=Path, default=None, help="file: one page path per line")
@@ -377,6 +502,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    import os
     ap = build_parser()
     args = ap.parse_args()
     if args.enumerate_from:
@@ -399,7 +525,17 @@ def main() -> int:
             proc, base = _serve_tree(args.serve_tree.resolve())
         else:
             base = args.base
-        return asyncio.run(check(base, paths, args.settle, args.budget))
+        accepted = load_baseline(args.baseline) if args.baseline else frozenset()
+        record_into = (set() if args.baseline
+                       and os.environ.get("WEBCHECK_UPDATE_FORCED_REFLOW_BASELINE") == "1"
+                       else None)
+        rc = asyncio.run(check(base, paths, args.settle, args.budget,
+                               accepted=accepted, record_into=record_into))
+        if record_into is not None:
+            write_baseline(args.baseline, record_into)
+            print("baseline refreshed: %s (%d accepted finding(s))"
+                  % (args.baseline, len(record_into)), flush=True)
+        return rc
     finally:
         if proc is not None:
             proc.terminate()

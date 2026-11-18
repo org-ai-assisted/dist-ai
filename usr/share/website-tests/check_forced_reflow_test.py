@@ -123,6 +123,41 @@ def run() -> int:
         except SystemExit:
             ck(True, label)
 
+    # --- terminal safety: untrusted path/frame/exception text is stripped of control bytes ---
+    ck(fr.safe_terminal("a\x1b]52;c;SGFja2Vk\x07b") == "a?]52;c;SGFja2Vk?b",
+       "safe_terminal strips the ESC + BEL of an OSC-52 clipboard-write")
+    ck("\n" not in fr.safe_terminal("ok\n/evil"),
+       "safe_terminal strips newline so a crafted path cannot forge a second output line")
+    ck(fr.safe_terminal("/wiki/Normal_Page") == "/wiki/Normal_Page",
+       "safe_terminal leaves ordinary printable text untouched")
+
+    # --- baseline: stable key drops line:col, keeps script + function ---
+    ck(fr._stable_frame("app.min.js:168:93 (sync)") == "app.min.js (sync)",
+       "_stable_frame drops :line:col, keeps script + function")
+    ck(fr._stable_frame("mockup.js:47:3 ((anonymous))") == "mockup.js ((anonymous))",
+       "_stable_frame handles an anonymous frame")
+    ck(fr.baseline_key("/chat-view/", "mockup.js:47:3 (atBottom)")
+       == "/chat-view/\tmockup.js (atBottom)",
+       "baseline_key joins path + stable frame with a tab")
+    ck(fr.baseline_key("/a/", "x.js:1:1 (f)") != fr.baseline_key("/b/", "x.js:1:1 (f)"),
+       "same frame on two pages is two distinct keys")
+    ck(fr.baseline_key("/a/", "x.js:1:1 (f)") == fr.baseline_key("/a/", "x.js:9:9 (f)"),
+       "a line shift does not change the key (stable across unrelated edits)")
+
+    # --- baseline: file round-trip, missing-file, comment/blank handling ---
+    with tempfile.TemporaryDirectory() as d:
+        bp = Path(d) / "secure-terminal.github.io.txt"
+        keys = {"/chat-view/\tmockup.js (atBottom)", "/paste/\tcopy.js (onClick)"}
+        fr.write_baseline(bp, keys)
+        ck(fr.load_baseline(bp) == frozenset(keys), "write_baseline/load_baseline round-trips keys")
+        ck(all(not k.startswith("#") for k in fr.load_baseline(bp)),
+           "load_baseline drops the header comment lines")
+        ck(fr.load_baseline(Path(d) / "absent.txt") == frozenset(),
+           "a missing baseline file means no accepted findings")
+        bp.write_text("# just a comment\n\n   \n/x/\ta.js (f)\n")
+        ck(fr.load_baseline(bp) == frozenset({"/x/\ta.js (f)"}),
+           "load_baseline ignores comment + blank lines")
+
     sys.stdout.write(
         f"check_forced_reflow_test: {stats['pass']} pass, {stats['fail']} fail, 0 skip\n")
     return 1 if stats["fail"] else 0
