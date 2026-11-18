@@ -1003,6 +1003,31 @@ test("search root prefix survives the post-build ?h= cache-buster (real deployed
     "/wiki/Firewall", "resolved search href must not double /wiki/");
 });
 
+test("search dropdown ranks exact + prefix title matches above infix (ISO bug #211)", async () => {
+  // Titles arrive in the index ALPHABETICALLY (builder.py sorts them), which once buried the
+  // exact "ISO" page under infix hits ("Compar-ISO-n") and a prefix hit ("ISO-lation" pages).
+  // The dropdown must rank exact > prefix > infix (shorter title breaks ties), not index order.
+  const w = load('<input id="search-input">', {
+    searchIndex: [
+      { t: "Comparison of Hardware Wallets", u: "wiki/Comparison_of_Hardware_Wallets/" },
+      { t: "Comparison with Others", u: "wiki/Comparison_with_Others/" },
+      { t: "Dev/Strong Linux User Account Isolation", u: "wiki/Dev/Strong_Linux_User_Account_Isolation/" },
+      { t: "ISO", u: "wiki/ISO/" },
+      { t: "ISO Live Mode", u: "wiki/ISO_Live_Mode/" },
+      { t: "Mobile", u: "wiki/Mobile/" },   // no "iso" -> excluded from the title results
+    ],
+  });
+  const input = w.document.getElementById("search-input");
+  input.value = "iso";
+  input.dispatchEvent(new w.Event("input"));
+  await tick();
+  const titles = Array.from(w.document.querySelectorAll(".search-results li a")).map((a) => a.textContent);
+  assert.equal(titles[0], "ISO", "exact title 'ISO' must lead for query 'iso' (not the alphabetical infix hit)");
+  assert.ok(titles.indexOf("ISO Live Mode") < titles.indexOf("Comparison with Others"),
+    "prefix 'ISO Live Mode' must rank above the infix 'Comparison...' matches");
+  assert.ok(!titles.includes("Mobile"), "a non-matching title is not in the title results");
+});
+
 test("search closes on outside click and Escape, clearing the live results", async () => {
   const w = load('<div class="site-search"><input type="checkbox" id="search-toggle">' +
     '<input id="search-input"></div><p id="elsewhere">x</p>',
@@ -2032,6 +2057,27 @@ test("search Enter navigates to the best match: exact title beats a substring hi
   assert.equal(w.location.hash, "#api", "exact (case-insensitive) title match wins over the substring");
 });
 
+test("search Enter: among same-tier (infix) matches the shorter title wins (ranked bestMatch)", async () => {
+  // No exact/prefix match for "xy" -> all three are infix (tier 2); the ranked bestMatch must pick
+  // the SHORTEST title ("CxyD"), exercising the tie-break both ways (the longer earlier match is
+  // replaced; the longer later one is not).
+  const w = load('<input id="search-input">', {
+    appSrc: "../../vendor-bundle.js",   // no app.js match -> rootPrefix "" -> bare-hash hrefs
+    searchIndex: [
+      { t: "AxyB longer title", u: "#long" },
+      { t: "CxyD", u: "#short" },
+      { t: "ExyFghij", u: "#long2" },
+    ],
+  });
+  const input = w.document.getElementById("search-input");
+  input.focus();
+  await tick();
+  input.value = "xy";
+  input.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Enter" }));
+  await tick();
+  assert.equal(w.location.hash, "#short", "shortest same-tier (infix) title wins the Enter best-match");
+});
+
 test("search Enter: substring fallback; short, non-Enter, IME and no-match presses are inert", async () => {
   const w = load('<input id="search-input">', {
     appSrc: "../../vendor-bundle.js",
@@ -2071,7 +2117,8 @@ test("search hides and clears results for a sub-2-character query", async () => 
 });
 
 // ---- search combobox keyboard navigation (ARIA list-autocomplete) --------------------------
-// Open a 3-result dropdown ("al" hits Alpha, Alfred, Album in index order) and return the pieces.
+// Open a 3-result dropdown ("al" hits Alpha, Alfie, Album -- all prefix, equal length, so the
+// ranked order equals index order) and return the pieces.
 // Forces document.readyState=complete so app.js's ready() takes the IMMEDIATE single-init path:
 // jsdom otherwise fires its OWN DOMContentLoaded on top of the harness's manual one, double-running
 // initSearch into two widgets (two keydown handlers) -- a harness artifact, not production (where
@@ -2080,7 +2127,7 @@ async function comboOpen(extra) {
   extra = extra || {};
   const userPre = extra.preEval;
   const opts = Object.assign({
-    searchIndex: [{ t: "Alpha", u: "wiki/Alpha/" }, { t: "Alfred", u: "wiki/Alfred/" },
+    searchIndex: [{ t: "Alpha", u: "wiki/Alpha/" }, { t: "Alfie", u: "wiki/Alfie/" },
                   { t: "Album", u: "wiki/Album/" }],
   }, extra);
   opts.preEval = (win) => {
@@ -2161,13 +2208,13 @@ test("search combobox: Enter follows the active option's href, overriding the be
   // root="" (no app.js-like script) -> bare-hash hrefs, which jsdom actually navigates.
   const { w, input, results } = await comboOpen({
     appSrc: "../../vendor-bundle.js",
-    searchIndex: [{ t: "Alpha", u: "#alpha" }, { t: "Alfred", u: "#alfred" }, { t: "Album", u: "#album" }],
+    searchIndex: [{ t: "Alpha", u: "#alpha" }, { t: "Alfie", u: "#alfie" }, { t: "Album", u: "#album" }],
   });
-  keydown(w, input, "ArrowDown"); keydown(w, input, "ArrowDown");   // activate option 1 (Alfred)
-  assert.equal(input.getAttribute("aria-activedescendant"), results.children[1].id, "Alfred is the active option");
+  keydown(w, input, "ArrowDown"); keydown(w, input, "ArrowDown");   // activate option 1 (Alfie)
+  assert.equal(input.getAttribute("aria-activedescendant"), results.children[1].id, "Alfie is the active option");
   keydown(w, input, "Enter");
   await tick();
-  assert.equal(w.location.hash, "#alfred", "Enter navigates to the highlighted option, not the first-row bestMatch");
+  assert.equal(w.location.hash, "#alfie", "Enter navigates to the highlighted option, not the first-row bestMatch");
 });
 
 test("search combobox: Escape dismisses the dropdown keeping the query; a 2nd Escape collapses the lens", async () => {
