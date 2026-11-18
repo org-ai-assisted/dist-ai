@@ -154,13 +154,19 @@ sbom_archive_one \
    "${source_date_epoch}" "${archive_dir}" >/dev/null
 cp -- "${out}" "${workdir}/run2.json"
 
-expected_serial="$(sbom_archive_serial "${pkg}" "${version}" "${arch}")"
+## Expected serial is a LITERAL (UUID5 of 'deb/sbomfixture/2.0-1/amd64'), computed
+## independently of the function under test so the identity check is not circular; the
+## function itself is checked against the same literal below. expected_sha256 is the
+## fixture stanza's SHA256, so the resolution check proves the RIGHT hash was read.
+expected_serial='dd221d17-777f-573c-8d0a-ec5533a18f48'
+expected_sha256='1111111111111111111111111111111111111111111111111111111111111111'
 
 ## All JSON-semantic assertions live in the standalone helper (no inline 'python3 -c'),
 ## run directly via its shebang. Not exec'd: the EXIT trap must still fire.
 "${test_dir}/sbom_resolved_archive_assert.py" \
    "${workdir}/run1.json" "${workdir}/run2.json" \
-   "${expected_serial}" "${source_date_epoch}" "${pkg}" "${version}" "${arch}"
+   "${expected_serial}" "${source_date_epoch}" "${pkg}" "${version}" "${arch}" \
+   "${expected_sha256}"
 
 pass_count=0
 fail_count=0
@@ -173,13 +179,27 @@ fail() {
    printf '%s\n' "FAIL: $*" >&2
 }
 
-## Resolution GUARD: a version that is not in the index must FAIL loud (non-zero).
+## sbom_archive_serial is tested against the SAME literal expected_serial the assertions
+## above used, so neither side depends on the other (no circularity).
+if [ "$(sbom_archive_serial "${pkg}" "${version}" "${arch}")" = "${expected_serial}" ]; then
+   pass "sbom_archive_serial produces the expected deterministic UUID5"
+else
+   fail "sbom_archive_serial did not produce the expected UUID5 ${expected_serial}"
+fi
+
+## Resolution GUARD: a version that is not in the index must FAIL loud (non-zero) AND must
+## leave no unresolved file behind (else a later 'git add --all' would commit it).
 if sbom_archive_one \
       "${repo}" "${codename}" "${pkg}" "9.9-9" "${arch}" "${arch}" \
       "${source_date_epoch}" "${archive_dir}" >/dev/null 2>&1; then
    fail "guard: an unresolved package (wrong version) was archived instead of failing"
 else
    pass "guard rejects an unresolved package (no hashes -> non-zero)"
+fi
+if [ -e "${archive_dir}/${pkg}_9.9-9_${arch}.cdx.json" ]; then
+   fail "guard left the unresolved SBOM file behind (would be committed later)"
+else
+   pass "guard discarded the unresolved SBOM file"
 fi
 
 ## Commit: a local commit is made and the SBOM is tracked.
@@ -215,25 +235,60 @@ else
    fail "arch-all filename not epoch-stripped: $(basename -- "${all_out}")"
 fi
 if jq --exit-status \
-      --arg v "${allversion}" \
-      '[.components[]? | select(.version == $v and ((.hashes // []) | length > 0))] | length > 0' \
+      --arg n "${allpkg}" --arg v "${allversion}" \
+      '[.components[]?
+        | select(.name == $n and .version == $v
+                 and ((.purl // "") | test("[?&]arch=all(&|$)"))
+                 and ((.hashes // []) | length > 0))] | length > 0' \
       "${all_out}" >/dev/null; then
-   pass "arch-all package resolved with its full epoched version"
+   pass "arch-all package resolved (name, arch=all, full epoched version, hashes)"
 else
-   fail "arch-all package did not resolve with hashes at version ${allversion}"
+   fail "arch-all package did not resolve as ${allpkg} arch=all ${allversion}"
 fi
 
-## Presence check: a built package is present; an unbuilt one (or wrong version) is absent,
-## so the wrapper can skip it instead of failing the whole packaging batch.
-if sbom_archive_present "${repo}" "${codename}" "${pkg}" "${version}"; then
+## Codename detection: the single codename under dists/ (no literal '*' glob leak).
+if [ "$(sbom_archive_codename "${repo}")" = "${codename}" ]; then
+   pass "sbom_archive_codename returns the single repo codename"
+else
+   fail "sbom_archive_codename did not return '${codename}'"
+fi
+
+## Presence check (arch-aware): a built package is present for its own arch; an unbuilt one
+## (wrong version, OR right name/version but an arch not built) is absent, so the wrapper can
+## skip it instead of failing the whole packaging batch.
+if sbom_archive_present "${repo}" "${codename}" "${pkg}" "${version}" "${arch}"; then
    pass "sbom_archive_present finds a package that is in the index"
 else
    fail "sbom_archive_present missed a package that is in the index"
 fi
-if sbom_archive_present "${repo}" "${codename}" "${pkg}" "9.9-9"; then
+if sbom_archive_present "${repo}" "${codename}" "${pkg}" "9.9-9" "${arch}"; then
    fail "sbom_archive_present reported an absent version as present"
 else
    pass "sbom_archive_present reports an absent version as absent"
+fi
+if sbom_archive_present "${repo}" "${codename}" "${pkg}" "${version}" arm64; then
+   fail "sbom_archive_present matched an arch the package was not built for"
+else
+   pass "sbom_archive_present rejects a wrong arch (same name+version)"
+fi
+
+## if_present: archive when the arch is in the index, INFO-skip (no file, rc 0) when not.
+present_dir="${workdir}/ifpresent"
+sbom_archive_if_present \
+   "${repo}" "${codename}" "${pkg}" "${version}" "${arch}" "${arch}" \
+   "${source_date_epoch}" "${present_dir}"
+if [ -f "${present_dir}/${pkg}_${version}_${arch}.cdx.json" ]; then
+   pass "sbom_archive_if_present archives a package present for its arch"
+else
+   fail "sbom_archive_if_present did not archive a present package"
+fi
+if sbom_archive_if_present \
+      "${repo}" "${codename}" "${pkg}" "${version}" arm64 arm64 \
+      "${source_date_epoch}" "${present_dir}" \
+      && [ ! -e "${present_dir}/${pkg}_${version}_arm64.cdx.json" ]; then
+   pass "sbom_archive_if_present skips (rc 0, no file) an arch not in the index"
+else
+   fail "sbom_archive_if_present did not cleanly skip an absent arch"
 fi
 
 printf '%s\n' "RESULT: ${pass_count} pass, ${fail_count} fail, 0 skip"

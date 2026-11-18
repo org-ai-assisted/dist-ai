@@ -10,11 +10,29 @@
 ##
 ## Usage: sbom_resolved_archive_assert.py \
 ##          <run1.json> <run2.json> <expected_serial> <source_date_epoch> \
-##          <name> <version> <arch>
+##          <name> <version> <arch> <expected_sha256>
 
 import json
 import sys
 from datetime import datetime, timezone
+from urllib.parse import parse_qs, urlsplit
+
+
+def purl_arch(purl):
+    ## The purl's 'arch' qualifier, parsed exactly (not a substring match, so 'amd64'
+    ## does not spuriously match 'amd64evil').
+    if not purl:
+        return None
+    qualifiers = parse_qs(urlsplit(purl).query)
+    values = qualifiers.get("arch")
+    return values[0] if values else None
+
+
+def sha256_of(component):
+    for one_hash in component.get("hashes", []):
+        if one_hash.get("alg") == "SHA-256":
+            return one_hash.get("content")
+    return None
 
 
 def main():
@@ -26,7 +44,8 @@ def main():
         name,
         version,
         arch,
-    ) = sys.argv[1:8]
+        expected_sha256,
+    ) = sys.argv[1:9]
 
     with open(run1_path, "rb") as run1_file:
         run1_bytes = run1_file.read()
@@ -53,53 +72,76 @@ def main():
         "SBOM differs between runs (non-reproducible)",
     )
 
-    ## 2. RESOLVED: the binary component carries the index's content hashes.
+    ## 2. RESOLVED: the binary component is exactly this (name, version, arch) and carries
+    ## the fixture index's SHA-256 -- not merely 'some hash', so a wrong-arch or wrong-hash
+    ## component cannot pass.
     binary = next(
         (
             component
             for component in components
-            if f"arch={arch}" in (component.get("purl") or "")
+            if component.get("name") == name
+            and component.get("version") == version
+            and purl_arch(component.get("purl")) == arch
         ),
         None,
     )
     check(
-        binary is not None and len(binary.get("hashes", [])) > 0,
-        "binary component carries content hashes (resolved)",
-        "binary component missing or has no hashes (unresolved)",
+        binary is not None,
+        f"binary component is exactly {name}@{version} arch={arch}",
+        f"no binary component matching {name}@{version} arch={arch}",
     )
-    if binary is not None:
-        check(
-            binary.get("name") == name and binary.get("version") == version,
-            f"binary component is {name}@{version}",
-            f"binary component is not {name}@{version}: "
-            f"{binary.get('name')}@{binary.get('version')}",
-        )
+    check(
+        binary is not None and sha256_of(binary) == expected_sha256,
+        "binary component carries the index's SHA-256 (resolved)",
+        f"binary SHA-256 {binary and sha256_of(binary)} != index {expected_sha256}",
+    )
 
-    ## 3. The binary->source edge: a source component is emitted (no closure expansion).
+    ## 3. The binary->source EDGE: a source component for the same source, AND a dependency
+    ## edge from the binary ref to the source ref (not merely 'a source component exists').
     source = next(
         (
             component
             for component in components
-            if "arch=source" in (component.get("purl") or "")
+            if purl_arch(component.get("purl")) == "source"
         ),
         None,
     )
     check(
         source is not None,
-        "source component emitted (binary->source edge)",
-        "no source component (missing binary->source edge)",
+        "source component emitted",
+        "no source component",
+    )
+    edges = {
+        dependency.get("ref"): dependency.get("dependsOn", [])
+        for dependency in document.get("dependencies", [])
+    }
+    check(
+        binary is not None
+        and source is not None
+        and source.get("bom-ref") in edges.get(binary.get("bom-ref"), []),
+        "binary->source dependency edge present",
+        "no dependency edge from the binary to its source",
     )
 
-    ## 4. Deterministic serial = UUID5 of the package identity.
+    ## 4. No closure expansion: exactly the binary and its source, nothing else -- so a
+    ## stray transitive dependency component would fail.
+    check(
+        len(components) == 2,
+        "exactly two components (binary + source, no closure)",
+        f"expected 2 components (binary + source), got {len(components)}",
+    )
+
+    ## 5. Deterministic serial = the EXPECTED UUID5 (a literal the caller passes, computed
+    ## independently of the function under test, so the check is not circular).
     expected_urn = f"urn:uuid:{expected_serial}"
     got_serial = document.get("serialNumber", "")
     check(
         got_serial == expected_urn,
-        f"serialNumber is the deterministic UUID5 ({got_serial})",
+        f"serialNumber is the expected UUID5 ({got_serial})",
         f"serialNumber '{got_serial}' != expected '{expected_urn}'",
     )
 
-    ## 5. Timestamp = the passed SOURCE_DATE_EPOCH, not wall-clock.
+    ## 6. Timestamp = the passed SOURCE_DATE_EPOCH, not wall-clock.
     expected_ts = datetime.fromtimestamp(
         int(source_date_epoch), tz=timezone.utc
     ).isoformat()
