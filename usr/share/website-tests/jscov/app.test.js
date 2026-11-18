@@ -1590,7 +1590,7 @@ function stubTableGeom(doc, el, scrollWidth, clientWidth, railLog) {
   Object.defineProperty(el, "clientWidth", { configurable: true, get() { return clientWidth; } });
 }
 
-test("wide tables: one ResizeObserver batches all reads before any style write (no reflow thrash)", async () => {
+test("wide tables: the ResizeObserver callback measures SYNCHRONOUSLY (post-layout free read, never rAF-deferred)", () => {
   const w = load('<div class="wiki-content">' +
     '<table id="wide"><tbody><tr><td>x</td></tr></tbody></table>' +
     '<table id="fits"><tbody><tr><td>y</td></tr></tbody></table></div>');
@@ -1606,8 +1606,17 @@ test("wide tables: one ResizeObserver batches all reads before any style write (
   stubTableGeom(w.document, wide, 400, 200, railLog);  // overflows -> needs a rail
   stubTableGeom(w.document, fits, 150, 200, railLog);  // fits -> no rail
 
-  ro.cb();  // one batched callback; the measure+write is coalesced into the next frame
-  await new Promise((r) => setTimeout(r, 30));
+  ro.cb();
+  // REGRESSION (PageSpeed "forced reflow", app.min.js sync()): a ResizeObserver callback is
+  // delivered AFTER the browser's layout pass, so reading scrollWidth in it is free -- no forced
+  // synchronous layout. The measure + rail build must therefore happen SYNCHRONOUSLY inside
+  // ro.cb(), with NO requestAnimationFrame / timer flush. The bug bounced this read through rAF
+  // (which runs BEFORE the frame's layout), forcing the reflow Lighthouse flagged; a rail that
+  // appears only after a frame flush IS that defect. Asserting the rail exists immediately (no
+  // await) fails on the old rAF-deferred code and passes on the fix.
+  const rail = wide.previousElementSibling;
+  assert.ok(rail && rail.classList.contains("table-scroll-top"),
+    "overwide table's rail built synchronously in the RO callback (post-layout read, not rAF-deferred)");
 
   assert.ok(railLog.length >= 2, "every table's geometry was read");
   assert.ok(railLog.every((sawRail) => sawRail === false),
@@ -1615,8 +1624,6 @@ test("wide tables: one ResizeObserver batches all reads before any style write (
 
   // Behaviour preserved: the overwide table gets a top rail whose spacer == its scrollWidth;
   // the fitting table gets none.
-  const rail = wide.previousElementSibling;
-  assert.ok(rail && rail.classList.contains("table-scroll-top"), "overwide table got a top rail");
   assert.equal(rail.firstChild.style.width, "400px", "spacer width == table scrollWidth");
   assert.equal(rail.style.display, "", "rail shown while overwide");
   assert.equal(wide.style.marginTop, "0px", "overwide table pinned under the rail");
@@ -2599,8 +2606,7 @@ test("wide tables: the top rail and the table mirror each other's scrollLeft (re
   const w = load('<div class="wiki-content"><table id="wide"><tbody><tr><td>x</td></tr></tbody></table></div>');
   const wide = w.document.getElementById("wide");
   stubTableGeom(w.document, wide, 400, 200);
-  w.__resizeObservers[0].cb();   // build the rail (coalesced into the next frame)
-  await new Promise((r) => setTimeout(r, 30));
+  w.__resizeObservers[0].cb();   // RO callback reads post-layout -> builds the rail synchronously
   const rail = wide.previousElementSibling;
   // Setting scrollLeft normally fires no scroll event in jsdom; make it do so, which also
   // re-enters the sibling's handler while the sync lock is held (exercising the lock guard).
