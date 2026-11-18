@@ -1660,6 +1660,39 @@ test("wide tables: a not-yet-loaded in-table image is observed (free post-layout
     "the RO callback builds the rail synchronously (post-layout read, never rAF-deferred)");
 });
 
+test("geometry batcher: bottom-stack + wide table SHARE one observer, all reads before any writes", () => {
+  const w = load('<div class="bottom-stack" id="bs"></div>' +
+    '<div class="wiki-content"><table id="wide"><tbody><tr><td>x</td></tr></tbody></table></div>');
+  // One shared ResizeObserver for BOTH widgets. The old per-widget observers interleaved in a
+  // single dispatch: the bottom-stack callback wrote body.paddingBottom (dirtying global layout),
+  // then the table callback read scrollWidth -> a forced synchronous reflow (PageSpeed, on a
+  // bottom-stack page like Dev/wikitest). TWO observers here is the regression.
+  assert.equal(w.__resizeObservers.length, 1, "bottom-stack + wide table share ONE ResizeObserver");
+  const ro = w.__resizeObservers[0];
+  const stack = w.document.getElementById("bs");
+  const wide = w.document.getElementById("wide");
+  assert.ok(ro.targets.includes(stack) && ro.targets.includes(wide),
+    "the shared observer watches both the bottom-stack and the table");
+  // Reserve a stack height; make the table overwide. The scrollWidth getter records what
+  // body.paddingBottom held AT READ TIME -- it must still be unwritten.
+  Object.defineProperty(stack, "offsetHeight", { configurable: true, get() { return 50; } });
+  const pbAtRead = [];
+  Object.defineProperty(wide, "scrollWidth",
+    { configurable: true, get() { pbAtRead.push(w.document.body.style.paddingBottom); return 400; } });
+  Object.defineProperty(wide, "clientWidth", { configurable: true, get() { return 200; } });
+  ro.cb();
+  // REGRESSION: every widget's READ runs before any widget's WRITE, so when the table's scrollWidth
+  // is read the bottom-stack's paddingBottom write has NOT happened. The old two-observer design
+  // wrote paddingBottom first, so the read saw "50px" and forced layout -- this assertion fails on it.
+  assert.ok(pbAtRead.length > 0, "the table scrollWidth was read in the shared callback");
+  assert.ok(pbAtRead.every((pb) => !pb),
+    "every scrollWidth read preceded the body.paddingBottom write (read-before-write across widgets)");
+  // Both widgets applied: body padding reserved + the overwide table got its rail.
+  assert.equal(w.document.body.style.paddingBottom, "50px", "bottom-stack reserved 50px");
+  const rail = wide.previousElementSibling;
+  assert.ok(rail && rail.classList.contains("table-scroll-top"), "overwide table got its rail");
+});
+
 // ---- totality ------------------------------------------------------------------------------
 
 test("init is total on a minimal document (no throw)", () => {
