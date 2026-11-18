@@ -5,7 +5,7 @@
 
 ## AI-Assisted
 
-## Behavioural test for developer-meta-files' sbom-archive.bsh (the resolved per-.deb
+## Behavioural test for developer-meta-files' dm-sbom-archive (the resolved per-.deb
 ## CycloneDX SBOM archive, tier B of the two-tier SBOM). Sources the real library and
 ## drives the real functions against a HERMETIC fixture reprepro index -- a hand-written
 ## dists/<cn>/<comp>/binary-<arch>/Packages with one package stanza (name, version, arch,
@@ -51,7 +51,7 @@ fi
 
 test_dir="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")"
 
-rel='usr/libexec/developer-meta-files/sbom-archive.bsh'
+rel='usr/bin/dm-sbom-archive'
 candidates=()
 [ -z "${SBOM_ARCHIVE_BSH:-}" ] || candidates+=( "${SBOM_ARCHIVE_BSH}" )
 [ -z "${DEVELOPER_META_FILES_DIR:-}" ] || candidates+=( "${DEVELOPER_META_FILES_DIR}/${rel}" )
@@ -65,7 +65,7 @@ for candidate in "${candidates[@]}"; do
    fi
 done
 if [ -z "${subject}" ]; then
-   printf '%s\n' "FATAL: sbom-archive.bsh not found (set SBOM_ARCHIVE_BSH)." >&2
+   printf '%s\n' "FATAL: dm-sbom-archive not found (set SBOM_ARCHIVE_BSH)." >&2
    exit 1
 fi
 ## Absolute path: the standalone-exec assertions invoke it from inside a cd'd subshell, where
