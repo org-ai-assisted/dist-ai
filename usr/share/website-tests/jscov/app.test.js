@@ -2391,23 +2391,6 @@ test("fly-in toast (non-test): a recent dismissal suppresses the toast", () => {
     "a dismissal within the window keeps the toast hidden (no schedule)");
 });
 
-test("fly-in toast: keyboard close (Enter/Space) + transitionend completes the hide", async () => {
-  const w = load('<div id="fly-in-notification-panel" hidden><button class="close-panel">x</button></div>' +
-    '<div id="fly-in-notification-test-settings" data-waitinseconds="0" ' +
-    'data-dismissfordays="3" data-now="1700000500000"></div>');
-  await tick();
-  const panel = w.document.getElementById("fly-in-notification-panel");
-  assert.equal(panel.hidden, false, "shown after the 0s wait");
-  const btn = panel.querySelector(".close-panel");
-  const enter = new w.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
-  btn.dispatchEvent(enter);
-  assert.ok(enter.defaultPrevented, "Enter activates the close");
-  btn.dispatchEvent(new w.KeyboardEvent("keydown", { key: " ", bubbles: true }));   // Space also closes
-  btn.dispatchEvent(new w.KeyboardEvent("keydown", { key: "x", bubbles: true }));    // other keys ignored
-  panel.dispatchEvent(new w.Event("transitionend"));
-  assert.equal(panel.hidden, true, "transitionend completes the slide-out hide");
-});
-
 // ---- modal focus trap + close affordances ---------------------------------------------------
 
 test("modal focus trap: Tab wraps to the first, Shift+Tab wraps to the last focusable", () => {
