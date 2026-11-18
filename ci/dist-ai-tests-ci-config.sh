@@ -69,6 +69,7 @@ terminal_safe_corpus='false'
 secure_terminal='false'
 static_analysis_tools='false'
 submodules='false'
+apt_backports='false'
 skip_args=''
 allow_skip_args=''
 
@@ -91,6 +92,12 @@ if [ -f "${cfg}" ]; then
    fi
    if [ "$(yq -r '.["dist-ai-tests"]["helper-scripts"] // ""' "${cfg}")" = 'true' ]; then
       helper_scripts='true'
+   fi
+   ## Opt-in: enable trixie-backports before the test-deps install, for a suite whose
+   ## required tool is packaged only there (e.g. debsbom). Deps still resolve from main;
+   ## backports is NotAutomatic, so no other package is pulled from it implicitly.
+   if [ "$(yq -r '.["dist-ai-tests"]["apt-backports"] // ""' "${cfg}")" = 'true' ]; then
+      apt_backports='true'
    fi
    ## Opt-in rather than unconditional: cloning the corpus for every consumer
    ## costs a checkout none of them need, and only a component with a suite that
@@ -251,6 +258,7 @@ fi
    printf '%s\n' "secure_terminal=${secure_terminal}"
    printf '%s\n' "static_analysis_tools=${static_analysis_tools}"
    printf '%s\n' "submodules=${submodules}"
+   printf '%s\n' "apt_backports=${apt_backports}"
    printf '%s\n' "skip_args=${skip_args# }"
    printf '%s\n' "allow_skip_args=${allow_skip_args# }"
    if [ "${helper_scripts}" = 'true' ]; then
