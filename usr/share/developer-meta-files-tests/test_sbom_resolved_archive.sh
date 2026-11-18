@@ -130,6 +130,41 @@ Description: hermetic SBOM fixture (arch all, epoch)
  Arch-all package with an epoch, for the all-arch + epoch-filename path.
 EOF
 
+## A third source 'runpkg' producing TWO binaries at ONE shared version (runbin amd64 +
+## rundata all), each carrying a Source: field (name != source) -- the shape sbom_archive_run
+## iterates from a single debian/control + changelog. Exercises the multi-binary orchestration
+## and the explicit-Source edge (the stanzas above omit Source, so source == name there).
+cat >> "${binary_dir}/Packages" <<EOF
+
+Package: runbin
+Source: runpkg
+Version: 1.0-1
+Architecture: ${arch}
+Maintainer: Test <test@example.com>
+Installed-Size: 10
+Filename: pool/${component}/r/runpkg/runbin_1.0-1_${arch}.deb
+Size: 2000
+SHA256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+SHA1: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+MD5sum: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+Description: run-test arch-dependent binary
+ Body.
+
+Package: rundata
+Source: runpkg
+Version: 1.0-1
+Architecture: all
+Maintainer: Test <test@example.com>
+Installed-Size: 10
+Filename: pool/${component}/r/runpkg/rundata_1.0-1_all.deb
+Size: 2001
+SHA256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+SHA1: dddddddddddddddddddddddddddddddddddddddd
+MD5sum: dddddddddddddddddddddddddddddddd
+Description: run-test arch-all binary
+ Body.
+EOF
+
 cat > "${repo}/dists/${codename}/Release" <<EOF
 Origin: test
 Label: test
@@ -137,6 +172,35 @@ Codename: ${codename}
 Components: ${component}
 Architectures: ${arch}
 Description: hermetic fixture repository
+EOF
+
+## Source package tree sbom_archive_run reads: control (two binaries) + a changelog whose
+## date is exactly source_date_epoch (1700000000 = Tue, 14 Nov 2023 22:13:20 +0000).
+pkgdir="${workdir}/runpkg"
+mkdir --parents -- "${pkgdir}/debian"
+cat > "${pkgdir}/debian/control" <<EOF
+Source: runpkg
+Section: misc
+Priority: optional
+Maintainer: Test <test@example.com>
+Standards-Version: 4.7.2
+
+Package: runbin
+Architecture: any
+Description: run-test arch-dependent binary
+ Body.
+
+Package: rundata
+Architecture: all
+Description: run-test arch-all binary
+ Body.
+EOF
+cat > "${pkgdir}/debian/changelog" <<EOF
+runpkg (1.0-1) unstable; urgency=medium
+
+  * Test.
+
+ -- Test <test@example.com>  Tue, 14 Nov 2023 22:13:20 +0000
 EOF
 
 ## --- drive the real library --------------------------------------------------------
@@ -289,6 +353,71 @@ if sbom_archive_if_present \
    pass "sbom_archive_if_present skips (rc 0, no file) an arch not in the index"
 else
    fail "sbom_archive_if_present did not cleanly skip an absent arch"
+fi
+
+## sbom_archive_run: the whole orchestration from a source tree. Two binaries at one version
+## -- runbin (any -> built arch) + rundata (all) -- both archived and committed in one pass.
+run_archive_dir="${workdir}/run-archive"
+(
+   cd -- "${pkgdir}"
+   make_cross_build_platform_list="${arch}" DEBFULLNAME='Test' DEBEMAIL='test@example.com' \
+      sbom_archive_run "${repo}" "${run_archive_dir}" runpkg
+)
+if [ -f "${run_archive_dir}/runbin_1.0-1_${arch}.cdx.json" ] \
+      && [ -f "${run_archive_dir}/rundata_1.0-1_all.cdx.json" ]; then
+   pass "sbom_archive_run archives every declared binary (arch-dep + all)"
+else
+   fail "sbom_archive_run did not archive both binaries"
+fi
+## Explicit-Source edge: the binary's source component is 'runpkg' (Source: field), not its
+## own name, and the binary->source edge points at it.
+if jq --exit-status \
+      '[.components[]? | select(.name == "runpkg" and ((.purl // "") | test("[?&]arch=source(&|$)")))] | length == 1' \
+      "${run_archive_dir}/runbin_1.0-1_${arch}.cdx.json" >/dev/null; then
+   pass "sbom_archive_run resolves the Source: field to the source component"
+else
+   fail "sbom_archive_run did not emit the 'runpkg' source component"
+fi
+if git -C "${run_archive_dir}" rev-parse --verify --quiet HEAD >/dev/null \
+      && git -C "${run_archive_dir}" ls-files --error-unmatch \
+            "runbin_1.0-1_${arch}.cdx.json" "rundata_1.0-1_all.cdx.json" >/dev/null 2>&1; then
+   pass "sbom_archive_run commits every binary's SBOM"
+else
+   fail "sbom_archive_run did not commit both SBOMs"
+fi
+## An arch the package was not built for is skipped, not fatal: build list widened to an
+## absent arch leaves only the present one archived.
+run_skip_dir="${workdir}/run-skip"
+(
+   cd -- "${pkgdir}"
+   make_cross_build_platform_list="${arch} arm64" DEBFULLNAME='Test' DEBEMAIL='test@example.com' \
+      sbom_archive_run "${repo}" "${run_skip_dir}" runpkg
+)
+if [ -f "${run_skip_dir}/runbin_1.0-1_${arch}.cdx.json" ] \
+      && [ ! -e "${run_skip_dir}/runbin_1.0-1_arm64.cdx.json" ]; then
+   pass "sbom_archive_run skips an unbuilt arch, archives the built one"
+else
+   fail "sbom_archive_run mishandled a build list with an absent arch"
+fi
+
+## Standalone EXECUTABLE: run the script itself (main + was_executed), not sourced.
+exec_archive_dir="${workdir}/exec-archive"
+(
+   cd -- "${pkgdir}"
+   make_cross_build_platform_list="${arch}" DEBFULLNAME='Test' DEBEMAIL='test@example.com' \
+      "${subject}" "${repo}" "${exec_archive_dir}" runpkg
+)
+if [ -f "${exec_archive_dir}/runbin_1.0-1_${arch}.cdx.json" ] \
+      && git -C "${exec_archive_dir}" rev-parse --verify --quiet HEAD >/dev/null; then
+   pass "executed as a script (main/was_executed) archives and commits"
+else
+   fail "standalone execution did not produce a committed archive"
+fi
+## Wrong argument count fails loud (the main() usage guard).
+if "${subject}" "${repo}" "${exec_archive_dir}" >/dev/null 2>&1; then
+   fail "main did not reject a wrong argument count"
+else
+   pass "main rejects a wrong argument count (usage guard)"
 fi
 
 printf '%s\n' "RESULT: ${pass_count} pass, ${fail_count} fail, 0 skip"
