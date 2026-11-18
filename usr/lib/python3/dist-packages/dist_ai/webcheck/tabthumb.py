@@ -20,8 +20,8 @@ Measurement, at the phone width (default 390px), for each
 .tab-content-controller, for each :scope > .tcc-content > .tcc-section that holds
 a .thumbframe with an <img>:
   - isolate-activate the section (remove .active from its siblings, add .active to
-    it -- the CSS `.mininav-ready .tcc-section:not(.active){display:none}` hides
-    the others), so only this section is laid out;
+    it -- the client-js first-paint tab-collapse then hides the controller's
+    now-non-active sections), so only this section is laid out;
   - measure the IMG box vs the enclosing .tcc-content CONTENT box (subtract the
     pane's padding + client border): leftGap = img.left - contentLeft,
     rightGap = contentRight - img.right;
