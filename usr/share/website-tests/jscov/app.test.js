@@ -984,6 +984,23 @@ test("Special:Search page: an unrelated fragment nav (skip-link) does NOT clear 
   assert.equal(links[0].textContent, "Tor");
 });
 
+test("Special:Search page: Back to a bare URL (empty fragment) clears the stale search", async () => {
+  // An empty fragment (Back from #q=, or deleting the hash in the address bar) must re-sync so the
+  // previous term + results do not linger -- distinct from a non-empty non-q anchor nav, which is kept.
+  const w = load('<input id="search-input"><div data-search-page></div>',
+    { hash: "#q=Tor",
+      searchIndex: [{ t: "Tor", u: "wiki/Tor/" }, { t: "Firewall", u: "wiki/Firewall/" }] });
+  await tick();
+  assert.equal(w.document.querySelectorAll("#search-page-results li a").length, 1, "Tor renders first");
+  w.location.hash = "";                    // Back / address-bar clear to the bare URL
+  w.dispatchEvent(new w.Event("hashchange"));
+  await tick();
+  assert.equal(w.document.getElementById("search-page-input").value, "",
+    "the field clears when the fragment is emptied");
+  assert.equal(w.document.getElementById("search-page-results").children.length, 0,
+    "the stale results are removed");
+});
+
 test("search: unchecking the magnifier toggle hides AND clears the results dropdown", async () => {
   const w = load(
     '<span class="site-search"><input type="checkbox" id="search-toggle"><input id="search-input"></span>',
