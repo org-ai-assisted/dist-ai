@@ -965,6 +965,25 @@ test("Special:Search page: an address-bar re-search (hashchange) re-runs without
   assert.equal(links[0].textContent, "Firewall");
 });
 
+test("Special:Search page: an unrelated fragment nav (skip-link) does NOT clear the search", async () => {
+  // The hashchange handler guards on the fragment carrying q=. Activating the page's skip-link
+  // (#main-content) or a TOC jump changes the fragment but must leave the query + results intact
+  // -- without the guard, urlQuery() returns "" and the box would wipe itself on every anchor click.
+  const w = load('<input id="search-input"><div data-search-page></div>',
+    { hash: "#q=Tor",
+      searchIndex: [{ t: "Tor", u: "wiki/Tor/" }, { t: "Firewall", u: "wiki/Firewall/" }] });
+  await tick();
+  assert.equal(w.document.querySelectorAll("#search-page-results li a").length, 1, "Tor renders first");
+  w.location.hash = "#main-content";       // a skip-link / TOC navigation -- no q=
+  w.dispatchEvent(new w.Event("hashchange"));
+  await tick();
+  assert.equal(w.document.getElementById("search-page-input").value, "Tor",
+    "the query survives an unrelated fragment navigation");
+  const links = w.document.querySelectorAll("#search-page-results li a");
+  assert.equal(links.length, 1, "the results are not wiped");
+  assert.equal(links[0].textContent, "Tor");
+});
+
 test("search: unchecking the magnifier toggle hides AND clears the results dropdown", async () => {
   const w = load(
     '<span class="site-search"><input type="checkbox" id="search-toggle"><input id="search-input"></span>',
