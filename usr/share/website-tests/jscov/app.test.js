@@ -871,22 +871,22 @@ test("Special:Search page: a query with no match shows 'No results found.'", asy
   assert.equal(w.document.querySelector(".search-page-status").textContent, "No results found.");
 });
 
-test("Special:Search page: reads the query from ?q= when there is no #q= hash", async () => {
+test("Special:Search page: re-entrant init builds the box once (no duplicate rows)", async () => {
   const w = load(
     '<input id="search-input"><div data-search-page></div>',
-    { url: "https://x.test/wiki/Special:Search?q=tor",
+    { hash: "#q=tor",
       searchIndex: [{ t: "Tor", u: "wiki/Tor/" }, { t: "Firewall", u: "wiki/Firewall/" }] });
   await tick();
-  // A re-entrant initSearch (the harness fires DOMContentLoaded twice) must build the page box
-  // ONCE: exactly one input + one list, so this selector cannot see duplicate rows.
+  // The harness fires DOMContentLoaded twice; setupResultsPage must build the box ONCE: exactly one
+  // input + one list, so a query cannot see duplicate rows.
   assert.equal(w.document.querySelectorAll("#search-page-input").length, 1, "one search box (idempotent init)");
+  assert.equal(w.document.querySelectorAll("#search-page-results").length, 1, "one results list");
   const links = w.document.querySelectorAll("#search-page-results li a");
-  assert.equal(links.length, 1, "one match from ?q=tor");
+  assert.equal(links.length, 1, "one match for 'tor'");
   assert.equal(links[0].textContent, "Tor");
-  assert.equal(w.document.getElementById("search-page-input").value, "tor", "field prefilled from ?q=");
 });
 
-test("Special:Search page: with no #q=/?q=, the field is empty and nothing renders until typed", async () => {
+test("Special:Search page: with no #q=, the field is empty and nothing renders until typed", async () => {
   const w = load('<input id="search-input"><div data-search-page></div>',
     { searchIndex: [{ t: "Tor", u: "wiki/Tor/" }] });
   await tick();
@@ -894,29 +894,19 @@ test("Special:Search page: with no #q=/?q=, the field is empty and nothing rende
   assert.equal(w.document.getElementById("search-page-results").children.length, 0, "nothing rendered yet");
 });
 
-test("Special:Search page: a FRAGMENT '+' stays literal; a QUERY '+' is a space", async () => {
+test("Special:Search page: a '+' in #q= stays literal; a malformed escape falls back to the raw token", async () => {
   // #q= is NOT form-urlencoded, so '+' is a literal plus -- e.g. [[Special:Search#q=C++]] searches
-  // "c++", not "c  ". ?q= IS a query string, so there '+' means space (form-urlencoded).
+  // "c++", not "c  ". (There is no ?q= path: the query lives only in the fragment.)
   const wf = load('<input id="search-input"><div data-search-page></div>',
     { hash: "#q=a+b", searchIndex: [] });
   await tick();
   assert.equal(wf.document.getElementById("search-page-input").value, "a+b",
     "a '+' in the #q= fragment stays a literal '+'");
-  const wq = load('<input id="search-input"><div data-search-page></div>',
-    { url: "https://x.test/wiki/Special:Search?q=a+b", searchIndex: [] });
-  await tick();
-  assert.equal(wq.document.getElementById("search-page-input").value, "a b",
-    "a '+' in the ?q= query string decodes to a space");
   const wm = load('<input id="search-input"><div data-search-page></div>',
     { hash: "#q=%E0%A4", searchIndex: [] });
   await tick();
   assert.equal(wm.document.getElementById("search-page-input").value, "%E0%A4",
     "a malformed percent-escape in the fragment falls back to the raw token (no throw)");
-  const wmq = load('<input id="search-input"><div data-search-page></div>',
-    { url: "https://x.test/wiki/Special:Search?q=%E0%A4", searchIndex: [] });
-  await tick();
-  assert.equal(wmq.document.getElementById("search-page-input").value, "%E0%A4",
-    "a malformed percent-escape in the query string also falls back to the raw token");
 });
 
 test("Special:Search page: '#q=C++' searches the literal 'c++' and matches a C++ page", async () => {
