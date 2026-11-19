@@ -246,6 +246,27 @@ def main() -> int:
     h.ok(r3.returncode == 1, "the unlisted over-budget image fails the run (exit 1)",
          f"rc={r3.returncode} out={r3.stdout!r} err={r3.stderr!r}")
 
+    # -- Case 3b: an exempt-ONLY scan EXITS 0 -- pins that WARN-EXEMPT is
+    #    non-fatal, not merely a label. Case 3's rc is forced by its UNLISTED image,
+    #    so on its own it cannot tell a correctly-exempt gate from one that prints
+    #    WARN-EXEMPT yet still counts the image fatal. Scan a dir whose ONLY
+    #    over-budget image is allowlisted: a correct gate exits 0. --
+    d3b = work / "c3b"
+    media3b = d3b / "media"
+    media3b.mkdir(parents=True)
+    f3b = media3b / "Distai_exempt_fixture.png.webp"
+    _webp_lossless(f3b, (300, 300), noise=True)
+    (d3b / "img-budget-photo-exempt.txt").write_text(
+        "Distai_exempt_fixture.png\n", encoding="utf-8")
+    r3b = h.run_gate(str(media3b))
+    m3b = h.finding_for(r3b.stdout, f3b)
+    h.ok(m3b is not None and m3b.group("verdict") == "WARN-EXEMPT",
+         "the sole over-budget image is reported WARN-EXEMPT", r3b.stdout)
+    h.ok(r3b.returncode == 0,
+         "a scan whose only over-budget image is allowlisted EXITS 0 "
+         "(WARN-EXEMPT is non-fatal, not just a label)",
+         f"rc={r3b.returncode} out={r3b.stdout!r} err={r3b.stderr!r}")
+
     # -- Case 4: an UNREADABLE file is never exempt -- fail-closed even with its
     #    source name in the same sidecar (the inverse canary of case 3). --
     d4 = work / "c4"
@@ -281,43 +302,48 @@ def main() -> int:
         h.ok(int(m5.group("ideal")) == oracle_ideal(aw, ah),
              "AVIF ideal reproduces Lighthouse byte-for-byte")
 
-    # -- Case 6: HALF-UP rounding + the UPPER threshold edge, pinned with one padded
-    #    fixture. 399x401 = 159999 px puts TARGET*px on an exact half-integer
-    #    (26666.5), where Chromium's Math.round (floor(x+0.5) = 26667) and Python's
-    #    ties-to-even round() (26666) DIVERGE -- so a gate using the wrong rounding is
-    #    caught by the ideal assertion. Padded to ideal+6000 bytes: the saving (6000)
-    #    sits ABOVE 4096 but BELOW 8192, so a gate with an inflated threshold would not
-    #    flag it -- caught by requiring OVER-BUDGET here. --
+    # -- Case 6: HALF-UP rounding + the UPPER threshold edge, pinned to one byte.
+    #    399x401 = 159999 px puts TARGET*px on an exact half-integer (26666.5), where
+    #    Chromium's Math.round (floor(x+0.5) = 26667) and Python's ties-to-even round()
+    #    (26666) DIVERGE -- so a gate using the wrong rounding is caught by the ideal
+    #    assertion. Padded to ideal + (4096 + 1): the saving is EXACTLY one byte over
+    #    the 4096 threshold, so any threshold inflated past 4096 fails to flag it --
+    #    caught by requiring OVER-BUDGET here, with the printed slack asserted == 4096. --
     d6 = work / "c6"
     d6.mkdir()
     f6 = d6 / "distai_halfint_fixture.png"
     ideal6 = oracle_ideal(399, 401)  # 26667 (half-up); a ties-to-even gate yields 26666
-    _png_padded(f6, (399, 401), ideal6 + 6000)
+    _png_padded(f6, (399, 401), ideal6 + (BYTE_SAVINGS_THRESHOLD + 1))
     r6 = h.run_gate(str(d6))
     m6 = h.finding_for(r6.stdout, f6)
     h.ok(m6 is not None and m6.group("verdict") == "OVER-BUDGET",
-         "half-integer fixture (saving 6000, in (4096,8192)) is flagged "
-         "(pins the 4096 threshold from above)", r6.stdout)
+         "half-integer fixture (saving 4097, one byte over 4096) is flagged "
+         "(pins the threshold from above)", r6.stdout)
     if m6 is not None:
         h.ok(int(m6.group("ideal")) == ideal6,
              "gate rounds the ideal HALF-UP at a half-integer boundary "
              "(not ties-to-even)", f"gate {m6.group('ideal')} vs half-up {ideal6}")
-        h.ok(BYTE_SAVINGS_THRESHOLD < int(m6.group("saving")) < 2 * BYTE_SAVINGS_THRESHOLD,
-             "fixture saving lies in the (4096, 8192) window that pins the threshold",
-             m6.group("saving"))
+        h.ok(int(m6.group("saving")) == BYTE_SAVINGS_THRESHOLD + 1,
+             "fixture saving is exactly one byte over the threshold "
+             "(a threshold above 4096 would not flag it)", m6.group("saving"))
+        h.ok(int(m6.group("slack")) == BYTE_SAVINGS_THRESHOLD,
+             "gate prints the 4096 savings threshold it compared against "
+             "(pins the constant directly)", m6.group("slack"))
 
-    # -- Case 7: the LOWER threshold edge. Padded to ideal+2000: over the per-pixel
-    #    TARGET but UNDER the 4096 savings threshold, so it must NOT be flagged. A gate
-    #    that dropped/lowered the threshold would flag it -- caught by requiring a pass. --
+    # -- Case 7: the LOWER threshold edge, pinned EXACTLY. Padded to ideal + 4096: the
+    #    saving equals 4096, and the gate flags only saving > 4096 (STRICT), so it must
+    #    NOT be flagged. A gate that lowered the threshold -- or weakened the compare to
+    #    >= -- would flag it, caught by requiring a pass. With case 6 (saving 4097,
+    #    flagged) this brackets the threshold to a single byte AND pins the strictness. --
     d7 = work / "c7"
     d7.mkdir()
     f7 = d7 / "distai_underslack_fixture.png"
-    _png_padded(f7, (400, 400), oracle_ideal(400, 400) + 2000)
+    _png_padded(f7, (400, 400), oracle_ideal(400, 400) + BYTE_SAVINGS_THRESHOLD)
     r7 = h.run_gate(str(d7))
-    h.ok(r7.returncode == 0, "image over TARGET but under the 4096 saving threshold passes",
+    h.ok(r7.returncode == 0, "image whose saving equals the 4096 threshold passes (strict >)",
          f"rc={r7.returncode} out={r7.stdout!r} err={r7.stderr!r}")
     h.ok(h.finding_for(r7.stdout, f7) is None,
-         "under-threshold image is NOT flagged (pins the 4096 threshold from below)")
+         "a saving of exactly 4096 is NOT flagged (pins the strict-'>' boundary)")
 
     # -- Case 8: usage error on no arguments (exit 2). --
     r6 = h.run_gate()
