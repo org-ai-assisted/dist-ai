@@ -987,7 +987,9 @@ test("Special:Search page: a typed query survives an anchor nav + Back (no force
   input.value = "cat";
   input.dispatchEvent(new w.Event("input"));
   await tick();
-  assert.equal(w.document.querySelectorAll("#search-page-results li a").length, 1, "'cat' renders");
+  const catLinks = w.document.querySelectorAll("#search-page-results li a");
+  assert.equal(catLinks.length, 1, "'cat' renders");
+  assert.equal(catLinks[0].textContent, "Cat", "the single result is Cat (not Dog)");
   w.location.hash = "#main-content";       // a skip-link / TOC anchor nav -- no q=
   w.dispatchEvent(new w.Event("hashchange"));
   await tick();
@@ -995,8 +997,10 @@ test("Special:Search page: a typed query survives an anchor nav + Back (no force
   w.dispatchEvent(new w.Event("hashchange"));
   await tick();
   assert.equal(input.value, "cat", "the typed query survives the anchor nav + Back (not wiped)");
-  assert.equal(w.document.querySelectorAll("#search-page-results li a").length, 1,
-    "the results are preserved");
+  const afterLinks = w.document.querySelectorAll("#search-page-results li a");
+  assert.equal(afterLinks.length, 1, "the results are preserved");
+  assert.equal(afterLinks[0].textContent, "Cat",
+    "the SAME result (Cat) is preserved -- a changed single result (Dog) must fail");
 });
 
 test("search: unchecking the magnifier toggle hides AND clears the results dropdown", async () => {
