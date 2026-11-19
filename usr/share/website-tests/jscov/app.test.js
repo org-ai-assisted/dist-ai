@@ -652,20 +652,36 @@ test("expand/collapse-all toggles every <details> + flips the label and arrow st
 
 // ---- tabs ----------------------------------------------------------------------------------
 
-test("tab controller builds a mininav switcher and activates on click", () => {
-  const body = `
-    <div class="tab-content-controller">
-      <div class="mininav"></div>
-      <div class="tcc-content">
-        <div class="tcc-section"><div class="tcc-title"><h3 id="one">One</h3></div></div>
-        <div class="tcc-section"><div class="tcc-title"><h3 id="two">Two</h3></div></div>
-      </div>
-    </div>`;
-  const w = load(body);
+// The tab switcher pills are SERVER-rendered (page.py _build_tab_switchers); app.js only ENHANCES
+// them (adds ARIA + handlers, inserts nothing -> zero CLS). Build the server-equivalent controller
+// markup these app.js tests feed to load(): a <ul> of <a class="tcc-tab" href="#id"> pills + the
+// stacked sections. The authoritative pill extraction (icon adoption, label stripping, % encoding)
+// lives in page.py and is unit-tested there (test_page) + cross-checked on real pages by
+// check-tab-pill-images; here we exercise app.js's ARIA/keyboard/click enhancement.
+function tcc(secs, opts) {
+  opts = opts || {};
+  const pills = secs.map((s) => {
+    const href = s.href != null ? s.href : s.id ? "#" + s.id : "#";
+    return `<li><a class="tcc-tab${s.active ? " active" : ""}" href="${href}">` +
+      `${s.icon || ""}${s.label == null ? "" : s.label}</a></li>`;
+  }).join("");
+  const sections = secs.map((s) => {
+    const h = s.id ? `<h3 id="${s.id}">${s.label}</h3>` : `<h3>${s.label}</h3>`;
+    return `<div class="tcc-section${s.active ? " active" : ""}"${s.sid ? ` id="${s.sid}"` : ""}>` +
+      `<div class="tcc-image">${s.icon || ""}</div><div class="tcc-title">${h}</div>` +
+      `<div class="tcc-content">${s.body || ""}</div></div>`;
+  }).join("");
+  return `<div class="tab-content-controller"${opts.id ? ` id="${opts.id}"` : ""}>` +
+    `<div class="mininav mn-switcher"><ul>${pills}</ul></div>` +
+    `<div class="tcc-content">${sections}</div></div>`;
+}
+
+test("tab controller enhances the server-rendered switcher and activates on click", () => {
+  const w = load(tcc([{ id: "one", label: "One", active: true }, { id: "two", label: "Two" }]));
   const ctrl = w.document.querySelector(".tab-content-controller");
   const pills = ctrl.querySelectorAll(".mininav .tcc-tab");
-  assert.equal(pills.length, 2, "one pill per section");
-  assert.equal(pills[0].textContent.trim(), "One", "labelled from title text");
+  assert.equal(pills.length, 2, "one pill per section (server-rendered)");
+  assert.equal(pills[0].textContent.trim(), "One", "server pill label preserved");
   pills[1].dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true }));
   const secs = ctrl.querySelectorAll(".tcc-content > .tcc-section");
   assert.ok(secs[1].classList.contains("active"), "second section active after click");
@@ -684,16 +700,9 @@ test("tab controller builds a mininav switcher and activates on click", () => {
 });
 
 test("tab controller: Arrow/Home/End move focus and activate (roving tabindex)", () => {
-  const body = `
-    <div class="tab-content-controller">
-      <div class="mininav"></div>
-      <div class="tcc-content">
-        <div class="tcc-section active"><div class="tcc-title"><h3 id="a">A</h3></div></div>
-        <div class="tcc-section"><div class="tcc-title"><h3 id="b">B</h3></div></div>
-        <div class="tcc-section"><div class="tcc-title"><h3 id="c">C</h3></div></div>
-      </div>
-    </div>`;
-  const w = load(body);
+  const w = load(tcc([
+    { id: "a", label: "A", active: true }, { id: "b", label: "B" }, { id: "c", label: "C" },
+  ]));
   const ctrl = w.document.querySelector(".tab-content-controller");
   const ul = ctrl.querySelector(".mininav > ul");
   const pills = ctrl.querySelectorAll(".mininav .tcc-tab");
@@ -710,15 +719,7 @@ test("tab controller: Arrow/Home/End move focus and activate (roving tabindex)",
 });
 
 test("tab click anchors location.hash to the chosen section id", () => {
-  const body = `
-    <div class="tab-content-controller">
-      <div class="mininav"></div>
-      <div class="tcc-content">
-        <div class="tcc-section"><div class="tcc-title"><h3 id="one">One</h3></div></div>
-        <div class="tcc-section"><div class="tcc-title"><h3 id="two">Two</h3></div></div>
-      </div>
-    </div>`;
-  const w = load(body);
+  const w = load(tcc([{ id: "one", label: "One", active: true }, { id: "two", label: "Two" }]));
   const pills = w.document.querySelectorAll(".mininav .tcc-tab");
   pills[1].dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true }));
   assert.equal(w.location.hash, "#two", "URL hash follows the chosen tab");
@@ -726,35 +727,24 @@ test("tab click anchors location.hash to the chosen section id", () => {
   assert.equal(w.location.hash, "#one", "hash updates on each tab switch");
 });
 
-test("tab click percent-encodes a special section id so reload decode round-trips", () => {
-  const body = `
-    <div class="tab-content-controller">
-      <div class="mininav"></div>
-      <div class="tcc-content">
-        <div class="tcc-section"><div class="tcc-title"><h3 id="a">A</h3></div></div>
-        <div class="tcc-section"><div class="tcc-title"><h3 id="100%_Done">B</h3></div></div>
-      </div>
-    </div>`;
-  const w = load(body);
+test("tab click: location.hash follows the server pill's percent-encoded href (decode round-trips)", () => {
+  // The server percent-encodes the heading id in the pill href (page.py); app.js reuses that href
+  // on click, so a reload's syncTabsFromHash decodeURIComponent round-trips without throwing.
+  const w = load(tcc([
+    { id: "a", label: "A", active: true },
+    { id: "100%_Done", label: "B", href: "#100%25_Done" },
+  ]));
   const pills = w.document.querySelectorAll(".mininav .tcc-tab");
-  // the pill's href (the shared/open-in-new-tab URL) is encoded too, not just the click handler
-  assert.equal(pills[1].getAttribute("href"), "#100%25_Done", "pill href is percent-encoded");
+  assert.equal(pills[1].getAttribute("href"), "#100%25_Done", "server pill href is percent-encoded");
   pills[1].dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true }));
-  assert.equal(w.location.hash, "#100%25_Done", "a raw % in the id is percent-encoded");
-  // decodeURIComponent of the fragment must NOT throw (syncTabsFromHash does this on reload)
+  assert.equal(w.location.hash, "#100%25_Done", "hash follows the pill's encoded href");
   assert.equal(decodeURIComponent(w.location.hash.slice(1)), "100%_Done");
 });
 
 test("hash tab-sync: target element reachable, no throw", () => {
-  const body = `
-    <div class="tab-content-controller">
-      <div class="mininav"></div>
-      <div class="tcc-content">
-        <div class="tcc-section" id="s1"><div class="tcc-title"><h3 id="t1">a</h3></div></div>
-        <div class="tcc-section" id="s2"><div class="tcc-title"><h3 id="target">b</h3></div></div>
-      </div>
-    </div>`;
-  const w = load(body, { hash: "#target" });
+  const w = load(tcc([
+    { id: "t1", label: "a", sid: "s1" }, { id: "target", label: "b", sid: "s2" },
+  ]), { hash: "#target" });
   assert.ok(w.document.getElementById("target"), "target present");
   w.dispatchEvent(new w.Event("hashchange"));
 });
@@ -766,11 +756,7 @@ test("FUZZ: adversarial location.hash never throws", () => {
   ];
   for (const h of hostile) {
     assert.doesNotThrow(() => {
-      const w = load(
-        '<div class="tab-content-controller"><div class="mininav"></div>' +
-        '<div class="tcc-content"><div class="tcc-section" id="s">' +
-        '<div class="tcc-title"><h3 id="h">x</h3></div></div></div></div>',
-        { hash: h });
+      const w = load(tcc([{ id: "h", label: "x", active: true, sid: "s" }]), { hash: h });
       w.location.hash = h;
       w.dispatchEvent(new w.Event("hashchange"));
     }, `hash ${JSON.stringify(h)} must not throw`);
@@ -2718,46 +2704,26 @@ test("download modal: countdown ticks, pauses while hidden, and proceeds at zero
   assert.equal(proceeded, 1, "reaching zero clicks the proceed link (rel=noreferrer navigation)");
 });
 
-// ---- tabs: skipped controllers, href encoding edges, label stripping, keyboard --------------
+// ---- tabs: enhancement guards, href encoding edges, keyboard --------------------------------
 
-test("tab controller is skipped when it has no sections or no mininav", () => {
+test("tab controller enhancement is skipped when it has no server switcher or no sections", () => {
   const w = load('<div class="tab-content-controller"><div class="tcc-content"></div></div>');
-  assert.equal(w.document.querySelector(".mininav"), null, "nothing built for a controller with no mininav/sections");
+  const ctrl = w.document.querySelector(".tab-content-controller");
+  assert.equal(ctrl.querySelector(".mininav"), null, "app.js enhances only; it builds no switcher");
 });
 
-test("tab pill: no heading id -> href '#'; a tcc-image img is adopted; share/edit affordances stripped from the label", () => {
-  const w = load('<div class="tab-content-controller"><div class="mininav"></div><div class="tcc-content">' +
-    '<div class="tcc-section"><div class="tcc-image"><img src="i.webp" alt="I"></div>' +
-    '<div class="tcc-title"><h3>Plain<span class="share-tooltip">S</span><span class="mw-editsection">E</span></h3></div>' +
-    '</div></div></div>');
-  const pill = w.document.querySelector(".mininav .tcc-tab");
-  assert.equal(pill.getAttribute("href"), "#", "a section with no heading id gets a '#' pill href");
-  assert.ok(pill.querySelector("img"), "the tcc-image img is adopted into the pill");
-  assert.equal(pill.textContent.trim(), "Plain", "share-tooltip and mw-editsection are stripped from the pill label");
-});
-
-test("tab pill: a tcc-image with both <i> and <img> adopts the <img>, not the decorative <i>", () => {
-  const w = load('<div class="tab-content-controller"><div class="mininav"></div><div class="tcc-content">' +
-    '<div class="tcc-section"><div class="tcc-image"><i class="fa-solid fa-cubes"></i><img src="a.webp" alt="A"></div>' +
-    '<div class="tcc-title"><h3 id="h">H</h3></div></div></div></div>');
-  const pill = w.document.querySelector(".mininav .tcc-tab");
-  assert.ok(pill.querySelector("img"), "the authored <img> is adopted into the pill");
-  assert.equal(pill.querySelector("i"), null, "the decorative <i> is NOT adopted (img preferred over DOM order)");
-});
-
-test("tab pill: an <i> icon is adopted but a nested <a> inside it is stripped (no anchor-in-anchor)", () => {
-  const w = load('<div class="tab-content-controller"><div class="mininav"></div><div class="tcc-content">' +
-    '<div class="tcc-section"><div class="tcc-image"><i class="fa-solid fa-cubes"><a href="/wiki/X">L</a></i></div>' +
-    '<div class="tcc-title"><h3 id="h">H</h3></div></div></div></div>');
-  const pill = w.document.querySelector(".mininav .tcc-tab");
-  assert.ok(pill.querySelector("i"), "the <i> icon is adopted into the pill");
-  assert.equal(pill.querySelector("a"), null, "the nested <a> inside the icon is stripped (pill stays a single anchor)");
+test("tab controller enhancement is skipped when the server pill count and section count disagree", () => {
+  // Defensive: a malformed server tree (pills != sections) must not get half-wired ARIA.
+  const w = load('<div class="tab-content-controller"><div class="mininav mn-switcher"><ul>' +
+    '<li><a class="tcc-tab active" href="#one">One</a></li></ul></div><div class="tcc-content">' +
+    '<div class="tcc-section active"><div class="tcc-title"><h3 id="one">One</h3></div></div>' +
+    '<div class="tcc-section"><div class="tcc-title"><h3 id="two">Two</h3></div></div></div></div>');
+  const ul = w.document.querySelector(".mininav > ul");
+  assert.equal(ul.getAttribute("role"), null, "mismatch leaves the switcher un-enhanced (no role=tablist)");
 });
 
 test("tab click falls back to location.hash when history.replaceState throws", () => {
-  const w = load('<div class="tab-content-controller"><div class="mininav"></div><div class="tcc-content">' +
-    '<div class="tcc-section"><div class="tcc-title"><h3 id="one">One</h3></div></div>' +
-    '<div class="tcc-section"><div class="tcc-title"><h3 id="two">Two</h3></div></div></div></div>', {
+  const w = load(tcc([{ id: "one", label: "One", active: true }, { id: "two", label: "Two" }]), {
     preEval: (win) => { win.history.replaceState = () => { throw new Error("blocked"); }; },
   });
   const pills = w.document.querySelectorAll(".mininav .tcc-tab");
@@ -2766,11 +2732,9 @@ test("tab click falls back to location.hash when history.replaceState throws", (
 });
 
 test("tab keyboard: ArrowLeft and Home move/activate; a non-navigation key is ignored", () => {
-  const body = '<div class="tab-content-controller"><div class="mininav"></div><div class="tcc-content">' +
-    '<div class="tcc-section active"><div class="tcc-title"><h3 id="a">A</h3></div></div>' +
-    '<div class="tcc-section"><div class="tcc-title"><h3 id="b">B</h3></div></div>' +
-    '<div class="tcc-section"><div class="tcc-title"><h3 id="c">C</h3></div></div></div></div>';
-  const w = load(body);
+  const w = load(tcc([
+    { id: "a", label: "A", active: true }, { id: "b", label: "B" }, { id: "c", label: "C" },
+  ]));
   const ul = w.document.querySelector(".mininav > ul");
   const secs = w.document.querySelectorAll(".tcc-content > .tcc-section");
   ul.dispatchEvent(new w.KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
@@ -2782,17 +2746,16 @@ test("tab keyboard: ArrowLeft and Home move/activate; a non-navigation key is ig
 });
 
 test("syncTabsFromHash activates nested tab sections for a deep fragment", () => {
-  const w = load('<div class="tab-content-controller" id="outer"><div class="mininav"></div>' +
-    '<div class="tcc-content">' +
-    '<div class="tcc-section" id="os1"><div class="tcc-title"><h3 id="o1">O1</h3></div>' +
-    '<div class="tab-content-controller" id="inner"><div class="mininav"></div><div class="tcc-content">' +
-    '<div class="tcc-section" id="is1"><div class="tcc-title"><h3 id="i1">I1</h3></div></div>' +
-    '<div class="tcc-section" id="is2"><div class="tcc-title"><h3 id="deep">Deep</h3></div></div>' +
-    '</div></div></div>' +
-    '<div class="tcc-section" id="os2"><div class="tcc-title"><h3 id="o2">O2</h3></div></div>' +
-    '</div></div>', { hash: "#deep" });
-  // openHashDetails/syncTabsFromHash ran at load for #deep: both the outer section holding the
-  // inner controller AND the inner target section are activated (outermost first).
+  // Inner controller lives in the outer's NON-active section; a #deep load must switch BOTH the
+  // outer (to reveal the inner controller) and the inner (to the deep target) -- outermost first.
+  const inner = tcc([
+    { id: "i1", label: "I1", active: true, sid: "is1" },
+    { id: "deep", label: "Deep", sid: "is2" },
+  ], { id: "inner" });
+  const w = load(tcc([
+    { id: "o1", label: "O1", sid: "os1", body: inner },
+    { id: "o2", label: "O2", active: true, sid: "os2" },
+  ], { id: "outer" }), { hash: "#deep" });
   assert.ok(w.document.getElementById("os1").classList.contains("active"), "the outer section is activated");
   assert.ok(w.document.getElementById("is2").classList.contains("active"), "the nested target section is activated");
 });
@@ -3519,14 +3482,7 @@ test("comparison-more: a .cmp-more-btn not inside a .cmp-more-ctrl row is left u
 test("tab keyboard: a keydown bubbling from a NESTED tablist is ignored by the ancestor tablist", () => {
   // The roving-tabindex handler is scoped via closest('[role=tablist]') === ul; a key event whose
   // nearest tablist is a different (nested) one must not steal the ancestor's selection.
-  const w = load(`
-    <div class="tab-content-controller">
-      <div class="mininav"></div>
-      <div class="tcc-content">
-        <div class="tcc-section active"><div class="tcc-title"><h3 id="o1">O1</h3></div></div>
-        <div class="tcc-section"><div class="tcc-title"><h3 id="o2">O2</h3></div></div>
-      </div>
-    </div>`);
+  const w = load(tcc([{ id: "o1", label: "O1", active: true }, { id: "o2", label: "O2" }]));
   const ctrl = w.document.querySelector(".tab-content-controller");
   const ul = ctrl.querySelector(".mininav > ul");
   const secs = ctrl.querySelectorAll(".tcc-content > .tcc-section");
@@ -3543,14 +3499,7 @@ test("tab keyboard: a keydown bubbling from a NESTED tablist is ignored by the a
 
 test("tab keyboard: an arrow key is inert once the tablist has no .tcc-tab children", () => {
   // After the pills are removed, the live keydown read finds zero tabs -> `!tabs.length` return.
-  const w = load(`
-    <div class="tab-content-controller">
-      <div class="mininav"></div>
-      <div class="tcc-content">
-        <div class="tcc-section active"><div class="tcc-title"><h3 id="a">A</h3></div></div>
-        <div class="tcc-section"><div class="tcc-title"><h3 id="b">B</h3></div></div>
-      </div>
-    </div>`);
+  const w = load(tcc([{ id: "a", label: "A", active: true }, { id: "b", label: "B" }]));
   const ctrl = w.document.querySelector(".tab-content-controller");
   const ul = ctrl.querySelector(".mininav > ul");
   const secs = ctrl.querySelectorAll(".tcc-content > .tcc-section");
@@ -3564,14 +3513,8 @@ test("syncTabsFromHash tolerates a hash target whose enclosing .tcc-section has 
   // documentElement carries class tcc-section + the hash id -> its parentElement is null, driving
   // the `p && p.closest ? ... : null` else arm. The chain's section has no controller, so a real
   // body tab controller must be left at its default.
-  const w = load(`
-    <div class="tab-content-controller">
-      <div class="mininav"></div>
-      <div class="tcc-content">
-        <div class="tcc-section active"><div class="tcc-title"><h3 id="one">One</h3></div></div>
-        <div class="tcc-section"><div class="tcc-title"><h3 id="two">Two</h3></div></div>
-      </div>
-    </div>`, { hash: "#rootsec", preEval: (win) => {
+  const w = load(tcc([{ id: "one", label: "One", active: true }, { id: "two", label: "Two" }]), {
+    hash: "#rootsec", preEval: (win) => {
       win.document.documentElement.id = "rootsec";
       win.document.documentElement.classList.add("tcc-section");
     } });
