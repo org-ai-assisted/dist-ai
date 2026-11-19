@@ -150,6 +150,14 @@ def run() -> int:
     ck(fr.classify_probe(ev, BASE, 200, BASE + "/", 200, {"loss": False, "done": False})
        == {"trace_bad": "tracingComplete never arrived"},
        "classify_probe: an incomplete trace (no tracingComplete) fails CLOSED")
+    # A failed navigation leaves Chromium on chrome-error://; that URL is off-host, so it must NOT be
+    # read as a benign off-site redirect -- fail CLOSED on the triggering status instead.
+    ck(fr.classify_probe([], BASE, 200, "chrome-error://chromewebdata/", 404, TRACE_OK)
+       == {"bad_status": 404},
+       "classify_probe: a redirect that ends on Chromium's error page FAILS (not a benign external)")
+    ck(fr.classify_probe([], BASE, 200, "chrome-error://chromewebdata/", None, TRACE_OK)
+       == {"bad_status": 200},
+       "classify_probe: a chrome-error end with no post-load status falls back to the initial status")
 
     # --- engine-absent vs launch-failure: only a missing engine is a SKIP ---
     ck(fr._is_engine_absent(Exception("Executable doesn't exist at /ms-playwright/chrome")) is True,
@@ -158,10 +166,50 @@ def run() -> int:
        "_is_engine_absent: a launch TIMEOUT is a real failure, not an absent-engine SKIP")
     ck(fr._is_engine_absent(Exception("Failed to create a sandbox: namespace unavailable")) is False,
        "_is_engine_absent: a sandbox/namespace launch error is a real failure, not a SKIP")
+    # "playwright install-deps" (install OS LIBRARIES; chromium IS present) contains the substring
+    # "playwright install" -- it must NOT be misread as an absent engine, or a broken-but-installed
+    # environment SKIPs (77) instead of failing the gate.
+    ck(fr._is_engine_absent(Exception(
+        "Host system is missing dependencies to run browsers.\nrun: sudo playwright install-deps")) is False,
+       "_is_engine_absent: a missing-OS-libraries error (install-deps) is a real failure, not a SKIP")
 
     # --- empty page list is rejected, not a zero-page PASS (browser-free: guard precedes launch) ---
     ck(asyncio.run(fr.check(BASE, [])) == 1,
        "check(): an empty page list FAILS (an HTML-less site must not pass as zero pages gated)")
+
+    # --- _serve_tree readiness: bounded wait + announced-port verification (no browser) ---
+    def _serve_raises(body, label):
+        # Drive _serve_tree against a fake WEBCHECK_SERVE helper; a short ready-timeout keeps it fast.
+        # It MUST raise (never hang) and return within the bound -- a hang here fails the whole suite.
+        import time as _time
+        with tempfile.TemporaryDirectory() as td:
+            helper = Path(td) / "fake-serve.py"
+            helper.write_text(body, encoding="utf-8")
+            old = {k: os.environ.get(k) for k in ("WEBCHECK_SERVE", "WEBCHECK_SERVE_READY_TIMEOUT")}
+            os.environ["WEBCHECK_SERVE"] = str(helper)
+            os.environ["WEBCHECK_SERVE_READY_TIMEOUT"] = "1.5"
+            t0 = _time.time()
+            try:
+                fr._serve_tree(Path(td))
+                raised = False
+            except RuntimeError:
+                raised = True
+            finally:
+                for k, v in old.items():
+                    if v is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = v
+            ck(raised and (_time.time() - t0) < 8, label)
+    # A: a server that binds-but-never-announces (version skew / stderr-only) must not let a blocking
+    # read defeat the deadline -- _serve_tree raises within the bound instead of hanging forever.
+    _serve_raises("import time\ntime.sleep(60)\n",
+                  "_serve_tree: a child that never announces readiness FAILS within the deadline (no hang)")
+    # B: an announced port the child never bound must be rejected, not trusted -- else the gate would
+    # measure whatever unrelated service holds that port.
+    _serve_raises("import sys, time\nsys.stdout.write('PRE_DEPLOY_SERVE_READY 1\\n')\n"
+                  "sys.stdout.flush()\ntime.sleep(60)\n",
+                  "_serve_tree: an announced port with nothing listening is rejected (not measured)")
 
     # --- argparse: each required mutually-exclusive group is enforced WITH a usage-error exit ---
     for argv, label in [

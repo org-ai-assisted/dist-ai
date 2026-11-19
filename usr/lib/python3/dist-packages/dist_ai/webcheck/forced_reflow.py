@@ -200,6 +200,12 @@ def classify_probe(collected, base_url, initial_status, final_url, final_nav_sta
         return {"trace_bad": "data loss" if trace.get("loss") else "tracingComplete never arrived"}
     forced = attribute_forced_layouts(collected, base_url)
     ms = sum(d for _f, d in forced)
+    # A FAILED navigation (a client redirect to a 404/download/unreachable target) leaves Chromium on
+    # its error page chrome-error://chromewebdata/. That URL is off-host, so the external branch below
+    # would read a BROKEN page as a benign off-site redirect and PASS it. A chrome-error final document
+    # loaded no real content -- fail CLOSED on the triggering status.
+    if final_url.startswith("chrome-error:"):
+        return {"bad_status": final_nav_status if final_nav_status is not None else initial_status}
     if is_off_origin(final_url, base_url):
         return {"external": final_url, "forced": forced, "ms": ms}
     # Same host: validate the FINAL document, not just the one goto() first saw. A 200 page that
@@ -298,6 +304,11 @@ def _is_engine_absent(exc) -> bool:
     never a silent skip that lets the gate pass unrun. Playwright's not-installed error names the
     missing executable and the `playwright install` remedy."""
     msg = str(exc).lower()
+    # "playwright install-deps" is the install-OS-LIBRARIES remedy: the chromium binary IS present
+    # but the host lacks shared libs -- a real failure to REPORT, not an absent engine. It contains
+    # the "playwright install" substring, so exclude it before the absent-engine match below.
+    if "install-deps" in msg:
+        return False
     return ("executable doesn't exist" in msg
             or "playwright install" in msg
             or "looks like playwright was just installed" in msg)
@@ -485,25 +496,63 @@ def _serve_tree(tree: Path):
     server's tree. pre-deploy-serve.py ships beside this core's wiki sibling; locate it on PATH or
     via $WEBCHECK_SERVE."""
     import os
+    import socket
+    import threading
     serve = os.environ.get("WEBCHECK_SERVE")
     if not serve:
         from shutil import which
         serve = which("pre-deploy-serve.py")
     if not serve or not Path(serve).is_file():
         raise RuntimeError("pre-deploy-serve.py not found; set WEBCHECK_SERVE to its path")
+    # Test/config seam (env, not argv): a slow CI host can need more than 10s; a test uses a short one.
+    try:
+        ready_timeout = float(os.environ.get("WEBCHECK_SERVE_READY_TIMEOUT", "10"))
+    except ValueError:
+        ready_timeout = 10.0
     proc = subprocess.Popen([sys.executable, "-Bsu", str(serve), "0", str(tree)],
                             stdout=subprocess.PIPE, text=True)
     prefix = "PRE_DEPLOY_SERVE_READY "
-    deadline = time.time() + 10
-    while time.time() < deadline:
-        line = proc.stdout.readline()
-        if line == "":  # EOF: the child exited before announcing a port (e.g. bind failed)
-            raise RuntimeError("pre-deploy-serve.py exited before announcing its port")
-        if line.startswith(prefix):
-            port = int(line[len(prefix):].strip())
-            return proc, "http://127.0.0.1:%d" % port
-    proc.terminate()
-    raise RuntimeError("pre-deploy-serve.py did not announce readiness within 10s")
+    result = {"port": None}
+    found = threading.Event()
+    # Read the child's stdout in a THREAD, not a blocking readline() on this thread: a child that
+    # binds but never prints the line (a version-skewed pre-deploy-serve.py, or one logging to
+    # stderr) would otherwise make readline() block forever and defeat the deadline. The thread also
+    # keeps READING past the readiness line to EOF, draining stdout so later child output cannot fill
+    # the ~64KB pipe buffer, block the child's write(), and wedge the server mid-run.
+    def _reader():
+        try:
+            for line in proc.stdout:
+                if result["port"] is None and line.startswith(prefix):
+                    try:
+                        result["port"] = int(line[len(prefix):].strip())
+                    except ValueError:
+                        pass
+                    found.set()
+        finally:
+            found.set()  # unblock the waiter on EOF even if no readiness line ever arrived
+    threading.Thread(target=_reader, daemon=True).start()
+    if not found.wait(timeout=ready_timeout):
+        proc.terminate()
+        raise RuntimeError("pre-deploy-serve.py did not announce readiness within %gs" % ready_timeout)
+    if result["port"] is None:  # EOF reached with no readiness line: the child exited (e.g. bind failed)
+        raise RuntimeError("pre-deploy-serve.py exited before announcing its port")
+    port = result["port"]
+    # Trust the announced port ONLY after confirming the child actually accepts connections there: a
+    # misbehaving/version-skewed server that prints a port it never bound would otherwise make the gate
+    # measure whatever unrelated service already holds that port. Restores the pre-picked-port path's
+    # listening-check without reintroducing its bind/close race.
+    connect_deadline = time.time() + ready_timeout
+    while True:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=1.0):
+                break
+        except OSError:
+            if time.time() >= connect_deadline:
+                proc.terminate()
+                raise RuntimeError(
+                    "pre-deploy-serve.py announced port %d but is not accepting connections" % port)
+            time.sleep(0.05)
+    return proc, "http://127.0.0.1:%d" % port
 
 
 def build_parser() -> argparse.ArgumentParser:
