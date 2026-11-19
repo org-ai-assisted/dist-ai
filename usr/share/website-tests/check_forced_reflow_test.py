@@ -180,8 +180,13 @@ def run() -> int:
     # --- WEBCHECK_SERVE_READY_TIMEOUT parsing: non-finite / non-positive / garbage -> safe default ---
     ck(fr._ready_timeout("5") == 5.0 and fr._ready_timeout("2.5") == 2.5,
        "_ready_timeout: a positive numeric value is used as-is")
-    ck(all(fr._ready_timeout(v) == 10.0 for v in ("inf", "nan", "-1", "0", "abc", None)),
-       "_ready_timeout: inf/nan/non-positive/garbage/None fall back to the default (no overflow/early-kill)")
+    ck(all(fr._ready_timeout(v) == 10.0 for v in ("inf", "nan", "-1", "0", "abc", None, "1e20", "1e11")),
+       "_ready_timeout: inf/nan/non-positive/over-TIMEOUT_MAX/garbage/None fall back to the default")
+    # Boundary: Event.wait() overflows C time_t above threading.TIMEOUT_MAX, so cap there.
+    import threading as _th
+    ck(fr._ready_timeout(str(_th.TIMEOUT_MAX)) == _th.TIMEOUT_MAX
+       and fr._ready_timeout(str(_th.TIMEOUT_MAX + 1e6)) == 10.0,
+       "_ready_timeout: TIMEOUT_MAX is accepted, just above it falls back (no Event.wait overflow)")
 
     # --- empty page list is rejected, not a zero-page PASS (browser-free: guard precedes launch) ---
     ck(asyncio.run(fr.check(BASE, [])) == 1,

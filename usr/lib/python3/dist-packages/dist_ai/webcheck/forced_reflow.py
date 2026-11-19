@@ -489,14 +489,27 @@ def check_roots(roots: list, settle_ms: int = 3000, budget: int = 0) -> int:
 
 def _ready_timeout(raw, default: float = 10.0) -> float:
     """Seconds to wait for the serve child's readiness (WEBCHECK_SERVE_READY_TIMEOUT). A non-numeric,
-    non-finite (inf/nan), or non-positive value falls back to the default: inf would overflow
-    Event.wait(), and <= 0 would kill a healthy server before it can announce."""
+    non-finite (inf/nan), non-positive, or absurdly large value falls back to the default: inf AND any
+    finite value above threading.TIMEOUT_MAX overflow Event.wait()'s C time_t, and <= 0 would kill a
+    healthy server before it can announce."""
     import math
+    import threading
     try:
         val = float(raw)
     except (TypeError, ValueError):
         return default
-    return val if (math.isfinite(val) and val > 0) else default
+    return val if (math.isfinite(val) and 0 < val <= threading.TIMEOUT_MAX) else default
+
+
+def _terminate_serve(proc) -> None:
+    """Stop the serve child AND reap it, so a cleanup path that raises before returning proc cannot
+    leave a running or zombie process. SIGKILL falls back for a child that ignores SIGTERM."""
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
 
 
 def _serve_tree(tree: Path):
@@ -547,10 +560,10 @@ def _serve_tree(tree: Path):
             found.set()  # unblock the waiter on EOF even if no valid readiness line ever arrived
     threading.Thread(target=_reader, daemon=True).start()
     if not found.wait(timeout=ready_timeout):
-        proc.terminate()
+        _terminate_serve(proc)
         raise RuntimeError("pre-deploy-serve.py did not announce readiness within %gs" % ready_timeout)
     if result["port"] is None:  # EOF / only garbage lines: the child never announced a usable port
-        proc.terminate()  # it may still be alive (printed garbage then hung) -- reap it, no orphan
+        _terminate_serve(proc)  # it may still be alive (printed garbage then hung) -- reap it, no orphan
         raise RuntimeError("pre-deploy-serve.py did not announce a valid port")
     port = result["port"]
     # Liveness barrier: wait until the announced port actually ACCEPTS a connection before measuring.
@@ -567,7 +580,7 @@ def _serve_tree(tree: Path):
                 break
         except OSError:
             if time.time() >= connect_deadline:
-                proc.terminate()
+                _terminate_serve(proc)
                 raise RuntimeError(
                     "pre-deploy-serve.py announced port %d but is not accepting connections" % port)
             time.sleep(0.05)
@@ -620,11 +633,7 @@ def main() -> int:
         return asyncio.run(check(base, paths, args.settle, args.budget))
     finally:
         if proc is not None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
+            _terminate_serve(proc)
 
 
 if __name__ == "__main__":
