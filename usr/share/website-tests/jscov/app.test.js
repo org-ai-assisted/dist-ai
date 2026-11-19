@@ -984,21 +984,29 @@ test("Special:Search page: an unrelated fragment nav (skip-link) does NOT clear 
   assert.equal(links[0].textContent, "Tor");
 });
 
-test("Special:Search page: Back to a bare URL (empty fragment) clears the stale search", async () => {
-  // An empty fragment (Back from #q=, or deleting the hash in the address bar) must re-sync so the
-  // previous term + results do not linger -- distinct from a non-empty non-q anchor nav, which is kept.
+test("Special:Search page: a typed query survives an anchor nav + Back (no force-clear on empty)", async () => {
+  // The page input is NEVER written to the URL, so an empty/non-q fragment carries no query intent.
+  // Typing 'cat', jumping to #main-content (skip-link), then Back to the bare URL must NOT wipe the
+  // typed query -- force-syncing from an empty fragment would be input data loss. (The handler reacts
+  // ONLY to a q= fragment; an empty fragment is deliberately a no-op, accepting stale results on Back
+  // as the lesser evil vs destroying in-progress input.)
   const w = load('<input id="search-input"><div data-search-page></div>',
-    { hash: "#q=Tor",
-      searchIndex: [{ t: "Tor", u: "wiki/Tor/" }, { t: "Firewall", u: "wiki/Firewall/" }] });
+    { searchIndex: [{ t: "Cat", u: "wiki/Cat/" }, { t: "Dog", u: "wiki/Dog/" }] });
   await tick();
-  assert.equal(w.document.querySelectorAll("#search-page-results li a").length, 1, "Tor renders first");
-  w.location.hash = "";                    // Back / address-bar clear to the bare URL
+  const input = w.document.getElementById("search-page-input");
+  input.value = "cat";
+  input.dispatchEvent(new w.Event("input"));
+  await tick();
+  assert.equal(w.document.querySelectorAll("#search-page-results li a").length, 1, "'cat' renders");
+  w.location.hash = "#main-content";       // a skip-link / TOC anchor nav -- no q=
   w.dispatchEvent(new w.Event("hashchange"));
   await tick();
-  assert.equal(w.document.getElementById("search-page-input").value, "",
-    "the field clears when the fragment is emptied");
-  assert.equal(w.document.getElementById("search-page-results").children.length, 0,
-    "the stale results are removed");
+  w.location.hash = "";                    // Back to the bare URL -- empty fragment, no q=
+  w.dispatchEvent(new w.Event("hashchange"));
+  await tick();
+  assert.equal(input.value, "cat", "the typed query survives the anchor nav + Back (not wiped)");
+  assert.equal(w.document.querySelectorAll("#search-page-results li a").length, 1,
+    "the results are preserved");
 });
 
 test("search: unchecking the magnifier toggle hides AND clears the results dropdown", async () => {
