@@ -172,6 +172,16 @@ def run() -> int:
     ck(fr._is_engine_absent(Exception(
         "Host system is missing dependencies to run browsers.\nrun: sudo playwright install-deps")) is False,
        "_is_engine_absent: a missing-OS-libraries error (install-deps) is a real failure, not a SKIP")
+    # A genuine missing-executable whose configured path happens to contain 'install-deps' is STILL
+    # an absent engine (the definitive message wins before the install-deps exclusion).
+    ck(fr._is_engine_absent(Exception("Executable doesn't exist at /tmp/install-deps/chrome")) is True,
+       "_is_engine_absent: 'executable doesn't exist' wins even when the path contains install-deps")
+
+    # --- WEBCHECK_SERVE_READY_TIMEOUT parsing: non-finite / non-positive / garbage -> safe default ---
+    ck(fr._ready_timeout("5") == 5.0 and fr._ready_timeout("2.5") == 2.5,
+       "_ready_timeout: a positive numeric value is used as-is")
+    ck(all(fr._ready_timeout(v) == 10.0 for v in ("inf", "nan", "-1", "0", "abc", None)),
+       "_ready_timeout: inf/nan/non-positive/garbage/None fall back to the default (no overflow/early-kill)")
 
     # --- empty page list is rejected, not a zero-page PASS (browser-free: guard precedes launch) ---
     ck(asyncio.run(fr.check(BASE, [])) == 1,
@@ -210,6 +220,12 @@ def run() -> int:
     _serve_raises("import sys, time\nsys.stdout.write('PRE_DEPLOY_SERVE_READY 1\\n')\n"
                   "sys.stdout.flush()\ntime.sleep(60)\n",
                   "_serve_tree: an announced port with nothing listening is rejected (not measured)")
+    # C: a line that matches the prefix but carries a non-numeric port must NOT be read as readiness
+    # (it would raise a false 'exited' error and orphan the still-running child). It is ignored, so
+    # the deadline fires -- raising within the bound, with the child reaped.
+    _serve_raises("import sys, time\nsys.stdout.write('PRE_DEPLOY_SERVE_READY nope\\n')\n"
+                  "sys.stdout.flush()\ntime.sleep(60)\n",
+                  "_serve_tree: a garbage readiness line is ignored, not a false 'exited' (child reaped)")
 
     # --- argparse: each required mutually-exclusive group is enforced WITH a usage-error exit ---
     for argv, label in [

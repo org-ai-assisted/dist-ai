@@ -304,14 +304,16 @@ def _is_engine_absent(exc) -> bool:
     never a silent skip that lets the gate pass unrun. Playwright's not-installed error names the
     missing executable and the `playwright install` remedy."""
     msg = str(exc).lower()
+    # DEFINITIVE absent-engine messages win first -- they hold even if the configured browsers path
+    # happens to contain "install-deps" (e.g. "Executable doesn't exist at /tmp/install-deps/...").
+    if "executable doesn't exist" in msg or "looks like playwright was just installed" in msg:
+        return True
     # "playwright install-deps" is the install-OS-LIBRARIES remedy: the chromium binary IS present
     # but the host lacks shared libs -- a real failure to REPORT, not an absent engine. It contains
-    # the "playwright install" substring, so exclude it before the absent-engine match below.
+    # the looser "playwright install" substring, so exclude it before that match.
     if "install-deps" in msg:
         return False
-    return ("executable doesn't exist" in msg
-            or "playwright install" in msg
-            or "looks like playwright was just installed" in msg)
+    return "playwright install" in msg
 
 
 async def _launch(p):
@@ -485,6 +487,18 @@ def check_roots(roots: list, settle_ms: int = 3000, budget: int = 0) -> int:
     return overall
 
 
+def _ready_timeout(raw, default: float = 10.0) -> float:
+    """Seconds to wait for the serve child's readiness (WEBCHECK_SERVE_READY_TIMEOUT). A non-numeric,
+    non-finite (inf/nan), or non-positive value falls back to the default: inf would overflow
+    Event.wait(), and <= 0 would kill a healthy server before it can announce."""
+    import math
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return default
+    return val if (math.isfinite(val) and val > 0) else default
+
+
 def _serve_tree(tree: Path):
     """Serve a built tree on localhost via the real pre-deploy-serve.py (try_files, mirrors
     nginx/Pages), so --serve-tree needs no external server. Returns (proc, base_url).
@@ -505,10 +519,7 @@ def _serve_tree(tree: Path):
     if not serve or not Path(serve).is_file():
         raise RuntimeError("pre-deploy-serve.py not found; set WEBCHECK_SERVE to its path")
     # Test/config seam (env, not argv): a slow CI host can need more than 10s; a test uses a short one.
-    try:
-        ready_timeout = float(os.environ.get("WEBCHECK_SERVE_READY_TIMEOUT", "10"))
-    except ValueError:
-        ready_timeout = 10.0
+    ready_timeout = _ready_timeout(os.environ.get("WEBCHECK_SERVE_READY_TIMEOUT"))
     proc = subprocess.Popen([sys.executable, "-Bsu", str(serve), "0", str(tree)],
                             stdout=subprocess.PIPE, text=True)
     prefix = "PRE_DEPLOY_SERVE_READY "
@@ -522,25 +533,33 @@ def _serve_tree(tree: Path):
     def _reader():
         try:
             for line in proc.stdout:
-                if result["port"] is None and line.startswith(prefix):
-                    try:
-                        result["port"] = int(line[len(prefix):].strip())
-                    except ValueError:
-                        pass
+                if result["port"] is not None or not line.startswith(prefix):
+                    continue
+                try:
+                    p = int(line[len(prefix):].strip())
+                except ValueError:
+                    continue  # a non-numeric line sharing the prefix: ignore it, keep waiting
+                if 1 <= p <= 65535:
+                    result["port"] = p
                     found.set()
+                # an out-of-range port is ignored too -- keep waiting for a valid line or the timeout
         finally:
-            found.set()  # unblock the waiter on EOF even if no readiness line ever arrived
+            found.set()  # unblock the waiter on EOF even if no valid readiness line ever arrived
     threading.Thread(target=_reader, daemon=True).start()
     if not found.wait(timeout=ready_timeout):
         proc.terminate()
         raise RuntimeError("pre-deploy-serve.py did not announce readiness within %gs" % ready_timeout)
-    if result["port"] is None:  # EOF reached with no readiness line: the child exited (e.g. bind failed)
-        raise RuntimeError("pre-deploy-serve.py exited before announcing its port")
+    if result["port"] is None:  # EOF / only garbage lines: the child never announced a usable port
+        proc.terminate()  # it may still be alive (printed garbage then hung) -- reap it, no orphan
+        raise RuntimeError("pre-deploy-serve.py did not announce a valid port")
     port = result["port"]
-    # Trust the announced port ONLY after confirming the child actually accepts connections there: a
-    # misbehaving/version-skewed server that prints a port it never bound would otherwise make the gate
-    # measure whatever unrelated service already holds that port. Restores the pre-picked-port path's
-    # listening-check without reintroducing its bind/close race.
+    # Liveness barrier: wait until the announced port actually ACCEPTS a connection before measuring.
+    # This proves readiness, NOT ownership -- ownership comes from the child binding port 0 ITSELF and
+    # printing the OS-assigned port it now holds (no pre-picked-port race), and WEBCHECK_SERVE is
+    # trusted operator config (a lying helper is an env-seam adversary, out of scope). A dead/wrong
+    # port that nothing answers is caught here; a correct server never vacates its port mid-run. (A
+    # port that answers but serves the wrong tree would still surface downstream as the page probes
+    # fail/WEDGE, so the gate stays fail-closed either way.)
     connect_deadline = time.time() + ready_timeout
     while True:
         try:
