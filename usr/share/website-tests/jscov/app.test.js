@@ -821,6 +821,91 @@ test("search filters the prebuilt index and renders result links", async () => {
   assert.equal(links[0].textContent, "Firewall");
 });
 
+// ---- Special:Search results PAGE (setupResultsPage) -- a standalone box + inline list that
+// reuses the same index + ranking as the header dropdown. The page needs BOTH a #search-input
+// (so initSearch runs instead of early-returning) and a [data-search-page] container. ----
+
+test("Special:Search page: renders ranked results from the #q= URL query", async () => {
+  const w = load(
+    '<input id="search-input"><div data-search-page><noscript>x</noscript></div>',
+    { hash: "#q=fire",
+      searchIndex: [{ t: "Firewall", u: "wiki/Firewall/" }, { t: "Tor", u: "wiki/Tor/" }] });
+  await tick();
+  const list = w.document.getElementById("search-page-results");
+  const links = list.querySelectorAll("li a");
+  assert.equal(links.length, 1, "one title match for 'fire'");
+  assert.equal(links[0].textContent, "Firewall");
+  assert.equal(list.firstElementChild.getAttribute("role"), null,
+    "page results are plain <li>, not combobox role=option");
+  assert.equal(w.document.getElementById("search-page-input").value, "fire",
+    "the field is prefilled from #q=");
+  assert.equal(w.document.querySelector(".search-page-status").textContent, "1 result",
+    "the status announces the count (singular)");
+});
+
+test("Special:Search page: typing re-renders; a <2-char query clears the list + status", async () => {
+  const w = load(
+    '<input id="search-input"><div data-search-page></div>',
+    { searchIndex: [{ t: "Firewall", u: "wiki/Firewall/" }, { t: "Firestarter", u: "wiki/Firestarter/" }] });
+  const input = w.document.getElementById("search-page-input");
+  const list = w.document.getElementById("search-page-results");
+  const status = w.document.querySelector(".search-page-status");
+  input.value = "fire";
+  input.dispatchEvent(new w.Event("input"));
+  await tick();
+  assert.equal(list.querySelectorAll("li a").length, 2, "two matches for 'fire'");
+  assert.equal(status.textContent, "2 results", "plural count");
+  input.value = "f";                 // below the 2-char floor
+  input.dispatchEvent(new w.Event("input"));
+  await tick();
+  assert.equal(list.children.length, 0, "a <2-char query clears the list");
+  assert.equal(status.textContent, "", "and clears the status");
+});
+
+test("Special:Search page: a query with no match shows 'No results found.'", async () => {
+  const w = load(
+    '<input id="search-input"><div data-search-page></div>',
+    { hash: "#q=zzzz", searchIndex: [{ t: "Tor", u: "wiki/Tor/" }] });
+  await tick();
+  assert.equal(w.document.getElementById("search-page-results").children.length, 0);
+  assert.equal(w.document.querySelector(".search-page-status").textContent, "No results found.");
+});
+
+test("Special:Search page: reads the query from ?q= when there is no #q= hash", async () => {
+  const w = load(
+    '<input id="search-input"><div data-search-page></div>',
+    { url: "https://x.test/wiki/Special:Search?q=tor",
+      searchIndex: [{ t: "Tor", u: "wiki/Tor/" }, { t: "Firewall", u: "wiki/Firewall/" }] });
+  await tick();
+  // A re-entrant initSearch (the harness fires DOMContentLoaded twice) must build the page box
+  // ONCE: exactly one input + one list, so this selector cannot see duplicate rows.
+  assert.equal(w.document.querySelectorAll("#search-page-input").length, 1, "one search box (idempotent init)");
+  const links = w.document.querySelectorAll("#search-page-results li a");
+  assert.equal(links.length, 1, "one match from ?q=tor");
+  assert.equal(links[0].textContent, "Tor");
+  assert.equal(w.document.getElementById("search-page-input").value, "tor", "field prefilled from ?q=");
+});
+
+test("Special:Search page: with no #q=/?q=, the field is empty and nothing renders until typed", async () => {
+  const w = load('<input id="search-input"><div data-search-page></div>',
+    { searchIndex: [{ t: "Tor", u: "wiki/Tor/" }] });
+  await tick();
+  assert.equal(w.document.getElementById("search-page-input").value, "", "no prefill without a query");
+  assert.equal(w.document.getElementById("search-page-results").children.length, 0, "nothing rendered yet");
+});
+
+test("Special:Search page: '+' in the query is a space; a malformed %-escape falls back to raw", async () => {
+  const w = load('<input id="search-input"><div data-search-page></div>',
+    { hash: "#q=a+b", searchIndex: [] });
+  await tick();
+  assert.equal(w.document.getElementById("search-page-input").value, "a b", "'+' decodes to a space");
+  const w2 = load('<input id="search-input"><div data-search-page></div>',
+    { hash: "#q=%E0%A4", searchIndex: [] });
+  await tick();
+  assert.equal(w2.document.getElementById("search-page-input").value, "%E0%A4",
+    "a malformed percent-escape falls back to the raw token (no throw)");
+});
+
 test("search: unchecking the magnifier toggle hides AND clears the results dropdown", async () => {
   const w = load(
     '<span class="site-search"><input type="checkbox" id="search-toggle"><input id="search-input"></span>',
