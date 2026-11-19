@@ -136,8 +136,9 @@ ANON_LEAK_TEST_REPO="${ANON_LEAK_TEST_REPO:-/var/lib/image-tests/anon-leak-test}
 GUEST_SHARE_MOUNT='/mnt/shared'
 
 ## Dedicated apt sources dir in the WS for the --local-repo lane: holds the derivative 'local' repo
-## + the Debian base mirror sources, GENERATED HOST-SIDE (the released image's repo-add-local lacks
-## the base block). check 3 -- and the enable/verify apt ops -- read ONLY this dir
+## + the Debian base mirror sources, GENERATED HOST-SIDE (repo-add-local is dev-only, not shipped
+## in the image, and its base block needs host-side mirror-residency probing regardless). check 3
+## -- and the enable/verify apt ops -- read ONLY this dir
 ## (Dir::Etc::sourceparts + sourcelist=/dev/null), so the full upgrade resolves entirely from the
 ## local file: sources (offline, no Tor) with NO apt pin and WITHOUT touching the guest's own apt
 ## config (so the other checks are unaffected).
@@ -1536,8 +1537,9 @@ ws_cli_console_systemcheck() {
 ## the lane must never claim a local-repo upgrade it did not enable.
 ws_func_enable_local_repo() {
    vm="${ws}"
-   ## Generate the local apt sources HOST-SIDE (a released image's repo-add-local has no base block):
-   ## the derivative 'local' repo + each Debian base suite, carrying the GUEST file: URIs. Residency
+   ## Generate the local apt sources HOST-SIDE (repo-add-local is not shipped in the image, and its
+   ## base block needs host-side mirror residency anyway): the derivative 'local' repo + each Debian
+   ## base suite, carrying the GUEST file: URIs. Residency
    ## is READ from the host-side mirror bind-mount; the emitted URI is the guest mount path. All
    ## inputs are trusted (local_repo is enum-validated, the paths come from dm-shared-apt-repo), and
    ## the stanzas reach the guest base64-encoded, so nothing untrusted hits the guest shell.

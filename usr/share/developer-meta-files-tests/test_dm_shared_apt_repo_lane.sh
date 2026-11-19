@@ -123,5 +123,24 @@ if [ -z "${got}" ]; then pass "non-absolute LOCAL_APT_REPOSITORY_BASE rejected";
 got="$(LOCAL_APT_REPOSITORY_BASE='/a b' "${subject}" repo-path whonix 2>/dev/null || true)"
 if [ -z "${got}" ]; then pass "whitespace LOCAL_APT_REPOSITORY_BASE rejected"; else fail "accepted a whitespace base (got '${got}')"; fi
 
+## 11. 'prepare' DELIVERS the guest-side enabler into the share root. repo-add-local is dev-only
+## (not shipped in the image), so the guest gets it over the SAME shared folder; a missing copy
+## would leave the printed 'sudo bash /mnt/shared/repo-add-local' step with no file to run. Point
+## DEBIAN_MIRROR_DIR at an absent path so expose_cache skips its root bind-mount (no sudo, no root);
+## the fixture flat repo (${tmp}/aptrepo_local/whonix) satisfies the 'repo not found' guard. Assert
+## the delivered copy is byte-identical to the source (not an empty touch).
+repo_add_local_src="$( dirname -- "${subject}" )/repo-add-local"
+if [ ! -r "${repo_add_local_src}" ]; then
+   fail "repo-add-local source missing beside dm-shared-apt-repo at '${repo_add_local_src}'"
+else
+   DM_SHARED_APT_REPO_ROOT="${tmp}" DEBIAN_MIRROR_DIR="${tmp}/no-such-mirror" \
+      "${subject}" prepare whonix >/dev/null 2>&1 || true
+   if [ -r "${tmp}/repo-add-local" ] && cmp --quiet -- "${repo_add_local_src}" "${tmp}/repo-add-local"; then
+      pass "prepare delivers repo-add-local into the share root (byte-identical)"
+   else
+      fail "prepare did not deliver repo-add-local to the share root"
+   fi
+fi
+
 printf '%s\n' "" "${pass_count} pass, ${fail_count} fail, 0 skip"
 [ "${fail_count}" -eq 0 ]

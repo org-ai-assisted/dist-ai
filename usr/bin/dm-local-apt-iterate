@@ -13,7 +13,7 @@
 ##                        (or --only-packages '<p>')    '<p1 p2>' for a subset)
 ##   3.                   dm-shared-apt-repo prepare  -- make the repo _apt-readable
 ##   4. [--vm NAME]       dm-shared-apt-repo attach   -- share it read-only to the VM
-##   5.                   (printed) guest step        -- 'sudo repo-add-local'
+##   5.                   (printed) guest step        -- 'sudo bash /mnt/shared/repo-add-local'
 ##
 ## Step 5 runs INSIDE the VM (over the shared folder), so it is printed, not run.
 ## Use --dry-run to print every step's command and run nothing.
@@ -112,4 +112,6 @@ if [ -n "${vm}" ]; then
    run_step "attach to vm" dm-shared-apt-repo attach "${vm}"
 fi
 
-printf '%s\n' "${me}: in the guest, enable + upgrade: sudo repo-add-local ${derivative}"
+## dm-shared-apt-repo prepare dropped repo-add-local into the share root; run it via the
+## interpreter so /mnt's security-misc noexec does not refuse it.
+printf '%s\n' "${me}: in the guest, enable + upgrade: sudo bash /mnt/shared/repo-add-local ${derivative}"

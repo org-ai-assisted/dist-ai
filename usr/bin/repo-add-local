@@ -1,0 +1,173 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Enable a derivative LOCAL apt repository on THIS system (write its deb822 sources
+## stanza). It does NOT run apt-get update -- that is the caller's next step.
+## The local repo is derivative-maker's reprepro 'local' repo (codename 'local'),
+## built from source and delivered here by one of:
+##   - a VirtualBox shared folder mounted at /mnt/shared (host-injected from the
+##     build host by dm-shared-apt-repo) -- the DEFAULT; written to
+##     /etc/apt/sources.list.d/local-apt-repo-mnt.sources;
+##   - a repo materialised on this system under /srv (pass --repo-dir DIR) --
+##     written to local-apt-repo-srv.sources, so it can coexist with the mnt one.
+##
+## DEV-ONLY tool: not shipped in a released image. It lives in dist-ai (the dev/test
+## tooling repo, alongside dm-shared-apt-repo / dm-local-apt-iterate) and reaches the
+## guest over the SAME shared folder as the repo: dm-shared-apt-repo's 'prepare' drops
+## it at /mnt/shared/repo-add-local. Run it in the guest via the interpreter, so
+## security-misc's noexec remount of /mnt cannot refuse it (noexec blocks execve of
+## the file, not an interpreter reading it as data):
+##
+##   sudo bash /mnt/shared/repo-add-local [kicksecure|whonix]
+##
+## Uniform on Kicksecure, Whonix-Gateway and Whonix-Workstation: a shared folder
+## is host<->guest, not network, so a Workstation reaches it with no Gateway relay
+## and no Tor. The slot of a laned build is resolved HOST-side (which directory is
+## shared / bind-mounted), so this tool sees a slot-free path and needs no --slot.
+##
+## [trusted=yes] is intrinsic: apt 3.0 fatally refuses an unsigned repo. The trust
+## anchor is whoever owns the delivered tree (a read-only vboxsf mount, or a
+## root-/build-user-owned /srv). The deb822 stanza is emitted by the shared
+## generator (local-apt-repo-sources.bsh, still shipped by helper-scripts) so it
+## cannot drift from the build side.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+me="${0##*/}"
+## mnt-shared-vbox.service auto-mounts the host 'shared' folder here; a test seam points it at a
+## fixture dir (which also skips the real mountpoint restart below).
+guest_mount="${REPO_ADD_LOCAL_GUEST_MOUNT:-/mnt/shared}"
+codename="local"
+
+## Single source of truth for the deb822 stanza: helper-scripts' libexec, INSTALLED on
+## every guest at /usr/libexec/helper-scripts (HELPER_SCRIPTS_PATH unset -> that absolute
+## path). Sourcing is a read, so /usr being noexec is irrelevant. A dev checkout points
+## HELPER_SCRIPTS_PATH at the helper-scripts tree.
+# shellcheck disable=SC1090,SC1091
+source "${HELPER_SCRIPTS_PATH:-}/usr/libexec/helper-scripts/local-apt-repo-sources.bsh"
+
+die() {
+   printf '%s\n' "${me}: ERROR: ${1}" >&2
+   exit 1
+}
+
+[ "$(id -u)" -eq 0 ] || die "run as root (writes /etc/apt/sources.list.d and runs apt-get)"
+
+derivative=""
+repo_dir_override=""
+location="mnt"
+while [ "$#" -gt 0 ]; do
+   case "$1" in
+      --repo-dir)
+         repo_dir_override="${2:-}"
+         location="srv"
+         shift 2
+         ;;
+      kicksecure|whonix)
+         derivative="$1"
+         shift
+         ;;
+      *)
+         die "unknown argument: '$1' (usage: ${me} [kicksecure|whonix] [--repo-dir DIR])"
+         ;;
+   esac
+done
+
+## Derivative: explicit arg, else detect Whonix (ships anon-* / a whonix marker),
+## else default kicksecure.
+if [ -z "${derivative}" ]; then
+   if grep --quiet --ignore-case 'whonix' /etc/os-release 2>/dev/null || [ -d /usr/share/whonix ]; then
+      derivative="whonix"
+   else
+      derivative="kicksecure"
+   fi
+fi
+
+if [ -n "${repo_dir_override}" ]; then
+   repo_dir="${repo_dir_override}"
+else
+   ## Host-injected shared folder. The mount is Kicksecure's job: vm-config-dist's
+   ## mnt-shared-vbox.service mounts 'shared' to /mnt/shared every boot; restart it
+   ## if not mounted yet -- never reimplementing its mount logic.
+   ## Skip the real-mount dance when a test seam points guest_mount at a fixture (not a mountpoint).
+   if [ -z "${REPO_ADD_LOCAL_GUEST_MOUNT:-}" ] && ! mountpoint --quiet -- "${guest_mount}"; then
+      printf '%s\n' "${me}: ${guest_mount} not mounted; restarting mnt-shared-vbox.service"
+      systemctl restart mnt-shared-vbox.service || true
+      mountpoint --quiet -- "${guest_mount}" \
+         || die "${guest_mount} still not mounted -- is the 'shared' folder attached? (host: dm-shared-apt-repo attach <vm>)"
+   fi
+   repo_dir="${guest_mount}/aptrepo_local/${derivative}"
+   ## apt over this read-only vboxsf mount: the _apt sandbox user cannot read it
+   ## (vboxsf perms come from the mount options, umask 0007, not the inode mode -- a
+   ## chmod/ACL in the guest is a no-op), so a later 'apt-get update' prints a benign
+   ## "Err: ... Permission denied" + "Download is performed unsandboxed as root" and
+   ## retries as root, which succeeds via [trusted=yes]. Expected; accepted as-is.
+fi
+
+[ -d "${repo_dir}/dists/${codename}" ] \
+   || die "no '${codename}' repo at ${repo_dir} (host: populate it with 'derivative-maker --skip-published-packages' and deliver it)"
+
+## deb822 stanza MUST live in a .sources file (apt ignores a stanza in a .list).
+## Distinct name per location so a /srv and a /mnt repo can be enabled at once.
+## The sources.list.d dir is an env seam (trusted env) so the tool is testable
+## without writing to the real /etc/apt; production is the unset default.
+apt_sources_list_d="${REPO_ADD_LOCAL_SOURCES_LIST_D:-/etc/apt/sources.list.d}"
+list_file="${apt_sources_list_d}/local-apt-repo-${location}.sources"
+local_apt_repo_sources_stanza "file:${repo_dir}" "${codename}" > "${list_file}"
+printf '%s\n' "${me}: wrote ${list_file}:"
+cat -- "${list_file}"
+
+## No apt preferences pin: the caller points an upgrade at THESE local sources only (e.g.
+## 'apt-get -o Dir::Etc::sourceparts=<this-dir> -o Dir::Etc::sourcelist=/dev/null full-upgrade'),
+## so there is no remote to out-prefer. A complete mirror + the local repo resolve the whole
+## upgrade offline; nothing to pin.
+
+## Debian-base local upgrade (shared-folder case only): if the host also exposed a Debian mirror
+## under the shared tree at ${guest_mount}/aptcache (dm-shared-apt-repo bind-mounts the local
+## mirror there), enable file: sources for the Debian base suites too -- genuine-signed, and only
+## the RESIDENT components (local_apt_repo_base_stanza; an offered-but-absent component would make
+## apt-get update hard-fail, so a complete mirror emits all and a partial one only what it holds).
+## Generic + best-effort: no mirror, or no resident component, -> skip (the base stays on its
+## configured sources). Image-type-agnostic (Kicksecure, Whonix, any -- same Debian base).
+if [ "${location}" = "mnt" ] && [ -d "${guest_mount}/aptcache" ]; then
+   base_cache="${guest_mount}/aptcache"
+   deb_codename="$( . /etc/os-release 2>/dev/null || true; printf '%s' "${VERSION_CODENAME:-}" )"
+   deb_arch="$(dpkg --print-architecture)"
+   base_file="${apt_sources_list_d}/local-apt-repo-base-mnt.sources"
+   if [ -z "${deb_codename}" ]; then
+      printf '%s\n' "${me}: no VERSION_CODENAME in /etc/os-release; skipping the Debian-base local cache" >&2
+   else
+      base_content=""
+      for base_spec in "debian:${deb_codename}" "debian:${deb_codename}-updates" "debian-security:${deb_codename}-security"; do
+         base_nick="${base_spec%%:*}"
+         base_suite="${base_spec#*:}"
+         if base_stanza="$(local_apt_repo_base_stanza "${base_cache}" "${base_nick}" "${base_suite}" "${deb_arch}")"; then
+            if [ -z "${base_content}" ]; then
+               base_content="${base_stanza}"
+            else
+               ## deb822 separates stanzas by a blank line.
+               base_content="${base_content}"$'\n\n'"${base_stanza}"
+            fi
+         fi
+      done
+      if [ -n "${base_content}" ]; then
+         printf '%s\n' "${base_content}" > "${base_file}"
+         printf '%s\n' "${me}: wrote ${base_file} (cache-resident Debian-base suite(s)):"
+         cat -- "${base_file}"
+      else
+         printf '%s\n' "${me}: apt cache at ${base_cache} has no cache-resident Debian-base suite -- base stays on its configured sources"
+      fi
+   fi
+fi
+
+printf '%s\n' "${me}: enabled. Next: apt-get update && apt-get install --only-upgrade <pkg>"

@@ -26,7 +26,8 @@
 ## Delivery reuses Kicksecure vm-config-dist: the share is named exactly `shared`;
 ## mnt-shared-vbox.service auto-mounts it to /mnt/shared on every boot. So this tool
 ## does NOT pass VBox --automount (that double-mounts to /media/sf_shared). In the
-## guest, enable it with the shipped helper-scripts tool: 'sudo repo-add-local'.
+## guest, 'prepare' also drops the dev-only enabler at the share root; enable with
+## 'sudo bash /mnt/shared/repo-add-local' (bash-invoked so /mnt noexec cannot refuse it).
 ##
 ## SECURITY: the guest trusts this repo [trusted=yes] (installs as root, no sig check)
 ## over a READ-ONLY vboxsf mount. Trust anchor = the host build user who owns the
@@ -42,6 +43,12 @@ export LC_ALL=C
 
 me="${0##*/}"
 VBOXMANAGE="${VBOXMANAGE:-VBoxManage}"
+
+## The guest-side enabler repo-add-local is a dist-ai sibling (same usr/bin), not shipped
+## in the image; 'prepare' delivers it into the share root so the guest can run it. Resolve
+## it next to this script (works installed at /usr/bin and from a checkout).
+dm_shared_apt_repo_bindir="$( cd -- "$( dirname -- "$( readlink -f -- "${BASH_SOURCE[0]}" )" )" && pwd )"
+repo_add_local_src="${REPO_ADD_LOCAL_SRC:-${dm_shared_apt_repo_bindir}/repo-add-local}"
 
 ## dm's LOCAL apt repo store is the share host path; the reprepro repos live in its
 ## aptrepo_local/<derivative> subdirs, codename `local`. dm serves it from a
@@ -206,8 +213,15 @@ do_prepare() {
    ## Also expose the local Debian mirror (Debian base) under the shared tree, so the guest's full
    ## upgrade can pull the base locally too, not just the derivative repo. Absent-safe (skips).
    expose_cache
+   ## Deliver the guest-side enabler over the SAME share: repo-add-local is dev-only (not shipped
+   ## in the image), so drop it at the share root -> guest /mnt/shared/repo-add-local. World-readable
+   ## so the guest user can read it; it is RUN via the interpreter (sudo bash ...), which bypasses
+   ## /mnt's security-misc noexec (an interpreter reads the file as data, it is not execve'd).
+   [ -r "${repo_add_local_src}" ] \
+      || die 1 "repo-add-local not found at ${repo_add_local_src} (dist-ai sibling of ${me}); set REPO_ADD_LOCAL_SRC"
+   install -m 0644 -- "${repo_add_local_src}" "${repo_parent}/repo-add-local"
    printf '%s\n' \
-      "${me}: prepared ${rd} (codename ${codename}); guest: run 'sudo repo-add-local'"
+      "${me}: prepared ${rd} (codename ${codename}); guest: run 'sudo bash /mnt/shared/repo-add-local ${d}'"
 }
 
 ## Print the VM's VMState (empty if unknown). Must never return non-zero: a

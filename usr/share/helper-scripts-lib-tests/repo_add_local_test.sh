@@ -5,7 +5,7 @@
 
 ## AI-Assisted
 
-## Drives the REAL repo-add-local (helper-scripts usr/bin) end to end with
+## Drives the REAL repo-add-local (dist-ai usr/bin) end to end with
 ## --repo-dir against a fake local repo. The root check (id) and apt-get are
 ## PATH-stubbed, and the sources file is written into a temp dir via the tool's
 ## REPO_ADD_LOCAL_SOURCES_LIST_D env seam -- so no root, no network, and nothing
@@ -24,12 +24,20 @@ shopt -s shift_verbose
 export LC_ALL=C
 
 [ -v HELPER_SCRIPTS_REPO ] || HELPER_SCRIPTS_REPO=""
+## repo-add-local is a dist-ai tool (dev-only, not shipped); its stanza LIBRARY stays in
+## helper-scripts. Resolve the SUBJECT from this dist-ai checkout, the LIBRARY (and the
+## HELPER_SCRIPTS_PATH the subject sources it through) from helper-scripts.
+if [ -n "${DIST_AI_REPO:-}" ]; then
+   subject="${DIST_AI_REPO}/usr/bin/repo-add-local"
+else
+   test_dir="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" && pwd )"
+   subject="${test_dir}/../../bin/repo-add-local"
+   [ -x "${subject}" ] || subject="/usr/bin/repo-add-local"
+fi
 if [ -n "${HELPER_SCRIPTS_REPO}" ]; then
-   subject="${HELPER_SCRIPTS_REPO}/usr/bin/repo-add-local"
    lib="${HELPER_SCRIPTS_REPO}/usr/libexec/helper-scripts/local-apt-repo-sources.bsh"
    hs_path="${HELPER_SCRIPTS_REPO}"
 else
-   subject="/usr/bin/repo-add-local"
    lib="/usr/libexec/helper-scripts/local-apt-repo-sources.bsh"
    hs_path=""
 fi
