@@ -894,16 +894,39 @@ test("Special:Search page: with no #q=/?q=, the field is empty and nothing rende
   assert.equal(w.document.getElementById("search-page-results").children.length, 0, "nothing rendered yet");
 });
 
-test("Special:Search page: '+' in the query is a space; a malformed %-escape falls back to raw", async () => {
-  const w = load('<input id="search-input"><div data-search-page></div>',
+test("Special:Search page: a FRAGMENT '+' stays literal; a QUERY '+' is a space", async () => {
+  // #q= is NOT form-urlencoded, so '+' is a literal plus -- e.g. [[Special:Search#q=C++]] searches
+  // "c++", not "c  ". ?q= IS a query string, so there '+' means space (form-urlencoded).
+  const wf = load('<input id="search-input"><div data-search-page></div>',
     { hash: "#q=a+b", searchIndex: [] });
   await tick();
-  assert.equal(w.document.getElementById("search-page-input").value, "a b", "'+' decodes to a space");
-  const w2 = load('<input id="search-input"><div data-search-page></div>',
+  assert.equal(wf.document.getElementById("search-page-input").value, "a+b",
+    "a '+' in the #q= fragment stays a literal '+'");
+  const wq = load('<input id="search-input"><div data-search-page></div>',
+    { url: "https://x.test/wiki/Special:Search?q=a+b", searchIndex: [] });
+  await tick();
+  assert.equal(wq.document.getElementById("search-page-input").value, "a b",
+    "a '+' in the ?q= query string decodes to a space");
+  const wm = load('<input id="search-input"><div data-search-page></div>',
     { hash: "#q=%E0%A4", searchIndex: [] });
   await tick();
-  assert.equal(w2.document.getElementById("search-page-input").value, "%E0%A4",
-    "a malformed percent-escape falls back to the raw token (no throw)");
+  assert.equal(wm.document.getElementById("search-page-input").value, "%E0%A4",
+    "a malformed percent-escape in the fragment falls back to the raw token (no throw)");
+  const wmq = load('<input id="search-input"><div data-search-page></div>',
+    { url: "https://x.test/wiki/Special:Search?q=%E0%A4", searchIndex: [] });
+  await tick();
+  assert.equal(wmq.document.getElementById("search-page-input").value, "%E0%A4",
+    "a malformed percent-escape in the query string also falls back to the raw token");
+});
+
+test("Special:Search page: '#q=C++' searches the literal 'c++' and matches a C++ page", async () => {
+  const w = load('<input id="search-input"><div data-search-page></div>',
+    { hash: "#q=C++",
+      searchIndex: [{ t: "C++", u: "wiki/C++/" }, { t: "Firewall", u: "wiki/Firewall/" }] });
+  await tick();
+  const links = w.document.querySelectorAll("#search-page-results li a");
+  assert.equal(links.length, 1, "the literal 'c++' title-matches the C++ page (not stripped to 'c')");
+  assert.equal(links[0].textContent, "C++");
 });
 
 test("search: unchecking the magnifier toggle hides AND clears the results dropdown", async () => {
@@ -3170,6 +3193,40 @@ test("full-text appends body-only matches after title hits, BM25-ranked", async 
   const links = [...w.document.querySelectorAll(".search-results li a")].map((a) => a.textContent);
   assert.deepEqual(links, ["Tor", "Networking Guide"],
     "body-only matches appended; shorter doc (Tor, dl 10) outranks the longer (dl 100)");
+});
+
+test("Special:Search page: a dropdown search does not cancel the page's in-flight body hits", async () => {
+  // Regression: the page + dropdown once shared ONE generation counter, so a dropdown keystroke
+  // bumped it and the page's still-pending full-text batch was dropped (gen !== queryGen). Each
+  // surface now has its own counter, so a concurrent dropdown search cannot tear out page rows.
+  const name = pad3(bktOf.anonymity);
+  const shard = {}; shard[name] = { anonymity: [[1, 0, [5]]] };   // body-only hit on page 1 (Tor)
+  const sh = {}; sh[name] = "abc12345";
+  const w = load('<input id="search-input"><div data-search-page></div>', {
+    searchIndex: [{ t: "Firewall", u: "wiki/Firewall/" }, { t: "Tor", u: "wiki/Tor/" }],
+    manifest: { v: 1, buckets: FX.buckets, docs: 2, avgdl: 30, dl: [50, 10], base: "search/ft/", sh },
+    shards: shard,
+  });
+  // Gate the SHARD fetch so the page's full-text pass is still in flight when the dropdown bumps.
+  let releaseShard;
+  const gate = new Promise((r) => { releaseShard = r; });
+  const realFetch = w.fetch;
+  w.fetch = (u) => (/\/ft\/\d+\.json/.test(String(u)) ? gate.then(() => realFetch(u)) : realFetch(u));
+  // Page query (a body-only term): the title pass finds nothing; full-text parks on the gated shard.
+  const pinput = w.document.getElementById("search-page-input");
+  pinput.value = "anonymity";
+  pinput.dispatchEvent(new w.Event("input"));
+  await tick();
+  // A header-dropdown keystroke bumps the DROPDOWN's generation while the page batch is pending.
+  const hinput = w.document.getElementById("search-input");
+  hinput.value = "zz";
+  hinput.dispatchEvent(new w.Event("input"));
+  await tick();
+  // Release the shard: the page's body hit must still land (the old shared counter dropped it).
+  releaseShard();
+  await tick(); await tick();
+  const links = [...w.document.querySelectorAll("#search-page-results li a")].map((a) => a.textContent);
+  assert.deepEqual(links, ["Tor"], "the page's body-only hit survives a concurrent dropdown search");
 });
 
 test("full-text merges with title hits without double-listing a page", async () => {
