@@ -33,7 +33,6 @@ wiki/Dev/Build_Documentation/security-misc/easy.html: link '../../../Security_Gu
 wiki/Dev/DHCP.html: broken internal link '../Special:AWCforum/st/id240#post_1143' -> wiki/Special:AWCforum/st/id240
 wiki/Dev/Default_Application_Policy.html: link '../File_Sharing#Updates' targets missing #Updates
 wiki/Dev/Download_Wizard.html: broken in-page anchor #TODO
-wiki/Dev/ImageResize.html: broken internal link '../File:Usb_installation.jpg' -> wiki/File:Usb_installation.jpg
 wiki/Dev/Inspiration.html: link '../Features#Advantages_of_Whonix' targets missing #Advantages_of_Whonix
 wiki/Dev/KVM.html: link '../Advanced_Security_Guide#Network_Time_Synchronization' targets missing #Network_Time_Synchronization
 wiki/Dev/Leak_Tests.html: link '../Alternative_DNS_Resolver#DNSSec' targets missing #DNSSec
@@ -69,7 +68,6 @@ wiki/Dev/wiki.html: link '../Special:Preferences#mw-prefsection-gadgets' targets
 wiki/Disaster_Recovery.html: link 'Full_Disk_Encryption_and_Encrypted_Images#New_Removable_Media' targets missing #New_Removable_Media
 wiki/Download.html: broken in-page anchor #VirtualBox
 wiki/Features.html: broken in-page anchor #Tunnel_Support
-wiki/File:Qubes-Whonix-Gateway_TemplateVM_Qubes_VM_Manager_Settings.png.html: broken internal link '/wiki/File:Qubes-Whonix-Gateway_Template_Qubes_VM_Manager_Settings.png' -> wiki/File:Qubes-Whonix-Gateway_Template_Qubes_VM_Manager_Settings.png
 wiki/Firewall.html: link 'Install_Software#Whonix-Workstation_is_Firewalled' targets missing #Whonix-Workstation_is_Firewalled
 wiki/Ga.html: link '/wiki/Moved:VirtualBox/Guest_Additions#Issue' targets missing #Issue
 wiki/Host_Firewall.html: link './Moved:Host_Firewall_Basics#How-to:_Install_and_Configure_a_Firewall' targets missing #How-to:_Install_and_Configure_a_Firewall

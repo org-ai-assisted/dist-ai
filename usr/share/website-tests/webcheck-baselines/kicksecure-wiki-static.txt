@@ -160,7 +160,6 @@ wiki/Release_Upgrade_17_to_18.html: link 'Operating_System_Software_and_Updates#
 wiki/Reporting_Bugs.html: link 'Support#The_User_Co-developer_Concept' targets missing #The_User_Co-developer_Concept
 wiki/Reporting_Bugs.html: link 'Tor_Browser#Tor_Browser_Downloader_by_Kicksecure' targets missing #Tor_Browser_Downloader_by_Kicksecure
 wiki/Root.html: broken in-page anchor #Default_Password
-wiki/Root.html: broken internal link './Special:Search/compartmentalization' -> wiki/Special:Search/compartmentalization
 wiki/Root.html: link 'Debian#User_Account_Information' targets missing #User_Account_Information
 wiki/Root.html: link 'Desktop#Virtual_Console' targets missing #Virtual_Console
 wiki/SSH.html: link 'Onion_Services#Onion_Services_Reliability_Issues' targets missing #Onion_Services_Reliability_Issues
