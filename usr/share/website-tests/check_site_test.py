@@ -1281,6 +1281,28 @@ def run():
               not any('#top' in f.lower() for f in fails), repr(fails))
         check('check_links: a real missing cross-page anchor is still flagged',
               any('#realmissing' in f for f in fails), repr(fails))
+    # Special:Search `#q=<query>` is a SEARCH QUERY the page's own JS consumes (reads
+    # location.hash `#q=`), NOT a DOM id -- so it is never a dangling anchor. The
+    # exemption is keyed on the CLASS (the search page + a q= query fragment), so a
+    # non-q fragment on the search page, and a `#q=` on any OTHER page, are still
+    # flagged. (Regression: the anchor check flagged `Special:Search#q=...` as a
+    # "targets missing #q=..." dangling anchor.)
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'wiki/Special:Search.html',
+               '<!doctype html><html><head><title>s</title></head><body>'
+               '<input id="search-input"></body></html>')
+        _write(root, 'wiki/Root.html',
+               '<!doctype html><html><head><title>r</title></head><body>'
+               '<a href="./Special:Search#q=compartmentalization">search</a>'
+               '<a href="./Special:Search#notaquery">bad</a>'
+               '<a href="./Root#q=compartmentalization">selfquery</a></body></html>')
+        fails = _links_failures(root)
+        check('check_links: Special:Search #q= query fragment is not a dangling anchor',
+              not any('Special:Search#q=' in f for f in fails), repr(fails))
+        check('check_links: a non-query fragment on the search page is still flagged',
+              any('#notaquery' in f for f in fails), repr(fails))
+        check('check_links: a #q= fragment on a non-search page is still flagged',
+              any('./Root#q=' in f for f in fails), repr(fails))
     # A browser normalizes a URL before resolving (WHATWG): trim leading/trailing space, drop inner
     # tab/newline/CR, fold '\' to '/' -- case-preserving (the on-disk filename is case-sensitive).
     check('_url_path_norm trims ends + inner tab/newline, folds backslash, keeps case',
