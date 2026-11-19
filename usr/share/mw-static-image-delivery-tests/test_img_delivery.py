@@ -112,6 +112,21 @@ def _png(path: Path, size, color=None, noise: bool = False) -> None:
     im.save(path, "PNG")
 
 
+def _png_padded(path: Path, size, total_bytes: int) -> None:
+    """A flat PNG of `size`, then zero-padded to EXACTLY total_bytes. The gate reads
+    dimensions header-only (so the trailing bytes do not change w x h) and the byte
+    size from the file, so padding gives deterministic control of the saving -- the
+    only way to land a fixture on a chosen side of the 4096-byte threshold or a
+    half-integer rounding boundary, which encoder output size cannot hit on purpose."""
+    from PIL import Image
+    Image.new("RGB", size, (10, 20, 30)).save(path, "PNG")
+    pad = total_bytes - path.stat().st_size
+    if pad < 0:
+        raise ValueError(f"base PNG already {path.stat().st_size}B > target {total_bytes}B")
+    with path.open("ab") as fh:
+        fh.write(b"\0" * pad)
+
+
 def _webp_lossless(path: Path, size, noise: bool = False) -> None:
     from PIL import Image
     if noise:
@@ -201,23 +216,35 @@ def main() -> int:
     h.ok(h.finding_for(r2.stdout, f2) is None,
          "within-budget raster is NOT flagged")
 
-    # -- Case 3: an over-budget image whose SOURCE File name is allowlisted in a
-    #    trusted-dir sidecar WARN-EXEMPTs and passes (exit 0). Pass the FILE as
-    #    target so its parent dir (holding the sidecar) is a trusted exempt dir;
-    #    the served-name form proves _source_base keys on the source File name. --
+    # -- Case 3: exemption keys on the SOURCE File NAME, not mere sidecar presence.
+    #    Scan a media dir holding TWO over-budget images -- one whose source name is
+    #    in the sidecar, one that is NOT -- with the sidecar in the dir's PARENT (a
+    #    trusted exempt dir; a scan-target dir's own sidecar is intentionally not
+    #    read). The listed one must WARN-EXEMPT, the UNLISTED one must stay
+    #    OVER-BUDGET and fail the run (exit 1). A gate that exempted every readable
+    #    image whenever a sidecar exists would pass both -> exit 0, caught here. The
+    #    served-name form (<Source>.png.webp) also proves _source_base strips the
+    #    derivative extension to key on the source File name. --
     d3 = work / "c3"
-    d3.mkdir()
-    f3 = d3 / "Distai_exempt_fixture.png.webp"
-    _webp_lossless(f3, (300, 300), noise=True)
+    media3 = d3 / "media"
+    media3.mkdir(parents=True)
+    f3_listed = media3 / "Distai_exempt_fixture.png.webp"
+    f3_unlisted = media3 / "Distai_unlisted_fixture.png.webp"
+    _webp_lossless(f3_listed, (300, 300), noise=True)
+    _webp_lossless(f3_unlisted, (300, 300), noise=True)
     (d3 / "img-budget-photo-exempt.txt").write_text(
         "# dist-ai image-delivery suite fixture\nDistai_exempt_fixture.png\n",
         encoding="utf-8")
-    r3 = h.run_gate(str(f3))
-    m3 = h.finding_for(r3.stdout, f3)
-    h.ok(r3.returncode == 0, "allowlisted photographic image passes (WARN-EXEMPT)",
-         f"rc={r3.returncode} out={r3.stdout!r} err={r3.stderr!r}")
-    h.ok(m3 is not None and m3.group("verdict") == "WARN-EXEMPT",
+    r3 = h.run_gate(str(media3))
+    m3_listed = h.finding_for(r3.stdout, f3_listed)
+    m3_unlisted = h.finding_for(r3.stdout, f3_unlisted)
+    h.ok(m3_listed is not None and m3_listed.group("verdict") == "WARN-EXEMPT",
          "allowlisted image reported as WARN-EXEMPT", r3.stdout)
+    h.ok(m3_unlisted is not None and m3_unlisted.group("verdict") == "OVER-BUDGET",
+         "an UNLISTED over-budget image beside the sidecar stays OVER-BUDGET "
+         "(exemption keys on the name, not sidecar presence)", r3.stdout)
+    h.ok(r3.returncode == 1, "the unlisted over-budget image fails the run (exit 1)",
+         f"rc={r3.returncode} out={r3.stdout!r} err={r3.stderr!r}")
 
     # -- Case 4: an UNREADABLE file is never exempt -- fail-closed even with its
     #    source name in the same sidecar (the inverse canary of case 3). --
@@ -254,12 +281,50 @@ def main() -> int:
         h.ok(int(m5.group("ideal")) == oracle_ideal(aw, ah),
              "AVIF ideal reproduces Lighthouse byte-for-byte")
 
-    # -- Case 6: usage error on no arguments (exit 2). --
+    # -- Case 6: HALF-UP rounding + the UPPER threshold edge, pinned with one padded
+    #    fixture. 399x401 = 159999 px puts TARGET*px on an exact half-integer
+    #    (26666.5), where Chromium's Math.round (floor(x+0.5) = 26667) and Python's
+    #    ties-to-even round() (26666) DIVERGE -- so a gate using the wrong rounding is
+    #    caught by the ideal assertion. Padded to ideal+6000 bytes: the saving (6000)
+    #    sits ABOVE 4096 but BELOW 8192, so a gate with an inflated threshold would not
+    #    flag it -- caught by requiring OVER-BUDGET here. --
+    d6 = work / "c6"
+    d6.mkdir()
+    f6 = d6 / "distai_halfint_fixture.png"
+    ideal6 = oracle_ideal(399, 401)  # 26667 (half-up); a ties-to-even gate yields 26666
+    _png_padded(f6, (399, 401), ideal6 + 6000)
+    r6 = h.run_gate(str(d6))
+    m6 = h.finding_for(r6.stdout, f6)
+    h.ok(m6 is not None and m6.group("verdict") == "OVER-BUDGET",
+         "half-integer fixture (saving 6000, in (4096,8192)) is flagged "
+         "(pins the 4096 threshold from above)", r6.stdout)
+    if m6 is not None:
+        h.ok(int(m6.group("ideal")) == ideal6,
+             "gate rounds the ideal HALF-UP at a half-integer boundary "
+             "(not ties-to-even)", f"gate {m6.group('ideal')} vs half-up {ideal6}")
+        h.ok(BYTE_SAVINGS_THRESHOLD < int(m6.group("saving")) < 2 * BYTE_SAVINGS_THRESHOLD,
+             "fixture saving lies in the (4096, 8192) window that pins the threshold",
+             m6.group("saving"))
+
+    # -- Case 7: the LOWER threshold edge. Padded to ideal+2000: over the per-pixel
+    #    TARGET but UNDER the 4096 savings threshold, so it must NOT be flagged. A gate
+    #    that dropped/lowered the threshold would flag it -- caught by requiring a pass. --
+    d7 = work / "c7"
+    d7.mkdir()
+    f7 = d7 / "distai_underslack_fixture.png"
+    _png_padded(f7, (400, 400), oracle_ideal(400, 400) + 2000)
+    r7 = h.run_gate(str(d7))
+    h.ok(r7.returncode == 0, "image over TARGET but under the 4096 saving threshold passes",
+         f"rc={r7.returncode} out={r7.stdout!r} err={r7.stderr!r}")
+    h.ok(h.finding_for(r7.stdout, f7) is None,
+         "under-threshold image is NOT flagged (pins the 4096 threshold from below)")
+
+    # -- Case 8: usage error on no arguments (exit 2). --
     r6 = h.run_gate()
     h.ok(r6.returncode == 2, "no arguments yields the usage exit code (2)",
          f"rc={r6.returncode}")
 
-    # -- Case 7: a missing scan target fails closed (exit 1). --
+    # -- Case 9: a missing scan target fails closed (exit 1). --
     r7 = h.run_gate(str(work / "does-not-exist"))
     h.ok(r7.returncode == 1, "missing scan target fails closed",
          f"rc={r7.returncode} out={r7.stdout!r} err={r7.stderr!r}")
