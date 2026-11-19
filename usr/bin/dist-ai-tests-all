@@ -143,6 +143,7 @@ core_suites=(
    lock-screen-tests
    lockfile-tests
    mediawiki-shell-tests
+   mw-static-image-delivery-tests
    msgcollector-tests
    onion-grater-tests
    onion-time-pre-script-tests
@@ -1233,6 +1234,17 @@ wire() {
          ## satisfies the registry guard.
          wire_env=()
          ;;
+      mw-static-image-delivery)
+         ## The suite drives mw-static-generator's tools/check-img-compression.py
+         ## resolved from MW_STATIC_GENERATOR_REPO (the gate IS the subject). pkg_dir
+         ## prints nothing in a bare run; the entrypoint then FATALs unless the run
+         ## authorized the skip, so leave the var unset rather than clobber an ambient
+         ## one. PIL + avifenc are declared consumer apt-packages, not wired here.
+         mw_static_repo="$( pkg_dir mw-static-generator )"
+         if [ -n "${mw_static_repo}" ]; then
+            wire_env+=( "MW_STATIC_GENERATOR_REPO=${mw_static_repo}" )
+         fi
+         ;;
       *)
          printf '%s\n' "dist-ai-tests-all: no wiring for suite ${suite}" >&2
          return 1
@@ -1345,6 +1357,9 @@ suite_component() {
          ;;
       sdwdate-gui)
          printf '%s' 'sdwdate-gui'
+         ;;
+      mw-static-image-delivery)
+         printf '%s' 'mw-static-generator'
          ;;
       sdwdate|sdwdate-onion-tester)
          printf '%s' 'sdwdate'
