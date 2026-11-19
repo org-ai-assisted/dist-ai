@@ -929,6 +929,42 @@ test("Special:Search page: '#q=C++' searches the literal 'c++' and matches a C++
   assert.equal(links[0].textContent, "C++");
 });
 
+test("Special:Search page: a raw '&' in the #q= fragment stays part of the term (Chromium EscapePath)", async () => {
+  // Chromium substitutes {searchTerms} into an OpenSearch fragment with EscapePath, which leaves '&'
+  // RAW: searching "R&D" navigates to #q=R&D. The fragment value runs to END-OF-STRING, so the '&'
+  // is part of the term -- not a separator that would truncate it to "R" (which is also <2 chars).
+  const w = load('<input id="search-input"><div data-search-page></div>',
+    { hash: "#q=R&D",
+      searchIndex: [{ t: "R&D", u: "wiki/R&D/" }, { t: "Tor", u: "wiki/Tor/" }] });
+  await tick();
+  assert.equal(w.document.getElementById("search-page-input").value, "R&D",
+    "the whole 'R&D' term survives a raw '&' (not truncated to 'R')");
+  const links = w.document.querySelectorAll("#search-page-results li a");
+  assert.equal(links.length, 1, "the full term title-matches the R&D page");
+  assert.equal(links[0].textContent, "R&D");
+});
+
+test("Special:Search page: an address-bar re-search (hashchange) re-runs without a reload", async () => {
+  // Changing #q= on the same page is a fragment-only navigation (no document reload), so without a
+  // hashchange listener the box keeps the first query's results. An OpenSearch keyword re-search from
+  // the address bar -- or an in-page dropdown pick -- must re-sync the field and re-render.
+  const w = load('<input id="search-input"><div data-search-page></div>',
+    { hash: "#q=Tor",
+      searchIndex: [{ t: "Tor", u: "wiki/Tor/" }, { t: "Firewall", u: "wiki/Firewall/" }] });
+  await tick();
+  let links = w.document.querySelectorAll("#search-page-results li a");
+  assert.equal(links.length, 1, "initial #q=Tor renders Tor");
+  assert.equal(links[0].textContent, "Tor");
+  w.location.hash = "#q=Firewall";
+  w.dispatchEvent(new w.Event("hashchange"));
+  await tick();
+  assert.equal(w.document.getElementById("search-page-input").value, "Firewall",
+    "the field re-syncs to the new fragment");
+  links = w.document.querySelectorAll("#search-page-results li a");
+  assert.equal(links.length, 1, "the results re-render for the new query");
+  assert.equal(links[0].textContent, "Firewall");
+});
+
 test("search: unchecking the magnifier toggle hides AND clears the results dropdown", async () => {
   const w = load(
     '<span class="site-search"><input type="checkbox" id="search-toggle"><input id="search-input"></span>',
