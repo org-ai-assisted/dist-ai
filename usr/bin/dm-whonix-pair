@@ -420,12 +420,17 @@ source "${lib_base}/vbox-session.bsh"
 source "${lib_base}/release-checks.bsh"
 # shellcheck source=./usr/share/dm-smbios-reader-boot-tests/ocr-session.bsh
 source "${lib_base}/ocr-session.bsh"
-## helper-scripts: the single generator of the local apt sources deb822 stanzas (derivative 'local'
-## repo + Debian base mirror). Sourced host-side ONLY for the --local-repo lane; define-only. Made
-## non-fatal so a missing/old lib fails ONLY that lane (enable guards on the functions), never the
-## leak or non-local-repo lanes that do not use it.
+## Local apt sources deb822 generators, sourced host-side ONLY for the --local-repo lane;
+## define-only. Two libraries: the derivative 'local' repo stanza (local_apt_repo_sources_stanza)
+## from helper-scripts (also a build-time generator, so it stays there), and the Debian-base
+## mirror stanza (local_apt_repo_base_stanza) from dist-ai's own libexec (dev-only, no build user).
+## Both non-fatal so a missing/old lib fails ONLY this lane (the enable step guards on the
+## functions below), never the leak or non-local-repo lanes that do not use them.
 # shellcheck disable=SC1090,SC1091
 source "${HELPER_SCRIPTS_PATH:-}/usr/libexec/helper-scripts/local-apt-repo-sources.bsh" 2>/dev/null || true
+dm_whonix_pair_base_lib="${DM_WHONIX_PAIR_BASE_LIB:-$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")/../libexec/dist-ai/local-apt-repo-base.bsh}"
+# shellcheck disable=SC1090,SC1091
+source "${dm_whonix_pair_base_lib}" 2>/dev/null || true
 
 usage() {
    printf '%s\n' "usage: ${me} [--gw NAME] [--ws NAME] [--mode leak|functional] [--interface gui|cli] [--local-repo kicksecure|whonix]
@@ -1546,7 +1551,7 @@ ws_func_enable_local_repo() {
    local host_cache guest_cache guest_repo sources_content emitted_suites b64 nick suite spec base_stanza
    local chain member policy_check member_host_repo
    if [ "$(type -t local_apt_repo_base_stanza)" != 'function' ] || [ "$(type -t local_apt_repo_sources_stanza)" != 'function' ]; then
-      die "${SETUP_RC}" "${ws}: helper-scripts local-apt-repo-sources.bsh not loaded (set HELPER_SCRIPTS_PATH / install helper-scripts) -- cannot generate the local apt sources (INCONCLUSIVE)"
+      die "${SETUP_RC}" "${ws}: local apt sources generators not loaded -- need helper-scripts local-apt-repo-sources.bsh (set HELPER_SCRIPTS_PATH / install helper-scripts) AND dist-ai local-apt-repo-base.bsh (set DM_WHONIX_PAIR_BASE_LIB) -- cannot generate the local apt sources (INCONCLUSIVE)"
    fi
    ## Resolve the HOST mirror path under the SAME base the orchestrator exposed + the attach used:
    ## this runs as the account (no dist_build_slot in env), so without the pinned --local-repo-base

@@ -49,6 +49,9 @@ VBOXMANAGE="${VBOXMANAGE:-VBoxManage}"
 ## it next to this script (works installed at /usr/bin and from a checkout).
 dm_shared_apt_repo_bindir="$( cd -- "$( dirname -- "$( readlink -f -- "${BASH_SOURCE[0]}" )" )" && pwd )"
 repo_add_local_src="${REPO_ADD_LOCAL_SRC:-${dm_shared_apt_repo_bindir}/repo-add-local}"
+## repo-add-local's Debian-base stanza library (dist-ai, dev-only): delivered to the guest
+## beside repo-add-local, since it is not shipped/installed there.
+local_apt_repo_base_lib_src="${LOCAL_APT_REPO_BASE_LIB_SRC:-${dm_shared_apt_repo_bindir}/../libexec/dist-ai/local-apt-repo-base.bsh}"
 
 ## dm's LOCAL apt repo store is the share host path; the reprepro repos live in its
 ## aptrepo_local/<derivative> subdirs, codename `local`. dm serves it from a
@@ -220,6 +223,11 @@ do_prepare() {
    [ -r "${repo_add_local_src}" ] \
       || die 1 "repo-add-local not found at ${repo_add_local_src} (dist-ai sibling of ${me}); set REPO_ADD_LOCAL_SRC"
    install -m 0644 -- "${repo_add_local_src}" "${repo_parent}/repo-add-local"
+   ## repo-add-local sources this (dev-only, not installed on the guest) for the Debian-base
+   ## cache stanza; deliver it beside repo-add-local so the share root is self-contained.
+   [ -r "${local_apt_repo_base_lib_src}" ] \
+      || die 1 "local-apt-repo-base.bsh not found at ${local_apt_repo_base_lib_src} (dist-ai dev lib); set LOCAL_APT_REPO_BASE_LIB_SRC"
+   install -m 0644 -- "${local_apt_repo_base_lib_src}" "${repo_parent}/local-apt-repo-base.bsh"
    printf '%s\n' \
       "${me}: prepared ${rd} (codename ${codename}); guest: run 'sudo bash /mnt/shared/repo-add-local ${d}'"
 }

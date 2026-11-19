@@ -50,6 +50,14 @@ if [ ! -r "${lib}" ]; then
    printf '%s\n' "FATAL: local-apt-repo-sources.bsh not readable at '${lib}'." >&2
    exit 1
 fi
+## repo-add-local's Debian-base stanza lib is a dist-ai sibling of the subject
+## (usr/libexec/dist-ai); point the subject at it explicitly so the mnt base-cache case runs
+## regardless of layout (REPO_ADD_LOCAL_BASE_LIB is repo-add-local's own resolution seam).
+base_lib="$(cd -- "$(dirname -- "${subject}")" && pwd)/../libexec/dist-ai/local-apt-repo-base.bsh"
+if [ ! -r "${base_lib}" ]; then
+   printf '%s\n' "FATAL: local-apt-repo-base.bsh not readable at '${base_lib}'; set DIST_AI_REPO or install dist-ai." >&2
+   exit 1
+fi
 
 # shellcheck disable=SC1090
 source "${lib}"
@@ -153,6 +161,7 @@ PATH="${tmp}/stubs:${PATH}" \
    REPO_ADD_LOCAL_SOURCES_LIST_D="${tmp}/mnt-sources" \
    REPO_ADD_LOCAL_PREFERENCES_D="${tmp}/mnt-prefs" \
    HELPER_SCRIPTS_PATH="${hs_path}" \
+   REPO_ADD_LOCAL_BASE_LIB="${base_lib}" \
    "${subject}" whonix >/dev/null 2>&1 || rc=$?
 if [ "${rc}" -eq 0 ]; then
    ok "runs clean in the mnt case with an aptcache present"

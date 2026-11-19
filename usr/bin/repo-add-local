@@ -56,6 +56,23 @@ codename="local"
 # shellcheck disable=SC1090,SC1091
 source "${HELPER_SCRIPTS_PATH:-}/usr/libexec/helper-scripts/local-apt-repo-sources.bsh"
 
+## local_apt_repo_base_stanza is DEV-ONLY and lives in dist-ai, NOT in helper-scripts and NOT
+## installed on a stock guest. dm-shared-apt-repo delivers it to the share root beside this
+## script, so try that first, then the dist-ai install/checkout layout. Best-effort: only the
+## shared-folder base-cache path uses it and guards on the function being defined, so a
+## --repo-dir run (or a guest without the delivered lib) still works.
+repo_add_local_selfdir="$( cd -- "$( dirname -- "$( readlink -f -- "${BASH_SOURCE[0]}" )" )" && pwd )"
+for repo_add_local_base_lib in \
+   "${REPO_ADD_LOCAL_BASE_LIB:-}" \
+   "${repo_add_local_selfdir}/local-apt-repo-base.bsh" \
+   "${repo_add_local_selfdir}/../libexec/dist-ai/local-apt-repo-base.bsh"; do
+   if [ -n "${repo_add_local_base_lib}" ] && [ -r "${repo_add_local_base_lib}" ]; then
+      # shellcheck disable=SC1090,SC1091
+      source "${repo_add_local_base_lib}"
+      break
+   fi
+done
+
 die() {
    printf '%s\n' "${me}: ERROR: ${1}" >&2
    exit 1
@@ -144,7 +161,9 @@ if [ "${location}" = "mnt" ] && [ -d "${guest_mount}/aptcache" ]; then
    deb_codename="$( . /etc/os-release 2>/dev/null || true; printf '%s' "${VERSION_CODENAME:-}" )"
    deb_arch="$(dpkg --print-architecture)"
    base_file="${apt_sources_list_d}/local-apt-repo-base-mnt.sources"
-   if [ -z "${deb_codename}" ]; then
+   if [ "$(type -t local_apt_repo_base_stanza)" != 'function' ]; then
+      printf '%s\n' "${me}: local-apt-repo-base.bsh not loaded (dev base lib not delivered beside this script); Debian base stays on its configured sources" >&2
+   elif [ -z "${deb_codename}" ]; then
       printf '%s\n' "${me}: no VERSION_CODENAME in /etc/os-release; skipping the Debian-base local cache" >&2
    else
       base_content=""

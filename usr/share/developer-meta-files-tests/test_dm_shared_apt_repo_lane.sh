@@ -129,9 +129,14 @@ if [ -z "${got}" ]; then pass "whitespace LOCAL_APT_REPOSITORY_BASE rejected"; e
 ## DEBIAN_MIRROR_DIR at an absent path so expose_cache skips its root bind-mount (no sudo, no root);
 ## the fixture flat repo (${tmp}/aptrepo_local/whonix) satisfies the 'repo not found' guard. Assert
 ## the delivered copy is byte-identical to the source (not an empty touch).
-repo_add_local_src="$( dirname -- "${subject}" )/repo-add-local"
-if [ ! -r "${repo_add_local_src}" ]; then
-   fail "repo-add-local source missing beside dm-shared-apt-repo at '${repo_add_local_src}'"
+## It delivers BOTH repo-add-local AND its dist-ai Debian-base stanza lib (local-apt-repo-base.bsh,
+## dev-only, not installed on a stock guest) -- repo-add-local sources the latter from beside
+## itself, so a missing delivery would silently drop the Debian-base local upgrade in the guest.
+subject_bindir="$( cd -- "$( dirname -- "${subject}" )" && pwd )"
+repo_add_local_src="${subject_bindir}/repo-add-local"
+base_lib_src="${subject_bindir}/../libexec/dist-ai/local-apt-repo-base.bsh"
+if [ ! -r "${repo_add_local_src}" ] || [ ! -r "${base_lib_src}" ]; then
+   fail "delivery sources missing: repo-add-local='${repo_add_local_src}' base-lib='${base_lib_src}'"
 else
    DM_SHARED_APT_REPO_ROOT="${tmp}" DEBIAN_MIRROR_DIR="${tmp}/no-such-mirror" \
       "${subject}" prepare whonix >/dev/null 2>&1 || true
@@ -139,6 +144,11 @@ else
       pass "prepare delivers repo-add-local into the share root (byte-identical)"
    else
       fail "prepare did not deliver repo-add-local to the share root"
+   fi
+   if [ -r "${tmp}/local-apt-repo-base.bsh" ] && cmp --quiet -- "${base_lib_src}" "${tmp}/local-apt-repo-base.bsh"; then
+      pass "prepare delivers local-apt-repo-base.bsh into the share root (byte-identical)"
+   else
+      fail "prepare did not deliver local-apt-repo-base.bsh to the share root"
    fi
 fi
 
