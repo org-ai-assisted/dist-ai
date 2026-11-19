@@ -62,12 +62,22 @@ export LC_ALL=C
 ##     unprivileged caller, and runs the whole privleap --fuzz category (in-process
 ##     parser fuzz + live-daemon session fuzz) as it. Same reason as the setup
 ##     script: root + a checkout arg no orchestrator lane passes.
+##   website-tests-all  a thin front for the website-tests engine: runs the FULL
+##     family (every Pages site + the cross-site checks) by exec-ing the registered
+##     website-tests engine with no selector. Registering it would run that whole
+##     engine a second time and assert nothing new (same shape as website-tests-sandbox).
+##   website-tests-single  a thin front for the website-tests engine: gates EXACTLY
+##     ONE named site (what site-deploy publishes), taken as a REQUIRED argument. Not
+##     a standalone suite -- it needs a site arg no orchestrator lane passes, and
+##     registering it would re-run the engine (same shape as website-tests-all).
 allowed_unregistered=(
    'dist-ai-tests-all'
    'privleap-tests-coverage'
    'secure-terminal-tests-coverage'
    'dm-stripped-setx-audit'
    'website-tests-sandbox'
+   'website-tests-all'
+   'website-tests-single'
    'privleap-tests-session-fuzz-setup'
    'privleap-tests-fuzz-ci'
 )
