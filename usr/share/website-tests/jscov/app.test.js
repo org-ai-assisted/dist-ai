@@ -77,7 +77,7 @@ function load(bodyHtml, opts) {
           contentRect: { width: t.__inlineSize || 0 },
         })));
       }
-      observe(t) { this.targets.push(t); }
+      observe(t, opts) { this.targets.push(t); (w.__roObserved || (w.__roObserved = [])).push({ el: t, box: opts && opts.box }); }
       unobserve() {} disconnect() {}
     };
   }
@@ -2255,30 +2255,51 @@ test("wide tables: a page whose only table has no rows initializes with no rail 
     "no rail built when every table is row-less (items empty -> early return)");
 });
 
-test("geometry batcher: an entry lacking borderBoxSize/contentBoxSize falls back to contentRect.width", () => {
-  const w = load('<div class="wiki-content"><table id="wide"><tbody><tr><td>x</td></tr></tbody></table></div>');
+test("geometry batcher: a child lacking borderBoxSize falls back to offsetWidth (border-box), NOT contentRect", () => {
+  // REGRESSION (codex, mw-static round-3): a ResizeObserver WITHOUT box-size support (Safari
+  // 14-15.3 / older WebKit) exposes only contentRect (the CONTENT box). A padded child -- a caption
+  // has 10em side gutters -- then has contentRect == its text width, far short of its border box.
+  // The CHILD border must fall back to offsetWidth (border-box), matching the no-RO path; a
+  // contentRect fallback would lose the padding and miss the rail. contentRect stays the fallback
+  // for the TABLE's visible width (content box == clientWidth).
+  const w = load('<div class="wiki-content"><table id="t"><caption>c</caption><tbody><tr><td>x</td></tr></tbody></table></div>');
   const ro = w.__resizeObservers[0];
-  const wide = w.document.getElementById("wide");
-  const rg = wide.tBodies[0];
-  // An older ResizeObserver entry exposes only contentRect, neither structured box. BOTH the border
-  // and content roles then fall back to contentRect.width (an unpadded row group's border == content
-  // anyway), so the measure still comes from the entry -- never scrollWidth.
+  const t = w.document.getElementById("t");
+  const cap = t.caption, rg = t.tBodies[0];
+  Object.defineProperty(cap, "offsetWidth", { value: 400, configurable: true });  // border box, padding-incl
+  Object.defineProperty(rg, "offsetWidth", { value: 120, configurable: true });
   ro.cb([
-    { target: rg, contentRect: { width: 400 } },
-    { target: wide, contentRect: { width: 200 } },
+    { target: cap, contentRect: { width: 120 } },   // no borderBoxSize -> border falls to offsetWidth (400)
+    { target: rg, contentRect: { width: 120 } },
+    { target: t, contentRect: { width: 200 } },      // table visible 200 (content box) via contentRect
   ]);
-  const rail = wide.previousElementSibling;
-  assert.equal(rail.style.display, "", "overwide computed from contentRect.width when neither box is present");
-  assert.equal(rail.firstChild.style.width, "400px", "spacer from contentRect.width");
+  const rail = t.previousElementSibling;
+  assert.equal(rail.style.display, "", "caption offsetWidth border-box (400) drives overwide, not contentRect (120)");
+  assert.equal(rail.firstChild.style.width, "400px", "spacer == caption offsetWidth border-box (400)");
+});
+
+test("geometry batcher: wide-table children are observed border-box, the table content-box", () => {
+  // F2 (codex): a child's border box can change WITHOUT its content box (a caption's 10em gutters
+  // collapsing at the 560px media query). A content-box observation would miss that and leave the
+  // cached scroll extent stale, so children are observed {box:'border-box'}; the table is observed
+  // content-box (its visible width == clientWidth == content box).
+  const w = load('<div class="wiki-content"><table id="t"><caption>c</caption><tbody><tr><td>x</td></tr></tbody></table></div>');
+  const t = w.document.getElementById("t");
+  const boxOf = (el) => { const r = (w.__roObserved || []).find((o) => o.el === el); return r ? r.box : "UNOBSERVED"; };
+  assert.equal(boxOf(t.caption), "border-box", "caption observed border-box");
+  assert.equal(boxOf(t.tBodies[0]), "border-box", "row group observed border-box");
+  assert.equal(boxOf(t), undefined, "table observed content-box (default, no box option)");
 });
 
 test("geometry batcher: the table's VISIBLE width is read from contentBoxSize, NOT contentRect", () => {
   // REGRESSION (coderabbit, dist-ai #874): the default mock derives contentBoxSize AND contentRect
   // from the same __inlineSize, so neither can tell a contentBoxSize read from a contentRect-only
-  // read. Pass an explicit entry where they DIFFER on the TABLE (its visible width is the contentBox):
-  // contentBoxSize 200 (true visible content box) vs contentRect 400. A child border box of 300
-  // overflows the real 200 viewport -> rail shown. A regression reading contentRect (400) would see
-  // the table as 400 wide -> 300 fits -> rail hidden -> RED. (The missing-box fallback case above
+  // read. This explicit entry makes them DIFFER on the TABLE (visible width = contentBox) to PIN the
+  // structured read: contentBoxSize 200 vs contentRect 400. A child border box of 300 overflows the
+  // real 200 viewport -> rail shown; a regression reading contentRect (400) would see 400 wide ->
+  // 300 fits -> rail hidden -> RED. The 200!=400 divergence is SYNTHETIC: in horizontal writing mode
+  // (the wiki's only mode) contentBoxSize.inlineSize === contentRect.width, so a real browser never
+  // diverges -- the entry exists only to lock which field app.js reads. (Missing-box fallback above
   // stays separate.)
   const w = load('<div class="wiki-content"><table id="t"><tbody><tr><td>x</td></tr></tbody></table></div>');
   const ro = w.__resizeObservers[0];
@@ -4174,12 +4195,15 @@ test("hovercards: a page link whose href is cleared mid-fetch yields no card (hr
   const a = w.document.querySelector(".wiki-content a");
   a.dispatchEvent(new w.MouseEvent("mouseover", { bubbles: true }));
   a.removeAttribute("href");                 // cleared after the guard, before the fetch resolves
-  await tick();
-  // Asserts NO card is built, so there is no state to poll FOR. pageNodes throws on the cleared
-  // href inside the fetch `.then` (all microtasks); one macrotask after that chain drains
-  // guarantees the decision is made and no showTimer was scheduled -- deterministic, unlike a
-  // fixed sleep that could pass spuriously by asserting before a would-be card appears.
-  await new Promise((r) => setTimeout(r, 0));
+  await tick();   // drain the fetch `.then`: the show-or-not decision (pageNodes -> null) is made here
+  // A NEGATIVE assertion has no card state to poll FOR, so it must OUTLAST the window in which a
+  // regressed guard could still pop one: a wrongly-returned card shows on the app's 200ms showTimer,
+  // armed inside the now-drained fetch microtask. A wait LONGER than 200ms, armed AFTER that drain,
+  // is guaranteed by setTimeout ordering to fire AFTER any such timer, so a regressed stale card
+  // appears before this resolves and trips the assert. previews are pre-seeded (the timer arms on a
+  // microtask, no variable fetch latency), which keeps this bound tight; a ~0ms drain -- the earlier
+  // form -- asserted at ~5ms and would MISS a 200ms card.
+  await new Promise((r) => setTimeout(r, 260));  // > the 200ms showTimer, armed after the microtask drain
   assert.equal(w.document.querySelector(".hovercard .hovercard-page"), null,
     "an anchor that lost its href resolves to no preview card");
 });
