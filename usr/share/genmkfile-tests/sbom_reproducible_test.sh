@@ -80,16 +80,21 @@ sbom_file="${workdir}/usr/share/sbom/sbomreprodemo.cdx.json"
 ## honors it over the changelog date -- which would not match this test's changelog-derived
 ## expectation. Unsetting forces the changelog-date path the assertion checks.
 run_sbom() {
-   ( unset SOURCE_DATE_EPOCH; cd -- "${workdir}" && "${genmkfile_bin}" sbom ) >/dev/null 2>&1
+   ## Keep stderr (do not discard): a failure must surface its REAL cause, not a fixed guess.
+   ## Likeliest is a missing python3-cyclonedx-lib / python3-packageurl (genmkfile Depends), but
+   ## a dispatcher-preamble abort (DISTDIR/destdir/version) prints here too and must be visible.
+   ( unset SOURCE_DATE_EPOCH; cd -- "${workdir}" && "${genmkfile_bin}" sbom ) >/dev/null 2>"${workdir}/sbom.err"
 }
 
 if ! run_sbom; then
-   printf '%s\n' "FATAL: 'genmkfile sbom' failed -- python3-cyclonedx-lib / python3-packageurl absent (genmkfile Depends)?" >&2
+   printf '%s\n' "FATAL: 'genmkfile sbom' failed (python3-cyclonedx-lib / python3-packageurl absent?). genmkfile stderr:" >&2
+   cat -- "${workdir}/sbom.err" >&2
    exit 1
 fi
 cp -- "${sbom_file}" "${workdir}/run1.json"
 if ! run_sbom; then
-   printf '%s\n' "FATAL: second 'genmkfile sbom' run failed." >&2
+   printf '%s\n' "FATAL: second 'genmkfile sbom' run failed. genmkfile stderr:" >&2
+   cat -- "${workdir}/sbom.err" >&2
    exit 1
 fi
 cp -- "${sbom_file}" "${workdir}/run2.json"
