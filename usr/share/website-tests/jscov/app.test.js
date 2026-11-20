@@ -935,6 +935,70 @@ test("search dropdown footer: an async body row cannot steal the active footer's
     "Enter follows the still-active footer (a no-op path nav), NOT the body row's '#firewall'");
 });
 
+// ---- Trailing controls: the clear-x (#search-clear, shown only while the field holds text) and
+// the "Search" submit (#search-submit, whose #q= href tracks the typed query). These fixtures carry
+// both controls so the clearBtn/submitLink-PRESENT branches run; the minimal '<input id=...>'
+// fixtures above exercise the absent branches. Esc and the clear-x both empty the field. ----
+
+function searchWithControls(opts) {
+  return load(
+    '<span class="site-search"><input id="search-input">' +
+    '<button id="search-clear" hidden></button>' +
+    '<a id="search-submit" href="/wiki/Special:Search"></a></span>', opts);
+}
+
+test("search controls: the clear-x is revealed only while the field holds text", async () => {
+  const w = searchWithControls({ searchIndex: [{ t: "Firewall", u: "wiki/Firewall/" }] });
+  const input = w.document.getElementById("search-input");
+  const clear = w.document.getElementById("search-clear");
+  assert.ok(clear.hasAttribute("hidden"), "clear-x hidden for an empty field at init (syncControls ran once)");
+  input.value = "fire"; input.dispatchEvent(new w.Event("input"));
+  assert.ok(!clear.hasAttribute("hidden"), "clear-x shown once the field has text");
+  input.value = "  "; input.dispatchEvent(new w.Event("input"));
+  assert.ok(clear.hasAttribute("hidden"), "clear-x hidden again when the field is whitespace-only (trimmed empty)");
+});
+
+test("search controls: the submit #q= tracks the typed query and falls back to the bare page", async () => {
+  const w = searchWithControls({ appSrc: "../app.min.js", searchIndex: [{ t: "Firewall", u: "wiki/Firewall/" }] });
+  const input = w.document.getElementById("search-input");
+  const submit = w.document.getElementById("search-submit");
+  assert.equal(submit.getAttribute("href"), "../wiki/Special:Search",
+    "empty field -> the bare results page (relative, no #q=), never dead");
+  input.value = "fire & ice"; input.dispatchEvent(new w.Event("input"));
+  assert.equal(submit.getAttribute("href"), "../wiki/Special:Search#q=fire%20%26%20ice",
+    "non-empty -> #q= with the RAW query percent-encoded, the SAME target as the dropdown footer row");
+  input.value = ""; input.dispatchEvent(new w.Event("input"));
+  assert.equal(submit.getAttribute("href"), "../wiki/Special:Search", "emptied -> back to the bare page");
+});
+
+test("search controls: a cross-origin root prefix makes the submit inert, never a cross-origin sink", async () => {
+  // A protocol-relative app.js src makes rootPrefix cross-origin -> specialSearchHref returns null
+  // AND the bare fallback is not same-origin, so the submit href is cleared to "" rather than
+  // emitting a //evil.example link. Mirrors the footer row dropping itself when not same-origin.
+  const w = searchWithControls({ appSrc: "//evil.example/app.js", searchIndex: [{ t: "Firewall", u: "wiki/Firewall/" }] });
+  const input = w.document.getElementById("search-input");
+  const submit = w.document.getElementById("search-submit");
+  input.value = "fire"; input.dispatchEvent(new w.Event("input"));
+  assert.equal(submit.getAttribute("href"), "", "unsafe prefix -> inert submit (no cross-origin #q= or bare link)");
+});
+
+test("search controls: the clear-x empties the field, resets the controls, and closes the dropdown", async () => {
+  const w = searchWithControls({ appSrc: "../app.min.js", searchIndex: [{ t: "Firewall", u: "wiki/Firewall/" }] });
+  const input = w.document.getElementById("search-input");
+  const clear = w.document.getElementById("search-clear");
+  const submit = w.document.getElementById("search-submit");
+  input.value = "fire"; input.dispatchEvent(new w.Event("input"));
+  await tick();
+  const results = w.document.querySelector(".search-results");
+  assert.ok(!results.hidden, "dropdown open after a query");
+  clear.dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
+  assert.equal(input.value, "", "clear-x empties the field");
+  assert.ok(clear.hasAttribute("hidden"), "clear-x hides itself (no text)");
+  assert.equal(submit.getAttribute("href"), "../wiki/Special:Search", "submit falls back to the bare page");
+  assert.ok(results.hidden, "clear-x closes the dropdown (clearField -> closeSearch)");
+  assert.equal(w.document.activeElement, input, "focus stays in the field for a fresh query");
+});
+
 // ---- Special:Search results PAGE (setupResultsPage) -- a standalone box + inline list that
 // reuses the same index + ranking as the header dropdown. The page needs BOTH a #search-input
 // (so initSearch runs instead of early-returning) and a [data-search-page] container. ----
@@ -2556,9 +2620,11 @@ test("search combobox: Enter follows the active option's href, overriding the be
   assert.equal(w.location.hash, "#alfie", "Enter navigates to the highlighted option, not the first-row bestMatch");
 });
 
-test("search combobox: Escape dismisses the dropdown keeping the query; a 2nd Escape collapses the lens", async () => {
-  // The full lens (a toggle) so stage 2 -- the document-level Escape collapsing the box -- is observable.
-  // readyState=complete -> single init (see comboOpen), so one widget / one document Escape handler.
+test("search combobox: Escape CLEARS the field and closes the dropdown + lens in one go", async () => {
+  // Operator clear contract: one Escape empties the field, hides the dropdown, AND collapses the
+  // lens (clearField -> closeSearch unchecks the toggle). A second Escape on the now-empty, closed
+  // field is inert (nothing to clear -> it propagates). readyState=complete -> single init.
+  // Canary: pre-change app.js PRESERVED the query on Escape (input.value stayed "al").
   const w = load(
     '<span class="site-search"><input type="checkbox" id="search-toggle"><input id="search-input"></span>',
     { searchIndex: [{ t: "Alpha", u: "wiki/Alpha/" }, { t: "Album", u: "wiki/Album/" }],
@@ -2570,13 +2636,15 @@ test("search combobox: Escape dismisses the dropdown keeping the query; a 2nd Es
   input.value = "al"; input.dispatchEvent(new w.Event("input")); await tick();
   assert.ok(!results.hidden, "dropdown open after a query");
   keydown(w, input, "Escape");
-  assert.ok(results.hidden, "first Escape hides the dropdown");
+  assert.equal(input.value, "", "Escape CLEARS the field (not the old keep-query behaviour)");
+  assert.ok(results.hidden, "Escape hides the dropdown");
   assert.equal(results.children.length, 0, "and clears its rows");
-  assert.equal(input.value, "al", "the typed query is preserved");
   assert.equal(input.getAttribute("aria-expanded"), "false");
-  assert.equal(toggle.checked, true, "the lens stays open on the first Escape (stopPropagation)");
+  assert.equal(toggle.checked, false, "clearField -> closeSearch collapses the lens in the SAME Escape");
+  // A second Escape on the now-empty, closed field hits the early-return (nothing to clear).
   keydown(w, input, "Escape");
-  assert.equal(toggle.checked, false, "a second Escape collapses the search lens");
+  assert.equal(toggle.checked, false, "a second Escape on the empty, closed field is a no-op");
+  assert.equal(input.value, "", "and leaves the field empty");
 });
 
 test("search combobox: mouse hover syncs the active option; hovering the panel padding is a no-op", async () => {
@@ -3506,13 +3574,13 @@ test("a shard batch resolving AFTER close does not reopen the search panel", asy
   assert.equal(results.querySelectorAll("li a").length, 0, "no stale body rows appended after close");
 });
 
-test("search combobox: Stage-1 Escape invalidates an in-flight shard so a late batch cannot reopen the panel", async () => {
-  // Regression: the input-keydown Stage-1 Escape (dismiss dropdown, keep query) stopPropagation's
-  // the document handler, so closeSearch never runs -- the branch must bump queryGen ITSELF, else a
-  // full-text shard batch still in flight resolves and reopens the panel the user just dismissed.
-  // Two pages: a title hit (page 0 "Anonymity") OPENS the panel, so Escape is Stage 1; the shard
-  // holds a BODY-ONLY hit for a DIFFERENT page (page 1 "Download", not in the title results'
-  // shownIds), so the late batch has a row to append -- that is what reopens the panel on old code.
+test("search combobox: Escape clears the field and invalidates an in-flight shard so a late batch cannot reopen the panel", async () => {
+  // Regression: the input-keydown Escape (clear the field) stopPropagation's the document handler,
+  // so the document Escape never runs -- the queryGen bump that invalidates a late batch must come
+  // from clearField -> closeSearch, else a full-text shard batch still in flight resolves and
+  // reopens the panel the user just dismissed. Two pages: a title hit (page 0 "Anonymity") OPENS the
+  // panel; the shard holds a BODY-ONLY hit for a DIFFERENT page (page 1 "Download", not in the title
+  // results' shownIds), so the late batch has a row to append -- that is what reopens it on old code.
   const idx = [{ t: "Anonymity", u: "wiki/Anonymity/" }, { t: "Download", u: "wiki/Download/" }];
   const name = pad3(bktOf.anonymity);
   const sh = {}; sh[name] = "h1";
@@ -3536,12 +3604,13 @@ test("search combobox: Stage-1 Escape invalidates an in-flight shard so a late b
   assert.ok(!results.hidden, "panel open on the title hit while the shard is in flight");
   // Stage-1 Escape ON THE INPUT (dropdown open) -- stopPropagation keeps closeSearch from running.
   input.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-  assert.ok(results.hidden, "Stage-1 Escape closes the panel");
-  assert.equal(input.getAttribute("aria-expanded"), "false", "aria-expanded cleared on Stage-1 Escape");
+  assert.ok(results.hidden, "Escape closes the panel");
+  assert.equal(input.value, "", "Escape clears the field");
+  assert.equal(input.getAttribute("aria-expanded"), "false", "aria-expanded cleared on Escape");
   releaseShard();                              // the body shard arrives LATE
   await tick(); await tick();
   assert.ok(results.hidden, "a late shard batch must NOT reopen the Escape-dismissed panel");
-  assert.equal(results.querySelectorAll("li a").length, 0, "no stale body rows appended after Stage-1 Escape");
+  assert.equal(results.querySelectorAll("li a").length, 0, "no stale body rows appended after Escape");
 });
 
 test("hovercards: a citation anchor with no href resolves to no footnote (href defaults to empty)", async () => {
