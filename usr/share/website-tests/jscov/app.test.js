@@ -973,13 +973,30 @@ test("search controls: the submit #q= tracks the typed query and falls back to t
 
 test("search controls: a cross-origin root prefix makes the submit inert, never a cross-origin sink", async () => {
   // A protocol-relative app.js src makes rootPrefix cross-origin -> specialSearchHref returns null
-  // AND the bare fallback is not same-origin, so the submit href is cleared to "" rather than
-  // emitting a //evil.example link. Mirrors the footer row dropping itself when not same-origin.
+  // AND the bare fallback is not same-origin, so the href attribute is REMOVED (a true non-link:
+  // a click does nothing) rather than emitting a //evil.example link OR an href="" -- the latter
+  // is NOT inert, it resolves to the current document and navigates there, stripping the fragment.
+  // Mirrors the footer row dropping itself when not same-origin.
   const w = searchWithControls({ appSrc: "//evil.example/app.js", searchIndex: [{ t: "Firewall", u: "wiki/Firewall/" }] });
   const input = w.document.getElementById("search-input");
   const submit = w.document.getElementById("search-submit");
   input.value = "fire"; input.dispatchEvent(new w.Event("input"));
-  assert.equal(submit.getAttribute("href"), "", "unsafe prefix -> inert submit (no cross-origin #q= or bare link)");
+  assert.ok(!submit.hasAttribute("href"), "unsafe prefix -> href REMOVED (not emptied), so the anchor is a non-link");
+  assert.equal(submit.getAttribute("href"), null, "no cross-origin #q=, no bare link, no inert-looking href=\"\"");
+});
+
+test("search controls: a mousedown on the clear-x / submit is prevented, so the focus-gated control survives the click", () => {
+  // Both controls surface only on :focus-within. A default mousedown would blur #search-input, drop
+  // :focus-within, and remove the control from layout before mouseup -- the click would never land.
+  // app.js calls preventDefault on their mousedown to keep focus in the field.
+  const w = searchWithControls({ appSrc: "../app.min.js", searchIndex: [{ t: "Firewall", u: "wiki/Firewall/" }] });
+  const clear = w.document.getElementById("search-clear");
+  const submit = w.document.getElementById("search-submit");
+  for (const el of [clear, submit]) {
+    const ev = new w.MouseEvent("mousedown", { bubbles: true, cancelable: true });
+    el.dispatchEvent(ev);
+    assert.ok(ev.defaultPrevented, "mousedown default is prevented (focus stays in the field)");
+  }
 });
 
 test("search controls: the clear-x empties the field, resets the controls, and closes the dropdown", async () => {
@@ -995,7 +1012,7 @@ test("search controls: the clear-x empties the field, resets the controls, and c
   assert.equal(input.value, "", "clear-x empties the field");
   assert.ok(clear.hasAttribute("hidden"), "clear-x hides itself (no text)");
   assert.equal(submit.getAttribute("href"), "../wiki/Special:Search", "submit falls back to the bare page");
-  assert.ok(results.hidden, "clear-x closes the dropdown (clearField -> closeSearch)");
+  assert.ok(results.hidden, "clear-x closes the dropdown (clearField -> closeResults)");
   assert.equal(w.document.activeElement, input, "focus stays in the field for a fresh query");
 });
 
@@ -2620,11 +2637,14 @@ test("search combobox: Enter follows the active option's href, overriding the be
   assert.equal(w.location.hash, "#alfie", "Enter navigates to the highlighted option, not the first-row bestMatch");
 });
 
-test("search combobox: Escape CLEARS the field and closes the dropdown + lens in one go", async () => {
-  // Operator clear contract: one Escape empties the field, hides the dropdown, AND collapses the
-  // lens (clearField -> closeSearch unchecks the toggle). A second Escape on the now-empty, closed
-  // field is inert (nothing to clear -> it propagates). readyState=complete -> single init.
-  // Canary: pre-change app.js PRESERVED the query on Escape (input.value stayed "al").
+test("search combobox: two-stage Escape -- first clears + keeps the overlay open, second closes it", async () => {
+  // Stage 1 (field has text): one Escape empties the field and hides the dropdown but LEAVES the
+  // overlay open and focused so the user can retype at once (clearField -> closeResults, which does
+  // NOT uncheck the toggle; the input handler stopPropagation's, so the document Escape does not
+  // also run). Stage 2 (field already empty): the input handler early-returns, so the Escape
+  // propagates to the document handler, which closeSearch'es -- unchecking the toggle to collapse
+  // the mobile overlay. readyState=complete -> single init. Canary: pre-fix app.js collapsed the
+  // overlay on the FIRST Escape (clearField -> closeSearch); earlier it PRESERVED the query ("al").
   const w = load(
     '<span class="site-search"><input type="checkbox" id="search-toggle"><input id="search-input"></span>',
     { searchIndex: [{ t: "Alpha", u: "wiki/Alpha/" }, { t: "Album", u: "wiki/Album/" }],
@@ -2636,14 +2656,15 @@ test("search combobox: Escape CLEARS the field and closes the dropdown + lens in
   input.value = "al"; input.dispatchEvent(new w.Event("input")); await tick();
   assert.ok(!results.hidden, "dropdown open after a query");
   keydown(w, input, "Escape");
-  assert.equal(input.value, "", "Escape CLEARS the field (not the old keep-query behaviour)");
-  assert.ok(results.hidden, "Escape hides the dropdown");
+  assert.equal(input.value, "", "stage 1: Escape CLEARS the field (not the old keep-query behaviour)");
+  assert.ok(results.hidden, "stage 1: Escape hides the dropdown");
   assert.equal(results.children.length, 0, "and clears its rows");
   assert.equal(input.getAttribute("aria-expanded"), "false");
-  assert.equal(toggle.checked, false, "clearField -> closeSearch collapses the lens in the SAME Escape");
-  // A second Escape on the now-empty, closed field hits the early-return (nothing to clear).
+  assert.equal(toggle.checked, true, "stage 1: overlay STAYS open (clearField -> closeResults does not collapse the lens)");
+  // Stage 2: a second Escape on the now-empty field early-returns in the input handler and
+  // propagates to the document handler -> closeSearch collapses the overlay.
   keydown(w, input, "Escape");
-  assert.equal(toggle.checked, false, "a second Escape on the empty, closed field is a no-op");
+  assert.equal(toggle.checked, false, "stage 2: the empty-field Escape collapses the overlay");
   assert.equal(input.value, "", "and leaves the field empty");
 });
 
@@ -3577,7 +3598,7 @@ test("a shard batch resolving AFTER close does not reopen the search panel", asy
 test("search combobox: Escape clears the field and invalidates an in-flight shard so a late batch cannot reopen the panel", async () => {
   // Regression: the input-keydown Escape (clear the field) stopPropagation's the document handler,
   // so the document Escape never runs -- the queryGen bump that invalidates a late batch must come
-  // from clearField -> closeSearch, else a full-text shard batch still in flight resolves and
+  // from clearField -> closeResults, else a full-text shard batch still in flight resolves and
   // reopens the panel the user just dismissed. Two pages: a title hit (page 0 "Anonymity") OPENS the
   // panel; the shard holds a BODY-ONLY hit for a DIFFERENT page (page 1 "Download", not in the title
   // results' shownIds), so the late batch has a row to append -- that is what reopens it on old code.
