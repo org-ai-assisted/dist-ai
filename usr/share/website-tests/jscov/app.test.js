@@ -802,9 +802,67 @@ test("search filters the prebuilt index and renders result links", async () => {
   input.value = "fire";
   input.dispatchEvent(new w.Event("input"));
   await tick();
-  const links = w.document.querySelectorAll(".search-results li a");
+  const links = w.document.querySelectorAll(".search-results li:not(.search-all) a");
   assert.equal(links.length, 1, "one match for 'fire'");
   assert.equal(links[0].textContent, "Firewall");
+});
+
+// ---- The "search for all" dropdown footer -> Special:Search (the explicit route from the live
+// header dropdown to the full ranked results page; Wikipedia Vector / MDN idiom). Canary: these
+// fail on pre-change app.js (no footer row emitted). ----
+
+test("search dropdown: a 'search for all' footer is the LAST option, linking to Special:Search#q=", async () => {
+  const w = load('<input id="search-input">',
+    { appSrc: "../../vendor-bundle.js",   // rootPrefix "" -> clean absolute hrefs
+      searchIndex: [{ t: "Firewall", u: "wiki/Firewall/" }, { t: "Tor", u: "wiki/Tor/" }] });
+  const input = w.document.getElementById("search-input");
+  input.value = "fire";
+  input.dispatchEvent(new w.Event("input"));
+  await tick();
+  const results = w.document.querySelector(".search-results");
+  const last = results.lastElementChild;
+  assert.ok(last.classList.contains("search-all"), "the footer is the LAST option");
+  assert.equal(last.getAttribute("role"), "option", "footer is a combobox option (arrow-reachable)");
+  assert.equal(last.getAttribute("aria-selected"), "false", "footer starts unselected");
+  assert.ok(last.id, "footer carries an id for aria-activedescendant");
+  const a = last.firstElementChild;
+  assert.equal(a.getAttribute("href"), "/wiki/Special:Search#q=fire", "footer -> Special:Search #q= deep link");
+  assert.equal(a.textContent, 'Search for pages containing "fire"', "footer labels the query");
+  // The footer is EXTRA: the real title hit still renders, before the footer.
+  const pageRows = results.querySelectorAll("li:not(.search-all)");
+  assert.equal(pageRows.length, 1, "the title hit renders before the footer");
+  assert.equal(pageRows[0].firstElementChild.textContent, "Firewall");
+});
+
+test("search dropdown footer: carries the RAW query (un-lowercased), URL-encoded, in #q= and the label", async () => {
+  const w = load('<input id="search-input">',
+    { appSrc: "../../vendor-bundle.js",
+      searchIndex: [{ t: "Tor and Privacy", u: "wiki/Tor/" }] });
+  const input = w.document.getElementById("search-input");
+  input.value = "  API & Tor  ";   // trimmed; case + '&' + inner space preserved RAW (not lowercased)
+  input.dispatchEvent(new w.Event("input"));
+  await tick();
+  const a = w.document.querySelector(".search-results li.search-all a");
+  assert.equal(a.getAttribute("href"), "/wiki/Special:Search#q=API%20%26%20Tor",
+    "raw query percent-encoded into #q=: space -> %20, '&' -> %26, case preserved");
+  assert.equal(a.textContent, 'Search for pages containing "API & Tor"',
+    "the label shows the trimmed RAW query verbatim");
+});
+
+test("search dropdown footer: dropped when its Special:Search target is not same-origin (navSafe)", async () => {
+  // A cross-origin app.js src makes rootPrefix a protocol-relative prefix, so the footer's
+  // Special:Search href resolves to //host... -> navSafe drops it, exactly as it drops any
+  // tampered row target (defense in depth beneath CSP + Trusted Types).
+  const w = load('<input id="search-input">',
+    { appSrc: "//evil.example/app.js",
+      searchIndex: [{ t: "Firewall", u: "wiki/Firewall/" }] });
+  const input = w.document.getElementById("search-input");
+  input.value = "fire";
+  input.dispatchEvent(new w.Event("input"));
+  await tick();
+  const results = w.document.querySelector(".search-results");
+  assert.equal(results.querySelectorAll("li.search-all").length, 0,
+    "the footer is dropped when its target is not same-origin");
 });
 
 // ---- Special:Search results PAGE (setupResultsPage) -- a standalone box + inline list that
@@ -1100,7 +1158,7 @@ test("search hides namespaced (n:1) pages unless the query is namespace-qualifie
     input.value = query;
     input.dispatchEvent(new w.Event("input"));
     await tick();
-    return Array.from(w.document.querySelectorAll(".search-results li a")).map((a) => a.textContent);
+    return Array.from(w.document.querySelectorAll(".search-results li:not(.search-all) a")).map((a) => a.textContent);
   }
   // plain query: only the main-namespace page, Template: hidden
   assert.deepEqual(await run("box"), ["Box"], "plain query must not surface the Template: page");
@@ -1117,7 +1175,7 @@ test("search namespace filter matches the entry's namespace, not just any colon"
     input.value = query;
     input.dispatchEvent(new w.Event("input"));
     await tick();
-    return Array.from(w.document.querySelectorAll(".search-results li a")).map((a) => a.textContent);
+    return Array.from(w.document.querySelectorAll(".search-results li:not(.search-all) a")).map((a) => a.textContent);
   }
   // a colon that is NOT the page's namespace must not surface it (query ns "foo" != "template")
   assert.deepEqual(await run("foo:bar"), [],
@@ -1137,7 +1195,7 @@ test("search result href uses the root prefix from app.min.js (deployed), not do
   input.value = "fire";
   input.dispatchEvent(new w.Event("input"));
   await tick();
-  const a = w.document.querySelector(".search-results li a");
+  const a = w.document.querySelector(".search-results li:not(.search-all) a");
   assert.ok(a, "a result link is rendered");
   // depth-1 page -> root "../"; href must be "../wiki/Firewall", NOT "wiki/Firewall" (which
   // the browser would resolve to /wiki/wiki/Firewall).
@@ -1162,7 +1220,7 @@ test("search root prefix survives the post-build ?h= cache-buster (real deployed
   input.value = "fire";
   input.dispatchEvent(new w.Event("input"));
   await tick();
-  const a = w.document.querySelector(".search-results li a");
+  const a = w.document.querySelector(".search-results li:not(.search-all) a");
   assert.ok(a, "a result link is rendered");
   assert.equal(a.getAttribute("href"), "../wiki/Firewall",
     "fingerprinted app.min.js?h= must still yield the ../ root prefix (no /wiki/ doubling)");
@@ -1189,7 +1247,7 @@ test("search dropdown ranks exact + prefix title matches above infix (ISO bug #2
   input.value = "iso";
   input.dispatchEvent(new w.Event("input"));
   await tick();
-  const titles = Array.from(w.document.querySelectorAll(".search-results li a")).map((a) => a.textContent);
+  const titles = Array.from(w.document.querySelectorAll(".search-results li:not(.search-all) a")).map((a) => a.textContent);
   assert.equal(titles[0], "ISO", "exact title 'ISO' must lead for query 'iso' (not the alphabetical infix hit)");
   assert.ok(titles.indexOf("ISO Live Mode") < titles.indexOf("Comparison with Others"),
     "prefix 'ISO Live Mode' must rank above the infix 'Comparison...' matches");
@@ -2197,7 +2255,7 @@ test("rootPrefix is empty when no script resembles app.js (search href stays unp
   input.value = "fire";
   input.dispatchEvent(new w.Event("input"));
   await tick();
-  assert.equal(w.document.querySelector(".search-results li a").getAttribute("href"), "wiki/Firewall",
+  assert.equal(w.document.querySelector(".search-results li:not(.search-all) a").getAttribute("href"), "wiki/Firewall",
     "no app.js-like script (and a src-less one) -> empty root prefix");
 });
 
@@ -2304,7 +2362,7 @@ test("search Enter unifies with the dropdown: an unsafe top-ranked target is ski
   input.value = "xy";
   input.dispatchEvent(new w.Event("input"));
   await tick();
-  assert.equal(w.document.querySelector(".search-results li a").getAttribute("href"), "#safe",
+  assert.equal(w.document.querySelector(".search-results li:not(.search-all) a").getAttribute("href"), "#safe",
     "dropdown drops the unsafe top-ranked row; its first row is the safe one");
   w.location.hash = "#sentinel";
   input.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Enter" }));
@@ -2391,8 +2449,11 @@ test("search combobox: ArrowDown cycles none -> first .. last -> none -> first, 
   assert.equal(input.getAttribute("aria-activedescendant"), results.children[1].id, "steps to option 1");
   assert.equal(results.children[0].getAttribute("aria-selected"), "false", "previous option deselected");
   assert.equal(a0.style.outlineOffset, "", "previous option's paint cleared");
-  keydown(w, input, "ArrowDown");   // option 2 (last)
+  keydown(w, input, "ArrowDown");   // option 2 (Album)
   assert.equal(input.getAttribute("aria-activedescendant"), results.children[2].id);
+  keydown(w, input, "ArrowDown");   // option 3 -- the "search for all" footer (last option)
+  assert.equal(input.getAttribute("aria-activedescendant"), results.children[3].id, "the footer is the last navigable option");
+  assert.ok(results.children[3].classList.contains("search-all"), "the last option is the search-for-all footer");
   keydown(w, input, "ArrowDown");   // wrap off the end -> none (the typed query)
   assert.equal(input.getAttribute("aria-activedescendant"), "", "stepping past the last option returns to the query");
   assert.equal(results.querySelectorAll('[aria-selected="true"]').length, 0, "no option selected at the none step");
@@ -2404,8 +2465,9 @@ test("search combobox: ArrowUp enters at the last option and steps back up to no
   const { w, input, results } = await comboOpen();
   keydown(w, input, "ArrowUp");
   assert.equal(input.getAttribute("aria-activedescendant"),
-    results.children[results.children.length - 1].id, "ArrowUp from none activates the LAST option");
-  keydown(w, input, "ArrowUp"); keydown(w, input, "ArrowUp");   // -> option 1, option 0
+    results.children[results.children.length - 1].id, "ArrowUp from none activates the LAST option (the footer)");
+  // from the footer (last), step up through Album, Alfie, Alpha to the first option.
+  keydown(w, input, "ArrowUp"); keydown(w, input, "ArrowUp"); keydown(w, input, "ArrowUp");
   assert.equal(input.getAttribute("aria-activedescendant"), results.children[0].id, "stepped up to the first option");
   keydown(w, input, "ArrowUp");                                  // -> none
   assert.equal(input.getAttribute("aria-activedescendant"), "", "ArrowUp from the first option returns to the query");
@@ -3227,7 +3289,7 @@ test("full-text appends body-only matches after title hits, BM25-ranked", async 
   input.value = "anonymity";                   // no title contains it -> title pass renders nothing
   input.dispatchEvent(new w.Event("input"));
   await tick(); await tick();
-  const links = [...w.document.querySelectorAll(".search-results li a")].map((a) => a.textContent);
+  const links = [...w.document.querySelectorAll(".search-results li:not(.search-all) a")].map((a) => a.textContent);
   assert.deepEqual(links, ["Tor", "Networking Guide"],
     "body-only matches appended; shorter doc (Tor, dl 10) outranks the longer (dl 100)");
 });
@@ -3279,7 +3341,7 @@ test("full-text merges with title hits without double-listing a page", async () 
   input.value = "tor";
   input.dispatchEvent(new w.Event("input"));
   await tick(); await tick();
-  const links = [...w.document.querySelectorAll(".search-results li a")].map((a) => a.textContent);
+  const links = [...w.document.querySelectorAll(".search-results li:not(.search-all) a")].map((a) => a.textContent);
   assert.deepEqual(links, ["Tor", "Firewall"],
     "title hit Tor first, then body-only Firewall; Tor (already shown) not duplicated");
 });
@@ -3297,7 +3359,7 @@ test("a namespace-qualified query stays title-only (full-text skipped)", async (
   input.value = "template:tor";
   input.dispatchEvent(new w.Event("input"));
   await tick(); await tick();
-  const links = [...w.document.querySelectorAll(".search-results li a")].map((a) => a.textContent);
+  const links = [...w.document.querySelectorAll(".search-results li:not(.search-all) a")].map((a) => a.textContent);
   assert.deepEqual(links, ["Template:Tor"],
     "only the namespaced title hit; the body (Homepage) match is NOT appended");
 });
@@ -3315,7 +3377,7 @@ test("full-text degrades gracefully on a shard miss and an empty bucket", async 
   iA.value = "anonymity";
   iA.dispatchEvent(new wA.Event("input"));
   await tick(); await tick();
-  assert.equal(wA.document.querySelectorAll(".search-results li a").length, 0,
+  assert.equal(wA.document.querySelectorAll(".search-results li:not(.search-all) a").length, 0,
     "shard miss -> no results, no throw");
   // Case B: the term's bucket is absent from sh -> ensureShard returns null WITHOUT fetching.
   const wB = load('<input id="search-input">', {
@@ -3327,7 +3389,7 @@ test("full-text degrades gracefully on a shard miss and an empty bucket", async 
   iB.value = "anonymity";
   iB.dispatchEvent(new wB.Event("input"));
   await tick(); await tick();
-  assert.equal(wB.document.querySelectorAll(".search-results li a").length, 0,
+  assert.equal(wB.document.querySelectorAll(".search-results li:not(.search-all) a").length, 0,
     "empty bucket -> no results");
 });
 
@@ -3341,7 +3403,7 @@ test("a <2-char query renders nothing (full-text never runs)", async () => {
   input.value = "t";
   input.dispatchEvent(new w.Event("input"));
   await tick();
-  assert.equal(w.document.querySelectorAll(".search-results li a").length, 0, "no results for 1 char");
+  assert.equal(w.document.querySelectorAll(".search-results li:not(.search-all) a").length, 0, "no results for 1 char");
 });
 
 test("a shard batch resolving AFTER close does not reopen the search panel", async () => {
@@ -3570,7 +3632,7 @@ test("full-text: a repeated query token is deduplicated (behaves as the single t
   input.value = "tor tor";                  // no title holds "tor tor" -> title pass renders nothing
   input.dispatchEvent(new w.Event("input"));
   await tick(); await tick();
-  const links = [...w.document.querySelectorAll(".search-results li a")].map((a) => a.textContent);
+  const links = [...w.document.querySelectorAll(".search-results li:not(.search-all) a")].map((a) => a.textContent);
   assert.deepEqual(links, ["Tor", "Firewall"],
     "the duplicate 'tor' is dropped; results match the single-term 'tor' query");
 });
@@ -3594,7 +3656,7 @@ test("search Enter falls back to the first rendered body row when no title match
   input.value = "anonymity";
   input.dispatchEvent(new w.Event("input"));
   await tick(); await tick();
-  const first = w.document.querySelector(".search-results li a").getAttribute("href");
+  const first = w.document.querySelector(".search-results li:not(.search-all) a").getAttribute("href");
   assert.ok(first && first[0] === "#", "a body row is on screen with a hash href");
   input.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Enter" }));
   await tick();
@@ -3664,8 +3726,11 @@ test("full-text: a stopword-only query tokenizes to nothing and appends no body 
   input.dispatchEvent(new w.Event("input"));
   await tick(); await tick();
   const results = w.document.querySelector(".search-results");
-  assert.equal(results.querySelectorAll("li a").length, 0, "no title and no body rows for a stopword-only query");
-  assert.ok(results.hidden, "results panel stays hidden");
+  assert.equal(results.querySelectorAll("li:not(.search-all) a").length, 0, "no title and no body rows for a stopword-only query");
+  // The always-present "search for all" footer (index non-empty) keeps the panel open with just
+  // that one escalation row -- no page hits, but a route to Special:Search (Wikipedia/MDN idiom).
+  assert.ok(!results.hidden, "the search-for-all footer keeps the panel open");
+  assert.equal(results.querySelectorAll("li.search-all").length, 1, "only the footer row remains");
 });
 
 test("hovercards: a page link whose href is cleared mid-fetch yields no card (href || \"\" guard)", async () => {
@@ -3720,8 +3785,11 @@ test("search drops a title hit whose target fails navSafe (tampered javascript: 
   input.dispatchEvent(new w.Event("input"));
   await tick();
   const results = w.document.querySelector(".search-results");
-  assert.equal(results.querySelectorAll("li").length, 0, "the tampered javascript: target is dropped: no <li> appended");
-  assert.ok(results.hidden, "with the only hit dropped, the results panel stays hidden");
+  assert.equal(results.querySelectorAll("li:not(.search-all)").length, 0, "the tampered javascript: target is dropped: no page row appended");
+  // Only the always-safe "search for all" footer remains (its href is a same-origin Special:Search
+  // link, navSafe-clean); the panel stays open on that one escalation row.
+  assert.equal(results.querySelectorAll("li.search-all").length, 1, "only the safe search-for-all footer remains");
+  assert.ok(!results.hidden, "the footer keeps the panel open; the tampered hit is still dropped");
 });
 
 test("search renders safe title hits but drops the tampered //host one (count = real rows only)", async () => {
@@ -3734,7 +3802,7 @@ test("search renders safe title hits but drops the tampered //host one (count = 
   input.value = "firewall";
   input.dispatchEvent(new w.Event("input"));
   await tick();
-  const links = [...w.document.querySelectorAll(".search-results li a")].map((a) => a.textContent);
+  const links = [...w.document.querySelectorAll(".search-results li:not(.search-all) a")].map((a) => a.textContent);
   assert.equal(JSON.stringify(links), JSON.stringify(["Firewall Guide"]),
     "only the same-origin hit renders; the //evil.com title hit is dropped, not counted");
 });
@@ -3754,9 +3822,11 @@ test("full-text drops a body-only match whose target fails navSafe (tampered //h
   input.dispatchEvent(new w.Event("input"));
   await tick(); await tick();
   const results = w.document.querySelector(".search-results");
-  assert.equal(results.querySelectorAll("li a").length, 0,
-    "the BM25-ranked body hit has a tampered target -> appendResult drops it, no row added");
-  assert.ok(results.hidden, "no row added -> the results panel stays hidden");
+  assert.equal(results.querySelectorAll("li:not(.search-all) a").length, 0,
+    "the BM25-ranked body hit has a tampered target -> appendResult drops it, no page row added");
+  // The safe "search for all" footer remains (same-origin Special:Search); panel stays open on it.
+  assert.equal(results.querySelectorAll("li.search-all").length, 1, "only the safe search-for-all footer remains");
+  assert.ok(!results.hidden, "the footer keeps the panel open; the tampered body hit is still dropped");
 });
 
 test("download modal: a tampered javascript: href is not navigated (nav sink dropped, no modal)", () => {
