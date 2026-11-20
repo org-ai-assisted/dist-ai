@@ -2679,7 +2679,7 @@ test("search combobox: two-stage Escape owns both stages and never leaks to othe
 test("search combobox: on the desktop tier a STALE checked toggle does NOT swallow Escape", () => {
   // A toggle left :checked from a prior narrow width is STALE on the desktop tier (there the toggle
   // is display:none and the field is persistent, so the style.css reveal is mobile-scoped). Stage 2
-  // is mobile-gated on matchMedia("(min-width:721px)"), so an Escape on the empty desktop field
+  // is compact-tier-gated on matchMedia("(min-width:960px)"), so an Escape on the empty desktop field
   // PROPAGATES to the document handlers -- a co-open layer (here the nav drawer) still closes.
   // Canary: pre-fix app.js read the stale checked toggle as an open overlay and consumed the Escape,
   // so the nav drawer stayed up. matchMedia is read lazily in the handler, so stubbing it post-load is fine.
@@ -2689,7 +2689,7 @@ test("search combobox: on the desktop tier a STALE checked toggle does NOT swall
       '<nav class="site-nav"><a href="#x">link</a></nav>' +
       '<span class="site-search"><input type="checkbox" id="search-toggle"><input id="search-input"></span>' +
     '</div></header><main>body</main>');
-  w.matchMedia = (q) => ({ matches: /min-width:\s*721px/.test(q), media: q, addEventListener() {}, addListener() {} });
+  w.matchMedia = (q) => ({ matches: /min-width:\s*960px/.test(q), media: q, addEventListener() {}, addListener() {} });
   const navToggle = w.document.getElementById("nav-toggle");
   const toggle = w.document.getElementById("search-toggle");
   const input = w.document.getElementById("search-input");
