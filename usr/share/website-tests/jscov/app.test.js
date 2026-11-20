@@ -58,10 +58,22 @@ function load(bodyHtml, opts) {
   w.matchMedia = w.matchMedia || (() => ({ matches: false, addEventListener() {}, addListener() {} }));
   // Record each ResizeObserver so a test can fire its (batched) callback and inspect targets;
   // observe() still never auto-invokes, so every other test sees the former no-op behaviour.
+  // The app's geometry batcher reads each entry's border-box inlineSize (a free post-layout read,
+  // never scrollWidth/clientWidth which jsdom cannot compute). So `ro.cb()` with no args SYNTHESIZES
+  // one entry per observed target from its stubbed border-box size (`el.__inlineSize`, default 0) --
+  // a test sets sizes on the elements and fires the batched callback without hand-building entries.
+  // A test may still pass explicit entries (`ro.cb([{target, borderBoxSize | contentRect}])`).
   if (!w.ResizeObserver) {
     w.__resizeObservers = [];
     w.ResizeObserver = class {
-      constructor(cb) { this.cb = cb; this.targets = []; w.__resizeObservers.push(this); }
+      constructor(cb) {
+        this.targets = []; this._cb = cb; w.__resizeObservers.push(this);
+        this.cb = (entries) => this._cb(entries || this.targets.map((t) => ({
+          target: t,
+          borderBoxSize: [{ inlineSize: t.__inlineSize || 0 }],
+          contentRect: { width: t.__inlineSize || 0 },
+        })));
+      }
       observe(t) { this.targets.push(t); }
       unobserve() {} disconnect() {}
     };
@@ -1981,18 +1993,24 @@ test("wide-table scroll init is total on a table (no throw)", () => {
     load('<div class="wiki-content"><table><tr><td>x</td></tr></table></div>'));
 });
 
-// jsdom computes no layout, so override the geometry getters. `railLog` records, at each
-// scrollWidth READ, whether a top rail already exists in the DOM -- a read that sees one
-// proves a style WRITE ran between two reads (the forced-reflow thrash we fixed).
-function stubTableGeom(doc, el, scrollWidth, clientWidth, railLog) {
-  Object.defineProperty(el, "scrollWidth", { configurable: true, get() {
-    if (railLog) railLog.push(!!doc.querySelector(".table-scroll-top"));
-    return scrollWidth;
-  } });
-  Object.defineProperty(el, "clientWidth", { configurable: true, get() { return clientWidth; } });
+// jsdom computes no layout; app.js reads width from each RO entry's border-box inlineSize (a free
+// post-layout read, never scrollWidth/clientWidth which would force a layout AND which jsdom cannot
+// compute). stubTableGeom sets the stubbed sizes the RO mock synthesizes into entries: a ROW GROUP's
+// box is the CONTENT width (it lays out full-width while the table scrolls), the TABLE's box is the
+// VISIBLE width. `scrollSentinel`, if given, records any scrollWidth read -- it must stay EMPTY (the
+// fix reads the entry, so no forced reflow).
+function stubTableGeom(table, content, visible, scrollSentinel) {
+  const rg = table.tBodies[0] || table.tHead || table.tFoot;
+  rg.__inlineSize = content;
+  table.__inlineSize = visible;
+  if (scrollSentinel) {
+    const trap = (el, label) => Object.defineProperty(el, "scrollWidth",
+      { configurable: true, get() { scrollSentinel.push(label); return content; } });
+    trap(table, "table.scrollWidth"); trap(rg, "rg.scrollWidth");
+  }
 }
 
-test("wide tables: the ResizeObserver callback measures SYNCHRONOUSLY (post-layout free read, never rAF-deferred)", () => {
+test("wide tables: the RO callback reads border-box inlineSize (free post-layout read, NEVER scrollWidth)", () => {
   const w = load('<div class="wiki-content">' +
     '<table id="wide"><tbody><tr><td>x</td></tr></tbody></table>' +
     '<table id="fits"><tbody><tr><td>y</td></tr></tbody></table></div>');
@@ -2000,66 +2018,104 @@ test("wide tables: the ResizeObserver callback measures SYNCHRONOUSLY (post-layo
   // table, each interleaving read->write->read -> the ~83ms forced synchronous layout).
   assert.equal(w.__resizeObservers.length, 1, "one shared ResizeObserver for all tables");
   const ro = w.__resizeObservers[0];
-  assert.equal(ro.targets.length, 2, "it observes every table");
-
-  const railLog = [];
   const wide = w.document.getElementById("wide");
   const fits = w.document.getElementById("fits");
-  stubTableGeom(w.document, wide, 400, 200, railLog);  // overflows -> needs a rail
-  stubTableGeom(w.document, fits, 150, 200, railLog);  // fits -> no rail
+  // It observes each TABLE (visible width) AND its ROW GROUP (content width).
+  assert.ok(ro.targets.includes(wide) && ro.targets.includes(wide.tBodies[0]),
+    "observes each table and its row group");
+  assert.equal(ro.targets.length, 4, "two tables x (table + row group)");
 
+  // The rail is built UP FRONT (before any resize), hidden until measured overwide -- NOT lazily in
+  // the callback. Building outside the RO callback keeps the callback free of DOM-structure mutation.
+  const railBefore = wide.previousElementSibling;
+  assert.ok(railBefore && railBefore.classList.contains("table-scroll-top"), "rail built up front");
+  assert.equal(railBefore.style.display, "none", "rail hidden until the table is measured overwide");
+
+  const scrollReads = [];
+  stubTableGeom(wide, 400, 200, scrollReads);  // content 400 > visible 200 -> overwide
+  stubTableGeom(fits, 150, 200, scrollReads);  // content 150 < visible 200 -> fits
   ro.cb();
-  // REGRESSION (PageSpeed "forced reflow", app.min.js sync()): a ResizeObserver callback is
-  // delivered AFTER the browser's layout pass, so reading scrollWidth in it is free -- no forced
-  // synchronous layout. The measure + rail build must therefore happen SYNCHRONOUSLY inside
-  // ro.cb(), with NO requestAnimationFrame / timer flush. The bug bounced this read through rAF
-  // (which runs BEFORE the frame's layout), forcing the reflow Lighthouse flagged; a rail that
-  // appears only after a frame flush IS that defect. Asserting the rail exists immediately (no
-  // await) fails on the old rAF-deferred code and passes on the fix.
+
+  // REGRESSION (PageSpeed "forced reflow", app.min.js's old scrollWidth read): the measure must come
+  // from the RO entry's border-box inlineSize -- a free, post-layout read -- NEVER scrollWidth/
+  // clientWidth, which force a synchronous layout. The sentinel proves no scrollWidth getter fired
+  // during the callback; the old code read scrollWidth here, so this assertion fails on it.
+  assert.equal(scrollReads.length, 0, "no scrollWidth read in the RO callback -> no forced reflow");
+
+  // Behaviour preserved: the overwide table's rail is shown, spacer == row-group CONTENT width; the
+  // fitting table's rail stays hidden.
   const rail = wide.previousElementSibling;
-  assert.ok(rail && rail.classList.contains("table-scroll-top"),
-    "overwide table's rail built synchronously in the RO callback (post-layout read, not rAF-deferred)");
-
-  assert.ok(railLog.length >= 2, "every table's geometry was read");
-  assert.ok(railLog.every((sawRail) => sawRail === false),
-    "no scrollWidth read saw an already-built rail -> all reads precede all writes");
-
-  // Behaviour preserved: the overwide table gets a top rail whose spacer == its scrollWidth;
-  // the fitting table gets none.
-  assert.equal(rail.firstChild.style.width, "400px", "spacer width == table scrollWidth");
-  assert.equal(rail.style.display, "", "rail shown while overwide");
+  assert.equal(rail.style.display, "", "overwide table's rail shown");
+  assert.equal(rail.firstChild.style.width, "400px", "spacer width == row-group CONTENT width");
   assert.equal(wide.style.marginTop, "0px", "overwide table pinned under the rail");
-  const fitsPrev = fits.previousElementSibling;
-  assert.ok(!(fitsPrev && fitsPrev.classList && fitsPrev.classList.contains("table-scroll-top")),
-    "fitting table gets no rail");
+  assert.equal(fits.previousElementSibling.style.display, "none", "fitting table's rail stays hidden");
 });
 
-test("wide tables: a not-yet-loaded in-table image is observed (free post-layout re-measure, not rAF)", () => {
+test("wide tables: the ROW GROUP is observed so an in-cell reflow re-measures free (the image itself is not observed)", () => {
   const w = load('<div class="wiki-content"><table id="wide"><tbody><tr><td>' +
-    '<img id="late" src="/late.webp"><img id="done" src="/done.webp"></td></tr></tbody></table></div>', {
+    '<img id="late" src="/late.webp"></td></tr></tbody></table></div>', {
     preEval: (win) => {
-      const d = win.document;
-      Object.defineProperty(d.getElementById("late"), "complete", { get() { return false; } });
-      Object.defineProperty(d.getElementById("done"), "complete", { get() { return true; } });
+      Object.defineProperty(win.document.getElementById("late"), "complete", { get() { return false; } });
     },
   });
   const ro = w.__resizeObservers[0];
-  const late = w.document.getElementById("late");
-  const done = w.document.getElementById("done");
-  // REGRESSION (PageSpeed "forced reflow", sync()): a late in-table image grows the table's
-  // scrollWidth without changing its (max-width-capped) border box, so the table RO alone misses
-  // it. The image itself is observed, so its decode (box 0 -> intrinsic) re-measures through the
-  // post-layout RO callback -- a FREE read. The old img.load -> requestAnimationFrame path read
-  // scrollWidth PRE-layout and forced the reflow (it outlived the homepage fix on image-heavy
-  // pages like Dev/wikitest); observing the image, not a rAF, is the full fix.
-  assert.ok(ro.targets.includes(late), "a not-yet-loaded in-table image is observed for a free re-measure");
-  assert.ok(!ro.targets.includes(done), "an already-complete image is not observed (no pending load)");
   const wide = w.document.getElementById("wide");
-  stubTableGeom(w.document, wide, 400, 200);
+  const rg = wide.tBodies[0];
+  const late = w.document.getElementById("late");
+  // REGRESSION (PageSpeed "forced reflow"): a late in-table image grows the ROW GROUP's border box
+  // on decode. Observing the row group (not each image, not a rAF) delivers that as a FREE post-
+  // layout re-measure -- any in-cell reflow (image, font swap) changes the row group's box. The old
+  // code observed each pending image AND read scrollWidth; the single row-group observe subsumes both.
+  assert.ok(ro.targets.includes(rg), "the row group is observed for a free re-measure on any in-cell reflow");
+  assert.ok(!ro.targets.includes(late), "a pending image is NOT separately observed (the row group covers it)");
+  stubTableGeom(wide, 400, 200);
   ro.cb();
+  assert.equal(wide.previousElementSibling.style.display, "",
+    "the RO callback shows the rail from the row-group border-box read");
+});
+
+test("wide tables: row group resolves tbody -> thead -> tfoot; a row-less table is skipped", () => {
+  const w = load('<div class="wiki-content">' +
+    '<table id="hb"><thead><tr><th>h</th></tr></thead></table>' +   // thead-only
+    '<table id="fb"><tfoot><tr><td>f</td></tr></tfoot></table>' +   // tfoot-only
+    '<table id="empty"></table></div>');                           // no row group
+  const ro = w.__resizeObservers[0];
+  const hb = w.document.getElementById("hb");
+  const fb = w.document.getElementById("fb");
+  const empty = w.document.getElementById("empty");
+  assert.ok(ro.targets.includes(hb.tHead), "thead-only table: the thead is the observed row group");
+  assert.ok(ro.targets.includes(fb.tFoot), "tfoot-only table: the tfoot is the observed row group");
+  assert.ok(!ro.targets.includes(empty), "a row-less table is skipped (no row group)");
+  assert.ok(!(empty.previousElementSibling &&
+    empty.previousElementSibling.classList.contains("table-scroll-top")), "no rail for the row-less table");
+  stubTableGeom(hb, 400, 200); stubTableGeom(fb, 400, 200);
+  ro.cb();
+  assert.equal(hb.previousElementSibling.style.display, "", "thead-driven overwide shows the rail");
+  assert.equal(fb.previousElementSibling.style.display, "", "tfoot-driven overwide shows the rail");
+});
+
+test("wide tables: a page whose only table has no rows initializes with no rail (and no throw)", () => {
+  const w = load('<div class="wiki-content"><table id="empty"></table></div>');
+  const empty = w.document.getElementById("empty");
+  assert.ok(!(empty.previousElementSibling &&
+    empty.previousElementSibling.classList.contains("table-scroll-top")),
+    "no rail built when every table is row-less (items empty -> early return)");
+});
+
+test("geometry batcher: an entry lacking borderBoxSize falls back to contentRect.width", () => {
+  const w = load('<div class="wiki-content"><table id="wide"><tbody><tr><td>x</td></tr></tbody></table></div>');
+  const ro = w.__resizeObservers[0];
+  const wide = w.document.getElementById("wide");
+  const rg = wide.tBodies[0];
+  // An older ResizeObserver entry exposes only contentRect, not borderBoxSize; the batcher must
+  // read contentRect.width then.
+  ro.cb([
+    { target: rg, contentRect: { width: 400 } },
+    { target: wide, contentRect: { width: 200 } },
+  ]);
   const rail = wide.previousElementSibling;
-  assert.ok(rail && rail.classList.contains("table-scroll-top"),
-    "the RO callback builds the rail synchronously (post-layout read, never rAF-deferred)");
+  assert.equal(rail.style.display, "", "overwide computed from contentRect.width when borderBoxSize absent");
+  assert.equal(rail.firstChild.style.width, "400px", "spacer from contentRect.width");
 });
 
 test("geometry batcher: bottom-stack + wide table SHARE one observer, all reads before any writes", () => {
@@ -2067,43 +2123,35 @@ test("geometry batcher: bottom-stack + wide table SHARE one observer, all reads 
     '<div class="wiki-content"><table id="wide"><tbody><tr><td>x</td></tr></tbody></table></div>');
   // One shared ResizeObserver for BOTH widgets. The old per-widget observers interleaved in a
   // single dispatch: the bottom-stack callback wrote body.paddingBottom (dirtying global layout),
-  // then the table callback read scrollWidth -> a forced synchronous reflow (PageSpeed, on a
+  // then the table callback read geometry -> a forced synchronous reflow (PageSpeed, on a
   // bottom-stack page like Dev/wikitest). TWO observers here is the regression.
   assert.equal(w.__resizeObservers.length, 1, "bottom-stack + wide table share ONE ResizeObserver");
   const ro = w.__resizeObservers[0];
   const stack = w.document.getElementById("bs");
   const wide = w.document.getElementById("wide");
-  assert.ok(ro.targets.includes(stack) && ro.targets.includes(wide),
-    "the shared observer watches both the bottom-stack and the table");
-  // Reserve a stack height; make the table overwide. The scrollWidth getter records what
-  // body.paddingBottom held AT READ TIME -- it must still be unwritten.
-  // Record what each widget saw AT READ TIME, so a read-after-write reordering (the forced reflow
-  // this batcher exists to prevent) is caught on EITHER side: the stack's offsetHeight must be read
-  // before the table rail is inserted, and the table's scrollWidth before the paddingBottom write.
-  const stackReadSawRail = [];
+  assert.ok(ro.targets.includes(stack) && ro.targets.includes(wide) && ro.targets.includes(wide.tBodies[0]),
+    "the shared observer watches the bottom-stack, the table, and its row group");
+  // The bottom-stack's offsetHeight read must run BEFORE the table's rail is shown (every widget's
+  // READ precedes any WRITE). Record the rail's display at read time; it must still be hidden. AND
+  // no scrollWidth read at all (the table width comes from the RO entry).
+  const stackReadRailDisplay = [];
   Object.defineProperty(stack, "offsetHeight", { configurable: true, get() {
-    const prev = wide.previousElementSibling;
-    stackReadSawRail.push(!!(prev && prev.classList && prev.classList.contains("table-scroll-top")));
+    stackReadRailDisplay.push(wide.previousElementSibling.style.display);
     return 50;
   } });
-  const pbAtRead = [];
-  Object.defineProperty(wide, "scrollWidth",
-    { configurable: true, get() { pbAtRead.push(w.document.body.style.paddingBottom); return 400; } });
-  Object.defineProperty(wide, "clientWidth", { configurable: true, get() { return 200; } });
+  const scrollReads = [];
+  stubTableGeom(wide, 400, 200, scrollReads);
   ro.cb();
-  // REGRESSION: every widget's READ runs before any widget's WRITE, so when the table's scrollWidth
-  // is read the bottom-stack's paddingBottom write has NOT happened. The old two-observer design
-  // wrote paddingBottom first, so the read saw "50px" and forced layout -- this assertion fails on it.
-  assert.ok(pbAtRead.length > 0, "the table scrollWidth was read in the shared callback");
-  assert.ok(pbAtRead.every((pb) => !pb),
-    "every scrollWidth read preceded the body.paddingBottom write (read-before-write across widgets)");
-  assert.ok(stackReadSawRail.length > 0, "the bottom-stack height was measured in the shared callback");
-  assert.ok(stackReadSawRail.every((sawRail) => sawRail === false),
-    "no bottom-stack offsetHeight read saw the table rail -> the stack read precedes the table write");
-  // Both widgets applied: body padding reserved + the overwide table got its rail.
+  // REGRESSION: every widget's READ runs before any widget's WRITE. The old two-observer design
+  // wrote paddingBottom then read the table's geometry (forcing layout) -- and read scrollWidth at
+  // all. Both assertions fail on it.
+  assert.equal(scrollReads.length, 0, "the table width came from the RO entry, not a forced scrollWidth read");
+  assert.ok(stackReadRailDisplay.length > 0, "the bottom-stack height was measured in the shared callback");
+  assert.ok(stackReadRailDisplay.every((disp) => disp === "none"),
+    "the bottom-stack read ran while the table rail was still hidden -> read precedes write");
+  // Both widgets applied: body padding reserved + the overwide table's rail shown.
   assert.equal(w.document.body.style.paddingBottom, "50px", "bottom-stack reserved 50px");
-  const rail = wide.previousElementSibling;
-  assert.ok(rail && rail.classList.contains("table-scroll-top"), "overwide table got its rail");
+  assert.equal(wide.previousElementSibling.style.display, "", "overwide table's rail shown");
 });
 
 // ---- totality ------------------------------------------------------------------------------
@@ -3123,8 +3171,9 @@ test("wide tables: without ResizeObserver, build via sync(), re-sync on a coales
   // instead of racing a fixed delay against the browser's frame -- a frame that fires late would let
   // the assertion run before the fallback re-measures (a spurious pass/flake). Each stimulus must
   // QUEUE a frame; we assert that, run it, then check the effect on the SAME rail (app.js builds a
-  // rail once and re-measures it in place -- it never re-inserts, so we assert the spacer re-measure,
-  // not a rebuilt element).
+  // rail once up front and re-measures it in place -- it never re-inserts, so we assert the spacer
+  // re-measure, not a rebuilt element). With no RO there are no entries, so the fallback reads
+  // offsetWidth (content, on the row group) and clientWidth (visible, on the table) directly.
   const rafs = [];
   const w = load('<div class="wiki-content"><table id="wide"><tbody><tr><td>x' +
     '<img id="late" src="/wide.webp"></td></tr></tbody></table></div>', {
@@ -3137,36 +3186,39 @@ test("wide tables: without ResizeObserver, build via sync(), re-sync on a coales
     },
   });
   const wide = w.document.getElementById("wide");
-  // Mutable geometry: a later image "growing" the table is then observable in the re-sync.
-  const geom = { sw: 400, cw: 200 };
-  Object.defineProperty(wide, "scrollWidth", { configurable: true, get() { return geom.sw; } });
-  Object.defineProperty(wide, "clientWidth", { configurable: true, get() { return geom.cw; } });
+  const rg = wide.tBodies[0];
+  // Mutable geometry: a later image "growing" the row group is then observable in the re-sync.
+  const geom = { content: 400, visible: 200 };
+  Object.defineProperty(rg, "offsetWidth", { configurable: true, get() { return geom.content; } });
+  Object.defineProperty(wide, "clientWidth", { configurable: true, get() { return geom.visible; } });
   const drain = () => { while (rafs.length) { rafs.shift()(0); } };
-  drain();   // flush any frame queued during init (the init sync() read scrollWidth 0 -> built nothing)
+  drain();   // flush any frame queued during init (the init sync() read offsetWidth 0 -> hidden)
+
+  const rail = wide.previousElementSibling;
+  assert.ok(rail && rail.classList.contains("table-scroll-top"), "rail built up front");
+  assert.equal(rail.style.display, "none", "init measured 0 (unstubbed geometry) -> rail hidden");
 
   w.dispatchEvent(new w.Event("resize"));
   w.dispatchEvent(new w.Event("resize"));   // coalesced by the rAF guard
   assert.equal(rafs.length, 1, "two resizes coalesce into exactly one scheduled frame");
   drain();   // RUN the scheduled frame -- no fixed delay
-  const rail = wide.previousElementSibling;
-  assert.ok(rail && rail.classList.contains("table-scroll-top"), "the fallback built the top rail on the resize frame");
-  assert.equal(rail.firstChild.style.width, "400px", "the rail spacer matches the table's scrollWidth");
+  assert.equal(rail.style.display, "", "the resize re-sync showed the now-overwide rail");
+  assert.equal(rail.firstChild.style.width, "400px", "the rail spacer matches the row-group offsetWidth");
 
-  // A late in-table image grows the table; its load re-syncs on the no-RO path (the legacy rAF read),
-  // re-measuring and widening the EXISTING rail's spacer.
-  geom.sw = 600;
+  // A late in-table image grows the row group; its load re-syncs on the no-RO path (the legacy rAF
+  // read), re-measuring and widening the EXISTING rail's spacer.
+  geom.content = 600;
   w.document.getElementById("late").dispatchEvent(new w.Event("load"));
   assert.equal(rafs.length, 1, "a late image load schedules its own re-sync frame");
   drain();
   assert.equal(rail.firstChild.style.width, "600px", "the image-load re-sync re-measured and widened the rail spacer");
 });
 
-test("wide tables: the top rail and the table mirror each other's scrollLeft (re-entrancy guarded)", async () => {
+test("wide tables: the top rail and the table mirror each other's scrollLeft (re-entrancy guarded)", () => {
   const w = load('<div class="wiki-content"><table id="wide"><tbody><tr><td>x</td></tr></tbody></table></div>');
   const wide = w.document.getElementById("wide");
-  stubTableGeom(w.document, wide, 400, 200);
-  w.__resizeObservers[0].cb();   // RO callback reads post-layout -> builds the rail synchronously
-  const rail = wide.previousElementSibling;
+  const rail = wide.previousElementSibling;   // built up front, scroll listeners already wired
+  assert.ok(rail && rail.classList.contains("table-scroll-top"), "rail built up front");
   // Setting scrollLeft normally fires no scroll event in jsdom; make it do so, which also
   // re-enters the sibling's handler while the sync lock is held (exercising the lock guard).
   const reflect = (el) => {
@@ -3184,20 +3236,17 @@ test("wide tables: the top rail and the table mirror each other's scrollLeft (re
   assert.equal(wide.scrollLeft, 45, "scrolling the rail syncs the table");
 });
 
-test("wide tables: a rail-bearing table that later fits is hidden again", async () => {
+test("wide tables: a rail-bearing table that later fits is hidden again", () => {
   const w = load('<div class="wiki-content"><table id="wide"><tbody><tr><td>x</td></tr></tbody></table></div>');
   const wide = w.document.getElementById("wide");
-  const geom = { sw: 400, cw: 200 };
-  Object.defineProperty(wide, "scrollWidth", { configurable: true, get() { return geom.sw; } });
-  Object.defineProperty(wide, "clientWidth", { configurable: true, get() { return geom.cw; } });
   const ro = w.__resizeObservers[0];
-  ro.cb();   // overwide -> builds + shows the rail (coalesced into the next frame)
-  await new Promise((r) => setTimeout(r, 30));
   const rail = wide.previousElementSibling;
-  assert.equal(rail.style.display, "", "rail shown while overwide");
-  geom.sw = 150;   // now it fits
+  stubTableGeom(wide, 400, 200);   // overwide
   ro.cb();
-  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(rail.style.display, "", "rail shown while overwide");
+  assert.equal(wide.style.marginTop, "0px", "overwide table pinned");
+  stubTableGeom(wide, 150, 200);   // now the row-group content fits inside the visible table
+  ro.cb();
   assert.equal(rail.style.display, "none", "rail hidden once the table fits");
   assert.equal(wide.style.marginTop, "", "the overwide pin is released");
 });
