@@ -376,13 +376,19 @@ def resolve_internal(root, page, target, mount=None, parent_roots=(),
     # BEFORE the '..' clamp / urljoin below so an encoded '..' ('%2e%2e') is clamped
     # too, never slipped past it.
     target = urllib.parse.unquote(target)
+    # The RAW (still percent-ENCODED) fragment: the search-query exemption matches
+    # THIS, not the decoded form below. app.js tests `location.hash`, which the browser
+    # keeps percent-encoded, with the same `(?:^|&)q=` regex -- so an encoded `%26q=`
+    # is NOT a `&q=` search query to the browser (see _is_search_query_fragment). The
+    # element-id path keeps using the decoded frag.
+    raw_frag = frag
     # Decode the fragment too (split out above, BEFORE this unquote). A browser
     # percent-decodes #frag and matches it against an element id, which is a literal
     # attribute value never percent-encoded -- so an encoded anchor ('#%74op' = #top,
     # or a non-ASCII heading id) must be decoded here or it false-fails as broken.
     frag = urllib.parse.unquote(frag)
     if target == '':
-        return ('#self', None, frag)         # same-page fragment (no candidate list)
+        return ('#self', None, frag, raw_frag)   # same-page fragment (no candidate list)
     if target.startswith('/'):
         # A subsite's own mount prefix (/git-diffs-lie/...) maps back onto its own
         # tree, so verify it there rather than skipping it as an external sibling.
@@ -392,7 +398,7 @@ def resolve_internal(root, page, target, mount=None, parent_roots=(),
             # like /git-diffs-lie-extra/ is not mistaken for /git-diffs-lie/.
             return ('file',
                     _abs_candidates(target[len(mnt):].lstrip('/'), [root],
-                                    navigational), frag)
+                                    navigational), frag, raw_frag)
         if mount:
             # A subsite's OFF-mount absolute link (/terminal/, /paste/, ...) points
             # at the PARENT site, so verify it ONLY there -- searching the subsite
@@ -401,10 +407,12 @@ def resolve_internal(root, page, target, mount=None, parent_roots=(),
             if not parent_roots:
                 return None
             return ('file', _abs_candidates(target.lstrip('/'),
-                                            list(parent_roots), navigational), frag)
+                                            list(parent_roots), navigational),
+                    frag, raw_frag)
         if any(target.startswith(prefix) for prefix in KNOWN_PROJECT_PATHS):
             return None                          # valid sibling project-Pages path
-        return ('file', _abs_candidates(target.lstrip('/'), [root], navigational), frag)
+        return ('file', _abs_candidates(target.lstrip('/'), [root], navigational),
+                frag, raw_frag)
     # Resolve the relative link as a URL path against the page's own URL,
     # clamping '..' at the site root exactly as a browser does (urljoin drops the
     # leading '..' rather than escaping), then map that in-root path to disk.
@@ -421,7 +429,7 @@ def resolve_internal(root, page, target, mount=None, parent_roots=(),
     # subresource load must not be masked by a same-name .html sibling.
     if navigational:
         candidates.append(base + '.html')
-    return ('file', candidates, frag)
+    return ('file', candidates, frag, raw_frag)
 
 
 _IDS_CACHE: dict[str, set[str] | None] = {}
@@ -447,15 +455,22 @@ def _ids_of(path):
 # JS consumes (reads location.hash `#q=`, pre-fills + runs the search -- see app.js), NOT
 # a DOM element id. So a `#q=...` on the search page is a query, never a dangling anchor.
 # Keyed on the CLASS (the search page + any q= query fragment), not a one-off query word.
+# app.js matches this exact regex against the RAW (percent-encoded) location.hash
+# (`/(?:^|&)q=(.*)$/` on `hash.replace(/^#/, "")`, decoding only the captured value), so
+# the exemption must run on the ENCODED fragment too: an encoded `%26q=` is a literal
+# `%26q=` to the browser regex (no leading `&`), so it does NOT activate search and IS a
+# dead anchor. Matching the decoded `&q=` here would falsely exempt it -- a gate false
+# negative. Callers pass the raw frag; the element-id path still uses the decoded one.
 _SEARCH_PAGE = 'Special:Search.html'
 _SEARCH_QUERY_FRAG_RE = re.compile(r'(?:^|&)q=')
 
 
-def _is_search_query_fragment(target, frag):
+def _is_search_query_fragment(target, raw_frag):
     """True for a `#q=<query>` fragment on the MediaWiki Special:Search page: a
-    JS-consumed search query, not an element id -- so not a broken anchor."""
+    JS-consumed search query, not an element id -- so not a broken anchor. `raw_frag`
+    is the percent-ENCODED fragment (browser parity: app.js regexes location.hash)."""
     return (os.path.basename(target) == _SEARCH_PAGE
-            and bool(_SEARCH_QUERY_FRAG_RE.search(frag)))
+            and bool(_SEARCH_QUERY_FRAG_RE.search(raw_frag)))
 
 
 def check_links(root, failures, mount=None, parent_roots=(), pages=None):
@@ -487,11 +502,11 @@ def check_links(root, failures, mount=None, parent_roots=(), pages=None):
                 # document, so they ALWAYS resolve and are never a broken anchor. (The empty
                 # fragment is already falsy below; 'top' is the one needing an explicit pass.)
                 if (frag and frag.lower() != 'top' and frag not in ext.ids
-                        and not _is_search_query_fragment(page, frag)):
+                        and not _is_search_query_fragment(page, resolved[3])):
                     failures.append(
                         '%s: broken in-page anchor #%s' % (rel, frag))
                 continue
-            _tag, candidates, frag = resolved
+            _tag, candidates, frag, raw_frag = resolved
             hit = next((c for c in candidates if os.path.isfile(c)), None)
             if hit is None:
                 # root-RELATIVE resolved target (not an absolute fs path) so the finding is
@@ -507,7 +522,7 @@ def check_links(root, failures, mount=None, parent_roots=(), pages=None):
             # / other-page target exactly as on the same-page (#self) branch above.
             # (The empty fragment is already excluded by the enclosing `if frag`.)
             if (frag and frag.lower() != 'top'
-                    and not _is_search_query_fragment(hit, frag)):
+                    and not _is_search_query_fragment(hit, raw_frag)):
                 # The target may live in a PARENT site (a subsite's cross-site
                 # link) or an un-audited page, neither preloaded in `loaded`; load
                 # its ids on demand so a missing cross-site anchor is caught, not

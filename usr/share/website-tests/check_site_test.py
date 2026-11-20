@@ -1295,12 +1295,22 @@ def run():
                '<!doctype html><html><head><title>r</title></head><body>'
                '<a href="./Special:Search#q=compartmentalization">search</a>'
                '<a href="./Special:Search#notaquery">bad</a>'
+               # Encoded `%26q=`: app.js matches /(?:^|&)q=/ against the RAW location.hash
+               # (decoding only the captured value), so `%26q=` has NO leading `&` to the
+               # browser regex -- search never activates and it IS a dead anchor. The
+               # exemption must run on the encoded frag, not the decoded `&q=`, or it
+               # false-passes this. (Regression: the check decoded the frag first, so this
+               # dead anchor was wrongly exempted -- a gate false negative.)
+               '<a href="./Special:Search#%26q=tor">encq</a>'
                '<a href="./Root#q=compartmentalization">selfquery</a></body></html>')
         fails = _links_failures(root)
         check('check_links: Special:Search #q= query fragment is not a dangling anchor',
               not any('Special:Search#q=' in f for f in fails), repr(fails))
         check('check_links: a non-query fragment on the search page is still flagged',
               any('#notaquery' in f for f in fails), repr(fails))
+        check('check_links: an ENCODED %26q= on the search page is still flagged '
+              '(browser keeps location.hash encoded; app.js does not activate search)',
+              any('%26q=tor' in f for f in fails), repr(fails))
         check('check_links: a #q= fragment on a non-search page is still flagged',
               any('./Root#q=' in f for f in fails), repr(fails))
     # A browser normalizes a URL before resolving (WHATWG): trim leading/trailing space, drop inner
@@ -1679,7 +1689,7 @@ def run():
         mount='/sub', parent_roots=('/parent',))
     check('mount prefix requires a path boundary (sibling not swallowed)',
           mounted == ('file',
-                      check_site._abs_candidates('sub-extra/x', ['/parent']), '')
+                      check_site._abs_candidates('sub-extra/x', ['/parent']), '', '')
           and all('/root/-extra' not in c for c in mounted[1]), repr(mounted))
 
     # _is_external sees the control-char and scheme-relative forms a browser
@@ -2923,10 +2933,11 @@ def run():
         check('resolve_internal: mailto -> None',
               check_site.resolve_internal(root, page, 'mailto:a@b.c') is None)
         check('resolve_internal: pure fragment -> #self',
-              check_site.resolve_internal(root, page, '#sec') == ('#self', None, 'sec'))
+              check_site.resolve_internal(root, page, '#sec')
+              == ('#self', None, 'sec', 'sec'))
         q = check_site.resolve_internal(root, page, 'style.css?v=2#frag')
-        check('resolve_internal: ?query stripped, #frag kept',
-              q[2] == 'frag' and all('?' not in c for c in q[1]), q)
+        check('resolve_internal: ?query stripped, #frag kept (decoded + raw)',
+              q[2] == 'frag' and q[3] == 'frag' and all('?' not in c for c in q[1]), q)
 
     # check_wording drives the real predicate: case-sensitive, flags only lowercase prose.
     with tempfile.TemporaryDirectory() as root:
