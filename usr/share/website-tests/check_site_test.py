@@ -30,6 +30,9 @@ import os
 import sys
 import tempfile
 
+_SUBJECT_ANNOUNCED = False
+
+
 def _load_check_site():
     # the static checks live in the importable core; import it (its real home) so a
     # test that monkeypatches a module global patches the dict the functions read.
@@ -40,6 +43,16 @@ def _load_check_site():
     if os.path.isdir(_dp) and _dp not in sys.path:
         sys.path.insert(0, _dp)
     from dist_ai.webcheck import site
+    # Announce the SUBJECT once: the import silently falls back to the INSTALLED
+    # dist_ai when this tree's dist-packages is absent (e.g. a partial checkout or a
+    # subdir-only sandbox sync), so a test run can otherwise exercise stale installed
+    # code while reading as a result for the checkout -- a fabricated signal. Print
+    # which site.py is under test so that confusion cannot pass silently.
+    global _SUBJECT_ANNOUNCED
+    if not _SUBJECT_ANNOUNCED:
+        print('INFO: check_site under test: %s' % os.path.realpath(site.__file__),
+              file=sys.stderr)
+        _SUBJECT_ANNOUNCED = True
     return site
 
 
