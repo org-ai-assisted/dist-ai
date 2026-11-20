@@ -114,6 +114,21 @@ function load(bodyHtml, opts) {
 }
 
 const tick = () => new Promise((r) => setTimeout(r, 5));
+// Wait for the hovercard to reach a state (default "shown"; "hidden" for a dismiss), or ~2s, then
+// return the card (or null). Deterministic under load: the card opens/hides on a 200ms app timer,
+// and a fixed wall-clock sleep racing a loaded event loop flakes (the timer can fire after the
+// sleep). Polling the CONDITION means load only adds iterations; the cap turns a genuinely-stuck
+// state into a real failure, not a hang. The 10ms macrotask steps also drain the preview-fetch
+// microtask chain between checks, so a page card (fetch-then-200ms) is caught too.
+const pollCard = async (w, want) => {
+  const ok = () => {
+    const c = w.document.querySelector(".hovercard");
+    return want === "hidden" ? (!c || c.hidden) : (c && !c.hidden ? c : null);
+  };
+  let v = ok();
+  for (let i = 0; i < 200 && !v; i++) { await new Promise((r) => setTimeout(r, 10)); v = ok(); }
+  return v;
+};
 // Drive requestAnimationFrame SYNCHRONOUSLY (callback runs inline). app.js schedules deferred
 // work via rAF (e.g. initBackToTop arms .btt-anim a frame after the hidden state paints, instead
 // of a synchronous forced reflow); a sync rAF makes that deferral observable in a unit test
@@ -1693,7 +1708,7 @@ test("hovercards: hovering a reference link builds a card from the footnote", as
     '<li id="fn1">A footnote. <span class="mw-cite-backlink">^</span></li></div>');
   const a = w.document.querySelector("sup.reference a");
   a.dispatchEvent(new w.MouseEvent("mouseover", { bubbles: true }));
-  await new Promise((r) => setTimeout(r, 260));  // showTimer is 200ms
+  await pollCard(w);
   const card = w.document.querySelector(".hovercard .hovercard-ref");
   assert.ok(card, "ref hovercard built");
   assert.ok(/A footnote/.test(card.textContent), "footnote text carried over");
@@ -1708,7 +1723,7 @@ test("hovercards: a reference card carries a prev/next navigator that browses al
     '<li id="fn1">First note.</li><li id="fn2">Second note.</li><li id="fn3">Third note.</li></div>');
   const a = w.document.querySelectorAll("sup.reference a")[0];
   a.dispatchEvent(new w.MouseEvent("mouseover", { bubbles: true }));
-  await new Promise((r) => setTimeout(r, 260));
+  await pollCard(w);
   let card = w.document.querySelector(".hovercard");
   assert.ok(/First note/.test(card.textContent), "opens on the hovered note");
   assert.ok(card.querySelector(".hovercard-nav"), "nav present when the page has >1 note");
@@ -1731,7 +1746,7 @@ test("hovercards: a citation low in the viewport flips the card ABOVE and caps t
   // and above>160, so place() takes the useAbove=true path (flip above, cap maxHeight to the room).
   a.getBoundingClientRect = () => ({ top: 700, bottom: 720, left: 10, right: 30, width: 20, height: 20 });
   a.dispatchEvent(new w.MouseEvent("mouseover", { bubbles: true }));
-  await new Promise((r) => setTimeout(r, 260));
+  await pollCard(w);
   const card = w.document.querySelector(".hovercard");
   assert.ok(card, "card built");
   // maxHeight capped to the (large) room ABOVE, not the tiny room below -> useAbove branch taken.
@@ -1794,7 +1809,7 @@ test("hovercards: reference card has a 'Footnote N' headline, nav on top, arrow 
     '<li id="fn1">First note.</li><li id="fn2">Second note.</li></div>');
   w.document.querySelectorAll("sup.reference a")[0]
     .dispatchEvent(new w.MouseEvent("mouseover", { bubbles: true }));
-  await new Promise((r) => setTimeout(r, 260));
+  await pollCard(w);
   const card = w.document.querySelector(".hovercard");
   const title = card.querySelector(".hovercard-title");
   assert.ok(title && /^Footnote 1$/.test(title.textContent.trim()), "headline reads 'Footnote 1'");
@@ -1850,7 +1865,7 @@ test("hovercards: a FOCUSED citation opens the same card (keyboard parity, WCAG 
   const w = load('<div class="wiki-content"><sup class="reference"><a href="#fn1">[1]</a></sup>' +
     '<li id="fn1">A footnote.</li></div>');
   w.document.querySelector("sup.reference a").dispatchEvent(new w.Event("focusin", { bubbles: true }));
-  await new Promise((r) => setTimeout(r, 260));   // same 200ms showTimer as hover
+  await pollCard(w);
   const card = w.document.querySelector(".hovercard .hovercard-ref");
   assert.ok(card, "focus opens the reference card");
   assert.ok(/A footnote/.test(card.textContent), "footnote text carried over");
@@ -1861,20 +1876,22 @@ test("hovercards: focus into the card keeps it; focus away dismisses it; no rela
     '<li id="fn1">A footnote.</li></div>');
   const a = w.document.querySelector("sup.reference a");
   a.dispatchEvent(new w.Event("focusin", { bubbles: true }));
-  await new Promise((r) => setTimeout(r, 260));
+  await pollCard(w);
   const card = w.document.querySelector(".hovercard");
   assert.ok(card && !card.hidden, "focus opened the card");
   // focus moves INTO the card -> stays open (relatedTarget inside the card)
   const into = new w.Event("focusout", { bubbles: true });
   Object.defineProperty(into, "relatedTarget", { value: card, configurable: true });
   a.dispatchEvent(into);
-  await new Promise((r) => setTimeout(r, 260));
-  assert.ok(!card.hidden, "focus entering the card does not dismiss it");
+  // A wrongful hide would fire on the 200ms hideSoon timer; poll for hidden and assert it never
+  // comes (load only delays a would-be hide, so this still catches a regression; it times out at
+  // the cap when the card correctly stays open).
+  assert.ok(!(await pollCard(w, "hidden")) && !card.hidden, "focus entering the card does not dismiss it");
   // focus moves to an element OUTSIDE the card -> dismiss
   const away = new w.Event("focusout", { bubbles: true });
   Object.defineProperty(away, "relatedTarget", { value: w.document.body, configurable: true });
   a.dispatchEvent(away);
-  await new Promise((r) => setTimeout(r, 260));
+  await pollCard(w, "hidden");
   assert.ok(card.hidden, "focus leaving the card dismisses it");
   // a focusout with no relatedTarget is handled too (no throw, stays hidden)
   const none = new w.Event("focusout", { bubbles: true });
@@ -1903,7 +1920,7 @@ test("hovercards: hovering an internal link builds a page card from the fetched 
   const a = w.document.querySelector(".wiki-content a");
   a.dispatchEvent(new w.MouseEvent("mouseover", { bubbles: true }));
   await tick();                                   // let ensurePreviews() resolve
-  await new Promise((r) => setTimeout(r, 260));   // showTimer is 200ms
+  await pollCard(w);
   const card = w.document.querySelector(".hovercard .hovercard-page");
   assert.ok(card, "page-preview hovercard built from the fetched index");
   assert.ok(/Blocks unwanted traffic/.test(card.textContent), "summary carried over");
@@ -1920,7 +1937,7 @@ test("hovercards: page-preview summary renders whitelisted inline formatting as 
   const a = w.document.querySelector(".wiki-content a");
   a.dispatchEvent(new w.MouseEvent("mouseover", { bubbles: true }));
   await tick();
-  await new Promise((r) => setTimeout(r, 260));
+  await pollCard(w);
   const extract = w.document.querySelector(".hovercard-extract");
   assert.ok(extract, "page-preview card shown");
   const us = extract.querySelectorAll("u");
@@ -1943,7 +1960,7 @@ test("hovercards: page-preview summary drops non-whitelisted tags + tolerates un
   const a = w.document.querySelector(".wiki-content a");
   a.dispatchEvent(new w.MouseEvent("mouseover", { bubbles: true }));
   await tick();
-  await new Promise((r) => setTimeout(r, 260));
+  await pollCard(w);
   const extract = w.document.querySelector(".hovercard-extract");
   assert.ok(extract, "card shown");
   assert.equal(extract.querySelectorAll("span").length, 0, "non-whitelisted span dropped");
@@ -4076,7 +4093,7 @@ test("hovercards: a reference anchor with empty text yields a bare 'Footnote' he
   const w = load('<div class="wiki-content"><sup class="reference"><a href="#fn1"></a></sup>' +
     '<li id="fn1">The note body.</li></div>');
   w.document.querySelector("sup.reference a").dispatchEvent(new w.MouseEvent("mouseover", { bubbles: true }));
-  await new Promise((r) => setTimeout(r, 260));
+  await pollCard(w);
   const card = w.document.querySelector(".hovercard");
   assert.ok(card && !card.hidden, "card shown for the empty-label citation");
   assert.ok(/The note body/.test(card.textContent), "footnote body carried over");
@@ -4089,7 +4106,7 @@ test("hovercards: arrow keys are inert while a PAGE-preview card is shown (curRe
     { appSrc: "../app.min.js", previews: { "wiki/Firewall/": { t: "Firewall", d: "Blocks traffic." } } });
   w.document.querySelector(".wiki-content a").dispatchEvent(new w.MouseEvent("mouseover", { bubbles: true }));
   await tick();
-  await new Promise((r) => setTimeout(r, 260));
+  await pollCard(w);
   assert.ok(w.document.querySelector(".hovercard .hovercard-page"), "page-preview card shown");
   w.document.dispatchEvent(new w.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
   assert.ok(w.document.querySelector(".hovercard .hovercard-page"), "card unchanged (curRef<0 -> arrow ignored)");
@@ -4151,7 +4168,11 @@ test("hovercards: a page link whose href is cleared mid-fetch yields no card (hr
   a.dispatchEvent(new w.MouseEvent("mouseover", { bubbles: true }));
   a.removeAttribute("href");                 // cleared after the guard, before the fetch resolves
   await tick();
-  await new Promise((r) => setTimeout(r, 260));
+  // Asserts NO card is built, so there is no state to poll FOR. pageNodes throws on the cleared
+  // href inside the fetch `.then` (all microtasks); one macrotask after that chain drains
+  // guarantees the decision is made and no showTimer was scheduled -- deterministic, unlike a
+  // fixed sleep that could pass spuriously by asserting before a would-be card appears.
+  await new Promise((r) => setTimeout(r, 0));
   assert.equal(w.document.querySelector(".hovercard .hovercard-page"), null,
     "an anchor that lost its href resolves to no preview card");
 });
