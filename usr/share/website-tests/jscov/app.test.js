@@ -1815,6 +1815,37 @@ test("hovercards: reference card has a 'Footnote N' headline, nav on top, arrow 
   assert.ok(w.document.querySelector(".hovercard").hidden, "Escape hides the card");
 });
 
+test("hovercards: click/tap outside an open card dismisses it; inside keeps it; no-op when closed (light dismiss)", async () => {
+  const w = load('<div class="wiki-content"><sup class="reference"><a href="#fn1">[1]</a></sup>' +
+    '<li id="fn1">A footnote.</li></div><p id="elsewhere">body text</p>');
+  const a = w.document.querySelector("sup.reference a");
+  const outside = w.document.getElementById("elsewhere");
+  // Before any card exists, an outside click is a harmless no-op (the !card early-return).
+  outside.dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
+  assert.ok(!w.document.querySelector(".hovercard"), "no card before hover; click is a no-op");
+  // Open the card, then POLL for it rather than sleeping a fixed wall-clock span: under a loaded
+  // event loop the app's 200ms showTimer can fire later than any guessed sleep, racing the assert.
+  // The loop waits on the CONDITION, so load only makes it iterate more, never flake; the ~2s cap
+  // turns a never-shown card into a real failure, not a hang.
+  a.dispatchEvent(new w.MouseEvent("mouseover", { bubbles: true }));
+  let card = null;
+  for (let i = 0; i < 200 && !(card && !card.hidden); i++) {
+    await new Promise((r) => setTimeout(r, 10));
+    card = w.document.querySelector(".hovercard");
+  }
+  assert.ok(card && !card.hidden, "card opened on hover");
+  // A click INSIDE the card does NOT dismiss it (links / the prev-next nav stay usable).
+  card.dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
+  assert.ok(!card.hidden, "click inside the card keeps it open");
+  // A click OUTSIDE (a tap, on touch) dismisses it -- the Popover-API `auto` light-dismiss idiom.
+  // The dismiss is synchronous in the handler, so no further wait is needed.
+  outside.dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
+  assert.ok(card.hidden, "click outside the card dismisses it");
+  // With the card already dismissed, a further outside click stays a no-op (card.hidden branch).
+  outside.dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
+  assert.ok(card.hidden, "a click while already dismissed stays a no-op");
+});
+
 test("hovercards: a FOCUSED citation opens the same card (keyboard parity, WCAG 2.1.1)", async () => {
   const w = load('<div class="wiki-content"><sup class="reference"><a href="#fn1">[1]</a></sup>' +
     '<li id="fn1">A footnote.</li></div>');
