@@ -1728,14 +1728,21 @@ test("hovercards: a reference card carries a prev/next navigator that browses al
   assert.ok(/First note/.test(card.textContent), "opens on the hovered note");
   assert.ok(card.querySelector(".hovercard-nav"), "nav present when the page has >1 note");
   assert.ok(/1 \/ 3/.test(card.querySelector(".hovercard-pos").textContent), "position reads 1 / 3");
-  // next -> note 2, content flips in place (same card element)
+  // next -> note 2, content flips in place (same card element) AND the card stays open.
+  // Regression: the click/tap-outside light-dismiss handler must NOT fire for a nav click. The
+  // button rebuilds the card synchronously (showRef -> fill), detaching e.target, so a bubble-phase
+  // containment test would read the click as "outside" and hide the just-flipped card. app.js runs
+  // that handler in the CAPTURE phase to keep e.target attached; this asserts the card stays shown.
   card.querySelectorAll(".hovercard-navbtn")[1].dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
   card = w.document.querySelector(".hovercard");
+  assert.ok(!card.hidden, "card stays open after a pointer nav click (light-dismiss did not hide it)");
   assert.ok(/Second note/.test(card.textContent) && /2 \/ 3/.test(card.querySelector(".hovercard-pos").textContent), "next flips to note 2 / 3");
   // prev from note 1 wraps to the last: 2 -> 1 -> 3
   card.querySelectorAll(".hovercard-navbtn")[0].dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
   w.document.querySelector(".hovercard").querySelectorAll(".hovercard-navbtn")[0].dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
-  assert.ok(/Third note/.test(w.document.querySelector(".hovercard").textContent), "prev wraps to the last note");
+  card = w.document.querySelector(".hovercard");
+  assert.ok(!card.hidden, "card stays open after wrapping prev nav clicks");
+  assert.ok(/Third note/.test(card.textContent), "prev wraps to the last note");
 });
 
 test("hovercards: a citation low in the viewport flips the card ABOVE and caps to the room", async () => {
