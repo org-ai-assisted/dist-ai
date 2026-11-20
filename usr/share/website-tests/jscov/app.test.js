@@ -2637,21 +2637,27 @@ test("search combobox: Enter follows the active option's href, overriding the be
   assert.equal(w.location.hash, "#alfie", "Enter navigates to the highlighted option, not the first-row bestMatch");
 });
 
-test("search combobox: two-stage Escape -- first clears + keeps the overlay open, second closes it", async () => {
-  // Stage 1 (field has text): one Escape empties the field and hides the dropdown but LEAVES the
-  // overlay open and focused so the user can retype at once (clearField -> closeResults, which does
-  // NOT uncheck the toggle; the input handler stopPropagation's, so the document Escape does not
-  // also run). Stage 2 (field already empty): the input handler early-returns, so the Escape
-  // propagates to the document handler, which closeSearch'es -- unchecking the toggle to collapse
-  // the mobile overlay. readyState=complete -> single init. Canary: pre-fix app.js collapsed the
-  // overlay on the FIRST Escape (clearField -> closeSearch); earlier it PRESERVED the query ("al").
+test("search combobox: two-stage Escape owns both stages and never leaks to other layers", async () => {
+  // The search OWNS its Escape, so neither stage reaches the document-level Escape handlers that
+  // also close the nav / tools / toast / modal. Stage 1 (field has text): one Escape empties the
+  // field + hides the dropdown but LEAVES the overlay open and focused to retype (clearField ->
+  // closeResults, no uncheck). Stage 2 (field already clear, overlay still open): the INPUT handler
+  // closeSearch'es, unchecking the toggle. Both stages stopPropagation, so the co-open nav drawer
+  // stays up. readyState=complete -> single init. Canary: pre-fix app.js collapsed the overlay on
+  // the FIRST Escape, and its stage-2 Escape PROPAGATED to the document handlers, unchecking the nav.
   const w = load(
-    '<span class="site-search"><input type="checkbox" id="search-toggle"><input id="search-input"></span>',
+    '<header class="site-header"><div class="site-header-inner">' +
+      '<input type="checkbox" id="nav-toggle" class="nav-toggle">' +
+      '<nav class="site-nav"><a href="#x">link</a></nav>' +
+      '<span class="site-search"><input type="checkbox" id="search-toggle"><input id="search-input"></span>' +
+    '</div></header><main>body</main>',
     { searchIndex: [{ t: "Alpha", u: "wiki/Alpha/" }, { t: "Album", u: "wiki/Album/" }],
       preEval: (win) => Object.defineProperty(win.document, "readyState", { value: "complete", configurable: true }) });
+  const navToggle = w.document.getElementById("nav-toggle");
   const toggle = w.document.getElementById("search-toggle");
   const input = w.document.getElementById("search-input");
   const results = w.document.querySelector(".search-results");
+  navToggle.checked = true;   // nav drawer co-open with the search overlay
   toggle.checked = true;
   input.value = "al"; input.dispatchEvent(new w.Event("input")); await tick();
   assert.ok(!results.hidden, "dropdown open after a query");
@@ -2660,12 +2666,14 @@ test("search combobox: two-stage Escape -- first clears + keeps the overlay open
   assert.ok(results.hidden, "stage 1: Escape hides the dropdown");
   assert.equal(results.children.length, 0, "and clears its rows");
   assert.equal(input.getAttribute("aria-expanded"), "false");
-  assert.equal(toggle.checked, true, "stage 1: overlay STAYS open (clearField -> closeResults does not collapse the lens)");
-  // Stage 2: a second Escape on the now-empty field early-returns in the input handler and
-  // propagates to the document handler -> closeSearch collapses the overlay.
+  assert.equal(toggle.checked, true, "stage 1: overlay STAYS open (closeResults does not collapse the lens)");
+  assert.equal(navToggle.checked, true, "stage 1: stopPropagation keeps the co-open nav drawer up");
+  // Stage 2: a second Escape on the now-empty field closeSearch'es from the INPUT handler and
+  // stopPropagation's, so only the search collapses -- the nav drawer is untouched.
   keydown(w, input, "Escape");
-  assert.equal(toggle.checked, false, "stage 2: the empty-field Escape collapses the overlay");
+  assert.equal(toggle.checked, false, "stage 2: the empty-field Escape collapses the search overlay");
   assert.equal(input.value, "", "and leaves the field empty");
+  assert.equal(navToggle.checked, true, "stage 2: closeSearch runs in the INPUT handler + stopPropagation -- the nav drawer is NOT closed");
 });
 
 test("search combobox: mouse hover syncs the active option; hovering the panel padding is a no-op", async () => {
