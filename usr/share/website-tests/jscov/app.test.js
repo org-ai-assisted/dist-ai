@@ -812,8 +812,11 @@ test("search filters the prebuilt index and renders result links", async () => {
 // fail on pre-change app.js (no footer row emitted). ----
 
 test("search dropdown: a 'search for all' footer is the LAST option, linking to Special:Search#q=", async () => {
+  // appSrc "../app.min.js" -> rootPrefix "../" (a real /wiki/ page), so the footer href is
+  // "../wiki/Special:Search#q=fire", NOT "..//wiki/..." -- canaries the double-slash bug: the
+  // footer must build its href EXACTLY like every other row (root + "wiki/...", no leading slash).
   const w = load('<input id="search-input">',
-    { appSrc: "../../vendor-bundle.js",   // rootPrefix "" -> clean absolute hrefs
+    { appSrc: "../app.min.js",
       searchIndex: [{ t: "Firewall", u: "wiki/Firewall/" }, { t: "Tor", u: "wiki/Tor/" }] });
   const input = w.document.getElementById("search-input");
   input.value = "fire";
@@ -826,7 +829,8 @@ test("search dropdown: a 'search for all' footer is the LAST option, linking to 
   assert.equal(last.getAttribute("aria-selected"), "false", "footer starts unselected");
   assert.ok(last.id, "footer carries an id for aria-activedescendant");
   const a = last.firstElementChild;
-  assert.equal(a.getAttribute("href"), "/wiki/Special:Search#q=fire", "footer -> Special:Search #q= deep link");
+  assert.equal(a.getAttribute("href"), "../wiki/Special:Search#q=fire",
+    "footer -> Special:Search #q= deep link, relative like every row (no leading-slash double //)");
   assert.equal(a.textContent, 'Search for pages containing "fire"', "footer labels the query");
   // The footer is EXTRA: the real title hit still renders, before the footer.
   const pageRows = results.querySelectorAll("li:not(.search-all)");
@@ -843,7 +847,7 @@ test("search dropdown footer: carries the RAW query (un-lowercased), URL-encoded
   input.dispatchEvent(new w.Event("input"));
   await tick();
   const a = w.document.querySelector(".search-results li.search-all a");
-  assert.equal(a.getAttribute("href"), "/wiki/Special:Search#q=API%20%26%20Tor",
+  assert.equal(a.getAttribute("href"), "wiki/Special:Search#q=API%20%26%20Tor",
     "raw query percent-encoded into #q=: space -> %20, '&' -> %26, case preserved");
   assert.equal(a.textContent, 'Search for pages containing "API & Tor"',
     "the label shows the trimmed RAW query verbatim");
@@ -863,6 +867,72 @@ test("search dropdown footer: dropped when its Special:Search target is not same
   const results = w.document.querySelector(".search-results");
   assert.equal(results.querySelectorAll("li.search-all").length, 0,
     "the footer is dropped when its target is not same-origin");
+  // Stronger than a footer-count: NOTHING navigable survives -- the protocol-relative rootPrefix
+  // makes every row's href (the title hit too) cross-origin, so navSafe drops them all. Guards
+  // against a regression that let ANY protocol-relative anchor through, not just the footer.
+  assert.equal(results.querySelectorAll("li a").length, 0,
+    "no navigable row survives: every target resolves protocol-relative -> all navSafe-dropped");
+});
+
+test("search dropdown footer: a lone surrogate in the query does not abort the render", async () => {
+  // encodeURIComponent throws URIError on an unpaired surrogate (half a pasted astral char). It is
+  // called while BUILDING the footer, which renderResults does FIRST -- so an unguarded throw would
+  // take down the whole dropdown (no title rows either). The title carries the surrogate so it still
+  // matches the tainted query (titleRank is substring); the guard must drop just the footer and let
+  // the title row render. Canary: pre-change app.js throws here and renders nothing.
+  const w = load('<input id="search-input">',
+    { appSrc: "../../vendor-bundle.js",
+      searchIndex: [{ t: "Tor\uD800", u: "wiki/Tor/" }] });
+  const input = w.document.getElementById("search-input");
+  input.value = "tor\uD800";                 // 2+ chars incl. the lone high surrogate
+  input.dispatchEvent(new w.Event("input"));
+  await tick();
+  const results = w.document.querySelector(".search-results");
+  assert.equal(results.querySelectorAll("li.search-all").length, 0,
+    "the footer is suppressed (encodeURIComponent would throw) -- not a broken render");
+  assert.equal(results.querySelectorAll("li:not(.search-all)").length, 1,
+    "the render survives the throw: the matching title row still appears");
+  assert.ok(!results.hidden, "the panel still opens on the surviving title row");
+});
+
+test("search dropdown footer: an async body row cannot steal the active footer's Enter target", async () => {
+  // activeIndex is a numeric index into the listbox. A body full-text row inserts BEFORE the footer
+  // (keeping it last), so the footer's index moves; appendResult must bump activeIndex to track it.
+  // Scenario: arrow onto the footer (the only row), THEN the gated body shard arrives and inserts
+  // ahead of it. Pure-hash body href makes a WRONG Enter observable (jsdom navigates a hash, no-ops
+  // a cross-doc path); the footer's Special:Search path nav is the swallowed no-op. Canary: pre-change
+  // app.js leaves activeIndex on index 0 (now the body row) and Enter yanks to '#firewall'.
+  const name = pad3(bktOf.anonymity);
+  const shard = {}; shard[name] = { anonymity: [[0, 0, [3]]] };   // body-only hit on page 0 for 'anonymity'
+  const sh = {}; sh[name] = "abc12345";
+  const w = load('<input id="search-input">', {
+    appSrc: "../../vendor-bundle.js",                              // rootPrefix "" -> footer href is "wiki/..."
+    searchIndex: [{ t: "Firewall", u: "#firewall" }],             // title lacks 'anonymity' -> title pass empty; pure-hash u
+    manifest: { v: 1, buckets: FX.buckets, docs: 1, avgdl: 10, dl: [10], base: "search/ft/", sh },
+    shards: shard,
+  });
+  let releaseShard;
+  const gate = new Promise((r) => { releaseShard = r; });
+  const realFetch = w.fetch;
+  w.fetch = (u) => (/\/ft\/\d+\.json/.test(String(u)) ? gate.then(() => realFetch(u)) : realFetch(u));
+  const input = w.document.getElementById("search-input");
+  input.value = "anonymity";
+  input.dispatchEvent(new w.Event("input"));
+  await tick();                                                    // title pass empty -> only the footer is shown
+  const results = w.document.querySelector(".search-results");
+  assert.equal(results.children.length, 1, "pre-insert: the footer is the sole (active) option");
+  keydown(w, input, "ArrowDown");                                  // activate the footer (index 0)
+  assert.equal(input.getAttribute("aria-activedescendant"), "mw-sr-all", "the footer is the active option");
+  w.location.hash = "#sentinel";
+  releaseShard();
+  await tick(); await tick();                                      // body row inserts before the footer
+  assert.ok(results.children[0].querySelector("a").getAttribute("href") === "#firewall",
+    "the async body row landed at index 0, pushing the footer to index 1");
+  assert.equal(results.querySelector("li.search-all").getAttribute("aria-selected"), "true",
+    "the footer is still the selected option after the insert");
+  keydown(w, input, "Enter");
+  assert.equal(w.location.hash, "#sentinel",
+    "Enter follows the still-active footer (a no-op path nav), NOT the body row's '#firewall'");
 });
 
 // ---- Special:Search results PAGE (setupResultsPage) -- a standalone box + inline list that
@@ -3789,6 +3859,10 @@ test("search drops a title hit whose target fails navSafe (tampered javascript: 
   // Only the always-safe "search for all" footer remains (its href is a same-origin Special:Search
   // link, navSafe-clean); the panel stays open on that one escalation row.
   assert.equal(results.querySelectorAll("li.search-all").length, 1, "only the safe search-for-all footer remains");
+  // Positively assert the surviving footer's OWN href is safe (not just that the tampered row went):
+  // a regression emitting a javascript:/protocol-relative footer would slip past a count alone.
+  assert.equal(results.querySelector("li.search-all a").getAttribute("href"), "wiki/Special:Search#q=firewall",
+    "the footer's own href is the same-origin Special:Search link, not an unsafe scheme");
   assert.ok(!results.hidden, "the footer keeps the panel open; the tampered hit is still dropped");
 });
 
@@ -3826,6 +3900,9 @@ test("full-text drops a body-only match whose target fails navSafe (tampered //h
     "the BM25-ranked body hit has a tampered target -> appendResult drops it, no page row added");
   // The safe "search for all" footer remains (same-origin Special:Search); panel stays open on it.
   assert.equal(results.querySelectorAll("li.search-all").length, 1, "only the safe search-for-all footer remains");
+  // Positively assert the footer's OWN href is safe, not merely that the tampered body row dropped.
+  assert.equal(results.querySelector("li.search-all a").getAttribute("href"), "wiki/Special:Search#q=anonymity",
+    "the footer's own href is the same-origin Special:Search link, not an unsafe scheme");
   assert.ok(!results.hidden, "the footer keeps the panel open; the tampered body hit is still dropped");
 });
 
