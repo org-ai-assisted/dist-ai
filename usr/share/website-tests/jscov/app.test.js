@@ -58,11 +58,13 @@ function load(bodyHtml, opts) {
   w.matchMedia = w.matchMedia || (() => ({ matches: false, addEventListener() {}, addListener() {} }));
   // Record each ResizeObserver so a test can fire its (batched) callback and inspect targets;
   // observe() still never auto-invokes, so every other test sees the former no-op behaviour.
-  // The app's geometry batcher reads each entry's CONTENT-box inlineSize (a free post-layout read,
-  // never scrollWidth/clientWidth which jsdom cannot compute). So `ro.cb()` with no args SYNTHESIZES
-  // one entry per observed target from its stubbed content-box size (`el.__inlineSize`, default 0) --
-  // a test sets sizes on the elements and fires the batched callback without hand-building entries.
-  // A test may still pass explicit entries (`ro.cb([{target, contentBoxSize | contentRect}])`).
+  // The app's geometry batcher reads each entry's BORDER-box inlineSize (child scroll extent) and
+  // CONTENT-box inlineSize (scroll-container visible width) -- free post-layout reads, never
+  // scrollWidth/clientWidth which jsdom cannot compute. So `ro.cb()` with no args SYNTHESIZES one
+  // entry per observed target from its stubbed sizes: content-box from `el.__inlineSize` (default 0)
+  // and border-box from `el.__borderSize` when set, else `el.__inlineSize` (equal on an unpadded
+  // element -- set `__borderSize` apart only to model padding, e.g. a caption's 10em side padding).
+  // A test may still pass explicit entries (`ro.cb([{target, borderBoxSize | contentBoxSize | contentRect}])`).
   if (!w.ResizeObserver) {
     w.__resizeObservers = [];
     w.ResizeObserver = class {
@@ -70,6 +72,7 @@ function load(bodyHtml, opts) {
         this.targets = []; this._cb = cb; w.__resizeObservers.push(this);
         this.cb = (entries) => this._cb(entries || this.targets.map((t) => ({
           target: t,
+          borderBoxSize: [{ inlineSize: t.__borderSize != null ? t.__borderSize : (t.__inlineSize || 0) }],
           contentBoxSize: [{ inlineSize: t.__inlineSize || 0 }],
           contentRect: { width: t.__inlineSize || 0 },
         })));
@@ -1993,14 +1996,15 @@ test("wide-table scroll init is total on a table (no throw)", () => {
     load('<div class="wiki-content"><table><tr><td>x</td></tr></table></div>'));
 });
 
-// jsdom computes no layout; app.js reads width from each RO entry's content-box inlineSize (a free
-// post-layout read, never scrollWidth/clientWidth which would force a layout AND which jsdom cannot
-// compute). stubTableGeom sets the stubbed sizes the RO mock synthesizes into entries: a ROW GROUP's
-// box is the CONTENT width (it lays out full-width while the table scrolls), the TABLE's box is the
-// VISIBLE width. `forcedReads`, if given, records ANY layout-forcing geometry read on the table or
-// its row group -- scrollWidth/clientWidth/offsetWidth/getBoundingClientRect, each of which forces a
-// synchronous layout. In the RO path it must stay EMPTY: the fix reads only the RO entry (free), so
-// a regression to ANY of these -- not just scrollWidth -- is caught, not only the one property.
+// jsdom computes no layout; app.js reads each child's BORDER-box inlineSize (scroll extent) and the
+// table's CONTENT-box inlineSize (visible width) from the RO entry -- free post-layout reads, never
+// scrollWidth/clientWidth which would force a layout AND which jsdom cannot compute. stubTableGeom
+// sets the stubbed sizes the RO mock synthesizes into entries: a ROW GROUP's box is the CONTENT
+// width (it lays out full-width while the table scrolls; unpadded, so border == content), the
+// TABLE's box is the VISIBLE width. `forcedReads`, if given, records ANY layout-forcing geometry
+// read on the table or its row group -- scrollWidth/clientWidth/offsetWidth/getBoundingClientRect,
+// each of which forces a synchronous layout. In the RO path it must stay EMPTY: the fix reads only
+// the RO entry (free), so a regression to ANY of these -- not just scrollWidth -- is caught.
 function stubTableGeom(table, content, visible, forcedReads) {
   const rg = table.tBodies[0] || table.tHead || table.tFoot;
   rg.__inlineSize = content;
@@ -2020,7 +2024,7 @@ function stubTableGeom(table, content, visible, forcedReads) {
   }
 }
 
-test("wide tables: the RO callback reads content-box inlineSize (free post-layout read, NEVER scrollWidth)", () => {
+test("wide tables: the RO callback reads cached entry sizes (free post-layout read, NEVER scrollWidth)", () => {
   const w = load('<div class="wiki-content">' +
     '<table id="wide"><tbody><tr><td>x</td></tr></tbody></table>' +
     '<table id="fits"><tbody><tr><td>y</td></tr></tbody></table></div>');
@@ -2047,17 +2051,17 @@ test("wide tables: the RO callback reads content-box inlineSize (free post-layou
   ro.cb();
 
   // REGRESSION (PageSpeed "forced reflow", app.min.js's old scrollWidth read): the measure must come
-  // from the RO entry's content-box inlineSize -- a free, post-layout read -- NEVER any layout-forcing
-  // geometry read (scrollWidth/clientWidth/offsetWidth/getBoundingClientRect). The sentinel traps ALL
-  // of those on the table and its row group; empty proves none fired. The old code read scrollWidth
-  // here, and a regression to clientWidth/offsetWidth would be equally forcing -- all are caught.
+  // from the RO entry (cached border/content box) -- a free, post-layout read -- NEVER any layout-
+  // forcing geometry read (scrollWidth/clientWidth/offsetWidth/getBoundingClientRect). The sentinel
+  // traps ALL of those on the table and its row group; empty proves none fired. The old code read
+  // scrollWidth here, and a regression to clientWidth/offsetWidth would be equally forcing -- all caught.
   assert.deepEqual(forcedReads, [], "no layout-forcing geometry read in the RO callback -> no forced reflow");
 
-  // Behaviour preserved: the overwide table's rail is shown, spacer == content width; the fitting
+  // Behaviour preserved: the overwide table's rail is shown, spacer == scroll extent; the fitting
   // table's rail stays hidden.
   const rail = wide.previousElementSibling;
   assert.equal(rail.style.display, "", "overwide table's rail shown");
-  assert.equal(rail.firstChild.style.width, "400px", "spacer width == child CONTENT width");
+  assert.equal(rail.firstChild.style.width, "400px", "spacer width == widest child's border-box (scroll extent)");
   assert.equal(wide.style.marginTop, "0px", "overwide table pinned under the rail");
   assert.equal(fits.previousElementSibling.style.display, "none", "fitting table's rail stays hidden");
 });
@@ -2106,36 +2110,86 @@ test("wide tables: observes the caption + EVERY row group; a caption-less row-le
   assert.equal(fb.previousElementSibling.style.display, "", "tfoot-driven overwide shows the rail");
 });
 
-test("wide tables: a wide CAPTION drives overwide even when the row group fits", () => {
-  // REGRESSION (codex/grok, both real-browser-verified): a table can overflow through its CAPTION
-  // (the scrollport child) while the row group fits. Observing only a row group missed it; observing
-  // the caption too catches it. The caption is the widest child here, so max(child widths) -> rail.
+test("wide tables: a wide CAPTION drives overwide by its BORDER box (padding-inclusive), not content box", () => {
+  // REGRESSION (codex + grok, both real-browser-verified): a table overflows through its CAPTION
+  // while the row group fits. The caption carries 10em side padding (style.css), so its CONTENT box
+  // excludes that padding and understates the scroll extent -- only its BORDER box == the table's
+  // scrollWidth. The fix reads the child's border box. Diverge the two: caption content 150 (would
+  // read as FITTING, 150 < 200), border 400 (the real extent). The shown rail + 400px spacer prove
+  // the BORDER box drove both the overwide verdict AND the spacer (so the rail's scroll range spans
+  // the full scrollWidth, not 20em short). A content-box read would hide the rail here -> RED.
   const w = load('<div class="wiki-content"><table id="t">' +
     '<caption>wide caption</caption><tbody><tr><td>x</td></tr></tbody></table></div>');
   const ro = w.__resizeObservers[0];
   const t = w.document.getElementById("t");
   assert.ok(ro.targets.includes(t.caption), "the caption is observed as a scroll-extent child");
-  t.caption.__inlineSize = 400;      // caption overflows
+  t.caption.__inlineSize = 150; t.caption.__borderSize = 400;  // content fits; border (padding-incl) overflows
   t.tBodies[0].__inlineSize = 150;   // row group fits
-  t.__inlineSize = 200;              // visible
+  t.__inlineSize = 200;              // visible (table content box)
   ro.cb();
-  assert.equal(t.previousElementSibling.style.display, "", "the wide caption (max child) shows the rail");
-  assert.equal(t.previousElementSibling.firstChild.style.width, "400px", "spacer == the widest child (caption)");
+  assert.equal(t.previousElementSibling.style.display, "", "the caption BORDER box (400) drives the rail, not content (150)");
+  assert.equal(t.previousElementSibling.firstChild.style.width, "400px", "spacer == caption border box (full scroll extent)");
 });
 
-test("wide tables: the WIDEST row group drives overwide (a hidden/narrow tbody does not mask a wide thead)", () => {
-  // REGRESSION (codex): picking tBodies[0] alone missed overflow from another row group. Content is
-  // max over ALL row groups, so a wide thead shows the rail even when tbody[0] measures narrow/0.
+test("wide tables: overwide is the MAX over ALL row groups (the widest is not the first/visible one)", () => {
+  // REGRESSION (codex + grok): content must be max over EVERY row group, not tBodies[0] or the first
+  // match. Fixture with the widest group SECOND so a first-match impl is caught: thead 100,
+  // tbody[0] 10 (narrow), tbody[1] 400 (the real extent). `tHead || tBodies[0]` reads 100,
+  // `size(tBodies[0])` reads 10 -- both < visible 200 -> rail hidden -> RED. Only the true max (400)
+  // shows the rail with a 400px spacer.
   const w = load('<div class="wiki-content"><table id="t">' +
-    '<thead><tr><th>h</th></tr></thead><tbody><tr><td>x</td></tr></tbody></table></div>');
+    '<thead><tr><th>h</th></tr></thead>' +
+    '<tbody><tr><td>x</td></tr></tbody>' +
+    '<tbody id="wideb"><tr><td>y</td></tr></tbody></table></div>');
   const ro = w.__resizeObservers[0];
   const t = w.document.getElementById("t");
-  t.tHead.__inlineSize = 400;        // the wide row group
-  t.tBodies[0].__inlineSize = 0;     // narrow/hidden tbody
+  assert.equal(t.tBodies.length, 2, "both tbodies are present");
+  assert.ok(ro.targets.includes(t.tBodies[1]), "the second (widest) tbody is observed too");
+  t.tHead.__inlineSize = 100;        // fits
+  t.tBodies[0].__inlineSize = 10;    // narrow (first)
+  t.tBodies[1].__inlineSize = 400;   // the real scroll extent (not first)
   t.__inlineSize = 200;              // visible
   ro.cb();
-  assert.equal(t.previousElementSibling.style.display, "", "max over row groups -> the wide thead shows the rail");
-  assert.equal(t.previousElementSibling.firstChild.style.width, "400px", "spacer == the widest row group (thead)");
+  assert.equal(t.previousElementSibling.style.display, "", "max over all row groups -> rail shown");
+  assert.equal(t.previousElementSibling.firstChild.style.width, "400px", "spacer == the widest row group (2nd tbody)");
+});
+
+test("wide tables: a CAPTION-ONLY table (no row group) is NOT skipped -- the caption builds + drives the rail", () => {
+  // REGRESSION (grok): the skip guard is "neither caption nor row group", not "no row group". A
+  // caption-only table (Chromium does not stretch a row group to a wide caption; a row-less table
+  // cannot at all) must still observe the caption and build a rail. A "skip unless row group" impl
+  // builds nothing here -> RED.
+  const w = load('<div class="wiki-content"><table id="c"><caption>wide</caption></table></div>');
+  const ro = w.__resizeObservers[0];
+  const c = w.document.getElementById("c");
+  assert.ok(ro.targets.includes(c.caption), "the caption-only table's caption is observed (table not skipped)");
+  const rail = c.previousElementSibling;
+  assert.ok(rail && rail.classList.contains("table-scroll-top"), "a rail is built for the caption-only table");
+  c.caption.__inlineSize = 150; c.caption.__borderSize = 400;  // border (padding-incl) overflows
+  c.__inlineSize = 200;                                        // visible
+  ro.cb();
+  assert.equal(rail.style.display, "", "the caption-only overwide shows the rail");
+  assert.equal(rail.firstChild.style.width, "400px", "spacer == caption border box");
+});
+
+test("wide tables: a child's width is RETAINED across a partial RO delivery that omits it", () => {
+  // REGRESSION (codex): a real RO callback delivers only the CHANGED targets, not every observed one.
+  // The batcher caches each delivered size and reuses it for targets absent from a later callback, so
+  // measure sees the widest child even when only the table was re-delivered. Prime wide-enough-to-fit
+  // (caption 400, table 500 -> hidden), then deliver ONLY the table shrinking to 200: the retained
+  // caption 400 now exceeds 200 -> rail shown. An impl reading only the current callback's entries
+  // loses the caption (not in the partial delivery) -> rail stays hidden -> RED.
+  const w = load('<div class="wiki-content"><table id="t">' +
+    '<caption>cap</caption><tbody><tr><td>x</td></tr></tbody></table></div>');
+  const ro = w.__resizeObservers[0];
+  const t = w.document.getElementById("t");
+  t.caption.__inlineSize = 150; t.caption.__borderSize = 400; t.tBodies[0].__inlineSize = 150; t.__inlineSize = 500;
+  ro.cb();  // full delivery: table 500 fits the 400 caption extent
+  assert.equal(t.previousElementSibling.style.display, "none", "primed hidden (caption 400 < visible 500)");
+  // Partial delivery: ONLY the table changed (shrank to 200); the caption is NOT re-delivered.
+  ro.cb([{ target: t, borderBoxSize: [{ inlineSize: 200 }], contentBoxSize: [{ inlineSize: 200 }], contentRect: { width: 200 } }]);
+  assert.equal(t.previousElementSibling.style.display, "", "retained caption 400 > new visible 200 -> rail shown");
+  assert.equal(t.previousElementSibling.firstChild.style.width, "400px", "spacer == retained caption border box");
 });
 
 test("wide tables: a page whose only table has no rows initializes with no rail (and no throw)", () => {
@@ -2146,20 +2200,42 @@ test("wide tables: a page whose only table has no rows initializes with no rail 
     "no rail built when every table is row-less (items empty -> early return)");
 });
 
-test("geometry batcher: an entry lacking contentBoxSize falls back to contentRect.width (same content box)", () => {
+test("geometry batcher: an entry lacking borderBoxSize/contentBoxSize falls back to contentRect.width", () => {
   const w = load('<div class="wiki-content"><table id="wide"><tbody><tr><td>x</td></tr></tbody></table></div>');
   const ro = w.__resizeObservers[0];
   const wide = w.document.getElementById("wide");
   const rg = wide.tBodies[0];
-  // An older ResizeObserver entry exposes only contentRect, not the structured contentBoxSize.
-  // contentRect IS the content box, so the fallback reads the SAME quantity -- never scrollWidth.
+  // An older ResizeObserver entry exposes only contentRect, neither structured box. BOTH the border
+  // and content roles then fall back to contentRect.width (an unpadded row group's border == content
+  // anyway), so the measure still comes from the entry -- never scrollWidth.
   ro.cb([
     { target: rg, contentRect: { width: 400 } },
     { target: wide, contentRect: { width: 200 } },
   ]);
   const rail = wide.previousElementSibling;
-  assert.equal(rail.style.display, "", "overwide computed from contentRect.width when contentBoxSize absent");
+  assert.equal(rail.style.display, "", "overwide computed from contentRect.width when neither box is present");
   assert.equal(rail.firstChild.style.width, "400px", "spacer from contentRect.width");
+});
+
+test("geometry batcher: the table's VISIBLE width is read from contentBoxSize, NOT contentRect", () => {
+  // REGRESSION (coderabbit, dist-ai #874): the default mock derives contentBoxSize AND contentRect
+  // from the same __inlineSize, so neither can tell a contentBoxSize read from a contentRect-only
+  // read. Pass an explicit entry where they DIFFER on the TABLE (its visible width is the contentBox):
+  // contentBoxSize 200 (true visible content box) vs contentRect 400. A child border box of 300
+  // overflows the real 200 viewport -> rail shown. A regression reading contentRect (400) would see
+  // the table as 400 wide -> 300 fits -> rail hidden -> RED. (The missing-box fallback case above
+  // stays separate.)
+  const w = load('<div class="wiki-content"><table id="t"><tbody><tr><td>x</td></tr></tbody></table></div>');
+  const ro = w.__resizeObservers[0];
+  const t = w.document.getElementById("t");
+  const rg = t.tBodies[0];
+  ro.cb([
+    { target: rg, borderBoxSize: [{ inlineSize: 300 }], contentBoxSize: [{ inlineSize: 300 }], contentRect: { width: 300 } },
+    { target: t, borderBoxSize: [{ inlineSize: 220 }], contentBoxSize: [{ inlineSize: 200 }], contentRect: { width: 400 } },
+  ]);
+  const rail = t.previousElementSibling;
+  assert.equal(rail.style.display, "", "visible read from table contentBoxSize (200), not contentRect (400) -> overwide");
+  assert.equal(rail.firstChild.style.width, "300px", "spacer == child border-box scroll extent (300)");
 });
 
 test("geometry batcher: bottom-stack + wide table SHARE one observer, all reads before any writes", () => {
