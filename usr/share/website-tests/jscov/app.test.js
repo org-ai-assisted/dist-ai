@@ -1997,16 +1997,26 @@ test("wide-table scroll init is total on a table (no throw)", () => {
 // post-layout read, never scrollWidth/clientWidth which would force a layout AND which jsdom cannot
 // compute). stubTableGeom sets the stubbed sizes the RO mock synthesizes into entries: a ROW GROUP's
 // box is the CONTENT width (it lays out full-width while the table scrolls), the TABLE's box is the
-// VISIBLE width. `scrollSentinel`, if given, records any scrollWidth read -- it must stay EMPTY (the
-// fix reads the entry, so no forced reflow).
-function stubTableGeom(table, content, visible, scrollSentinel) {
+// VISIBLE width. `forcedReads`, if given, records ANY layout-forcing geometry read on the table or
+// its row group -- scrollWidth/clientWidth/offsetWidth/getBoundingClientRect, each of which forces a
+// synchronous layout. In the RO path it must stay EMPTY: the fix reads only the RO entry (free), so
+// a regression to ANY of these -- not just scrollWidth -- is caught, not only the one property.
+function stubTableGeom(table, content, visible, forcedReads) {
   const rg = table.tBodies[0] || table.tHead || table.tFoot;
   rg.__inlineSize = content;
   table.__inlineSize = visible;
-  if (scrollSentinel) {
-    const trap = (el, label) => Object.defineProperty(el, "scrollWidth",
-      { configurable: true, get() { scrollSentinel.push(label); return content; } });
-    trap(table, "table.scrollWidth"); trap(rg, "rg.scrollWidth");
+  if (forcedReads) {
+    const trapProp = (el, name, label) => Object.defineProperty(el, name,
+      { configurable: true, get() { forcedReads.push(label); return content; } });
+    for (const el of [["table", table], ["rg", rg]]) {
+      for (const prop of ["scrollWidth", "clientWidth", "offsetWidth"]) {
+        trapProp(el[1], prop, `${el[0]}.${prop}`);
+      }
+      el[1].getBoundingClientRect = () => {
+        forcedReads.push(`${el[0]}.getBoundingClientRect`);
+        return { width: content, height: 0, top: 0, left: 0, right: content, bottom: 0 };
+      };
+    }
   }
 }
 
@@ -2031,16 +2041,17 @@ test("wide tables: the RO callback reads border-box inlineSize (free post-layout
   assert.ok(railBefore && railBefore.classList.contains("table-scroll-top"), "rail built up front");
   assert.equal(railBefore.style.display, "none", "rail hidden until the table is measured overwide");
 
-  const scrollReads = [];
-  stubTableGeom(wide, 400, 200, scrollReads);  // content 400 > visible 200 -> overwide
-  stubTableGeom(fits, 150, 200, scrollReads);  // content 150 < visible 200 -> fits
+  const forcedReads = [];
+  stubTableGeom(wide, 400, 200, forcedReads);  // content 400 > visible 200 -> overwide
+  stubTableGeom(fits, 150, 200, forcedReads);  // content 150 < visible 200 -> fits
   ro.cb();
 
   // REGRESSION (PageSpeed "forced reflow", app.min.js's old scrollWidth read): the measure must come
-  // from the RO entry's border-box inlineSize -- a free, post-layout read -- NEVER scrollWidth/
-  // clientWidth, which force a synchronous layout. The sentinel proves no scrollWidth getter fired
-  // during the callback; the old code read scrollWidth here, so this assertion fails on it.
-  assert.equal(scrollReads.length, 0, "no scrollWidth read in the RO callback -> no forced reflow");
+  // from the RO entry's border-box inlineSize -- a free, post-layout read -- NEVER any layout-forcing
+  // geometry read (scrollWidth/clientWidth/offsetWidth/getBoundingClientRect). The sentinel traps ALL
+  // of those on the table and its row group; empty proves none fired. The old code read scrollWidth
+  // here, and a regression to clientWidth/offsetWidth would be equally forcing -- all are caught.
+  assert.deepEqual(forcedReads, [], "no layout-forcing geometry read in the RO callback -> no forced reflow");
 
   // Behaviour preserved: the overwide table's rail is shown, spacer == row-group CONTENT width; the
   // fitting table's rail stays hidden.
@@ -2118,6 +2129,26 @@ test("geometry batcher: an entry lacking borderBoxSize falls back to contentRect
   assert.equal(rail.firstChild.style.width, "400px", "spacer from contentRect.width");
 });
 
+test("geometry batcher: an entry with BOTH borderBoxSize and contentRect reads the BORDER box", () => {
+  const w = load('<div class="wiki-content"><table id="wide"><tbody><tr><td>x</td></tr></tbody></table></div>');
+  const ro = w.__resizeObservers[0];
+  const wide = w.document.getElementById("wide");
+  const rg = wide.tBodies[0];
+  // borderBoxSize (border box) and contentRect.width (content box) differ by padding+border on a
+  // real element; the fix reads the BORDER box. Make them diverge so a contentRect-first read gives
+  // the WRONG verdict: border-box says overwide (row-group content 400 > visible 200), while
+  // content-box would read row group 150 < table 400 -> fits -> no rail. The shown rail + 400px
+  // spacer prove the border-box value drove the measure, not contentRect. (Guards the false-green a
+  // mock emitting equal borderBoxSize/contentRect would allow: a contentRect-only reader fails here.)
+  ro.cb([
+    { target: rg, borderBoxSize: [{ inlineSize: 400 }], contentRect: { width: 150 } },
+    { target: wide, borderBoxSize: [{ inlineSize: 200 }], contentRect: { width: 400 } },
+  ]);
+  const rail = wide.previousElementSibling;
+  assert.equal(rail.style.display, "", "border-box inlineSize (overwide) drove the measure, not contentRect");
+  assert.equal(rail.firstChild.style.width, "400px", "spacer == border-box inlineSize, not contentRect.width");
+});
+
 test("geometry batcher: bottom-stack + wide table SHARE one observer, all reads before any writes", () => {
   const w = load('<div class="bottom-stack" id="bs"></div>' +
     '<div class="wiki-content"><table id="wide"><tbody><tr><td>x</td></tr></tbody></table></div>');
@@ -2131,24 +2162,27 @@ test("geometry batcher: bottom-stack + wide table SHARE one observer, all reads 
   const wide = w.document.getElementById("wide");
   assert.ok(ro.targets.includes(stack) && ro.targets.includes(wide) && ro.targets.includes(wide.tBodies[0]),
     "the shared observer watches the bottom-stack, the table, and its row group");
-  // The bottom-stack's offsetHeight read must run BEFORE the table's rail is shown (every widget's
-  // READ precedes any WRITE). Record the rail's display at read time; it must still be hidden. AND
-  // no scrollWidth read at all (the table width comes from the RO entry).
-  const stackReadRailDisplay = [];
+  // The bottom-stack's offsetHeight is a LIVE read (it forces layout). It must run BEFORE any write
+  // that dirties layout -- the body.paddingBottom write AND the table's rail-show. Record BOTH at
+  // read time: paddingBottom must be unwritten and the rail still hidden. The old two-observer
+  // design wrote paddingBottom first, then read -> a forced reflow; that reordering sets
+  // paddingBottom at read time (not just the rail), so this assertion fails on it. AND no
+  // layout-forcing read of the table/row group at all (the table width comes from the RO entry).
+  const stackReadState = [];
   Object.defineProperty(stack, "offsetHeight", { configurable: true, get() {
-    stackReadRailDisplay.push(wide.previousElementSibling.style.display);
+    stackReadState.push({
+      pb: w.document.body.style.paddingBottom,
+      rail: wide.previousElementSibling.style.display,
+    });
     return 50;
   } });
-  const scrollReads = [];
-  stubTableGeom(wide, 400, 200, scrollReads);
+  const forcedReads = [];
+  stubTableGeom(wide, 400, 200, forcedReads);
   ro.cb();
-  // REGRESSION: every widget's READ runs before any widget's WRITE. The old two-observer design
-  // wrote paddingBottom then read the table's geometry (forcing layout) -- and read scrollWidth at
-  // all. Both assertions fail on it.
-  assert.equal(scrollReads.length, 0, "the table width came from the RO entry, not a forced scrollWidth read");
-  assert.ok(stackReadRailDisplay.length > 0, "the bottom-stack height was measured in the shared callback");
-  assert.ok(stackReadRailDisplay.every((disp) => disp === "none"),
-    "the bottom-stack read ran while the table rail was still hidden -> read precedes write");
+  assert.deepEqual(forcedReads, [], "the table width came from the RO entry, not a forced geometry read");
+  assert.ok(stackReadState.length > 0, "the bottom-stack height was measured in the shared callback");
+  assert.ok(stackReadState.every((s) => s.pb === "" && s.rail === "none"),
+    "every bottom-stack read ran before any write (paddingBottom unwritten, table rail still hidden)");
   // Both widgets applied: body padding reserved + the overwide table's rail shown.
   assert.equal(w.document.body.style.paddingBottom, "50px", "bottom-stack reserved 50px");
   assert.equal(wide.previousElementSibling.style.display, "", "overwide table's rail shown");
@@ -3212,6 +3246,17 @@ test("wide tables: without ResizeObserver, build via sync(), re-sync on a coales
   assert.equal(rafs.length, 1, "a late image load schedules its own re-sync frame");
   drain();
   assert.equal(rail.firstChild.style.width, "600px", "the image-load re-sync re-measured and widened the rail spacer");
+
+  // Prove the VISIBLE width comes from the TABLE (clientWidth), not an unstubbed row-group clientWidth
+  // (0, which would read every table as overwide). Shrink the content BELOW the visible width: the
+  // table now fits, so the rail must hide. A fallback comparing the row group's offsetWidth to the
+  // row group's own clientWidth (0 in jsdom) would keep it wrongly shown; the hidden rail rules that out.
+  geom.content = 120; geom.visible = 500;
+  w.dispatchEvent(new w.Event("resize"));
+  drain();
+  assert.equal(rail.style.display, "none",
+    "fits once content < table.clientWidth -> rail hidden (visible width came from the table)");
+  assert.equal(wide.style.marginTop, "", "the overwide pin is released when it fits");
 });
 
 test("wide tables: the top rail and the table mirror each other's scrollLeft (re-entrancy guarded)", () => {
