@@ -3187,6 +3187,17 @@ def _quote_path(rel):
     return '/'.join(urllib.parse.quote(seg, safe='') for seg in rel.split('/'))
 
 
+def _page_url_path(rel):
+    """The canonical served path for a content page REL: '/' for the root index,
+    '/sub/' for a directory index, '/X.html' otherwise. The page's percent-encoded
+    path segments keep their literal separators (see _quote_path)."""
+    if rel == 'index.html':
+        return '/'
+    if rel.endswith('/index.html'):
+        return '/' + _quote_path(rel[:-len('/index.html')]) + '/'
+    return '/' + _quote_path(rel)
+
+
 def seo_page_urls(root, host):
     """Sorted absolute URLs for every navigable content page under root. A
     directory index maps to its directory URL ('/', '/sub/'); any other page
@@ -3202,14 +3213,55 @@ def seo_page_urls(root, host):
         rel = os.path.relpath(page, root).replace(os.sep, '/')
         if rel == RESULTS_SUBDIR or rel.startswith(RESULTS_SUBDIR + '/'):
             continue
-        if rel == 'index.html':
-            path = '/'
-        elif rel.endswith('/index.html'):
-            path = '/' + _quote_path(rel[:-len('/index.html')]) + '/'
-        else:
-            path = '/' + _quote_path(rel)
-        urls.add('https://%s%s' % (host, path))
+        urls.add('https://%s%s' % (host, _page_url_path(rel)))
     return sorted(urls)
+
+
+def _sitemap_page_forms(root, host):
+    """Map each navigable content page's canonical URL to the set of sitemap
+    <loc> forms that COVER it, so coverage tolerates the two sitemap conventions
+    in use without letting one URL vouch for a page the server does not serve
+    there.
+
+    A clean-URL static server (GitHub Pages, and the wiki generator's nginx
+    `try_files $uri $uri.html`) serves a built `X.html` at BOTH `/X.html` and the
+    canonical extensionless `/X`: the wiki generator's sitemap lists the
+    extensionless form, dist-ai's own render_sitemap lists the `.html` form, so a
+    `/X.html` page is covered by EITHER.
+
+    The extensionless `/X` counts ONLY when the server actually serves `X.html`
+    there. The deployed rule (nginx/Pages `try_files $uri $uri.html`, mirrored by
+    mw-static-generator's pre-deploy-serve.py) short-circuits on a real FILE at
+    the bare path and otherwise serves `X.html` -- so ONLY a real file at `/X`
+    shadows it; a same-named DIRECTORY does NOT (`.html` wins over the dir, which
+    the wiki relies on -- it emits both `Page.html` and a `Page/` subpage dir).
+    So a built `a.html` shadows the `/a.html` clean form of `a.html.html` (whose
+    only served URL is then `/a.html.html`), while `wiki/KVM/` subpages never
+    shadow `/wiki/KVM`. A directory/root index ('/X/', '/') has no `.html` to
+    strip."""
+    forms = {}
+    for page in html_files(root):
+        rel = os.path.relpath(page, root).replace(os.sep, '/')
+        if rel == RESULTS_SUBDIR or rel.startswith(RESULTS_SUBDIR + '/'):
+            continue
+        url = 'https://%s%s' % (host, _page_url_path(rel))
+        variants = {url}
+        if rel.endswith('.html') and not rel.endswith('/index.html') \
+                and rel != 'index.html':
+            clean_rel = rel[:-len('.html')]
+            stem = posixpath.basename(clean_rel)
+            # The stem must be a real page segment. An empty stem ('.html' ->
+            # clean_rel '', 'sub/.html' -> 'sub/') collapses the clean URL onto a
+            # directory/root index ('/', '/sub/'), and a dot stem ('..html' -> '.',
+            # '...html' -> '..') normalizes to '.'/'..' -- none served by this page,
+            # so they must never vouch for it. Unshadowed: no real FILE occupies the
+            # extensionless path (a bare same-named directory does not shadow --
+            # .html wins over it).
+            if stem and stem not in ('.', '..') \
+                    and not os.path.isfile(os.path.join(root, clean_rel)):
+                variants.add('https://%s/%s' % (host, _quote_path(clean_rel)))
+        forms[url] = variants
+    return forms
 
 
 def render_sitemap(root, host):
@@ -3376,8 +3428,12 @@ def check_seo(root, policy=None):
                             for el in sitemap_root.iter()
                             if isinstance(el.tag, str)
                             and el.tag.rsplit('}', 1)[-1].lower() == 'loc'}
-                    for url in seo_page_urls(root, host):
-                        if url not in locs:
+                    # Coverage, not byte-identity: a clean-URL server serves a built
+                    # X.html at both /X.html and the canonical /X, so the sitemap may
+                    # list either form -- but only where the server truly serves it
+                    # (_sitemap_page_forms handles the shadow case).
+                    for url, variants in sorted(_sitemap_page_forms(root, host).items()):
+                        if not (variants & locs):
                             problems.append('sitemap.xml does not list %s' % url)
     # robots.txt: every site ships one (a crawler fetches it first).
     if not os.path.isfile(os.path.join(root, 'robots.txt')):
