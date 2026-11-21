@@ -1268,6 +1268,8 @@ test("Special:Search page: builds the blue submit + a clear-x inside a role=sear
   await tick();
   const box = w.document.querySelector(".search-page-box");
   assert.equal(box.getAttribute("role"), "search", "the box is the role=search landmark (no <form> under CSP)");
+  assert.equal(box.getAttribute("aria-label"), "Search the wiki",
+    "the landmark carries a distinct accessible name (the header's role=search is unlabeled -> landmark-unique)");
   const submit = box.querySelector(".search-page-submit");
   assert.ok(submit && submit.textContent === "Search", "a Search submit button is present");
   const clear = w.document.querySelector(".search-page-clear");
