@@ -79,8 +79,6 @@ wiki/KVM.html: broken in-page anchor #Download_and_Extract
 wiki/KVM/Support.html: broken in-page anchor #User_Help_Forum
 wiki/Keystroke_and_Mouse_Deanonymization.html: link 'Tips_on_Remaining_Anonymous#clearnet' targets missing #clearnet
 wiki/MacOS.html: link 'Dev/Build_Documentation/images#VM_Creation' targets missing #VM_Creation
-wiki/MediaWiki:Priority_Support.html: broken internal link '/wiki/MediaWiki:Plus_Support' -> wiki/MediaWiki:Plus_Support
-wiki/MediaWiki:Professional_Support.html: broken internal link '/wiki/MediaWiki:Premium_Support' -> wiki/MediaWiki:Premium_Support
 wiki/Monero/Manual_Instructions.html: link '../Warning#Always_Verify_Signatures' targets missing #Always_Verify_Signatures
 wiki/Network_Time_Synchronization.html: link "KVM#Editing_an_Imported_Machine's_XML_Configuration" targets missing #Editing_an_Imported_Machine's_XML_Configuration
 wiki/Old_Project_Versions_and_News.html: link 'Deprecated#Updating_Tor' targets missing #Updating_Tor
@@ -130,8 +128,6 @@ wiki/Template:No_leaks_policy.html: broken in-page anchor #For_Reporting_Securit
 wiki/Template:Non-functional_Onion_Services.html: broken in-page anchor #Updates
 wiki/Template:Prevent_Bypassing_the_Tunnel-Link.html: link 'Features#Tunnel_Support' targets missing #Tunnel_Support
 wiki/Template:Prevent_Bypassing_the_Tunnel-Link.html: link 'Whonix-Workstation_Security_Hardening#Multiple_Tor_Browser_Instances' targets missing #Multiple_Tor_Browser_Instances
-wiki/Template:Professional_Support.html: broken internal link '/wiki/Template:Premium_Support' -> wiki/Template:Premium_Support
-wiki/Template:Professional_Support_Skills.html: broken internal link '/wiki/Template:Premium_Support_Skills' -> wiki/Template:Premium_Support_Skills
 wiki/Template:Qubes_Operating_System_Updates.html: link 'Deprecated#KEYEXPIRED_Error' targets missing #KEYEXPIRED_Error
 wiki/Template:Should_I_be_concerned.html: link 'Browser_Tests#about:tor' targets missing #about:tor
 wiki/Template:Supported_Platforms.html: broken in-page anchor #Linux

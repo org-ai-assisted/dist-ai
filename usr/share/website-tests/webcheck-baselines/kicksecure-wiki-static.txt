@@ -97,8 +97,6 @@ wiki/Dev/wiki.html: link '../Special:Preferences#mw-prefsection-gadgets' targets
 wiki/Dev/wiki.html: link 'mediawiki#New_Vector_Skin_and_Skin_Preferences' targets missing #New_Vector_Skin_and_Skin_Preferences
 wiki/Download_Security.html: broken in-page anchor #balenaEtcher
 wiki/Electrum/Manual_Installation.html: link '../Tor_Controller#Nyx' targets missing #Nyx
-wiki/File:500.png.html: broken internal link '/wiki/File:Kicksecure_old_logo.png' -> wiki/File:Kicksecure_old_logo.png
-wiki/File:Qubes-Whonix-Gateway_TemplateVM_Qubes_VM_Manager_Settings.png.html: broken internal link '/wiki/File:Qubes-Whonix-Gateway_Template_Qubes_VM_Manager_Settings.png' -> wiki/File:Qubes-Whonix-Gateway_Template_Qubes_VM_Manager_Settings.png
 wiki/File_indexing.html: link 'Dev/bash#Safely_Using_Find_with_End-Of-Options' targets missing #Safely_Using_Find_with_End-Of-Options
 wiki/Forum_Best_Practices.html: link 'Dev/mediawiki#MediaWiki_Clean_vs_Unclean_Links' targets missing #MediaWiki_Clean_vs_Unclean_Links
 wiki/Forum_Best_Practices.html: link 'Privacy_Policy_Technical_Details#View_Counters_on_the_Whonix_Website' targets missing #View_Counters_on_the_Whonix_Website
