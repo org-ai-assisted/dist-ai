@@ -490,6 +490,59 @@ def run():
               any('does not list' in p and 'a%23b' in p for p in cs.check_seo(root)),
               repr(cs.check_seo(root)))
 
+    # _url_path_key normalization (reviewer round 2): a host is case-insensitive and an explicit
+    # default :443 is the same authority, so an UPPERCASE / :443 canonical is still self; a bad
+    # port or a non-web scheme (javascript:/file:) cannot classify -> conservative require; the
+    # robots probe takes noindex from ANY meta (restrictive wins); a duplicated href is first-win.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'up.html', '<p>x</p>')
+        _write(root, 'port.html', '<p>x</p>')
+        _write(root, 'bad.html', '<p>x</p>')
+        _write(root, 'dup.html', '<p>x</p>')
+        _write(root, 'multi.html', '<p>x</p>')
+        req, sp = cs._page_requires_sitemap_entry, cs._page_served_paths
+        check('an UPPERCASE-host canonical is self (case-insensitive host)',
+              req(_page(canonical='https://%s/up' % host.upper()), host, 'up.html', sp(root, 'up.html')),
+              'a canonical differing only in host case must count as self')
+        check('an explicit default :443 canonical is self',
+              req(_page(canonical='https://%s:443/port' % host), host, 'port.html', sp(root, 'port.html')),
+              'an explicit default https port is the same authority')
+        check('a bad-port canonical is conservatively required',
+              req(_page(canonical='https://%s:notaport/bad' % host), host, 'bad.html', sp(root, 'bad.html')),
+              'an invalid port must require the page, not silently drop it off-site')
+        check('a non-web (javascript:) canonical is conservatively required',
+              req(_page(canonical='javascript://%s/bad' % host), host, 'bad.html', sp(root, 'bad.html')),
+              'a non-web canonical scheme must not be treated as a self URL')
+        check('a duplicated href is first-win (self), not last-win (off-site)',
+              req(_page(canonical='https://%s/dup" href="https://evil.invalid/dup' % host),
+                  host, 'dup.html', sp(root, 'dup.html')),
+              'the first href wins, like a browser; the trailing off-site href must not')
+        check('noindex in a LATER robots meta still excludes the page',
+              not req('<meta name="robots" content="index">\n'
+                      '<meta name="robots" content="noindex">\n'
+                      '<link rel="canonical" href="https://%s/multi">' % host,
+                      host, 'multi.html', sp(root, 'multi.html')),
+              'the restrictive noindex from any robots meta must win')
+
+    # check_seo coverage rejects a non-web-scheme <loc> and matches a bare-host (no-slash) root loc.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _index(host))
+        _write(root, 'page.html', _page(canonical='https://%s/page' % host))
+        _write(root, 'robots.txt', cs.render_robots(host))
+        # root listed bare-host (no trailing slash) -> must still cover index; page listed only via
+        # a javascript: pseudo-URL whose (netloc,path) would otherwise alias the real one -> rejected.
+        _write(root, 'sitemap.xml',
+               '<?xml version="1.0"?><urlset>'
+               '<url><loc>https://%s</loc></url>'
+               '<url><loc>javascript://%s/page</loc></url></urlset>\n' % (host, host))
+        _probs = cs.check_seo(root)
+        check('a bare-host (no-slash) loc covers the root index',
+              not any(p == 'sitemap.xml does not list https://%s/' % host for p in _probs),
+              repr(_probs))
+        check('a non-web-scheme loc does not cover a page',
+              any('does not list' in p and '/page' in p for p in _probs),
+              repr(_probs))
+
     # check_seo: missing sitemap
     with tempfile.TemporaryDirectory() as root:
         _seed(root, host)

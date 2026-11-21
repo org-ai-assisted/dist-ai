@@ -3160,7 +3160,11 @@ class _CanonicalParser(html.parser.HTMLParser):
     def handle_starttag(self, tag, attrs):
         if tag != 'link' or self.href is not None:
             return
-        amap = dict(attrs)
+        amap = {}
+        for key, value in attrs:
+            kl = key.lower()
+            if kl not in amap:        # FIRST value of a duplicated attribute wins (browser)
+                amap[kl] = value or ''
         rel = (amap.get('rel') or '').lower().split()
         if 'canonical' in rel and amap.get('href'):
             self.href = amap['href']
@@ -3221,13 +3225,24 @@ def _page_served_paths(root, rel):
 
 
 def _url_path_key(url):
-    """A comparable key for a URL: (netloc, percent-decoded PATH). urlsplit -- NOT urlparse
-    -- keeps a ';params' segment IN the path and splits off '?query'/'#fragment', so two
-    DISTINCT resources never collapse to equal (/a vs /a%23b, /a vs /a;b); the path is
-    decoded so a literal char matches its %-escaped form (':' == '%3A'). Raises ValueError
-    on a malformed URL (e.g. a non-numeric port), which callers treat conservatively."""
+    """A comparable key for a URL: (NORMALIZED netloc, percent-decoded PATH), for matching a
+    canonical / sitemap <loc> against a served path. urlsplit (not urlparse) keeps a ';params'
+    segment IN the path and splits off '?query'/'#fragment': distinct resources stay distinct
+    (/a vs /a%23b, /a vs /a;b), while a query/fragment -- which never identifies a separate
+    crawlable PAGE -- is ignored for coverage. The path is decoded (':' == '%3A') and an empty
+    path normalizes to '/' (a bare-host <loc> is the root). The netloc is lowercased (a host is
+    case-insensitive) with the scheme's DEFAULT port dropped (an explicit :443 on https is the
+    same authority). Only http/https are accepted; any other scheme (javascript:, file:, ...)
+    and a malformed authority (a non-numeric/out-of-range port) raise ValueError, so callers
+    fall back conservatively (require the page) instead of false-matching."""
     parts = urllib.parse.urlsplit(url)
-    return (parts.netloc, urllib.parse.unquote(parts.path))
+    if parts.scheme not in ('http', 'https'):
+        raise ValueError('non-web scheme: %r' % (parts.scheme,))
+    port = parts.port       # property access raises ValueError on a bad port, not urlsplit()
+    host = parts.hostname or ''
+    default = 443 if parts.scheme == 'https' else 80
+    netloc = host if port in (None, default) else '%s:%d' % (host, port)
+    return (netloc, urllib.parse.unquote(parts.path) or '/')
 
 
 def _page_requires_sitemap_entry(markup, host, rel, served_paths):
@@ -3262,10 +3277,9 @@ def _page_requires_sitemap_entry(markup, host, rel, served_paths):
         # then take the decoded path. A bare-host canonical normalizes to '/'.
         netloc, canon_path = _url_path_key(urllib.parse.urljoin(own, canon.href))
     except ValueError:
-        return True   # malformed canonical: cannot classify -> require (fails loud, never masks)
-    if netloc and netloc != host:
+        return True   # malformed / non-web canonical: cannot classify -> require (never masks)
+    if netloc and netloc != host.lower():
         return False                      # canonical points off-site -> alias, not self
-    canon_path = canon_path or '/'
     served = set()
     for p in served_paths:
         try:
@@ -3354,19 +3368,20 @@ def render_sitemap(root, host):
 
 
 class _RobotsMetaProbe(html.parser.HTMLParser):
-    """Record whether the FIRST <meta name="robots"> carries the noindex directive as a TOKEN.
-    html.parser (not a regex) is load-bearing: a meta inside a comment or <script>/<style> text
-    is invisible; `data-content` is a distinct attribute, not `content`; the FIRST value of a
-    duplicated attribute wins (browser semantics); unquoted attributes parse; and `noindex` is a
-    comma/space token, so `noindexable` does NOT count."""
+    """Record whether ANY <meta name="robots"> carries the noindex directive as a TOKEN.
+    Crawlers COMBINE the directives of multiple robots metas and the most restrictive wins, so
+    noindex anywhere means noindex -- scan every robots meta, not just the first. html.parser
+    (not a regex) is load-bearing: a meta inside a comment or <script>/<style> text is invisible;
+    `data-content` is a distinct attribute, not `content`; the FIRST value of a duplicated
+    attribute wins (browser semantics); unquoted attributes parse; and `noindex` is a comma/space
+    token, so `noindexable` does NOT count."""
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.no_index = False
-        self._done = False
 
     def handle_starttag(self, tag, attrs):
-        if self._done or tag != 'meta':
+        if self.no_index or tag != 'meta':   # noindex found -> settled (it cannot be undone)
             return
         first = {}
         for key, value in attrs:
@@ -3375,9 +3390,9 @@ class _RobotsMetaProbe(html.parser.HTMLParser):
                 first[kl] = value or ''
         if first.get('name', '').lower() != 'robots':
             return
-        self._done = True             # only the first robots meta is authoritative
         tokens = re.split(r'[\s,]+', first.get('content', '').lower())
-        self.no_index = 'noindex' in tokens
+        if 'noindex' in tokens:
+            self.no_index = True
 
 
 def _site_no_index(root):
