@@ -3221,8 +3221,8 @@ def _page_requires_sitemap_entry(markup, host, served_paths):
     -- so the coverage check mirrors what a correct generator lists WITHOUT knowing
     any site's namespace names. A page is required only when it is canonical,
     indexable CONTENT; excluded otherwise:
-      - robots-noindex (the wiki's Special:*, Template:/File: namespaces, a preview
-        build) -- reuse _RobotsMetaProbe;
+      - robots-noindex (the wiki's transient Special:* utility pages, Template:/File:
+        namespaces, a preview build) -- reuse _RobotsMetaProbe;
       - NO <link rel=canonical> (the wiki's 404 and Category: stubs carry none);
       - a redirect/alias stub whose canonical points at a DIFFERENT URL -- the
         canonical TARGET is the real sitemap entry, not the stub (the wiki's
@@ -3242,7 +3242,9 @@ def _page_requires_sitemap_entry(markup, host, served_paths):
     parsed = urllib.parse.urlparse(canon.href)
     if parsed.netloc and parsed.netloc != host:
         return False                      # canonical points off-site -> alias, not self
-    canon_path = urllib.parse.unquote(parsed.path)
+    # A bare-host canonical ('https://host', no path) means the site root; normalize
+    # the empty path to '/' so it matches the index page's served '/'.
+    canon_path = urllib.parse.unquote(parsed.path) or '/'
     return canon_path in {urllib.parse.unquote(p) for p in served_paths}
 
 
@@ -3272,7 +3274,10 @@ def _sitemap_page_forms(root, host):
     canonical-less stubs (404, wiki Category:) are correctly absent from a
     generator's sitemap, so they are not required here either -- otherwise every
     such page false-fails coverage. This mirrors the generator inclusion rule from
-    the PAGE side, with no site-specific namespace knowledge.
+    the PAGE side, keyed on each page's OWN metadata with no namespace knowledge:
+    whether a given (e.g. Special:) page is required follows from its robots meta
+    and self-vs-other canonical, so the generator alone decides -- by noindex-ing a
+    utility page or by emitting it self-canonical + sitemapped -- and coverage matches.
 
     The value is the forms that COVER a required page, tolerating the two sitemap
     conventions in use. A clean-URL static server (GitHub Pages, and the wiki
@@ -3286,15 +3291,6 @@ def _sitemap_page_forms(root, host):
     for page in html_files(root):
         rel = os.path.relpath(page, root).replace(os.sep, '/')
         if rel == RESULTS_SUBDIR or rel.startswith(RESULTS_SUBDIR + '/'):
-            continue
-        # The MediaWiki Special: namespace is GENERATED utility pages (Special:AllPages,
-        # Special:Version, ...): self-canonical and crawlable, yet never sitemap content
-        # -- the generator emits them outside its indexable-page set (mw-static-generator
-        # _is_reserved_special: output path under `wiki/Special:`). They carry no HTML
-        # signal distinguishing them from content, so match the reserved namespace by the
-        # page title (the output basename). The `/Special:` is MediaWiki-specific; a
-        # non-wiki site has no such page, so this never drops real content.
-        if posixpath.basename(rel).startswith('Special:'):
             continue
         # The sitemap must COVER every canonical, indexable content page -- but ONLY
         # those. A built tree also holds noindex pages, redirect/alias stubs, and
@@ -3478,7 +3474,12 @@ def check_seo(root, policy=None):
                 except Exception:  # noqa: BLE001 -- any XML parse failure is a real SEO defect
                     problems.append('sitemap.xml is not well-formed XML')
                 else:
-                    locs = {(el.text or '').strip()
+                    # Percent-decode each <loc> so a sitemap written with a literal
+                    # char (a page's canonical href uses an unescaped ':' etc.) matches
+                    # a served variant computed with that char escaped (%3A); the same
+                    # char could never differentiate two real URLs, so this cannot
+                    # falsely satisfy coverage. Matches the required-check normalization.
+                    locs = {urllib.parse.unquote((el.text or '').strip())
                             for el in sitemap_root.iter()
                             if isinstance(el.tag, str)
                             and el.tag.rsplit('}', 1)[-1].lower() == 'loc'}
@@ -3487,7 +3488,7 @@ def check_seo(root, policy=None):
                     # list either form -- but only where the server truly serves it
                     # (_sitemap_page_forms handles the shadow case).
                     for url, variants in sorted(_sitemap_page_forms(root, host).items()):
-                        if not (variants & locs):
+                        if not ({urllib.parse.unquote(v) for v in variants} & locs):
                             problems.append('sitemap.xml does not list %s' % url)
     # robots.txt: every site ships one (a crawler fetches it first).
     if not os.path.isfile(os.path.join(root, 'robots.txt')):

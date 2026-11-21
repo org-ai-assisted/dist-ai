@@ -299,13 +299,15 @@ def run():
     # the generator's own sitemap inclusion rule from the page side. A built tree also
     # holds pages a correct sitemap OMITS; requiring them false-failed every one (the
     # real #262 deploy-blocker: 3061/3929 bogus does-not-list across both wiki sites).
-    # Classes, each excluded by an intrinsic signal (no site-specific names except the
-    # MediaWiki Special: namespace, which carries no distinguishing HTML signal):
-    #   - noindex (robots meta)            - the wiki's Template:/File:, a preview build
+    # Each class is judged by an INTRINSIC signal, with NO namespace knowledge -- so the
+    # generator alone decides a page's fate (noindex it, or emit it self-canonical +
+    # sitemapped) and coverage matches. This is key for the Special: namespace: a
+    # transient Special page (Search/WhatLinksHere/RecentChanges) is noindex -> excluded,
+    # while a Special page the generator chooses to index (a stable list page) is
+    # self-canonical -> REQUIRED, exactly like any content page. Exclusion classes:
+    #   - noindex (robots meta)             - Template:/File:, transient Special:, preview
     #   - redirect/alias (canonical->other) - redirect stubs; target is the real entry
     #   - no <link rel=canonical>           - 404, wiki Category: stubs
-    #   - Special: namespace                - generated utility pages (self-canonical,
-    #                                         crawlable, yet never sitemap content)
     with tempfile.TemporaryDirectory() as root:
         _write(root, 'index.html', _index(host))
         _write(root, 'wiki/Real_Page.html',
@@ -315,24 +317,40 @@ def run():
         _write(root, 'wiki/Redirect_Page.html',
                _page(canonical='https://%s/wiki/Real_Page' % host,
                      refresh='/wiki/Real_Page'))
+        # A transient Special page the generator noindexes -> excluded via the robots rule,
+        # NOT via any Special-name knowledge.
+        _write(root, 'wiki/Special:Search.html',
+               _page(canonical='https://%s/wiki/Special:Search' % host, noindex=True))
+        # A Special page the generator indexes (self-canonical) -> required, like content.
         _write(root, 'wiki/Special:AllPages.html',
                _page(canonical='https://%s/wiki/Special:AllPages' % host))
         _write(root, 'wiki/Category:Foo.html', _page())  # no canonical (a stub)
         _write(root, 'robots.txt', cs.render_robots(host))
-        # The CORRECT generator sitemap lists only the two canonical indexable pages.
+        # The CORRECT generator sitemap lists every canonical indexable page -- the two
+        # content pages AND the indexed Special page; nothing else.
         _sm = ('<?xml version="1.0"?><urlset>'
                '<url><loc>https://%s/</loc></url>'
                '<url><loc>https://%s/wiki/Real_Page</loc></url>'
-               '</urlset>\n' % (host, host))
+               '<url><loc>https://%s/wiki/Special:AllPages</loc></url>'
+               '</urlset>\n' % (host, host, host))
         _write(root, 'sitemap.xml', _sm)
         _probs = cs.check_seo(root)
         check('a realistic wiki tree: only canonical+indexable content is required',
               _probs == [], repr(_probs))
         # The excluded classes must never be demanded, even now that their pages exist.
-        for _excl in ('Noindex_Page', 'Redirect_Page', 'Special', 'Category'):
+        for _excl in ('Noindex_Page', 'Redirect_Page', 'Special:Search', 'Category'):
             check('coverage does not require the %s page' % _excl,
                   not any('does not list' in p and _excl in p for p in cs.check_seo(root)),
                   repr([p for p in cs.check_seo(root) if _excl in p]))
+        # An INDEXED Special page IS required: drop it from the sitemap -> flagged.
+        _write(root, 'sitemap.xml',
+               '<?xml version="1.0"?><urlset>'
+               '<url><loc>https://%s/</loc></url>'
+               '<url><loc>https://%s/wiki/Real_Page</loc></url></urlset>\n' % (host, host))
+        check('an indexed Special page absent from the sitemap fails loud',
+              any('does not list' in p and 'Special%3AAllPages' in p
+                  for p in cs.check_seo(root)), repr(cs.check_seo(root)))
+        _write(root, 'sitemap.xml', _sm)  # restore the correct sitemap
         # A genuinely-missing indexable content page STILL fails loud.
         _write(root, 'sitemap.xml',
                '<?xml version="1.0"?><urlset>'
