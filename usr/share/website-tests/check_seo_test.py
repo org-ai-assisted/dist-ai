@@ -76,10 +76,28 @@ def _index(host):
             '<header class="nav"></header>\n' % host)
 
 
+def _page(canonical=None, noindex=False, refresh=None):
+    # A content page as the generators emit it: a self-canonical indexable page
+    # carries <link rel=canonical> to its OWN url; a redirect stub points canonical
+    # (+ meta refresh) at ANOTHER url; a utility page is robots-noindex. `canonical`
+    # is the href (absolute or root-relative); None omits the link (a 404/Category
+    # stub). Coverage keys off these intrinsic signals, so tests must set them.
+    out = ['<!doctype html>\n<html lang="en">\n']
+    if noindex:
+        out.append('<meta name="robots" content="noindex,nofollow">\n')
+    if refresh:
+        out.append('<meta http-equiv="refresh" content="0; url=%s">\n' % refresh)
+    if canonical:
+        out.append('<link rel="canonical" href="%s">\n' % canonical)
+    out.append('<header class="nav"></header>\n')
+    return ''.join(out)
+
+
 def _seed(root, host):
     # A minimal but realistic multi-page site whose derived files are current.
     _write(root, 'index.html', _index(host))
-    _write(root, 'sub/index.html', '<header class="nav"></header>')
+    # A real indexable sub-page is self-canonical (coverage requires that).
+    _write(root, 'sub/index.html', _page(canonical='https://%s/sub/' % host))
     with open(os.path.join(root, 'sitemap.xml'), 'w', encoding='utf-8') as h:
         h.write(cs.render_sitemap(root, host))
     with open(os.path.join(root, 'robots.txt'), 'w', encoding='utf-8') as h:
@@ -277,57 +295,118 @@ def run():
         check('an unreadable sitemap.xml is reported, not crashed-on',
               not crashed and any('unreadable' in p for p in _probs), repr(_probs))
 
+    # check_seo: coverage REQUIRES only canonical + indexable CONTENT pages, mirroring
+    # the generator's own sitemap inclusion rule from the page side. A built tree also
+    # holds pages a correct sitemap OMITS; requiring them false-failed every one (the
+    # real #262 deploy-blocker: 3061/3929 bogus does-not-list across both wiki sites).
+    # Each class is judged by an INTRINSIC signal, with NO namespace knowledge -- so the
+    # generator alone decides a page's fate (noindex it, or emit it self-canonical +
+    # sitemapped) and coverage matches. This is key for the Special: namespace: a
+    # transient Special page (Search/WhatLinksHere/RecentChanges) is noindex -> excluded,
+    # while a Special page the generator chooses to index (a stable list page) is
+    # self-canonical -> REQUIRED, exactly like any content page. Exclusion classes:
+    #   - noindex (robots meta)             - Template:/File:, transient Special:, preview
+    #   - redirect/alias (canonical->other) - redirect stubs; target is the real entry
+    #   - no <link rel=canonical>           - 404, wiki Category: stubs
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _index(host))
+        _write(root, 'wiki/Real_Page.html',
+               _page(canonical='https://%s/wiki/Real_Page' % host))
+        _write(root, 'wiki/Noindex_Page.html',
+               _page(canonical='https://%s/wiki/Noindex_Page' % host, noindex=True))
+        _write(root, 'wiki/Redirect_Page.html',
+               _page(canonical='https://%s/wiki/Real_Page' % host,
+                     refresh='/wiki/Real_Page'))
+        # A transient Special page the generator noindexes -> excluded via the robots rule,
+        # NOT via any Special-name knowledge.
+        _write(root, 'wiki/Special:Search.html',
+               _page(canonical='https://%s/wiki/Special:Search' % host, noindex=True))
+        # A Special page the generator indexes (self-canonical) -> required, like content.
+        _write(root, 'wiki/Special:AllPages.html',
+               _page(canonical='https://%s/wiki/Special:AllPages' % host))
+        _write(root, 'wiki/Category:Foo.html', _page())  # no canonical (a stub)
+        _write(root, 'robots.txt', cs.render_robots(host))
+        # The CORRECT generator sitemap lists every canonical indexable page -- the two
+        # content pages AND the indexed Special page; nothing else.
+        _sm = ('<?xml version="1.0"?><urlset>'
+               '<url><loc>https://%s/</loc></url>'
+               '<url><loc>https://%s/wiki/Real_Page</loc></url>'
+               '<url><loc>https://%s/wiki/Special:AllPages</loc></url>'
+               '</urlset>\n' % (host, host, host))
+        _write(root, 'sitemap.xml', _sm)
+        _probs = cs.check_seo(root)
+        check('a realistic wiki tree: only canonical+indexable content is required',
+              _probs == [], repr(_probs))
+        # The excluded classes must never be demanded, even now that their pages exist.
+        for _excl in ('Noindex_Page', 'Redirect_Page', 'Special:Search', 'Category'):
+            check('coverage does not require the %s page' % _excl,
+                  not any('does not list' in p and _excl in p for p in cs.check_seo(root)),
+                  repr([p for p in cs.check_seo(root) if _excl in p]))
+        # An INDEXED Special page IS required: drop it from the sitemap -> flagged.
+        _write(root, 'sitemap.xml',
+               '<?xml version="1.0"?><urlset>'
+               '<url><loc>https://%s/</loc></url>'
+               '<url><loc>https://%s/wiki/Real_Page</loc></url></urlset>\n' % (host, host))
+        check('an indexed Special page absent from the sitemap fails loud',
+              any('does not list' in p and 'Special%3AAllPages' in p
+                  for p in cs.check_seo(root)), repr(cs.check_seo(root)))
+        _write(root, 'sitemap.xml', _sm)  # restore the correct sitemap
+        # A genuinely-missing indexable content page STILL fails loud.
+        _write(root, 'sitemap.xml',
+               '<?xml version="1.0"?><urlset>'
+               '<url><loc>https://%s/</loc></url></urlset>\n' % host)
+        check('a missing indexable content page still fails loud',
+              any('does not list' in p and 'Real_Page' in p for p in cs.check_seo(root)),
+              repr(cs.check_seo(root)))
+        # An alias/redirect-only sitemap (lists the stub, not the target) does NOT
+        # satisfy the target: the stub is not required, the target still is.
+        _write(root, 'sitemap.xml',
+               '<?xml version="1.0"?><urlset>'
+               '<url><loc>https://%s/</loc></url>'
+               '<url><loc>https://%s/wiki/Redirect_Page</loc></url></urlset>\n'
+               % (host, host))
+        check('a redirect-stub loc does not satisfy the canonical target',
+              any('does not list' in p and 'Real_Page' in p for p in cs.check_seo(root)),
+              repr(cs.check_seo(root)))
+
     # check_seo: a clean-URL (extensionless) sitemap COVERS an X.html built tree. A
     # clean-URL static server (GitHub Pages, the wiki generator's nginx try_files
-    # <uri> else <uri>.html) serves a built wiki/AEM.html at the canonical /wiki/AEM,
-    # so the wiki generator's sitemap lists the extensionless form while the tree on
-    # disk is X.html. Coverage must accept that -- a naive exact-string match flags
-    # every page (the real deploy-blocker this guards). The '.html'-terminal form (what
-    # dist-ai's own render_sitemap emits) is also accepted, so both conventions pass.
+    # <uri> else <uri>.html) serves wiki/AEM.html at the canonical /wiki/AEM, so the
+    # generator's sitemap lists the extensionless form while the tree holds X.html.
+    # Both that form and the '.html'-terminal form (dist-ai's own render_sitemap) pass.
     with tempfile.TemporaryDirectory() as root:
         _write(root, 'index.html', _index(host))
-        _write(root, 'wiki/AEM.html', '<p>x</p>')
+        _write(root, 'wiki/AEM.html',
+               _page(canonical='https://%s/wiki/AEM' % host))
         _write(root, 'robots.txt', cs.render_robots(host))
-        with open(os.path.join(root, 'sitemap.xml'), 'w', encoding='utf-8') as h:
-            h.write('<?xml version="1.0"?><urlset>'
-                    '<url><loc>https://%s/</loc></url>'
-                    '<url><loc>https://%s/wiki/AEM</loc></url>'
-                    '</urlset>\n' % (host, host))
-        check('an extensionless clean-URL sitemap covers an X.html built tree',
-              cs.check_seo(root) == [], repr(cs.check_seo(root)))
-        # the '.html'-terminal form still covers the same page (render_sitemap convention)
-        with open(os.path.join(root, 'sitemap.xml'), 'w', encoding='utf-8') as h:
-            h.write('<?xml version="1.0"?><urlset>'
-                    '<url><loc>https://%s/</loc></url>'
-                    '<url><loc>https://%s/wiki/AEM.html</loc></url>'
-                    '</urlset>\n' % (host, host))
-        check('the .html-terminal sitemap form also covers the page',
-              cs.check_seo(root) == [], repr(cs.check_seo(root)))
-        # clean-URL tolerance must NOT mask a genuinely absent page: a sitemap that
-        # lists NEITHER form of wiki/AEM is still flagged.
-        with open(os.path.join(root, 'sitemap.xml'), 'w', encoding='utf-8') as h:
-            h.write('<?xml version="1.0"?><urlset>'
-                    '<url><loc>https://%s/</loc></url>'
-                    '</urlset>\n' % host)
+        for _form in ('https://%s/wiki/AEM' % host, 'https://%s/wiki/AEM.html' % host):
+            _write(root, 'sitemap.xml',
+                   '<?xml version="1.0"?><urlset>'
+                   '<url><loc>https://%s/</loc></url>'
+                   '<url><loc>%s</loc></url></urlset>\n' % (host, _form))
+            check('sitemap form %r covers the built AEM.html' % _form,
+                  cs.check_seo(root) == [], repr(cs.check_seo(root)))
+        # Neither form present -> still flagged.
+        _write(root, 'sitemap.xml',
+               '<?xml version="1.0"?><urlset>'
+               '<url><loc>https://%s/</loc></url></urlset>\n' % host)
         check('a clean-URL sitemap still flags a truly missing page',
-              any('does not list' in p and p.endswith('/wiki/AEM.html')
-                  for p in cs.check_seo(root)), repr(cs.check_seo(root)))
+              any('does not list' in p and 'AEM' in p for p in cs.check_seo(root)),
+              repr(cs.check_seo(root)))
 
-    # check_seo: clean-URL tolerance must respect server shadowing. With BOTH a.html
-    # and a.html.html built, the server (try_files $uri $uri.html) serves /a.html as
-    # the real a.html file -- so /a.html does NOT cover a.html.html, whose only served
-    # URL is /a.html.html. A sitemap listing only / and /a.html must therefore FLAG
-    # a.html.html as unlisted (a blind .html-strip would let /a.html vouch for it).
+    # check_seo: clean-URL tolerance respects server shadowing. With BOTH a.html and
+    # a.html.html built, the server serves /a.html as the real a.html file -- so
+    # /a.html does NOT cover a.html.html (only served at /a.html.html). A sitemap
+    # listing only / and /a.html must FLAG a.html.html (a blind .html-strip would not).
     with tempfile.TemporaryDirectory() as root:
         _write(root, 'index.html', _index(host))
-        _write(root, 'a.html', '<p>real page served at /a.html</p>')
-        _write(root, 'a.html.html', '<p>only served at /a.html.html</p>')
+        _write(root, 'a.html', _page(canonical='https://%s/a.html' % host))
+        _write(root, 'a.html.html', _page(canonical='https://%s/a.html.html' % host))
         _write(root, 'robots.txt', cs.render_robots(host))
-        with open(os.path.join(root, 'sitemap.xml'), 'w', encoding='utf-8') as h:
-            h.write('<?xml version="1.0"?><urlset>'
-                    '<url><loc>https://%s/</loc></url>'
-                    '<url><loc>https://%s/a.html</loc></url>'
-                    '</urlset>\n' % (host, host))
+        _write(root, 'sitemap.xml',
+               '<?xml version="1.0"?><urlset>'
+               '<url><loc>https://%s/</loc></url>'
+               '<url><loc>https://%s/a.html</loc></url></urlset>\n' % (host, host))
         _probs = cs.check_seo(root)
         check('a shadowed extensionless form does not vouch for a.html.html',
               any('does not list' in p and p.endswith('/a.html.html')
@@ -335,64 +414,81 @@ def run():
         check('the real a.html IS covered by its own /a.html <loc>',
               not any('does not list' in p and p.rstrip().endswith('/a.html')
                       for p in _probs), repr(_probs))
-        # Unshadowed double-.html: drop a.html, leave a.html.html. Now /a.html is the
-        # genuine clean-URL form of a.html.html ($uri=a.html absent -> $uri.html hit),
-        # so listing /a.html alone covers it.
+        # Unshadowed: drop a.html -> /a.html is now a.html.html's genuine clean form.
         os.remove(os.path.join(root, 'a.html'))
-        with open(os.path.join(root, 'sitemap.xml'), 'w', encoding='utf-8') as h:
-            h.write('<?xml version="1.0"?><urlset>'
-                    '<url><loc>https://%s/</loc></url>'
-                    '<url><loc>https://%s/a.html</loc></url>'
-                    '</urlset>\n' % (host, host))
         check('an unshadowed /a.html clean form covers a.html.html',
               cs.check_seo(root) == [], repr(cs.check_seo(root)))
 
-    # check_seo: a same-named DIRECTORY must NOT shadow the extensionless form. The
+    # check_seo: a same-named DIRECTORY does NOT shadow the extensionless form. The
     # wiki emits both wiki/KVM.html and a wiki/KVM/ subpage dir; the server serves
-    # /wiki/KVM as wiki/KVM.html (.html wins over the dir -- try_files $uri $uri.html),
-    # so a sitemap listing /wiki/KVM (and /wiki/KVM/Child) correctly covers the page.
-    # os.path.exists() would wrongly treat the dir as a shadow and false-flag it.
+    # /wiki/KVM as wiki/KVM.html (.html wins over the dir), so a sitemap listing
+    # /wiki/KVM (+ /wiki/KVM/Child) correctly covers both.
     with tempfile.TemporaryDirectory() as root:
         _write(root, 'index.html', _index(host))
-        _write(root, 'wiki/KVM.html', '<p>served at /wiki/KVM</p>')
-        _write(root, 'wiki/KVM/Child.html', '<p>subpage</p>')
+        _write(root, 'wiki/KVM.html', _page(canonical='https://%s/wiki/KVM' % host))
+        _write(root, 'wiki/KVM/Child.html',
+               _page(canonical='https://%s/wiki/KVM/Child' % host))
         _write(root, 'robots.txt', cs.render_robots(host))
-        with open(os.path.join(root, 'sitemap.xml'), 'w', encoding='utf-8') as h:
-            h.write('<?xml version="1.0"?><urlset>'
-                    '<url><loc>https://%s/</loc></url>'
-                    '<url><loc>https://%s/wiki/KVM</loc></url>'
-                    '<url><loc>https://%s/wiki/KVM/Child</loc></url>'
-                    '</urlset>\n' % (host, host, host))
+        _write(root, 'sitemap.xml',
+               '<?xml version="1.0"?><urlset>'
+               '<url><loc>https://%s/</loc></url>'
+               '<url><loc>https://%s/wiki/KVM</loc></url>'
+               '<url><loc>https://%s/wiki/KVM/Child</loc></url></urlset>\n'
+               % (host, host, host))
         check('a same-named subpage dir does not shadow /wiki/KVM',
               cs.check_seo(root) == [], repr(cs.check_seo(root)))
 
-    # check_seo: a page with an EMPTY or dot stem must not borrow a directory/root
-    # <loc>. Stripping '.html' off a '.html'-only name yields '' (root), off
-    # 'sub/.html' yields 'sub/' (a dir), and off '..html'/'...html' yields '.'/'..';
-    # none of those URLs serve the page, so its clean form must NOT be synthesized --
-    # otherwise the index's '/' (or '/sub/') <loc> would mask the uncovered page.
-    for _name, _subdir, _canon in (
-            ('.html', '', '/.html'),
-            ('..html', '', '/..html'),
-            ('...html', '', '/...html'),
-            ('.html', 'sub', '/sub/.html')):
-        with tempfile.TemporaryDirectory() as root:
-            _write(root, 'index.html', _index(host))
-            rel = (_subdir + '/' + _name) if _subdir else _name
-            _write(root, rel, '<p>empty/dot stem page</p>')
-            if _subdir:
-                _write(root, _subdir + '/index.html', '<p>dir index</p>')
-            _write(root, 'robots.txt', cs.render_robots(host))
-            locs = ['https://%s/' % host]
-            if _subdir:
-                locs.append('https://%s/%s/' % (host, _subdir))
-            with open(os.path.join(root, 'sitemap.xml'), 'w', encoding='utf-8') as h:
-                h.write('<?xml version="1.0"?><urlset>%s</urlset>\n'
-                        % ''.join('<url><loc>%s</loc></url>' % u for u in locs))
-            _probs = cs.check_seo(root)
-            check('an empty/dot stem (%r) does not borrow a dir/root loc' % rel,
-                  any('does not list' in p and p.endswith(_canon) for p in _probs),
-                  repr(_probs))
+    # _page_served_paths: the extensionless clean-URL form is added only for a REAL
+    # page stem. An empty stem ('.html' -> '', 'sub/.html' -> 'sub/') or a dot stem
+    # ('..html' -> '.', '...html' -> '..') would collapse the clean URL onto a
+    # directory/root path, so it is NEVER synthesized -- else the index's '/' <loc>
+    # could vouch for the page. A normal stem keeps both served forms.
+    with tempfile.TemporaryDirectory() as root:
+        for _rel, _exp in (('.html', {'/.html'}),
+                           ('sub/.html', {'/sub/.html'}),
+                           ('..html', {'/..html'}),
+                           ('...html', {'/...html'}),
+                           ('wiki/AEM.html', {'/wiki/AEM.html', '/wiki/AEM'}),
+                           # a dir/root index is served at BOTH the clean path AND the file
+                           ('index.html', {'/', '/index.html'}),
+                           ('sub/index.html', {'/sub/', '/sub/index.html'})):
+            check('_page_served_paths(%r)' % _rel,
+                  cs._page_served_paths(root, _rel) == _exp,
+                  repr(cs._page_served_paths(root, _rel)))
+
+    # _page_requires_sitemap_entry robustness: resolve a RELATIVE canonical, accept an
+    # explicit index-file canonical, and conservatively REQUIRE a malformed canonical (never
+    # silently drop a page, never crash check_seo). Each would mis-classify before the fix.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'wiki/AEM.html', '<p>x</p>')      # a real file, so /wiki/AEM is unshadowed
+        _write(root, 'sub/index.html', '<p>x</p>')
+        _write(root, 'bad.html', '<p>x</p>')
+        req, sp = cs._page_requires_sitemap_entry, cs._page_served_paths
+        check('a relative canonical resolves against the page URL (self -> required)',
+              req(_page(canonical='AEM'), host, 'wiki/AEM.html', sp(root, 'wiki/AEM.html')),
+              'href="AEM" must resolve to /wiki/AEM and count as self-canonical')
+        check('an explicit index-file canonical counts as self (required)',
+              req(_page(canonical='https://%s/sub/index.html' % host), host,
+                  'sub/index.html', sp(root, 'sub/index.html')),
+              '/sub/index.html canonical must match the /sub/-served index page')
+        check('a malformed canonical is conservatively required (no crash, no silent drop)',
+              req(_page(canonical='https://[::1/bad'), host, 'bad.html', sp(root, 'bad.html')),
+              'an unparseable canonical must require the page, not raise')
+
+    # check_seo coverage compares DECODED PATHS, so a '#'-fragment <loc> (/a, fragment b) does
+    # NOT satisfy a page served at the %23-in-path URL /a%23b -- a whole-string unquote wrongly
+    # made the two equal and masked the missing page.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _index(host))
+        _write(root, 'a#b.html', _page(canonical='https://%s/a%%23b.html' % host))
+        _write(root, 'robots.txt', cs.render_robots(host))
+        _write(root, 'sitemap.xml',
+               '<?xml version="1.0"?><urlset>'
+               '<url><loc>https://%s/</loc></url>'
+               '<url><loc>https://%s/a#b</loc></url></urlset>\n' % (host, host))
+        check('a #fragment loc does not cover a %23-in-path page',
+              any('does not list' in p and 'a%23b' in p for p in cs.check_seo(root)),
+              repr(cs.check_seo(root)))
 
     # check_seo: missing sitemap
     with tempfile.TemporaryDirectory() as root:

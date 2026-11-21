@@ -3198,6 +3198,83 @@ def _page_url_path(rel):
     return '/' + _quote_path(rel)
 
 
+def _page_served_paths(root, rel):
+    """The server paths that serve page REL: its canonical '/X.html' path, plus
+    the extensionless clean-URL form '/X' when the server actually serves the page
+    there. Shadow/stem rules match the sitemap-form logic: only a real FILE shadows
+    the extensionless path (a bare same-named dir does not -- .html wins), and an
+    empty/dot stem never collapses onto a directory/root index (see
+    _sitemap_page_forms)."""
+    paths = {_page_url_path(rel)}
+    if rel == 'index.html' or rel.endswith('/index.html'):
+        # A directory/root index is served at BOTH the clean path (_page_url_path: '/sub/',
+        # '/') AND its explicit index file ('/sub/index.html', '/index.html') -- a
+        # self-canonical page may legitimately name either form.
+        paths.add('/' + _quote_path(rel))
+    elif rel.endswith('.html'):
+        clean_rel = rel[:-len('.html')]
+        stem = posixpath.basename(clean_rel)
+        if stem and stem not in ('.', '..') \
+                and not os.path.isfile(os.path.join(root, clean_rel)):
+            paths.add('/' + _quote_path(clean_rel))
+    return paths
+
+
+def _url_path_key(url):
+    """A comparable key for a URL: (netloc, percent-decoded PATH). urlsplit -- NOT urlparse
+    -- keeps a ';params' segment IN the path and splits off '?query'/'#fragment', so two
+    DISTINCT resources never collapse to equal (/a vs /a%23b, /a vs /a;b); the path is
+    decoded so a literal char matches its %-escaped form (':' == '%3A'). Raises ValueError
+    on a malformed URL (e.g. a non-numeric port), which callers treat conservatively."""
+    parts = urllib.parse.urlsplit(url)
+    return (parts.netloc, urllib.parse.unquote(parts.path))
+
+
+def _page_requires_sitemap_entry(markup, host, rel, served_paths):
+    """Whether built page must appear in the sitemap, judged from its OWN metadata
+    -- so the coverage check mirrors what a correct generator lists WITHOUT knowing
+    any site's namespace names. A page is required only when it is canonical,
+    indexable CONTENT; excluded otherwise:
+      - robots-noindex (the wiki's transient Special:* utility pages, Template:/File:
+        namespaces, a preview build) -- reuse _RobotsMetaProbe;
+      - NO <link rel=canonical> (the wiki's 404 and Category: stubs carry none);
+      - a redirect/alias stub whose canonical points at a DIFFERENT URL -- the
+        canonical TARGET is the real sitemap entry, not the stub (the wiki's
+        /wiki/ index and its ~hundreds of redirect pages).
+    This is the inverse view of the generator's own rule (mw-static _emit_sitemap
+    lists indexable article pages only; dist-ai render_sitemap derives from the
+    page set). `served_paths` is _page_served_paths for this page. (A <link>/<meta>
+    inside a <textarea>/<title> RCDATA element is NOT modelled -- the probes read
+    them as live, as html.parser does; generated pages place canonical/robots only in
+    <head>, never in body RCDATA, so this cannot arise on a real tree.)"""
+    robots = _RobotsMetaProbe()
+    robots.feed(markup)
+    robots.close()
+    if robots.no_index:
+        return False
+    canon = _CanonicalParser()
+    canon.feed(markup)
+    if not canon.href:
+        return False
+    own = 'https://%s%s' % (host, _page_url_path(rel))
+    try:
+        # Resolve a RELATIVE canonical (href="AEM", "./sub") against the page's own URL,
+        # then take the decoded path. A bare-host canonical normalizes to '/'.
+        netloc, canon_path = _url_path_key(urllib.parse.urljoin(own, canon.href))
+    except ValueError:
+        return True   # malformed canonical: cannot classify -> require (fails loud, never masks)
+    if netloc and netloc != host:
+        return False                      # canonical points off-site -> alias, not self
+    canon_path = canon_path or '/'
+    served = set()
+    for p in served_paths:
+        try:
+            served.add(_url_path_key('https://%s%s' % (host, p))[1])
+        except ValueError:
+            continue
+    return canon_path in served
+
+
 def seo_page_urls(root, host):
     """Sorted absolute URLs for every navigable content page under root. A
     directory index maps to its directory URL ('/', '/sub/'); any other page
@@ -3218,49 +3295,49 @@ def seo_page_urls(root, host):
 
 
 def _sitemap_page_forms(root, host):
-    """Map each navigable content page's canonical URL to the set of sitemap
-    <loc> forms that COVER it, so coverage tolerates the two sitemap conventions
-    in use without letting one URL vouch for a page the server does not serve
-    there.
+    """Map each page the sitemap MUST cover to the set of <loc> forms that cover
+    it. Only canonical, indexable CONTENT pages are required
+    (_page_requires_sitemap_entry): noindex pages, redirect/alias stubs, and
+    canonical-less stubs (404, wiki Category:) are correctly absent from a
+    generator's sitemap, so they are not required here either -- otherwise every
+    such page false-fails coverage. This mirrors the generator inclusion rule from
+    the PAGE side, keyed on each page's OWN metadata with no namespace knowledge:
+    whether a given (e.g. Special:) page is required follows from its robots meta
+    and self-vs-other canonical, so the generator alone decides -- by noindex-ing a
+    utility page or by emitting it self-canonical + sitemapped -- and coverage matches.
 
-    A clean-URL static server (GitHub Pages, and the wiki generator's nginx
-    `try_files $uri $uri.html`) serves a built `X.html` at BOTH `/X.html` and the
-    canonical extensionless `/X`: the wiki generator's sitemap lists the
-    extensionless form, dist-ai's own render_sitemap lists the `.html` form, so a
-    `/X.html` page is covered by EITHER.
-
-    The extensionless `/X` counts ONLY when the server actually serves `X.html`
-    there. The deployed rule (nginx/Pages `try_files $uri $uri.html`, mirrored by
-    mw-static-generator's pre-deploy-serve.py) short-circuits on a real FILE at
-    the bare path and otherwise serves `X.html` -- so ONLY a real file at `/X`
-    shadows it; a same-named DIRECTORY does NOT (`.html` wins over the dir, which
-    the wiki relies on -- it emits both `Page.html` and a `Page/` subpage dir).
-    So a built `a.html` shadows the `/a.html` clean form of `a.html.html` (whose
-    only served URL is then `/a.html.html`), while `wiki/KVM/` subpages never
-    shadow `/wiki/KVM`. A directory/root index ('/X/', '/') has no `.html` to
-    strip."""
+    The value is the forms that COVER a required page, tolerating the two sitemap
+    conventions in use. A clean-URL static server (GitHub Pages, and the wiki
+    generator's nginx `try_files $uri $uri.html`) serves a built `X.html` at BOTH
+    `/X.html` and the canonical extensionless `/X`: the wiki generator's sitemap
+    lists the extensionless form, dist-ai's own render_sitemap lists the `.html`
+    form, so a `/X.html` page is covered by EITHER (see _page_served_paths). The
+    extensionless `/X` counts only where the server truly serves it (real-file
+    shadow only, non-dot stem) -- _page_served_paths owns that rule."""
     forms = {}
     for page in html_files(root):
         rel = os.path.relpath(page, root).replace(os.sep, '/')
         if rel == RESULTS_SUBDIR or rel.startswith(RESULTS_SUBDIR + '/'):
             continue
+        # The sitemap must COVER every canonical, indexable content page -- but ONLY
+        # those. A built tree also holds noindex pages, redirect/alias stubs, and
+        # canonical-less stubs (404, wiki Category:) that a correct sitemap omits;
+        # requiring them would false-fail every such page against the generator's
+        # (correct) sitemap. Judge each page by its OWN metadata.
+        served = _page_served_paths(root, rel)
+        try:
+            with open(page, encoding='utf-8', errors='replace') as handle:
+                markup = handle.read()
+        except OSError:
+            markup = ''
+        # An unreadable page cannot be classified -- require it (conservative: a
+        # genuinely-missing page still fails loud rather than being silently dropped).
+        if markup and not _page_requires_sitemap_entry(markup, host, rel, served):
+            continue
+        # A clean-URL server serves a built X.html at both /X.html and the canonical
+        # /X, so the sitemap may list EITHER served form (_page_served_paths).
         url = 'https://%s%s' % (host, _page_url_path(rel))
-        variants = {url}
-        if rel.endswith('.html') and not rel.endswith('/index.html') \
-                and rel != 'index.html':
-            clean_rel = rel[:-len('.html')]
-            stem = posixpath.basename(clean_rel)
-            # The stem must be a real page segment. An empty stem ('.html' ->
-            # clean_rel '', 'sub/.html' -> 'sub/') collapses the clean URL onto a
-            # directory/root index ('/', '/sub/'), and a dot stem ('..html' -> '.',
-            # '...html' -> '..') normalizes to '.'/'..' -- none served by this page,
-            # so they must never vouch for it. Unshadowed: no real FILE occupies the
-            # extensionless path (a bare same-named directory does not shadow --
-            # .html wins over it).
-            if stem and stem not in ('.', '..') \
-                    and not os.path.isfile(os.path.join(root, clean_rel)):
-                variants.add('https://%s/%s' % (host, _quote_path(clean_rel)))
-        forms[url] = variants
+        forms[url] = {'https://%s%s' % (host, p) for p in served}
     return forms
 
 
@@ -3424,16 +3501,29 @@ def check_seo(root, policy=None):
                 except Exception:  # noqa: BLE001 -- any XML parse failure is a real SEO defect
                     problems.append('sitemap.xml is not well-formed XML')
                 else:
-                    locs = {(el.text or '').strip()
-                            for el in sitemap_root.iter()
-                            if isinstance(el.tag, str)
-                            and el.tag.rsplit('}', 1)[-1].lower() == 'loc'}
+                    # Compare each <loc> and served variant by its (netloc, decoded-PATH)
+                    # key (_url_path_key): a literal char matches its %-escaped form (':' ==
+                    # '%3A'), while ';params'/'#fragment' keep distinct resources distinct.
+                    # A malformed <loc> keys to nothing (covers no page).
+                    locs = set()
+                    for el in sitemap_root.iter():
+                        if isinstance(el.tag, str) and el.tag.rsplit('}', 1)[-1].lower() == 'loc':
+                            try:
+                                locs.add(_url_path_key((el.text or '').strip()))
+                            except ValueError:
+                                continue
                     # Coverage, not byte-identity: a clean-URL server serves a built
                     # X.html at both /X.html and the canonical /X, so the sitemap may
                     # list either form -- but only where the server truly serves it
                     # (_sitemap_page_forms handles the shadow case).
                     for url, variants in sorted(_sitemap_page_forms(root, host).items()):
-                        if not (variants & locs):
+                        vkeys = set()
+                        for v in variants:
+                            try:
+                                vkeys.add(_url_path_key(v))
+                            except ValueError:
+                                continue
+                        if not (vkeys & locs):
                             problems.append('sitemap.xml does not list %s' % url)
     # robots.txt: every site ships one (a crawler fetches it first).
     if not os.path.isfile(os.path.join(root, 'robots.txt')):
