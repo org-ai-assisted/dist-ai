@@ -1046,6 +1046,36 @@ test("search controls: the clear-x empties the field, resets the controls, and c
   assert.equal(w.document.activeElement, input, "focus stays in the field for a fresh query");
 });
 
+test("search Enter on an EMPTY field activates the submit -> the bare Special:Search page", async () => {
+  // Wikipedia/Vector idiom: Enter on an empty search box goes to the full Special:Search page.
+  // app.js activates the (already href-synced) submit; we observe the click rather than the real
+  // cross-document nav (jsdom cannot). Canary: pre-change empty-Enter returns early -> no click.
+  const w = searchWithControls({ appSrc: "../app.min.js", searchIndex: [{ t: "Firewall", u: "wiki/Firewall/" }] });
+  const input = w.document.getElementById("search-input");
+  const submit = w.document.getElementById("search-submit");
+  let clicked = null;
+  submit.addEventListener("click", (e) => { e.preventDefault(); clicked = submit.getAttribute("href"); });
+  input.value = "";
+  input.focus();
+  keydown(w, input, "Enter");
+  await tick();
+  assert.equal(clicked, "../wiki/Special:Search",
+    "empty-field Enter activates the Search submit -> the bare Special:Search results page");
+});
+
+test("search Enter on an empty field with no submit control is inert (no throw)", async () => {
+  // The minimal fixture has no #search-submit, so empty-Enter finds nothing to activate: it must
+  // simply no-op (never throw). Covers the submitLink-absent branch of the empty-Enter guard.
+  const w = load('<input id="search-input">', { appSrc: "../app.min.js", searchIndex: [{ t: "Firewall", u: "wiki/Firewall/" }] });
+  const input = w.document.getElementById("search-input");
+  input.value = "";
+  input.focus();
+  w.location.hash = "#sentinel";
+  keydown(w, input, "Enter");
+  await tick();
+  assert.equal(w.location.hash, "#sentinel", "empty-Enter without a submit control does nothing (no nav, no throw)");
+});
+
 // ---- Special:Search results PAGE (setupResultsPage) -- a standalone box + inline list that
 // reuses the same index + ranking as the header dropdown. The page needs BOTH a #search-input
 // (so initSearch runs instead of early-returning) and a [data-search-page] container. ----
@@ -1226,6 +1256,101 @@ test("Special:Search page: a typed query survives an anchor nav + Back (no force
   assert.equal(afterLinks.length, 1, "the results are preserved");
   assert.equal(afterLinks[0].textContent, "Cat",
     "the SAME result (Cat) is preserved -- a changed single result (Dog) must fail");
+});
+
+// ---- Special:Search page trailing controls: a blue Search submit + an inside-right clear-x (the
+// Codex cdx-search-input idiom), matching the header. The submit pins the query into #q=; the
+// clear-x shows only while the field holds text. ----
+
+test("Special:Search page: builds the blue submit + a clear-x inside a role=search box", async () => {
+  const w = load('<input id="search-input"><div data-search-page></div>',
+    { searchIndex: [{ t: "Tor", u: "wiki/Tor/" }] });
+  await tick();
+  const box = w.document.querySelector(".search-page-box");
+  assert.equal(box.getAttribute("role"), "search", "the box is the role=search landmark (no <form> under CSP)");
+  const submit = box.querySelector(".search-page-submit");
+  assert.ok(submit && submit.textContent === "Search", "a Search submit button is present");
+  const clear = w.document.querySelector(".search-page-clear");
+  assert.ok(clear, "a clear-x button is present");
+  assert.ok(clear.querySelector("i.fa-xmark"), "the clear-x carries the same X glyph as the header");
+  assert.ok(clear.hidden, "the clear-x is hidden for an empty field at init");
+  assert.equal(w.document.querySelector(".search-page-field input"), w.document.getElementById("search-page-input"),
+    "the input sits inside the field wrapper (so the absolute clear-x overlays its right end)");
+});
+
+test("Special:Search page: the clear-x is revealed only while the field holds text", async () => {
+  const w = load('<input id="search-input"><div data-search-page></div>',
+    { searchIndex: [{ t: "Tor", u: "wiki/Tor/" }] });
+  await tick();
+  const input = w.document.getElementById("search-page-input");
+  const clear = w.document.querySelector(".search-page-clear");
+  input.value = "tor"; input.dispatchEvent(new w.Event("input"));
+  assert.ok(!clear.hidden, "clear-x shown once the field has text");
+  input.value = "  "; input.dispatchEvent(new w.Event("input"));
+  assert.ok(clear.hidden, "clear-x hidden again when the field is whitespace-only (trimmed empty)");
+});
+
+test("Special:Search page: the clear-x empties the field, re-renders empty, and keeps focus", async () => {
+  const w = load('<input id="search-input"><div data-search-page></div>',
+    { hash: "#q=tor", searchIndex: [{ t: "Tor", u: "wiki/Tor/" }] });
+  await tick();
+  const input = w.document.getElementById("search-page-input");
+  const clear = w.document.querySelector(".search-page-clear");
+  const list = w.document.getElementById("search-page-results");
+  assert.equal(list.querySelectorAll("li a").length, 1, "prefilled #q=tor renders a result");
+  clear.dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
+  await tick();
+  assert.equal(input.value, "", "clear-x empties the field");
+  assert.ok(clear.hidden, "clear-x hides itself (no text)");
+  assert.equal(list.children.length, 0, "the results clear to the empty state");
+  assert.equal(w.document.activeElement, input, "focus returns to the field for a fresh query");
+});
+
+test("Special:Search page: the blue submit pins the query into #q= and renders", async () => {
+  const w = load('<input id="search-input"><div data-search-page></div>',
+    { searchIndex: [{ t: "Firewall", u: "wiki/Firewall/" }, { t: "Tor", u: "wiki/Tor/" }] });
+  await tick();
+  const input = w.document.getElementById("search-page-input");
+  const submit = w.document.querySelector(".search-page-submit");
+  input.value = "fire";                      // typed but not yet reflected in the URL
+  input.dispatchEvent(new w.Event("input"));
+  await tick();
+  submit.dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
+  await tick();
+  assert.equal(w.location.hash, "#q=fire", "submit pins the typed query into a shareable #q= fragment");
+  const links = w.document.querySelectorAll("#search-page-results li a");
+  assert.equal(links.length, 1, "the matching result is rendered");
+  assert.equal(links[0].textContent, "Firewall");
+  assert.equal(w.document.activeElement, input, "focus stays in the field after submit");
+});
+
+test("Special:Search page: submit on an empty field pins no #q= and shows the empty state", async () => {
+  const w = load('<input id="search-input"><div data-search-page></div>',
+    { searchIndex: [{ t: "Tor", u: "wiki/Tor/" }] });
+  await tick();
+  const input = w.document.getElementById("search-page-input");
+  const submit = w.document.querySelector(".search-page-submit");
+  w.location.hash = "#top";                   // a pre-existing unrelated fragment
+  input.value = "";
+  submit.dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
+  await tick();
+  assert.equal(w.location.hash, "#top", "an empty submit pins no #q= (the fragment is untouched)");
+  assert.equal(w.document.getElementById("search-page-results").children.length, 0, "no results for an empty submit");
+});
+
+test("Special:Search page: submit with a lone surrogate does not throw and pins no bad fragment", async () => {
+  // encodeURIComponent throws URIError on a lone surrogate (half a pasted emoji); submitPage must
+  // swallow it (skip the hash) and still run the render, never propagate the throw.
+  const w = load('<input id="search-input"><div data-search-page></div>',
+    { searchIndex: [{ t: "Tor", u: "wiki/Tor/" }] });
+  await tick();
+  const input = w.document.getElementById("search-page-input");
+  const submit = w.document.querySelector(".search-page-submit");
+  w.location.hash = "#top";
+  input.value = "\uD800ab";                   // a lone high surrogate -> encodeURIComponent throws
+  submit.dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
+  await tick();
+  assert.equal(w.location.hash, "#top", "the throwing encode is swallowed: the fragment is left as-is");
 });
 
 test("search: unchecking the magnifier toggle hides AND clears the results dropdown", async () => {
