@@ -3206,8 +3206,12 @@ def _page_served_paths(root, rel):
     empty/dot stem never collapses onto a directory/root index (see
     _sitemap_page_forms)."""
     paths = {_page_url_path(rel)}
-    if rel.endswith('.html') and not rel.endswith('/index.html') \
-            and rel != 'index.html':
+    if rel == 'index.html' or rel.endswith('/index.html'):
+        # A directory/root index is served at BOTH the clean path (_page_url_path: '/sub/',
+        # '/') AND its explicit index file ('/sub/index.html', '/index.html') -- a
+        # self-canonical page may legitimately name either form.
+        paths.add('/' + _quote_path(rel))
+    elif rel.endswith('.html'):
         clean_rel = rel[:-len('.html')]
         stem = posixpath.basename(clean_rel)
         if stem and stem not in ('.', '..') \
@@ -3216,7 +3220,17 @@ def _page_served_paths(root, rel):
     return paths
 
 
-def _page_requires_sitemap_entry(markup, host, served_paths):
+def _url_path_key(url):
+    """A comparable key for a URL: (netloc, percent-decoded PATH). urlsplit -- NOT urlparse
+    -- keeps a ';params' segment IN the path and splits off '?query'/'#fragment', so two
+    DISTINCT resources never collapse to equal (/a vs /a%23b, /a vs /a;b); the path is
+    decoded so a literal char matches its %-escaped form (':' == '%3A'). Raises ValueError
+    on a malformed URL (e.g. a non-numeric port), which callers treat conservatively."""
+    parts = urllib.parse.urlsplit(url)
+    return (parts.netloc, urllib.parse.unquote(parts.path))
+
+
+def _page_requires_sitemap_entry(markup, host, rel, served_paths):
     """Whether built page must appear in the sitemap, judged from its OWN metadata
     -- so the coverage check mirrors what a correct generator lists WITHOUT knowing
     any site's namespace names. A page is required only when it is canonical,
@@ -3229,7 +3243,10 @@ def _page_requires_sitemap_entry(markup, host, served_paths):
         /wiki/ index and its ~hundreds of redirect pages).
     This is the inverse view of the generator's own rule (mw-static _emit_sitemap
     lists indexable article pages only; dist-ai render_sitemap derives from the
-    page set). `served_paths` is _page_served_paths for this page."""
+    page set). `served_paths` is _page_served_paths for this page. (A <link>/<meta>
+    inside a <textarea>/<title> RCDATA element is NOT modelled -- the probes read
+    them as live, as html.parser does; generated pages place canonical/robots only in
+    <head>, never in body RCDATA, so this cannot arise on a real tree.)"""
     robots = _RobotsMetaProbe()
     robots.feed(markup)
     robots.close()
@@ -3239,13 +3256,23 @@ def _page_requires_sitemap_entry(markup, host, served_paths):
     canon.feed(markup)
     if not canon.href:
         return False
-    parsed = urllib.parse.urlparse(canon.href)
-    if parsed.netloc and parsed.netloc != host:
+    own = 'https://%s%s' % (host, _page_url_path(rel))
+    try:
+        # Resolve a RELATIVE canonical (href="AEM", "./sub") against the page's own URL,
+        # then take the decoded path. A bare-host canonical normalizes to '/'.
+        netloc, canon_path = _url_path_key(urllib.parse.urljoin(own, canon.href))
+    except ValueError:
+        return True   # malformed canonical: cannot classify -> require (fails loud, never masks)
+    if netloc and netloc != host:
         return False                      # canonical points off-site -> alias, not self
-    # A bare-host canonical ('https://host', no path) means the site root; normalize
-    # the empty path to '/' so it matches the index page's served '/'.
-    canon_path = urllib.parse.unquote(parsed.path) or '/'
-    return canon_path in {urllib.parse.unquote(p) for p in served_paths}
+    canon_path = canon_path or '/'
+    served = set()
+    for p in served_paths:
+        try:
+            served.add(_url_path_key('https://%s%s' % (host, p))[1])
+        except ValueError:
+            continue
+    return canon_path in served
 
 
 def seo_page_urls(root, host):
@@ -3305,7 +3332,7 @@ def _sitemap_page_forms(root, host):
             markup = ''
         # An unreadable page cannot be classified -- require it (conservative: a
         # genuinely-missing page still fails loud rather than being silently dropped).
-        if markup and not _page_requires_sitemap_entry(markup, host, served):
+        if markup and not _page_requires_sitemap_entry(markup, host, rel, served):
             continue
         # A clean-URL server serves a built X.html at both /X.html and the canonical
         # /X, so the sitemap may list EITHER served form (_page_served_paths).
@@ -3474,21 +3501,29 @@ def check_seo(root, policy=None):
                 except Exception:  # noqa: BLE001 -- any XML parse failure is a real SEO defect
                     problems.append('sitemap.xml is not well-formed XML')
                 else:
-                    # Percent-decode each <loc> so a sitemap written with a literal
-                    # char (a page's canonical href uses an unescaped ':' etc.) matches
-                    # a served variant computed with that char escaped (%3A); the same
-                    # char could never differentiate two real URLs, so this cannot
-                    # falsely satisfy coverage. Matches the required-check normalization.
-                    locs = {urllib.parse.unquote((el.text or '').strip())
-                            for el in sitemap_root.iter()
-                            if isinstance(el.tag, str)
-                            and el.tag.rsplit('}', 1)[-1].lower() == 'loc'}
+                    # Compare each <loc> and served variant by its (netloc, decoded-PATH)
+                    # key (_url_path_key): a literal char matches its %-escaped form (':' ==
+                    # '%3A'), while ';params'/'#fragment' keep distinct resources distinct.
+                    # A malformed <loc> keys to nothing (covers no page).
+                    locs = set()
+                    for el in sitemap_root.iter():
+                        if isinstance(el.tag, str) and el.tag.rsplit('}', 1)[-1].lower() == 'loc':
+                            try:
+                                locs.add(_url_path_key((el.text or '').strip()))
+                            except ValueError:
+                                continue
                     # Coverage, not byte-identity: a clean-URL server serves a built
                     # X.html at both /X.html and the canonical /X, so the sitemap may
                     # list either form -- but only where the server truly serves it
                     # (_sitemap_page_forms handles the shadow case).
                     for url, variants in sorted(_sitemap_page_forms(root, host).items()):
-                        if not ({urllib.parse.unquote(v) for v in variants} & locs):
+                        vkeys = set()
+                        for v in variants:
+                            try:
+                                vkeys.add(_url_path_key(v))
+                            except ValueError:
+                                continue
+                        if not (vkeys & locs):
                             problems.append('sitemap.xml does not list %s' % url)
     # robots.txt: every site ships one (a crawler fetches it first).
     if not os.path.isfile(os.path.join(root, 'robots.txt')):

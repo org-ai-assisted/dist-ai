@@ -444,14 +444,51 @@ def run():
     # directory/root path, so it is NEVER synthesized -- else the index's '/' <loc>
     # could vouch for the page. A normal stem keeps both served forms.
     with tempfile.TemporaryDirectory() as root:
-        for _rel, _want in (('.html', {'/.html'}),
-                            ('sub/.html', {'/sub/.html'}),
-                            ('..html', {'/..html'}),
-                            ('...html', {'/...html'}),
-                            ('wiki/AEM.html', {'/wiki/AEM.html', '/wiki/AEM'})):
-            check('_page_served_paths(%r) omits a collapsed form' % _rel,
-                  cs._page_served_paths(root, _rel) == _want,
+        for _rel, _exp in (('.html', {'/.html'}),
+                           ('sub/.html', {'/sub/.html'}),
+                           ('..html', {'/..html'}),
+                           ('...html', {'/...html'}),
+                           ('wiki/AEM.html', {'/wiki/AEM.html', '/wiki/AEM'}),
+                           # a dir/root index is served at BOTH the clean path AND the file
+                           ('index.html', {'/', '/index.html'}),
+                           ('sub/index.html', {'/sub/', '/sub/index.html'})):
+            check('_page_served_paths(%r)' % _rel,
+                  cs._page_served_paths(root, _rel) == _exp,
                   repr(cs._page_served_paths(root, _rel)))
+
+    # _page_requires_sitemap_entry robustness: resolve a RELATIVE canonical, accept an
+    # explicit index-file canonical, and conservatively REQUIRE a malformed canonical (never
+    # silently drop a page, never crash check_seo). Each would mis-classify before the fix.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'wiki/AEM.html', '<p>x</p>')      # a real file, so /wiki/AEM is unshadowed
+        _write(root, 'sub/index.html', '<p>x</p>')
+        _write(root, 'bad.html', '<p>x</p>')
+        req, sp = cs._page_requires_sitemap_entry, cs._page_served_paths
+        check('a relative canonical resolves against the page URL (self -> required)',
+              req(_page(canonical='AEM'), host, 'wiki/AEM.html', sp(root, 'wiki/AEM.html')),
+              'href="AEM" must resolve to /wiki/AEM and count as self-canonical')
+        check('an explicit index-file canonical counts as self (required)',
+              req(_page(canonical='https://%s/sub/index.html' % host), host,
+                  'sub/index.html', sp(root, 'sub/index.html')),
+              '/sub/index.html canonical must match the /sub/-served index page')
+        check('a malformed canonical is conservatively required (no crash, no silent drop)',
+              req(_page(canonical='https://[::1/bad'), host, 'bad.html', sp(root, 'bad.html')),
+              'an unparseable canonical must require the page, not raise')
+
+    # check_seo coverage compares DECODED PATHS, so a '#'-fragment <loc> (/a, fragment b) does
+    # NOT satisfy a page served at the %23-in-path URL /a%23b -- a whole-string unquote wrongly
+    # made the two equal and masked the missing page.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _index(host))
+        _write(root, 'a#b.html', _page(canonical='https://%s/a%%23b.html' % host))
+        _write(root, 'robots.txt', cs.render_robots(host))
+        _write(root, 'sitemap.xml',
+               '<?xml version="1.0"?><urlset>'
+               '<url><loc>https://%s/</loc></url>'
+               '<url><loc>https://%s/a#b</loc></url></urlset>\n' % (host, host))
+        check('a #fragment loc does not cover a %23-in-path page',
+              any('does not list' in p and 'a%23b' in p for p in cs.check_seo(root)),
+              repr(cs.check_seo(root)))
 
     # check_seo: missing sitemap
     with tempfile.TemporaryDirectory() as root:
