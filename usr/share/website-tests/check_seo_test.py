@@ -277,6 +277,95 @@ def run():
         check('an unreadable sitemap.xml is reported, not crashed-on',
               not crashed and any('unreadable' in p for p in _probs), repr(_probs))
 
+    # check_seo: a clean-URL (extensionless) sitemap COVERS an X.html built tree. A
+    # clean-URL static server (GitHub Pages, the wiki generator's nginx try_files
+    # <uri> else <uri>.html) serves a built wiki/AEM.html at the canonical /wiki/AEM,
+    # so the wiki generator's sitemap lists the extensionless form while the tree on
+    # disk is X.html. Coverage must accept that -- a naive exact-string match flags
+    # every page (the real deploy-blocker this guards). The '.html'-terminal form (what
+    # dist-ai's own render_sitemap emits) is also accepted, so both conventions pass.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _index(host))
+        _write(root, 'wiki/AEM.html', '<p>x</p>')
+        _write(root, 'robots.txt', cs.render_robots(host))
+        with open(os.path.join(root, 'sitemap.xml'), 'w', encoding='utf-8') as h:
+            h.write('<?xml version="1.0"?><urlset>'
+                    '<url><loc>https://%s/</loc></url>'
+                    '<url><loc>https://%s/wiki/AEM</loc></url>'
+                    '</urlset>\n' % (host, host))
+        check('an extensionless clean-URL sitemap covers an X.html built tree',
+              cs.check_seo(root) == [], repr(cs.check_seo(root)))
+        # the '.html'-terminal form still covers the same page (render_sitemap convention)
+        with open(os.path.join(root, 'sitemap.xml'), 'w', encoding='utf-8') as h:
+            h.write('<?xml version="1.0"?><urlset>'
+                    '<url><loc>https://%s/</loc></url>'
+                    '<url><loc>https://%s/wiki/AEM.html</loc></url>'
+                    '</urlset>\n' % (host, host))
+        check('the .html-terminal sitemap form also covers the page',
+              cs.check_seo(root) == [], repr(cs.check_seo(root)))
+        # clean-URL tolerance must NOT mask a genuinely absent page: a sitemap that
+        # lists NEITHER form of wiki/AEM is still flagged.
+        with open(os.path.join(root, 'sitemap.xml'), 'w', encoding='utf-8') as h:
+            h.write('<?xml version="1.0"?><urlset>'
+                    '<url><loc>https://%s/</loc></url>'
+                    '</urlset>\n' % host)
+        check('a clean-URL sitemap still flags a truly missing page',
+              any('does not list' in p and p.endswith('/wiki/AEM.html')
+                  for p in cs.check_seo(root)), repr(cs.check_seo(root)))
+
+    # check_seo: clean-URL tolerance must respect server shadowing. With BOTH a.html
+    # and a.html.html built, the server (try_files $uri $uri.html) serves /a.html as
+    # the real a.html file -- so /a.html does NOT cover a.html.html, whose only served
+    # URL is /a.html.html. A sitemap listing only / and /a.html must therefore FLAG
+    # a.html.html as unlisted (a blind .html-strip would let /a.html vouch for it).
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _index(host))
+        _write(root, 'a.html', '<p>real page served at /a.html</p>')
+        _write(root, 'a.html.html', '<p>only served at /a.html.html</p>')
+        _write(root, 'robots.txt', cs.render_robots(host))
+        with open(os.path.join(root, 'sitemap.xml'), 'w', encoding='utf-8') as h:
+            h.write('<?xml version="1.0"?><urlset>'
+                    '<url><loc>https://%s/</loc></url>'
+                    '<url><loc>https://%s/a.html</loc></url>'
+                    '</urlset>\n' % (host, host))
+        _probs = cs.check_seo(root)
+        check('a shadowed extensionless form does not vouch for a.html.html',
+              any('does not list' in p and p.endswith('/a.html.html')
+                  for p in _probs), repr(_probs))
+        check('the real a.html IS covered by its own /a.html <loc>',
+              not any('does not list' in p and p.rstrip().endswith('/a.html')
+                      for p in _probs), repr(_probs))
+        # Unshadowed double-.html: drop a.html, leave a.html.html. Now /a.html is the
+        # genuine clean-URL form of a.html.html ($uri=a.html absent -> $uri.html hit),
+        # so listing /a.html alone covers it.
+        os.remove(os.path.join(root, 'a.html'))
+        with open(os.path.join(root, 'sitemap.xml'), 'w', encoding='utf-8') as h:
+            h.write('<?xml version="1.0"?><urlset>'
+                    '<url><loc>https://%s/</loc></url>'
+                    '<url><loc>https://%s/a.html</loc></url>'
+                    '</urlset>\n' % (host, host))
+        check('an unshadowed /a.html clean form covers a.html.html',
+              cs.check_seo(root) == [], repr(cs.check_seo(root)))
+
+    # check_seo: a same-named DIRECTORY must NOT shadow the extensionless form. The
+    # wiki emits both wiki/KVM.html and a wiki/KVM/ subpage dir; the server serves
+    # /wiki/KVM as wiki/KVM.html (.html wins over the dir -- try_files $uri $uri.html),
+    # so a sitemap listing /wiki/KVM (and /wiki/KVM/Child) correctly covers the page.
+    # os.path.exists() would wrongly treat the dir as a shadow and false-flag it.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _index(host))
+        _write(root, 'wiki/KVM.html', '<p>served at /wiki/KVM</p>')
+        _write(root, 'wiki/KVM/Child.html', '<p>subpage</p>')
+        _write(root, 'robots.txt', cs.render_robots(host))
+        with open(os.path.join(root, 'sitemap.xml'), 'w', encoding='utf-8') as h:
+            h.write('<?xml version="1.0"?><urlset>'
+                    '<url><loc>https://%s/</loc></url>'
+                    '<url><loc>https://%s/wiki/KVM</loc></url>'
+                    '<url><loc>https://%s/wiki/KVM/Child</loc></url>'
+                    '</urlset>\n' % (host, host, host))
+        check('a same-named subpage dir does not shadow /wiki/KVM',
+              cs.check_seo(root) == [], repr(cs.check_seo(root)))
+
     # check_seo: missing sitemap
     with tempfile.TemporaryDirectory() as root:
         _seed(root, host)
