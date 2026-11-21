@@ -1326,17 +1326,19 @@ test("Special:Search page: the blue submit pins the query into #q= and renders",
   assert.equal(w.document.activeElement, input, "focus stays in the field after submit");
 });
 
-test("Special:Search page: submit on an empty field pins no #q= and shows the empty state", async () => {
+test("Special:Search page: submit on an empty field with no fragment stays empty (no spurious #q=)", async () => {
+  // No prior fragment (location.hash === ""): an empty submit must neither pin a q= nor create a
+  // spurious fragment -- it leaves the bare URL and the empty state as-is.
   const w = load('<input id="search-input"><div data-search-page></div>',
     { searchIndex: [{ t: "Tor", u: "wiki/Tor/" }] });
   await tick();
   const input = w.document.getElementById("search-page-input");
   const submit = w.document.querySelector(".search-page-submit");
-  w.location.hash = "#top";                   // a pre-existing unrelated fragment
+  assert.equal(w.location.hash, "", "no fragment at the start");
   input.value = "";
   submit.dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
   await tick();
-  assert.equal(w.location.hash, "#top", "an empty submit pins no #q= (the fragment is untouched)");
+  assert.equal(w.location.hash, "", "an empty submit with no fragment adds none (no spurious #q=)");
   assert.equal(w.document.getElementById("search-page-results").children.length, 0, "no results for an empty submit");
 });
 
@@ -1353,6 +1355,53 @@ test("Special:Search page: submit with a lone surrogate does not throw and pins 
   submit.dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
   await tick();
   assert.equal(w.location.hash, "#top", "the throwing encode is swallowed: the fragment is left as-is");
+});
+
+test("Special:Search page: submitting an emptied field DROPS a stale #q= (no stale-restore on reload)", async () => {
+  // Prefilled #q=tor, clear the field, then Submit: the stale q= fragment must be dropped so a
+  // reload does not restore the abandoned query. Canary: the old submitPage only SET the hash for a
+  // non-empty query, leaving #q=tor behind.
+  const w = load('<input id="search-input"><div data-search-page></div>',
+    { hash: "#q=tor", searchIndex: [{ t: "Tor", u: "wiki/Tor/" }] });
+  await tick();
+  const input = w.document.getElementById("search-page-input");
+  const clear = w.document.querySelector(".search-page-clear");
+  const submit = w.document.querySelector(".search-page-submit");
+  assert.equal(input.value, "tor", "prefilled from #q=tor");
+  clear.dispatchEvent(new w.MouseEvent("click", { bubbles: true }));   // empties the field (not the URL)
+  submit.dispatchEvent(new w.MouseEvent("click", { bubbles: true }));  // committing empty drops the fragment
+  await tick();
+  assert.equal(w.location.hash, "", "an empty submit clears the stale q= fragment");
+  assert.equal(w.document.getElementById("search-page-results").children.length, 0, "and the results stay empty");
+});
+
+test("Special:Search page: Enter in the field commits the query to #q= (like the Search button)", async () => {
+  // Canary: pre-change the page input had NO keydown handler, so Enter left the URL untouched.
+  const w = load('<input id="search-input"><div data-search-page></div>',
+    { searchIndex: [{ t: "Firewall", u: "wiki/Firewall/" }, { t: "Tor", u: "wiki/Tor/" }] });
+  await tick();
+  const input = w.document.getElementById("search-page-input");
+  input.value = "fire";
+  input.dispatchEvent(new w.Event("input"));
+  await tick();
+  keydown(w, input, "Enter");
+  await tick();
+  assert.equal(w.location.hash, "#q=fire", "Enter commits the typed query to #q=, same as the button");
+});
+
+test("Special:Search page: a non-Enter key and an IME-composing Enter do NOT commit", async () => {
+  const w = load('<input id="search-input"><div data-search-page></div>',
+    { searchIndex: [{ t: "Tor", u: "wiki/Tor/" }] });
+  await tick();
+  const input = w.document.getElementById("search-page-input");
+  input.value = "tor";
+  w.location.hash = "#sentinel";
+  keydown(w, input, "a");                               // a non-Enter key
+  keydown(w, input, "Enter", { isComposing: true });   // IME composition (isComposing)
+  keydown(w, input, "Enter", { keyCode: 229 });        // IME composition (Safari keyCode fallback)
+  await tick();
+  assert.equal(w.location.hash, "#sentinel",
+    "no commit from a non-Enter key or an IME-composing Enter (isComposing / keyCode 229)");
 });
 
 test("search: unchecking the magnifier toggle hides AND clears the results dropdown", async () => {
