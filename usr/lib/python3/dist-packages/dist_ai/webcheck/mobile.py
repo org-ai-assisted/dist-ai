@@ -381,12 +381,20 @@ _ELEMENT_OVERFLOW_JS = r"""
 
 # Broken / zero-dimension images: an <img> that 404'd or failed to decode renders
 # blank. A FAILED image subresource is NOT a JS console error or CSP violation, so
-# the console gate misses it -- a real gap. Ported from the same wiki tool;
-# `complete && naturalWidth===0` is the reliable broken signal. No loading=lazy
-# position skip: `complete` is ALREADY false for any not-yet-loaded (incl. lazy,
-# incl. display:none-never-fetched) image, so a position skip only mis-skipped
-# BROKEN lazy images the browser HAD loaded past ~1.5 viewports -- a false pass,
-# and these sites' result galleries are lazy (dev1238, grok ai-review, 61d6c25).
+# the console gate misses it -- a real gap. `complete && naturalWidth===0` is the
+# raster broken signal, GATED on a non-empty currentSrc:
+#   - currentSrc is '' until the browser SELECTS and begins fetching a source. A
+#     loading=lazy image still below the viewport has not been fetched; WebKit
+#     reports complete===true for it (Blink/Gecko report complete===false), so
+#     complete && naturalWidth===0 alone false-flags EVERY below-fold lazy image
+#     on WebKit (verified: live wiki ISO, 15 lazy imgs, all currentSrc=='').
+#   - Requiring currentSrc!=='' excludes the never-fetched lazy image on every
+#     engine (a no-op on Blink/Gecko, where such an image is already !complete)
+#     while still catching any image that actually attempted a load and failed:
+#     a 404/decode failure sets currentSrc to the selected URL (canary-verified
+#     cross-engine). A below-fold lazy image that will 404 only once fetched is
+#     intentionally not pre-flagged -- same coverage the Blink/Gecko !complete
+#     gate already has, now consistent on WebKit.
 _BROKEN_IMG_JS = r"""
 () => {
   var out = [];
@@ -396,9 +404,10 @@ _BROKEN_IMG_JS = r"""
     // 300x150), so the broken signal is unreliable for SVG cross-engine -- it
     // would false-flag a fine SVG on firefox/webkit. Raster 404s (the common
     // case) still report naturalWidth===0 reliably.
-    var src = img.currentSrc || img.getAttribute('src') || '';
+    var cs = img.currentSrc || '';
+    var src = cs || img.getAttribute('src') || '';
     if (/\.svgz?(\?|#|$)/i.test(src)) return;
-    if (img.complete && img.naturalWidth === 0) {
+    if (cs !== '' && img.complete && img.naturalWidth === 0) {
       out.push({ src: (src || '(inline)').slice(-80), alt: (img.alt || '').slice(0, 40) });
     }
   });

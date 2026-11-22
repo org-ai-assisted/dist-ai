@@ -171,7 +171,8 @@ staged_wt="${staging}/usr/share/website-tests"
 staged_pylib="${staging}/usr/lib/python3/dist-packages"
 mkdir --parents -- "${staged_wt}" "${staged_pylib}" "${staging}/roots"
 for runner in check_mobile.py check_width.py check_footer.py check_console.py \
-              check_forced_reflow.py check_webplatform.py check_taptarget_js_test.py; do
+              check_forced_reflow.py check_webplatform.py check_taptarget_js_test.py \
+              check_broken_img_js_test.py; do
    [ -f "${tests_dir}/${runner}" ] || die "missing runner: ${tests_dir}/${runner}"
    cp --archive -- "${tests_dir}/${runner}" "${staged_wt}/${runner}"
 done
@@ -239,5 +240,11 @@ run_lane check_webplatform.py || overall=1
 ## chromium innerText semantics the browser-free check_taptarget_test.py cannot reach). Ignores the
 ## trailing site-root args -- it serves its own set_content fixtures.
 run_lane check_taptarget_js_test.py || overall=1
+## Browser-backed cross-engine regression for the broken-image probe (_BROKEN_IMG_JS). WebKit
+## reports complete===true / naturalWidth===0 / currentSrc=='' for a lazy+srcset image in a
+## display:none subtree (an inactive tab cell), so the condition must gate on a non-empty
+## currentSrc or it false-flags every such image on WebKit. Runs webkit + chromium on its own
+## set_content fixtures; ignores the trailing site-root args.
+run_lane check_broken_img_js_test.py || overall=1
 
 exit "${overall}"

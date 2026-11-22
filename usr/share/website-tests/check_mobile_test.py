@@ -124,6 +124,16 @@ def run():
     check('broken-image JS has no lazy-position false-pass skip',
           "loading === 'lazy'" not in cm._BROKEN_IMG_JS
           and 'innerHeight * 2' not in cm._BROKEN_IMG_JS)
+    # The broken condition is GATED on a non-empty currentSrc. WebKit reports
+    # complete===true for a loading=lazy image still below the fold (never
+    # fetched), so complete && naturalWidth===0 alone false-flags every below-fold
+    # lazy image on WebKit (Blink/Gecko report !complete, so they do not). An
+    # unfetched image has currentSrc=='' on every engine; a real 404/decode break
+    # sets currentSrc. The guard must NOT be dropped. Behavioral cross-engine proof:
+    # check_broken_img_js_test.py (webkit lane).
+    check('broken-image JS gates on a non-empty currentSrc',
+          'img.currentSrc' in cm._BROKEN_IMG_JS
+          and "cs !== ''" in cm._BROKEN_IMG_JS)
     # The high-FP generic body-overlap heuristic must NOT come back (inline wrap FP).
     check('no generic body-overlap heuristic', not hasattr(cm, '_OVERLAP_JS'))
     # The mount server must swallow a client-aborted connection (a no-JS page that
