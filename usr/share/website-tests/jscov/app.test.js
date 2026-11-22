@@ -489,6 +489,63 @@ test("per-heading share: a keyboard reopen (focusin) clears the (x) override eve
 });
 
 // ---- native [popover] JS tether (BUG1 + #152: share "open in" confirm, (i) info, antispam) --
+// Touch click-to-activate for the per-heading affordances (permalink '#', edit, share). A
+// fine-pointer device reveals them on CSS :hover; a touch device has no hover, so initHeadingReveal
+// binds (only on a no-hover / coarse pointer) a tap that toggles a persistent .heading-active CSS
+// reveals that heading's affordances on -- tap again / another heading / away / Escape hides, one
+// active at a time. matchMedia is forced per case (the harness default is matches:false = desktop).
+test("touch heading reveal: tap toggles .heading-active (one at a time); affordance tap, outside tap + Escape handled", () => {
+  const touch = (w) => {
+    w.matchMedia = (q) => ({
+      matches: /hover:\s*none|pointer:\s*coarse/.test(q),
+      addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {},
+    });
+  };
+  const w = load(
+    '<div class="wiki-content">' +
+    '<h2 id="A">A<a class="h-anchor" href="#A"></a>' +
+    '<span class="heading-actions"><span class="mw-editsection"><a href="#">e</a></span></span></h2>' +
+    '<h2 id="B">B<a class="h-anchor" href="#B"></a>' +
+    '<span class="heading-actions"><span class="mw-editsection"><a href="#">e</a></span></span></h2>' +
+    '<h3 id="C">C</h3>' +                                  // a heading carrying no affordance
+    '<p id="body">text</p></div>' +
+    '<h2 id="Z">Z<a class="h-anchor" href="#Z"></a></h2>',  // a heading OUTSIDE .wiki-content
+    { preEval: touch });
+  const d = w.document;
+  const tap = (el) => el.dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true }));
+  const [hA, hB, hC, hZ] = ["A", "B", "C", "Z"].map((id) => d.getElementById(id));
+  tap(hA);
+  assert.ok(hA.classList.contains("heading-active"), "a tap reveals that heading's affordances");
+  tap(hA);
+  assert.ok(!hA.classList.contains("heading-active"), "a second tap hides it (toggle)");
+  tap(hA); tap(hB);
+  assert.ok(hB.classList.contains("heading-active") && !hA.classList.contains("heading-active"),
+    "opening one heading closes the others (one active at a time)");
+  tap(hB.querySelector(".h-anchor"));   // a tap on a real affordance must ACT, not toggle the panel
+  assert.ok(hB.classList.contains("heading-active"), "a tap on the '#'/edit/share affordance does not toggle");
+  tap(d.getElementById("body"));
+  assert.ok(!hB.classList.contains("heading-active"), "a tap off a content heading hides the open one");
+  tap(hA);
+  d.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  assert.ok(!hA.classList.contains("heading-active"), "Escape hides the open heading");
+  tap(hC);
+  assert.ok(!hC.classList.contains("heading-active"), "a heading carrying no affordance is not activated");
+  tap(hA); tap(hZ);
+  assert.ok(!hA.classList.contains("heading-active") && !hZ.classList.contains("heading-active"),
+    "a heading outside .wiki-content does not activate and clears any open one");
+});
+
+test("touch heading reveal: a hover-capable (desktop) pointer binds NO tap handler -- reveal stays pure CSS :hover", () => {
+  const w = load(
+    '<div class="wiki-content"><h2 id="A">A<a class="h-anchor" href="#A"></a>' +
+    '<span class="heading-actions"><span class="mw-editsection"><a href="#">e</a></span></span></h2></div>',
+    { preEval: (w) => { w.matchMedia = (q) => ({ matches: false, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} }); } });
+  const hA = w.document.getElementById("A");
+  hA.dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true }));
+  assert.ok(!hA.classList.contains("heading-active"),
+    "no .heading-active toggle on a hover-capable pointer (desktop reveals via CSS :hover, not JS)");
+});
+
 // CSS anchor() positioning is Chromium-only; initPopoverTether re-positions the top-layer
 // popovers via CSSOM on their `toggle` event. jsdom has no layout (offsetWidth/Height = 0, and
 // clientWidth defaults to 0), so these DRIVE THE BRANCHES (below / flip-above / phone-centre /
