@@ -76,13 +76,23 @@ check "driver threads --device into the render helper" "$(has '--device' "${driv
 ## Pixel 5 / unknown) is a standalone python file beside this test, run under the Playwright venv.
 self_dir="$(cd -- "$(dirname -- "$(readlink --canonicalize -- "$0")")" && pwd)"
 canary_py="${self_dir}/wiki_csp_render_device_canary.py"
+## Whether the caller EXPLICITLY requested an interpreter (intent to run Phase 2) vs left it to the
+## default venv path. An explicit non-executable value is an environment bug (FATAL); a missing
+## DEFAULT venv is the genuinely-optional, opt-in case (waived skip).
+playwright_requested="${PLAYWRIGHT_PYTHON:-}"
 PLAYWRIGHT_PYTHON="${PLAYWRIGHT_PYTHON:-${HOME}/.venvs/playwright/bin/python}"
 if [ ! -x "${PLAYWRIGHT_PYTHON}" ]; then
-   ## The Playwright venv is a host-side-only capability (sandbox-only per policy), absent in the
-   ## standard dist-ai test env -- so Phase 2 is an OPTIONAL, opt-in target. Count it as a SKIP (not a
-   ## masked pass) so the summary never reports clean coverage the behavioral canary did not provide.
-   ## style-ok: allow-skip: Phase 2 Playwright venv env-unmet -- optional behavioral target; Phase 1 wiring still gated above
-   printf '%s\n' "SKIP: Phase 2 behavioral canary -- no Playwright venv at '${PLAYWRIGHT_PYTHON}' (wiring verified above)." >&2
+   if [ -n "${playwright_requested}" ]; then
+      ## Phase 2 was explicitly requested but its interpreter is unusable -- a REQUIRED-dependency
+      ## environment bug, never a silent skip.
+      printf '%s\n' "FATAL: PLAYWRIGHT_PYTHON explicitly set to '${PLAYWRIGHT_PYTHON}' but not executable -- Phase 2 cannot run." >&2
+      exit 1
+   fi
+   ## The DEFAULT Playwright venv is a host-side-only capability (sandbox-only per policy), absent in
+   ## the standard dist-ai test env -- so Phase 2 is an OPTIONAL, opt-in target. Count it as a SKIP (not
+   ## a masked pass) so the summary never reports clean coverage the behavioral canary did not provide.
+   ## style-ok: allow-skip: Phase 2 default Playwright venv env-unmet -- optional behavioral target; Phase 1 wiring still gated above
+   printf '%s\n' "SKIP: Phase 2 behavioral canary -- no Playwright venv at default '${PLAYWRIGHT_PYTHON}' (wiring verified above)." >&2
    skip=$((skip + 1))
 elif [ ! -r "${canary_py}" ]; then
    printf '%s\n' "FATAL: Phase 2 canary missing at '${canary_py}'" >&2
