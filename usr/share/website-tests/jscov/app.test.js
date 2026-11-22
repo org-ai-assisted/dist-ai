@@ -521,15 +521,26 @@ test("touch heading reveal: tap toggles .heading-active (one at a time); afforda
   tap(hA); tap(hB);
   assert.ok(hB.classList.contains("heading-active") && !hA.classList.contains("heading-active"),
     "opening one heading closes the others (one active at a time)");
-  tap(hB.querySelector(".h-anchor"));   // a tap on a real affordance must ACT, not toggle the panel
-  assert.ok(hB.classList.contains("heading-active"), "a tap on the '#'/edit/share affordance does not toggle");
+  // A tap on a real affordance must ACT, not toggle the panel -- exercise BOTH exempted targets:
+  // the permalink '#' AND an edit control INSIDE .heading-actions (the handler exempts the whole
+  // cluster; tapping only .h-anchor would miss a cluster-exempt regression). tap() returns
+  // !defaultPrevented, so it also proves the reveal handler never preventDefaults the nav.
+  assert.ok(tap(hB.querySelector(".h-anchor")), "the '#' permalink tap passes through un-prevented (nav still acts)");
+  assert.ok(hB.classList.contains("heading-active"), "a tap on the '#' permalink does not toggle the panel");
+  assert.ok(tap(hB.querySelector(".heading-actions .mw-editsection a")), "an edit control tap passes through un-prevented");
+  assert.ok(hB.classList.contains("heading-active"), "a tap on an edit control inside .heading-actions does not toggle the panel");
   tap(d.getElementById("body"));
   assert.ok(!hB.classList.contains("heading-active"), "a tap off a content heading hides the open one");
   tap(hA);
   d.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   assert.ok(!hA.classList.contains("heading-active"), "Escape hides the open heading");
+  // an affordance-less content heading (widget h4-h6) has nothing to reveal, yet tapping it still
+  // DISMISSES any open heading (one-at-a-time), exactly like tapping away.
+  tap(hA);
+  assert.ok(hA.classList.contains("heading-active"), "re-open A");
   tap(hC);
   assert.ok(!hC.classList.contains("heading-active"), "a heading carrying no affordance is not activated");
+  assert.ok(!hA.classList.contains("heading-active"), "tapping an affordance-less heading still dismisses the open one");
   tap(hA); tap(hZ);
   assert.ok(!hA.classList.contains("heading-active") && !hZ.classList.contains("heading-active"),
     "a heading outside .wiki-content does not activate and clears any open one");
