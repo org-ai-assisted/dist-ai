@@ -6,3 +6,10 @@ dist-ai: uses-dpkg-database-directly
 # itself says to override. Context-less: it holds for all ~44 suites, and a per-file
 # list would drift as suites are added or removed.
 dist-ai: package-contains-documentation-outside-usr-share-doc
+# evil.example (RFC 2606 reserved) is a FAKE cross-origin host used ONLY as test-fixture
+# input in the jscov suite -- the book-nav tests feed it to the handler to PROVE it
+# REFUSES to navigate cross-origin (navSafe same-origin gate; no Referer/onion leak). It
+# is test data in a JS string, never a resource any shipped page loads. privacy-breach-generic
+# skips the standard rel=next/prev but flags the custom rel=mw-book-next carrier, so the
+# fixture trips it; the host name scopes the override to the fake test domain only.
+dist-ai: privacy-breach-generic *evil.example*
