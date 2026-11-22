@@ -159,15 +159,18 @@ def main(argv):
     old_js = "--old-js" in argv
     rc = asyncio.run(_amain(old_js))
     if old_js:
-        # Self-canary: the pre-fix condition MUST be caught (non-zero) -- a 0 here means the
-        # fixture or the assertions lost their teeth, which is itself a failure.
-        if rc == 0:
-            sys.stderr.write("check_broken_img_js_test: --old-js SELF-CANARY DEFEATED -- the "
-                             "pre-fix condition was not caught; fixture/assertions are toothless\n")
-            return 1
-        sys.stderr.write("check_broken_img_js_test: --old-js self-canary OK "
-                         "(pre-fix condition correctly caught)\n")
-        return 0
+        # Self-canary: PASS only when the pre-fix condition was actually CAUGHT (rc==1, a real
+        # wrong-classification). rc==0 = NOT caught (fixture/assertions toothless); rc==2 = the
+        # probe WEDGED before it could classify (e.g. an engine launch failure). Both are
+        # failures -- a wedge is never a silent green (mirrors the rc==2 path on the harness lane).
+        if rc == 1:
+            sys.stderr.write("check_broken_img_js_test: --old-js self-canary OK "
+                             "(pre-fix condition correctly caught)\n")
+            return 0
+        reason = ("pre-fix condition NOT caught; fixture/assertions are toothless" if rc == 0
+                  else "probe WEDGED before it could classify (rc=2) -- not a pass")
+        sys.stderr.write("check_broken_img_js_test: --old-js SELF-CANARY FAILED -- %s\n" % reason)
+        return 1
     return rc
 
 

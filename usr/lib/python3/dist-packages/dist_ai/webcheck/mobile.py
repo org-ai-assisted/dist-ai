@@ -395,6 +395,12 @@ _ELEMENT_OVERFLOW_JS = r"""
 #     cross-engine). A below-fold lazy image that will 404 only once fetched is
 #     intentionally not pre-flagged -- same coverage the Blink/Gecko !complete
 #     gate already has, now consistent on WebKit.
+#   - BOUNDED SCOPE: an image whose src was CLEARED after load (JS removeAttribute,
+#     currentSrc back to '') is likewise not flagged. It is indistinguishable at
+#     probe time from the unfetched-lazy case (both currentSrc=='' / complete /
+#     naturalWidth 0), and keying on the src ATTRIBUTE instead would re-introduce
+#     the WebKit lazy false positive. It is not a subresource failure and does not
+#     occur on these static pages (no script clears an img src), so it is out of scope.
 _BROKEN_IMG_JS = r"""
 () => {
   var out = [];
