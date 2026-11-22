@@ -314,6 +314,15 @@ pkg_dir() {
       printf '%s' "${component_root}"
       return 0
    fi
+   ## dist-encrypted-tests ships the SUBJECTS the dist-encrypted suite drives (reproduce-in-docker,
+   ## wiki-csp-render/*). It is a standalone sibling repo of dist-encrypted (Depends: dist-encrypted),
+   ## with no packages/ subpath, laid out BESIDE the dist-encrypted checkout -- the same sibling
+   ## layout reproduce-in-docker itself resolves. Resolve it beside component_root; the generic
+   ## DIST_AI_PKG_DIST_ENCRYPTED_TESTS override above still wins for a non-sibling layout.
+   if [ "${name}" = 'dist-encrypted-tests' ] && [ -n "${component_root}" ]; then
+      printf '%s' "${component_root%/*}/dist-encrypted-tests"
+      return 0
+   fi
    ## Auxiliary helper-scripts checkout: some components' suites drive a
    ## helper-scripts tool (open-link-confirmation -> sanitize-string). In
    ## standalone-component mode there is no sibling helper-scripts, so accept
@@ -335,7 +344,7 @@ pkg_dir() {
       ## a fabricated monorepo path) makes their suites exit 77 SKIP in
       ## --repo-root mode instead of failing to find a directory that was never
       ## going to exist; --component-root above is their real entry point.
-      dist-ai|private-ai-config|anon-leak-test|dist-encrypted)
+      dist-ai|private-ai-config|anon-leak-test|dist-encrypted|dist-encrypted-tests)
          ;;
       *)
          printf '%s' "${repo_root}/packages/kicksecure/${name}"
