@@ -109,7 +109,10 @@ run_preflight() {
       run_out="$(REPRO_CONTAINER="$1" DIST_ENCRYPTED_REPO="${de_repo}" DMF_DIR="${dmf_dir}" \
          "${subject}" local --preflight-only 2>&1)" || run_rc=$?
    else
-      run_out="$(DIST_ENCRYPTED_REPO="${de_repo}" DMF_DIR="${dmf_dir}" \
+      ## Explicitly UNSET REPRO_CONTAINER (not merely leave it unset in the prefix): the ambient
+      ## environment may already export it -- this very session runs under an isolated REPRO_CONTAINER
+      ## -- which would leak in and make the canonical-default assertion assert the ambient name.
+      run_out="$(env --unset=REPRO_CONTAINER DIST_ENCRYPTED_REPO="${de_repo}" DMF_DIR="${dmf_dir}" \
          "${subject}" local --preflight-only 2>&1)" || run_rc=$?
    fi
 }

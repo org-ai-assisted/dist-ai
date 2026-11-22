@@ -18,7 +18,6 @@
 # CANARY: a check.py without --device rejects the mobile run (argparse, exit 2),
 # so a mobile-only violation would ship unseen. Exit 0 only if all three match;
 # prints a PASS/FAIL line per case.
-import socket
 import subprocess
 import sys
 import threading
@@ -45,14 +44,6 @@ if (window.innerWidth < 500) {
 """
 
 
-def free_port():
-    sock = socket.socket()
-    sock.bind(("127.0.0.1", 0))
-    port = sock.getsockname()[1]
-    sock.close()
-    return port
-
-
 def run_check(check_py, serve_dir, base_url, extra):
     cmd = [sys.executable, check_py,
            "--base-url", base_url, "--path-prefix", "/", "--pages", "page.html",
@@ -74,9 +65,11 @@ def main():
     serve_dir = tempfile.mkdtemp()
     try:
         (Path(serve_dir) / "page.html").write_text(PAGE, encoding="utf-8")
-        port = free_port()
         handler = partial(SimpleHTTPRequestHandler, directory=serve_dir)
-        httpd = HTTPServer(("127.0.0.1", port), handler)
+        # Bind port 0 directly (no pick-then-rebind TOCTOU): the OS assigns a free port on the
+        # live server socket and we read it back -- it is never closed and re-bound.
+        httpd = HTTPServer(("127.0.0.1", 0), handler)
+        port = httpd.server_address[1]
         thread = threading.Thread(target=httpd.serve_forever, daemon=True)
         thread.start()
         base = "http://127.0.0.1:%d" % port
