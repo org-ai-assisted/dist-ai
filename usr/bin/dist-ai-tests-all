@@ -362,7 +362,7 @@ wire() {
    wire_args=()
    [ -n "${repo_root}" ] || [ -n "${component_root}" ] || return 0
 
-   local hs dmf suite_path st_repo
+   local hs dmf suite_path st_repo det
    hs="$( pkg_dir helper-scripts )"
    dmf="$( pkg_dir developer-meta-files )"
 
@@ -783,10 +783,14 @@ wire() {
          ## (DIST_ENCRYPTED_TESTS_REPO) --preflight-only and asserts the resolved container name
          ## honors REPRO_CONTAINER; it reads repro-container-defaults + the trust-root files from the
          ## dist-encrypted sibling (DIST_ENCRYPTED_REPO).
-         wire_env=(
-            "DIST_ENCRYPTED_REPO=$( pkg_dir dist-encrypted )"
-            "DIST_ENCRYPTED_TESTS_REPO=$( pkg_dir dist-encrypted-tests )"
-         )
+         wire_env=( "DIST_ENCRYPTED_REPO=$( pkg_dir dist-encrypted )" )
+         ## Only override DIST_ENCRYPTED_TESTS_REPO when pkg_dir RESOLVES it: an empty result (repo-root
+         ## mode) must not clobber an exported value, which would skip the test instead of running the
+         ## configured checkout.
+         det="$( pkg_dir dist-encrypted-tests )"
+         if [ -n "${det}" ]; then
+            wire_env+=( "DIST_ENCRYPTED_TESTS_REPO=${det}" )
+         fi
          if [ -n "${hs}" ]; then
             wire_env+=( "HELPER_SCRIPTS_PATH=${hs}" )
          fi

@@ -50,7 +50,9 @@ fi
 if [ -n "${DIST_ENCRYPTED_REPO:-}" ]; then
    de_repo="${DIST_ENCRYPTED_REPO}"
 else
-   de_repo="$(cd -- "$(dirname -- "${subject}")/../../.." && pwd)/dist-encrypted"
+   ## subject is <tests>/usr/local/bin/reproduce-in-docker: four levels up from usr/local/bin reaches
+   ## the PARENT of the tests checkout, where the dist-encrypted sibling sits (not inside it).
+   de_repo="$(cd -- "$(dirname -- "${subject}")/../../../.." && pwd)/dist-encrypted"
 fi
 defaults_lib="${de_repo}/usr/local/bin/repro-container-defaults"
 if [ ! -r "${defaults_lib}" ]; then

@@ -47,6 +47,7 @@ fi
 
 pass=0
 fail=0
+skip=0
 check() {
    local label got want
    label="$1"; got="$2"; want="$3"
@@ -77,7 +78,12 @@ self_dir="$(cd -- "$(dirname -- "$(readlink --canonicalize -- "$0")")" && pwd)"
 canary_py="${self_dir}/wiki_csp_render_device_canary.py"
 PLAYWRIGHT_PYTHON="${PLAYWRIGHT_PYTHON:-${HOME}/.venvs/playwright/bin/python}"
 if [ ! -x "${PLAYWRIGHT_PYTHON}" ]; then
-   printf '%s\n' "NOTE: no Playwright venv at '${PLAYWRIGHT_PYTHON}'; Phase 2 behavioral canary not run (wiring verified above)." >&2
+   ## The Playwright venv is a host-side-only capability (sandbox-only per policy), absent in the
+   ## standard dist-ai test env -- so Phase 2 is an OPTIONAL, opt-in target. Count it as a SKIP (not a
+   ## masked pass) so the summary never reports clean coverage the behavioral canary did not provide.
+   ## style-ok: allow-skip: Phase 2 Playwright venv env-unmet -- optional behavioral target; Phase 1 wiring still gated above
+   printf '%s\n' "SKIP: Phase 2 behavioral canary -- no Playwright venv at '${PLAYWRIGHT_PYTHON}' (wiring verified above)." >&2
+   skip=$((skip + 1))
 elif [ ! -r "${canary_py}" ]; then
    printf '%s\n' "FATAL: Phase 2 canary missing at '${canary_py}'" >&2
    exit 1
@@ -89,7 +95,7 @@ else
    check "Phase 2 canary: mobile-only CSP violation caught only with --device" "${canary_rc}" "0"
 fi
 
-printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
+printf '%s\n' "" "${pass} pass, ${fail} fail, ${skip} skip"
 if [ "${fail}" -ne 0 ]; then
    printf '%s\n' "FAILED"
    exit 1
