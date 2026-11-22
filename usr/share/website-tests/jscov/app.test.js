@@ -1342,19 +1342,40 @@ test("Special:Search page: submit on an empty field with no fragment stays empty
   assert.equal(w.document.getElementById("search-page-results").children.length, 0, "no results for an empty submit");
 });
 
-test("Special:Search page: submit with a lone surrogate does not throw and pins no bad fragment", async () => {
-  // encodeURIComponent throws URIError on a lone surrogate (half a pasted emoji); submitPage must
-  // swallow it (skip the hash) and still run the render, never propagate the throw.
+test("Special:Search page: a lone-surrogate submit DROPS the fragment (no stale/lying #q=)", async () => {
+  // encodeURIComponent throws URIError on a lone surrogate (half a pasted emoji). submitPage must
+  // swallow it AND drop the fragment -- NOT leave the prior #q= in place, which would make the URL
+  // claim a query that is not the one being searched. Canary: the prior code left #q=old behind.
   const w = load('<input id="search-input"><div data-search-page></div>',
-    { searchIndex: [{ t: "Tor", u: "wiki/Tor/" }] });
+    { hash: "#q=old", searchIndex: [{ t: "Tor", u: "wiki/Tor/" }] });
   await tick();
   const input = w.document.getElementById("search-page-input");
   const submit = w.document.querySelector(".search-page-submit");
-  w.location.hash = "#top";
   input.value = "\uD800ab";                   // a lone high surrogate -> encodeURIComponent throws
   submit.dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
   await tick();
-  assert.equal(w.location.hash, "#top", "the throwing encode is swallowed: the fragment is left as-is");
+  assert.equal(w.location.hash, "", "the unencodable query drops the fragment (the URL never lies about the query)");
+});
+
+test("Special:Search page: submit updates the URL IN PLACE (replaceState -- no Back-history entry)", async () => {
+  // Written with replaceState, not location.hash, so a submit never pushes a Back entry (which would
+  // let Back land on a stale URL whose field/results disagree with it). Canary: the location.hash
+  // version never called replaceState, so the spy stays null.
+  const w = load('<input id="search-input"><div data-search-page></div>',
+    { searchIndex: [{ t: "Alpha", u: "wiki/Alpha/" }] });
+  await tick();
+  const input = w.document.getElementById("search-page-input");
+  const submit = w.document.querySelector(".search-page-submit");
+  let repl = null;
+  const orig = w.history.replaceState.bind(w.history);
+  w.history.replaceState = (s, t, u) => { repl = u; return orig(s, t, u); };
+  input.value = "alpha";
+  input.dispatchEvent(new w.Event("input"));
+  await tick();
+  submit.dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
+  await tick();
+  assert.equal(repl, "#q=alpha", "submit commits the query via replaceState (in place), not a new history entry");
+  assert.equal(w.location.hash, "#q=alpha", "and the URL reflects it");
 });
 
 test("Special:Search page: submitting an emptied field DROPS a stale #q= (no stale-restore on reload)", async () => {
