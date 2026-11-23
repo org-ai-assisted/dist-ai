@@ -544,7 +544,7 @@ test("heading reveal: a content-heading click navigates to its anchor (:target r
   w.location.hash = "zzz";
   assert.ok(click(d.getElementById("bareBtn")), "a bare <button> in a heading passes through un-prevented");
   assert.equal(w.location.hash, "#zzz", "a bare <button> tap in a heading is exempt (button arm), no navigate");
-  click(d.getElementById("bareLink"));
+  assert.ok(click(d.getElementById("bareLink")), "a bare <a> in a heading passes through un-prevented (the link still acts)");
   assert.equal(w.location.hash, "#zzz", "a bare <a> tap in a heading is exempt (a arm), no navigate");
   assert.ok(click(hA.querySelector(".heading-actions .mw-editsection a")), "an edit control click passes through un-prevented");
   assert.equal(w.location.hash, "#zzz", "a click on an edit control (.heading-actions arm) does not navigate the heading");
@@ -1082,6 +1082,28 @@ test("search dropdown row: an img entry renders an <img> thumb, a highlighted pr
   assert.equal(a.querySelector(".search-row-title").textContent, "Tor Browser", "the full title renders");
   assert.equal(a.querySelector(".search-row-desc").textContent,
     "Hardened browser that routes traffic through Tor.", "the one-line summary renders below the title");
+});
+
+test("search dropdown row: an img thumb at a ROOT-level page (rootPrefix '') resolves at the site root", async () => {
+  // Complement to the "../" case above: a root-level page (appSrc "app.min.js" -> rootPrefix "").
+  // The index path is page-root-relative, so the "" prefix is a no-op and the src stays
+  // "media/thumb/...", which at the root resolves to /media/thumb/.... A regression dropping the
+  // <img> to the fallback at the root is invisible to the "../" case alone, so BOTH prefixes are pinned.
+  const w = load('<input id="search-input">',
+    { url: "https://x.test/Page", appSrc: "app.min.js",
+      searchIndex: [{ t: "Tor Browser", u: "wiki/Tor_Browser/",
+                      d: "Hardened browser that routes traffic through Tor.",
+                      img: "media/thumb/Tor-128.webp" }] });
+  const input = w.document.getElementById("search-input");
+  input.value = "tor";
+  input.dispatchEvent(new w.Event("input"));
+  await tick();
+  const img = w.document.querySelector(".search-results li:not(.search-all) .search-thumb img");
+  assert.ok(img, "an img entry still renders an <img> thumbnail at a root-level page");
+  assert.equal(img.getAttribute("src"), "media/thumb/Tor-128.webp",
+    "rootPrefix '' leaves the page-root-relative index path unchanged (no spurious prefix)");
+  assert.equal(img.src, "https://x.test/media/thumb/Tor-128.webp",
+    "the thumb resolves at the site root (/media/thumb/..., not a /wiki/ subtree)");
 });
 
 test("search dropdown row: no img field -> the grey document-glyph fallback, no <img>", async () => {
