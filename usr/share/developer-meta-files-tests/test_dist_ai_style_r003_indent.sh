@@ -174,6 +174,35 @@ chmod 0755 -- "${repo}/usr/bin/new_continuation.sh"
 commit_and_range "${repo}" "${base_sha}"
 assert_clean "a new flat script with only a one-off aligned indent is not flagged"
 
+## 2c. A new flat script dominated by RECURRING aligned continuations (the same
+## 4-space alignment across several lines of multiple multi-line commands, no
+## block indent) is NOT flagged. A frequency-based text scan is fooled here (the
+## width recurs); keying on statement-start columns is not -- a continuation is
+## never a statement start.
+repo="${test_dir}/new_recurring_continuation"
+base_sha="$(build_base "${repo}")"
+printf '%s\n' \
+  '#!/bin/bash' \
+  '' \
+  'set -o errexit' \
+  'set -o nounset' \
+  'set -o pipefail' \
+  'set -o errtrace' \
+  'shopt -s inherit_errexit' \
+  'shopt -s shift_verbose' \
+  'export LC_ALL=C' \
+  '' \
+  "true \\" \
+  "    one \\" \
+  "    two" \
+  "false \\" \
+  "    three \\" \
+  "    four" \
+  >"${repo}/usr/bin/new_recurring.sh"
+chmod 0755 -- "${repo}/usr/bin/new_recurring.sh"
+commit_and_range "${repo}" "${base_sha}"
+assert_clean "a new flat script of recurring aligned continuations is not flagged"
+
 ## 3. MODIFYING an existing 3-space file does not reindent it (new-file-only).
 repo="${test_dir}/modify_legacy"
 base_sha="$(build_base "${repo}")"

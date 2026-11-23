@@ -20,6 +20,7 @@ import shutil
 import stat
 import subprocess
 
+from dist_ai import bash_ast
 from dist_ai import engine
 from dist_ai import gitdiff
 from dist_ai import model
@@ -301,29 +302,33 @@ def _added_shell_names(names, base_ref, staged_mode, base_cwd):
     return [name for name in names if name in added]
 
 
-def _indent_unit(source):
-    """The file's dominant SPACE-indent step, or None when indeterminate. GCD of
-    the leading-space widths that RECUR (seen on >=2 lines). Parser-free ON
-    PURPOSE (never reinvent a bash parser), so the failure mode is always a MISS
-    (indeterminate -> pass), never a false FAIL of a clean file:
-      - A width seen only ONCE is ignored, never treated as the step. A flat
-        script's sole indentation can be an aligned multi-line continuation (a
-        lone 6-space line); counting it would read unit 6 and wrongly FAIL a file
-        that never used a 3-space block. Real block indentation recurs.
-      - The GCD can only be pulled DOWN toward 1 by odd indentation (2 and 3 are
-        coprime, so one genuine 2-space line forces GCD(2,3)=1), never UP.
-    Tab-indented lines carry no space width and are out of scope."""
-    counts = collections.Counter()
-    for line in source.split("\n"):
-        body = line.lstrip(" ")
-        width = len(line) - len(body)
-        if width == 0 or not body.strip():
-            continue
-        counts[width] += 1
-    widths = [w for w, seen in counts.items() if seen >= 2]
-    if not widths:
+def _indent_unit(tree):
+    """The file's block-indent step from the shfmt AST, or None when
+    indeterminate. The indent is the leading column of each line that STARTS a
+    statement -- read straight off the existing parse, NOT by scanning raw lines
+    (never reinvent a bash parser). Keying on statement starts is what makes it
+    correct: a line-continuation or aligned argument is mid-statement, never a
+    statement start, so it never contributes a spurious width -- the false-FAIL
+    class a text scan cannot avoid (a flat script of aligned multi-line commands
+    has every statement at column 1 -> no indent -> pass). GCD over the per-line
+    starts gives the step; several statements sharing a line (a ';' chain) count
+    once at the line's first. Unit < 2 (tabs, mixed) -> None (pass). Failure mode
+    is always a MISS, never a false FAIL."""
+    if tree is None:
         return None
-    unit = functools.reduce(math.gcd, widths, 0)
+    first_col = {}
+    for stmt in bash_ast.iter_stmts(tree):
+        pos = stmt.get("Pos") or {}
+        line = pos.get("Line")
+        col = pos.get("Col")
+        if not line or not col:
+            continue
+        if line not in first_col or col < first_col[line]:
+            first_col[line] = col
+    indents = [col - 1 for col in first_col.values() if col > 1]
+    if not indents:
+        return None
+    unit = functools.reduce(math.gcd, indents, 0)
     return unit if unit >= 2 else None
 
 
@@ -350,7 +355,7 @@ def check_added_file_indent(names, base_ref, staged_mode, base_cwd, source_rev):
             continue
         if ctx.has_rule_override(_INDENT_RULE) or ctx.has_waiver("indent-unit"):
             continue
-        unit = _indent_unit(ctx.source)
+        unit = _indent_unit(ctx.tree)
         if unit is None or unit == 2:
             continue
         yield model.fail(
