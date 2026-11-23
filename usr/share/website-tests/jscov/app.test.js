@@ -488,62 +488,58 @@ test("per-heading share: a keyboard reopen (focusin) clears the (x) override eve
     "focusin clears the override so :focus-within can reopen, even while still :hover");
 });
 
-// ---- native [popover] JS tether (BUG1 + #152: share "open in" confirm, (i) info, antispam) --
-// Touch click-to-activate for the per-heading affordances (permalink '#', edit, share). A
-// fine-pointer device reveals them on CSS :hover; a touch device has no hover, so initHeadingReveal
-// binds (only on a no-hover / coarse pointer) a tap that toggles a persistent .heading-active CSS
-// reveals that heading's affordances on -- tap again / another heading / away / Escape hides, one
-// active at a time. matchMedia is forced per case (the harness default is matches:false = desktop).
-test("touch heading reveal: tap toggles .heading-active (one at a time); affordance tap, outside tap + Escape handled", () => {
-  const touch = (w) => {
-    w.matchMedia = (q) => ({
-      matches: /hover:\s*none|pointer:\s*coarse/.test(q),
-      addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {},
-    });
-  };
+// Click/tap-to-reveal the per-heading edit/share affordances, EVERY pointer. There is no '#'
+// permalink glyph (operator removed it -- the revealed edit/share suffice); the heading ITSELF is
+// the permalink. A click/tap on a content heading that HAS affordances NAVIGATES to its anchor
+// (location.hash = encodeURIComponent(id)); CSS then reveals the cluster via :target, which -- being
+// single -- re-hides any previously-targeted heading (single-active). Escape clears the hash. A
+// click on an affordance (edit/share) or any link/button, off a heading, on a heading with no
+// affordances / no id, or on a heading outside .wiki-content, must NOT navigate.
+test("heading reveal: click a content heading navigates to its anchor (:target reveal); affordance/non-heading clicks + Escape handled", () => {
   const w = load(
     '<div class="wiki-content">' +
-    '<h2 id="A">A<a class="h-anchor" href="#A"></a>' +
-    '<span class="heading-actions"><span class="mw-editsection"><a href="#">e</a></span></span></h2>' +
-    '<h2 id="B">B<a class="h-anchor" href="#B"></a>' +
-    '<span class="heading-actions"><span class="mw-editsection"><a href="#">e</a></span></span></h2>' +
-    '<h3 id="C">C</h3>' +                                  // a heading carrying no affordance
+    '<h2 id="A">A<span class="heading-actions"><span class="mw-editsection"><a href="#">e</a></span></span></h2>' +
+    '<h2 id="B">B<span class="heading-actions"><span class="mw-editsection"><a href="#">e</a></span></span></h2>' +
+    '<h3 id="C">C</h3>' +                                   // a content heading carrying no affordance
+    '<h2>NoId<span class="heading-actions"><a href="#">e</a></span></h2>' +   // a heading with no id
     '<p id="body">text</p></div>' +
-    '<h2 id="Z">Z<a class="h-anchor" href="#Z"></a></h2>',  // a heading OUTSIDE .wiki-content
-    { preEval: touch });
+    '<h2 id="Z">Z<span class="heading-actions"><a href="#">e</a></span></h2>');  // a heading OUTSIDE .wiki-content
   const d = w.document;
-  const tap = (el) => el.dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true }));
+  const click = (el) => el.dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true }));
+  const esc = () => d.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   const [hA, hB, hC, hZ] = ["A", "B", "C", "Z"].map((id) => d.getElementById(id));
-  tap(hA);
-  assert.ok(hA.classList.contains("heading-active"), "a tap reveals that heading's affordances");
-  tap(hA);
-  assert.ok(!hA.classList.contains("heading-active"), "a second tap hides it (toggle)");
-  tap(hA); tap(hB);
-  assert.ok(hB.classList.contains("heading-active") && !hA.classList.contains("heading-active"),
-    "opening one heading closes the others (one active at a time)");
-  // A tap on a real affordance must ACT, not toggle the panel -- exercise BOTH exempted targets:
-  // the permalink '#' AND an edit control INSIDE .heading-actions (the handler exempts the whole
-  // cluster; tapping only .h-anchor would miss a cluster-exempt regression). tap() returns
-  // !defaultPrevented, so it also proves the reveal handler never preventDefaults the nav.
-  assert.ok(tap(hB.querySelector(".h-anchor")), "the '#' permalink tap passes through un-prevented (nav still acts)");
-  assert.ok(hB.classList.contains("heading-active"), "a tap on the '#' permalink does not toggle the panel");
-  assert.ok(tap(hB.querySelector(".heading-actions .mw-editsection a")), "an edit control tap passes through un-prevented");
-  assert.ok(hB.classList.contains("heading-active"), "a tap on an edit control inside .heading-actions does not toggle the panel");
-  tap(d.getElementById("body"));
-  assert.ok(!hB.classList.contains("heading-active"), "a tap off a content heading hides the open one");
-  tap(hA);
-  d.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-  assert.ok(!hA.classList.contains("heading-active"), "Escape hides the open heading");
-  // an affordance-less content heading (widget h4-h6) has nothing to reveal, yet tapping it still
-  // DISMISSES any open heading (one-at-a-time), exactly like tapping away.
-  tap(hA);
-  assert.ok(hA.classList.contains("heading-active"), "re-open A");
-  tap(hC);
-  assert.ok(!hC.classList.contains("heading-active"), "a heading carrying no affordance is not activated");
-  assert.ok(!hA.classList.contains("heading-active"), "tapping an affordance-less heading still dismisses the open one");
-  tap(hA); tap(hZ);
-  assert.ok(!hA.classList.contains("heading-active") && !hZ.classList.contains("heading-active"),
-    "a heading outside .wiki-content does not activate and clears any open one");
+  const hNoId = d.querySelector(".wiki-content h2:not([id])");
+  // a click on a content heading navigates to its anchor (the reveal is CSS :target, driven by this)
+  click(hA);
+  assert.equal(w.location.hash, "#A", "a click on a content heading navigates to its anchor");
+  // a second click on the SAME (already-targeted) heading does not re-navigate (no redundant entry)
+  click(hA);
+  assert.equal(w.location.hash, "#A", "re-clicking the targeted heading is a no-op (hash unchanged)");
+  // another heading re-targets -> single-active (the previous :target drops, CSS-side)
+  click(hB);
+  assert.equal(w.location.hash, "#B", "clicking another heading re-targets it (single-active via :target)");
+  // a click on an affordance INSIDE .heading-actions (edit) must ACT, not navigate; click() returns
+  // !defaultPrevented, proving the handler never preventDefaults the nav either
+  assert.ok(click(hB.querySelector(".heading-actions .mw-editsection a")), "an edit control click passes through un-prevented");
+  assert.equal(w.location.hash, "#B", "a click on an edit control does not navigate the heading");
+  // Escape clears the active reveal
+  esc();
+  assert.equal(w.location.hash, "", "Escape clears the heading anchor");
+  // Escape again with NO hash is a safe no-op (the && location.hash guard); a non-Escape key is ignored
+  esc();
+  assert.equal(w.location.hash, "", "Escape with no active hash is a no-op");
+  d.dispatchEvent(new w.KeyboardEvent("keydown", { key: "a", bubbles: true }));
+  assert.equal(w.location.hash, "", "a non-Escape key does not clear/alter the hash");
+  // none of these navigate: an affordance-less heading, a heading with no id, a heading outside
+  // .wiki-content, and a non-heading element
+  click(hC);
+  assert.equal(w.location.hash, "", "a content heading carrying no affordance does not navigate");
+  click(hNoId);
+  assert.equal(w.location.hash, "", "a heading with no id does not navigate");
+  click(hZ);
+  assert.equal(w.location.hash, "", "a heading outside .wiki-content does not navigate");
+  click(d.getElementById("body"));
+  assert.equal(w.location.hash, "", "a click off any heading does not navigate");
 });
 
 test("touch heading reveal: a hover-capable (desktop) pointer binds NO tap handler -- reveal stays pure CSS :hover", () => {
