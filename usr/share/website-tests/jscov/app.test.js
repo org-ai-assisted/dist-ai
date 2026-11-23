@@ -1869,13 +1869,29 @@ test("search closes on outside click and Escape, clearing the live results", asy
   w.document.getElementById("elsewhere").dispatchEvent(new w.Event("click", { bubbles: true }));
   assert.equal(toggle.checked, false, "outside click unchecks the toggle");
   assert.ok(results.hidden && results.children.length === 0, "outside click hides+clears results");
-  // reopen, then Escape closes
+  // reopen, then Escape. A keyboard user's Escape ORIGINATES at the focused input, so the input's
+  // own handler runs first and owns a two-stage clear-then-close (Carbon/Apple): the FIRST Escape
+  // clears the field + dropdown but LEAVES the box open to retype; a SECOND closes it. The input
+  // handler stopPropagation()s stage 1, so the document-level global-Escape handler does NOT also
+  // fire and collapse the box in one press. Dispatch ON the input (not document) to exercise this.
+  toggle.checked = true;
+  input.value = "tor";
+  input.dispatchEvent(new w.Event("input"));
+  await tick();
+  assert.equal(results.hidden, false, "reopened results shown");
+  input.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  assert.ok(input.value === "" && results.hidden, "1st Escape clears the field and dropdown");
+  assert.equal(toggle.checked, true, "1st Escape leaves the box OPEN to retype (stage 1 clears, does not close)");
+  input.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  assert.equal(toggle.checked, false, "2nd Escape on the now-clear field closes the box (compact tier)");
+  // a global Escape NOT originating in the field (focus elsewhere) still closes an open box in one
+  // press, via the document-level handler -- that path has no two-stage, so it collapses directly.
   toggle.checked = true;
   input.value = "tor";
   input.dispatchEvent(new w.Event("input"));
   await tick();
   w.document.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Escape" }));
-  assert.equal(toggle.checked, false, "Escape closes the box");
+  assert.equal(toggle.checked, false, "a document-level Escape (focus elsewhere) closes the box in one press");
 });
 
 // ---- banners (consent / stage / sitenotice) -------------------------------------------------
