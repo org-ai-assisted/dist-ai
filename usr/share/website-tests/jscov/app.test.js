@@ -503,7 +503,7 @@ test("per-heading share: a keyboard reopen (focusin) clears the (x) override eve
 test("heading reveal: a content-heading click navigates to its anchor (:target reveal); encoding-robust guard; affordance/non-heading clicks ignored", () => {
   const w = load(
     '<div class="wiki-content">' +
-    '<h2 id="A">A<span class="heading-actions"><span class="mw-editsection"><a href="#">e</a></span></span></h2>' +
+    '<h2 id="A">A<button type="button" id="bareBtn">x</button><a id="bareLink" href="#">l</a><span class="heading-actions"><span class="mw-editsection"><a href="#">e</a></span></span></h2>' +  // bare button/link DIRECTLY in the heading (not in .heading-actions): the a/button closest() arms
     '<h2 id="B">B<span class="heading-actions"><span class="mw-editsection"><a href="#">e</a></span></span></h2>' +
     '<h2 id="Anchor_(Template)">Anchor (Template)<span class="heading-actions"><a href="#">e</a></span></h2>' +  // MW keeps parens in ids; the TOC href encodes them as %28/%29, which encodeURIComponent does NOT
     '<h3 id="C">C</h3>' +                                   // a content heading carrying no affordance
@@ -536,21 +536,29 @@ test("heading reveal: a content-heading click navigates to its anchor (:target r
   w.location.hash = "%ZZ";
   click(hA);
   assert.equal(w.location.hash, "#A", "a malformed existing fragment is handled (catch -> raw compare -> navigate)");
-  // a click on an affordance INSIDE .heading-actions (edit) must ACT, not navigate; click() returns
-  // !defaultPrevented, proving the handler never preventDefaults the nav either
-  w.location.hash = "B";
-  assert.ok(click(hB.querySelector(".heading-actions .mw-editsection a")), "an edit control click passes through un-prevented");
-  assert.equal(w.location.hash, "#B", "a click on an edit control does not navigate the heading");
-  // none of these navigate: an affordance-less heading, a heading with no id, a heading outside
-  // .wiki-content, and a non-heading element (hash left where the last real nav put it)
+  // EVERY exempt pointer target returns before the hash write: the .heading-actions cluster AND a
+  // bare link/button placed directly in the heading (the a/button arms of the closest() exemption).
+  // Preset the hash to a NON-heading value so an exempt no-op (hash stays #zzz) is DISTINGUISHABLE
+  // from navigate-to-the-heading (#A): dropping the a/button arm -- or the whole exemption -- would
+  // rewrite it. (A preset of the heading's own id would skip anyway, hiding the regression.)
+  w.location.hash = "zzz";
+  assert.ok(click(d.getElementById("bareBtn")), "a bare <button> in a heading passes through un-prevented");
+  assert.equal(w.location.hash, "#zzz", "a bare <button> tap in a heading is exempt (button arm), no navigate");
+  click(d.getElementById("bareLink"));
+  assert.equal(w.location.hash, "#zzz", "a bare <a> tap in a heading is exempt (a arm), no navigate");
+  assert.ok(click(hA.querySelector(".heading-actions .mw-editsection a")), "an edit control click passes through un-prevented");
+  assert.equal(w.location.hash, "#zzz", "a click on an edit control (.heading-actions arm) does not navigate the heading");
+  // none of these navigate either: an affordance-less heading, a heading with no id, a heading
+  // outside .wiki-content, and a non-heading element (each returns before the hash write -- a nav
+  // would move the hash off #zzz to the heading's own id, e.g. #C / #Z)
   click(hC);
-  assert.equal(w.location.hash, "#B", "a content heading carrying no affordance does not navigate");
+  assert.equal(w.location.hash, "#zzz", "a content heading carrying no affordance does not navigate");
   click(hNoId);
-  assert.equal(w.location.hash, "#B", "a heading with no id does not navigate");
+  assert.equal(w.location.hash, "#zzz", "a heading with no id does not navigate");
   click(hZ);
-  assert.equal(w.location.hash, "#B", "a heading outside .wiki-content does not navigate");
+  assert.equal(w.location.hash, "#zzz", "a heading outside .wiki-content does not navigate");
   click(d.getElementById("body"));
-  assert.equal(w.location.hash, "#B", "a click off any heading does not navigate");
+  assert.equal(w.location.hash, "#zzz", "a click off any heading does not navigate");
 });
 
 test("touch heading reveal: a hover-capable (desktop) pointer binds NO tap handler -- reveal stays pure CSS :hover", () => {
@@ -1045,8 +1053,12 @@ test("search dropdown footer: an async body row cannot steal the active footer's
 // Canary: pre-change app.js renders a bare title link -- no .search-thumb, .match, or .search-row-desc. ----
 
 test("search dropdown row: an img entry renders an <img> thumb, a highlighted prefix, and a summary", async () => {
+  // A real /wiki/Page context (appSrc "../app.min.js" -> rootPrefix "../"), NOT a rootPrefix-""
+  // setup: the index path is page-root-relative, so the code must PREPEND the page-to-root prefix.
+  // With rootPrefix "" a missing-prepend bug is invisible (src stays correct); here it would leave
+  // "media/thumb/..." which resolves under /wiki/ (wrong), so this pins the prepend.
   const w = load('<input id="search-input">',
-    { appSrc: "../../vendor-bundle.js",    // rootPrefix "" -> the thumb src stays root-relative
+    { url: "https://x.test/wiki/Page", appSrc: "../app.min.js",
       searchIndex: [{ t: "Tor Browser", u: "wiki/Tor_Browser/",
                       d: "Hardened browser that routes traffic through Tor.",
                       img: "media/thumb/Tor-128.webp" }] });
@@ -1057,8 +1069,10 @@ test("search dropdown row: an img entry renders an <img> thumb, a highlighted pr
   const a = w.document.querySelector(".search-results li:not(.search-all)").firstElementChild;
   const img = a.querySelector(".search-thumb img");
   assert.ok(img, "an entry with an img field renders an <img> thumbnail");
-  assert.equal(img.getAttribute("src"), "media/thumb/Tor-128.webp",
-    "the thumb src is the root-relative index path (no leading-slash double //)");
+  assert.equal(img.getAttribute("src"), "../media/thumb/Tor-128.webp",
+    "the thumb src has the page-to-root prefix prepended (rootPrefix '../')");
+  assert.equal(img.src, "https://x.test/media/thumb/Tor-128.webp",
+    "the prefixed thumb resolves to /media/thumb/... (NOT /wiki/media/thumb/... -- the missing-prepend bug)");
   assert.equal(img.getAttribute("alt"), "", "the thumbnail is decorative (the title names the result)");
   assert.equal(img.getAttribute("loading"), "lazy", "thumbnails load lazily");
   assert.equal(img.getAttribute("width"), "64", "the box is reserved so rows do not shift as thumbs load");
@@ -1108,18 +1122,24 @@ test("search dropdown row: a backslash-authority img url is dropped too (navSafe
   // Browsers normalize a backslash to '/' in a URL, so "\\evil.example/x.png" and "/\evil..."
   // resolve cross-origin exactly like "//evil...". navSafe must reject all four leading-pair
   // forms; the old slice(0,2)==="//" check let the backslash forms through (false same-origin).
-  const w = load('<input id="search-input">',
-    { appSrc: "../../vendor-bundle.js",
-      searchIndex: [{ t: "Tor", u: "wiki/Tor/", d: "Anonymity network, long enough to show.",
-                      img: "\\\\evil.example/x.png" }] });   // two backslashes -> protocol-relative
-  const input = w.document.getElementById("search-input");
-  input.value = "tor";
-  input.dispatchEvent(new w.Event("input"));
-  await tick();
-  const a = w.document.querySelector(".search-results li:not(.search-all)").firstElementChild;
-  assert.equal(a.querySelectorAll("img").length, 0, "a backslash-authority thumb url renders no <img>");
-  assert.ok(a.querySelector(".search-thumb--fallback i.fa-file-lines"),
-    "the backslash cross-origin thumb falls back to the glyph, same as the // form");
+  // All FOUR leading-pair forms resolve to the same cross-origin authority once the browser
+  // normalizes backslashes; navSafe (/^[/\\]{2}/) must reject each. Testing only `\\` would still
+  // pass a guard regressed to slice(0,2) === "//" plus a lone `\\` special-case.
+  for (const lead of ["//", "\\\\", "/\\", "\\/"]) {
+    const w = load('<input id="search-input">',
+      { appSrc: "../../vendor-bundle.js",
+        searchIndex: [{ t: "Tor", u: "wiki/Tor/", d: "Anonymity network, long enough to show.",
+                        img: lead + "evil.example/x.png" }] });
+    const input = w.document.getElementById("search-input");
+    input.value = "tor";
+    input.dispatchEvent(new w.Event("input"));
+    await tick();
+    const a = w.document.querySelector(".search-results li:not(.search-all)").firstElementChild;
+    assert.equal(a.querySelectorAll("img").length, 0,
+      `a leading-pair '${lead}' authority thumb url renders no <img>`);
+    assert.ok(a.querySelector(".search-thumb--fallback i.fa-file-lines"),
+      `the '${lead}' cross-origin thumb falls back to the glyph, same as //`);
+  }
 });
 
 test("search dropdown row: a title whose lower-case changes length is not mis-highlighted", async () => {
