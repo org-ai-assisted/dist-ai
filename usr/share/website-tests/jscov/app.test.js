@@ -1033,6 +1033,70 @@ test("search dropdown footer: an async body row cannot steal the active footer's
     "Enter follows the still-active footer (a no-op path nav), NOT the body row's '#firewall'");
 });
 
+// ---- Suggestion-row layout: a narrow thumbnail, the title with the typed prefix highlighted, and
+// a one-line summary (Wikipedia-style). Thumb + summary come from the prebuilt index (e.img, e.d).
+// Canary: pre-change app.js renders a bare title link -- no .search-thumb, .match, or .search-row-desc. ----
+
+test("search dropdown row: an img entry renders an <img> thumb, a highlighted prefix, and a summary", async () => {
+  const w = load('<input id="search-input">',
+    { appSrc: "../../vendor-bundle.js",    // rootPrefix "" -> the thumb src stays root-relative
+      searchIndex: [{ t: "Tor Browser", u: "wiki/Tor_Browser/",
+                      d: "Hardened browser that routes traffic through Tor.",
+                      img: "media/thumb/Tor-128.webp" }] });
+  const input = w.document.getElementById("search-input");
+  input.value = "tor";
+  input.dispatchEvent(new w.Event("input"));
+  await tick();
+  const a = w.document.querySelector(".search-results li:not(.search-all)").firstElementChild;
+  const img = a.querySelector(".search-thumb img");
+  assert.ok(img, "an entry with an img field renders an <img> thumbnail");
+  assert.equal(img.getAttribute("src"), "media/thumb/Tor-128.webp",
+    "the thumb src is the root-relative index path (no leading-slash double //)");
+  assert.equal(img.getAttribute("alt"), "", "the thumbnail is decorative (the title names the result)");
+  assert.equal(img.getAttribute("loading"), "lazy", "thumbnails load lazily");
+  assert.equal(img.getAttribute("width"), "64", "the box is reserved so rows do not shift as thumbs load");
+  const match = a.querySelector(".search-row-title .match");
+  assert.ok(match, "the typed prefix is wrapped for highlighting");
+  assert.equal(match.textContent, "Tor", "the highlighted run is the typed prefix (original case preserved)");
+  assert.equal(a.querySelector(".search-row-title").textContent, "Tor Browser", "the full title renders");
+  assert.equal(a.querySelector(".search-row-desc").textContent,
+    "Hardened browser that routes traffic through Tor.", "the one-line summary renders below the title");
+});
+
+test("search dropdown row: no img field -> the grey document-glyph fallback, no <img>", async () => {
+  const w = load('<input id="search-input">',
+    { appSrc: "../../vendor-bundle.js",
+      searchIndex: [{ t: "Connecting to Tor", u: "wiki/Connecting/", d: "Established at boot." }] });
+  const input = w.document.getElementById("search-input");
+  input.value = "tor";                      // infix of "Connecting to Tor"
+  input.dispatchEvent(new w.Event("input"));
+  await tick();
+  const a = w.document.querySelector(".search-results li:not(.search-all)").firstElementChild;
+  assert.equal(a.querySelectorAll("img").length, 0, "no <img> is built when the entry has no thumb");
+  const thumb = a.querySelector(".search-thumb");
+  assert.ok(thumb.classList.contains("search-thumb--fallback"), "the thumb box is the fallback variant");
+  assert.ok(thumb.querySelector("i.fa-file-lines"), "the fallback is the document glyph (CSS, no asset)");
+  assert.equal(a.querySelector(".search-row-title .match").textContent, "Tor",
+    "the matched run is highlighted at its infix offset, not only a prefix");
+});
+
+test("search dropdown row: a cross-origin img url is dropped to the glyph (navSafe), row still links", async () => {
+  const w = load('<input id="search-input">',
+    { appSrc: "../../vendor-bundle.js",    // rootPrefix "" -> the row's own href stays same-origin
+      searchIndex: [{ t: "Tor", u: "wiki/Tor/", d: "Anonymity network, long enough to show.",
+                      img: "//evil.example/x.png" }] });   // tampered cross-origin thumb url
+  const input = w.document.getElementById("search-input");
+  input.value = "tor";
+  input.dispatchEvent(new w.Event("input"));
+  await tick();
+  const a = w.document.querySelector(".search-results li:not(.search-all)").firstElementChild;
+  assert.equal(a.querySelectorAll("img").length, 0, "a cross-origin thumb url renders no <img>");
+  assert.ok(a.querySelector(".search-thumb--fallback i.fa-file-lines"),
+    "the thumb falls back to the document glyph, exactly as a tampered href is navSafe-dropped");
+  assert.equal(a.getAttribute("href"), "wiki/Tor/",
+    "only the thumb was dropped -- the row still links to its same-origin target");
+});
+
 // ---- Trailing controls: the clear-x (#search-clear, shown only while the field holds text) and
 // the "Search" submit (#search-submit, whose #q= href tracks the typed query). These fixtures carry
 // both controls so the clearBtn/submitLink-PRESENT branches run; the minimal '<input id=...>'
