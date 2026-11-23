@@ -287,6 +287,8 @@ def _batch_findings(names, base_ref, staged_mode, base_cwd, message_file,
     else:
         yield from gate.check_changelog_range(base_ref, base_cwd)
     yield from gate.check_message(base_ref, staged_mode, message_file, base_cwd)
+    yield from gate.check_added_file_indent(
+        names, base_ref, staged_mode, base_cwd, source_rev)
     yield from gate.comments_audit(names, base_cwd, tool_dir)
     yield from gate.warn_worktree_skew(names, skew_ref, base_cwd)
     yield from gate.check_untracked(base_cwd)

@@ -12,6 +12,8 @@ Every check yields model.Finding, so the gate renders a range finding exactly
 like a per-file one. base_cwd is the repo root (paths are repo-relative there)."""
 
 import collections
+import functools
+import math
 import os
 import re
 import shutil
@@ -19,6 +21,7 @@ import stat
 import subprocess
 
 from dist_ai import engine
+from dist_ai import gitdiff
 from dist_ai import model
 
 _AUTOBUMP_SUBJECT = "bumped changelog version"
@@ -271,6 +274,88 @@ def check_untracked(base_cwd):
             "untracked",
             "untracked shell file NOT checked -- 'git add' it to gate it: "
             "'%s'" % display, display)
+
+
+_INDENT_RULE = "R-003"
+
+
+def _added_shell_names(names, base_ref, staged_mode, base_cwd):
+    """The subset of NAMES this change ADDS as a brand-new path (git status 'A'),
+    with rename/copy detection on (-M/-C) so a renamed LEGACY file is an R/C, not
+    an A, and is never forced to reindent. Keyed on git's own diff, not a
+    'cat-file -e base:path' existence test, exactly so a rename is excluded."""
+    if staged_mode:
+        spec = ["--cached", "HEAD"]
+    else:
+        spec = ["%s...HEAD" % base_ref]
+    try:
+        out = subprocess.run(
+            ["git", "-c", "core.quotePath=false", "diff", "-M", "-C",
+             "--diff-filter=A", "--name-only", "-z"] + spec,
+            capture_output=True, cwd=base_cwd)
+    except OSError:
+        return []
+    if out.returncode != 0:
+        return []
+    added = {os.fsdecode(raw) for raw in out.stdout.split(b"\0") if raw}
+    return [name for name in names if name in added]
+
+
+def _indent_unit(source):
+    """The file's dominant SPACE-indent step, or None when indeterminate. GCD of
+    the leading-space widths seen on >=2 lines (a one-off width -- a lone heredoc
+    body line, an aligned continuation -- is dropped as noise). Parser-free ON
+    PURPOSE (never reinvent a bash parser): the GCD can only be pulled DOWN toward
+    1 by odd indentation, so the failure mode is a MISS (indeterminate -> pass),
+    never a false FAIL of a clean 2-space file -- 2 and 3 are coprime, so a single
+    genuine 2-space line forces GCD(2,3)=1 and a 2-space file is never read as 3.
+    Tab-indented lines carry no space width and are out of scope."""
+    counts = collections.Counter()
+    for line in source.split("\n"):
+        body = line.lstrip(" ")
+        width = len(line) - len(body)
+        if width == 0 or not body.strip():
+            continue
+        counts[width] += 1
+    if not counts:
+        return None
+    widths = [w for w, seen in counts.items() if seen >= 2] or list(counts)
+    unit = functools.reduce(math.gcd, widths, 0)
+    return unit if unit >= 2 else None
+
+
+def check_added_file_indent(names, base_ref, staged_mode, base_cwd, source_rev):
+    """FAIL a NEWLY-ADDED shell file whose indentation step is not 2 (R-003).
+    New-file-only BY DESIGN: existing 2- and 3-space scripts are left untouched
+    (R-152), so this only ever judges a file this change introduces -- it never
+    reindents, and a direct-file run (no base_ref) is skipped. Waive a new file
+    that must match 3-space siblings with '## style-ok: R-003' (or '## style-ok:
+    indent-unit'). Python indentation is black's job (4-space), not this check."""
+    if not base_ref or not base_cwd:
+        return
+    added = _added_shell_names(names, base_ref, staged_mode, base_cwd)
+    if not added:
+        return
+    pairs = [(os.path.join(base_cwd, name), name) for name in added]
+    if source_rev is None:
+        contexts = gitdiff.contexts(pairs)
+    else:
+        contexts = gitdiff.blob_contexts(
+            pairs, None if source_rev == "" else source_rev)
+    for ctx in contexts:
+        if ctx is None or not ctx.is_shell or not ctx.source:
+            continue
+        if ctx.has_rule_override(_INDENT_RULE) or ctx.has_waiver("indent-unit"):
+            continue
+        unit = _indent_unit(ctx.source)
+        if unit is None or unit == 2:
+            continue
+        yield model.fail(
+            _INDENT_RULE,
+            "%s: new shell file indents with %d spaces; new files use 2-space "
+            "indentation (existing 2-/3-space files are left as-is). Reindent to "
+            "2, or waive with '## style-ok: %s' if it must match 3-space "
+            "siblings." % (_INDENT_RULE, unit, _INDENT_RULE), ctx.path)
 
 
 def _find_comments_audit(tool_dir):
