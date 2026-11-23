@@ -149,6 +149,31 @@ chmod 0755 -- "${repo}/usr/bin/new_two.sh"
 commit_and_range "${repo}" "${base_sha}"
 assert_clean "a newly-added 2-space file is not flagged"
 
+## 2b. A new flat script whose ONLY indentation is a single aligned line (here a
+## 6-space second line of a multi-line string, no recurring block indent) is NOT
+## flagged: a one-off width is never read as the indent step.
+repo="${test_dir}/new_continuation"
+base_sha="$(build_base "${repo}")"
+# shellcheck disable=SC2016  # literal fixture text, not an expansion in this script
+printf '%s\n' \
+  '#!/bin/bash' \
+  '' \
+  'set -o errexit' \
+  'set -o nounset' \
+  'set -o pipefail' \
+  'set -o errtrace' \
+  'shopt -s inherit_errexit' \
+  'shopt -s shift_verbose' \
+  'export LC_ALL=C' \
+  '' \
+  'message="line one' \
+  '      line two"' \
+  'printf "%s" "${message}"' \
+  >"${repo}/usr/bin/new_continuation.sh"
+chmod 0755 -- "${repo}/usr/bin/new_continuation.sh"
+commit_and_range "${repo}" "${base_sha}"
+assert_clean "a new flat script with only a one-off aligned indent is not flagged"
+
 ## 3. MODIFYING an existing 3-space file does not reindent it (new-file-only).
 repo="${test_dir}/modify_legacy"
 base_sha="$(build_base "${repo}")"

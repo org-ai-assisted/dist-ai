@@ -303,12 +303,15 @@ def _added_shell_names(names, base_ref, staged_mode, base_cwd):
 
 def _indent_unit(source):
     """The file's dominant SPACE-indent step, or None when indeterminate. GCD of
-    the leading-space widths seen on >=2 lines (a one-off width -- a lone heredoc
-    body line, an aligned continuation -- is dropped as noise). Parser-free ON
-    PURPOSE (never reinvent a bash parser): the GCD can only be pulled DOWN toward
-    1 by odd indentation, so the failure mode is a MISS (indeterminate -> pass),
-    never a false FAIL of a clean 2-space file -- 2 and 3 are coprime, so a single
-    genuine 2-space line forces GCD(2,3)=1 and a 2-space file is never read as 3.
+    the leading-space widths that RECUR (seen on >=2 lines). Parser-free ON
+    PURPOSE (never reinvent a bash parser), so the failure mode is always a MISS
+    (indeterminate -> pass), never a false FAIL of a clean file:
+      - A width seen only ONCE is ignored, never treated as the step. A flat
+        script's sole indentation can be an aligned multi-line continuation (a
+        lone 6-space line); counting it would read unit 6 and wrongly FAIL a file
+        that never used a 3-space block. Real block indentation recurs.
+      - The GCD can only be pulled DOWN toward 1 by odd indentation (2 and 3 are
+        coprime, so one genuine 2-space line forces GCD(2,3)=1), never UP.
     Tab-indented lines carry no space width and are out of scope."""
     counts = collections.Counter()
     for line in source.split("\n"):
@@ -317,9 +320,9 @@ def _indent_unit(source):
         if width == 0 or not body.strip():
             continue
         counts[width] += 1
-    if not counts:
+    widths = [w for w, seen in counts.items() if seen >= 2]
+    if not widths:
         return None
-    widths = [w for w, seen in counts.items() if seen >= 2] or list(counts)
     unit = functools.reduce(math.gcd, widths, 0)
     return unit if unit >= 2 else None
 
