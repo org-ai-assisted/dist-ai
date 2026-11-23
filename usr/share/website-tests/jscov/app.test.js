@@ -493,17 +493,19 @@ test("per-heading share: a keyboard reopen (focusin) clears the (x) override eve
 // the permalink. A click/tap on a content heading that HAS affordances NAVIGATES to its anchor
 // (location.hash = encodeURIComponent(id)); CSS then reveals the cluster via :target, which -- being
 // single -- re-hides any previously-targeted heading (single-active). The skip-redundant-nav guard
-// matches the current fragment against BOTH the encoded form and the raw id, because browsers
-// disagree on whether location.hash is percent-encoded and in-page hrefs are raw (no re-nav loop /
-// duplicate history on a reserved-char id). There is NO Escape handler (it would wipe any #fragment
-// and scroll to top). A click on an affordance (edit/share) or any link/button, off a heading, on a
-// heading with no affordances / no id, or on a heading outside .wiki-content, must NOT navigate.
+// DECODES the current fragment and compares it to the raw id (what :target itself matches), so it
+// holds however the fragment was encoded -- urllib.quote TOC hrefs percent-encode `( ) ' ,` that
+// encodeURIComponent leaves raw, and Firefox keeps the percent form in location.hash (no re-nav
+// loop / duplicate history). A malformed %-sequence throws, caught -> raw compare. There is NO
+// Escape handler (it would wipe any #fragment and scroll to top). A click on an affordance
+// (edit/share) or any link/button, off a heading, on a heading with no affordances / no id, or on a
+// heading outside .wiki-content, must NOT navigate.
 test("heading reveal: a content-heading click navigates to its anchor (:target reveal); encoding-robust guard; affordance/non-heading clicks ignored", () => {
   const w = load(
     '<div class="wiki-content">' +
     '<h2 id="A">A<span class="heading-actions"><span class="mw-editsection"><a href="#">e</a></span></span></h2>' +
     '<h2 id="B">B<span class="heading-actions"><span class="mw-editsection"><a href="#">e</a></span></span></h2>' +
-    '<h2 id="A,B">C,D<span class="heading-actions"><a href="#">e</a></span></h2>' +  // reserved char: encodeURIComponent encodes the comma, the URL fragment does not
+    '<h2 id="Anchor_(Template)">Anchor (Template)<span class="heading-actions"><a href="#">e</a></span></h2>' +  // MW keeps parens in ids; the TOC href encodes them as %28/%29, which encodeURIComponent does NOT
     '<h3 id="C">C</h3>' +                                   // a content heading carrying no affordance
     '<h2>NoId<span class="heading-actions"><a href="#">e</a></span></h2>' +   // a heading with no id
     '<p id="body">text</p></div>' +
@@ -511,24 +513,29 @@ test("heading reveal: a content-heading click navigates to its anchor (:target r
   const d = w.document;
   const click = (el) => el.dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true }));
   const [hA, hB, hC, hZ] = ["A", "B", "C", "Z"].map((id) => d.getElementById(id));
-  const hComma = d.getElementById("A,B");
+  const hParen = d.getElementById("Anchor_(Template)");
   const hNoId = d.querySelector(".wiki-content h2:not([id])");
   // a click on a content heading navigates to its anchor (the reveal is CSS :target, driven by this)
   click(hA);
   assert.equal(w.location.hash, "#A", "a click on a content heading navigates to its anchor");
-  // a second click on the SAME (already-targeted) heading does not re-navigate -- cur === frag skip
+  // a second click on the SAME (already-targeted) heading does not re-navigate -- decoded cur === id
   click(hA);
   assert.equal(w.location.hash, "#A", "re-clicking the targeted heading is a no-op (hash unchanged)");
   // another heading re-targets -> single-active (the previous :target drops, CSS-side)
   click(hB);
   assert.equal(w.location.hash, "#B", "clicking another heading re-targets it (single-active via :target)");
-  // encoding-robust guard: a RAW reserved-char fragment (as an in-page TOC href or Firefox leaves
-  // it) already matches the heading -- the guard must skip via `cur === h.id`, NOT re-navigate to
-  // the percent-encoded form (the single-form guard looped here, spamming history). This FAILS on a
-  // `location.hash !== "#" + encodeURIComponent(id)` guard.
-  w.location.hash = "A,B";
-  click(hComma);
-  assert.equal(w.location.hash, "#A,B", "a raw reserved-char fragment already at the heading is not re-navigated to its encoded form");
+  // encoding-robust guard: arriving via the heading's OWN TOC href `#Anchor_%28Template%29` (quote
+  // encodes the parens) already matches the heading. The guard DECODES the fragment and must SKIP,
+  // not re-navigate to encodeURIComponent's raw-paren form. FAILS on any single-form string compare:
+  // encodeURIComponent("Anchor_(Template)") === "Anchor_(Template)" !== "Anchor_%28Template%29".
+  w.location.hash = "Anchor_%28Template%29";
+  click(hParen);
+  assert.equal(w.location.hash, "#Anchor_%28Template%29", "a percent-encoded fragment already at the heading is not re-navigated to its raw form");
+  // a MALFORMED existing %-sequence makes decodeURIComponent throw -> the try/catch falls back to a
+  // raw compare and navigates (safe: the written hash is well-formed, so no loop)
+  w.location.hash = "%ZZ";
+  click(hA);
+  assert.equal(w.location.hash, "#A", "a malformed existing fragment is handled (catch -> raw compare -> navigate)");
   // a click on an affordance INSIDE .heading-actions (edit) must ACT, not navigate; click() returns
   // !defaultPrevented, proving the handler never preventDefaults the nav either
   w.location.hash = "B";
