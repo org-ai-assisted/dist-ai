@@ -492,54 +492,58 @@ test("per-heading share: a keyboard reopen (focusin) clears the (x) override eve
 // permalink glyph (operator removed it -- the revealed edit/share suffice); the heading ITSELF is
 // the permalink. A click/tap on a content heading that HAS affordances NAVIGATES to its anchor
 // (location.hash = encodeURIComponent(id)); CSS then reveals the cluster via :target, which -- being
-// single -- re-hides any previously-targeted heading (single-active). Escape clears the hash. A
-// click on an affordance (edit/share) or any link/button, off a heading, on a heading with no
-// affordances / no id, or on a heading outside .wiki-content, must NOT navigate.
-test("heading reveal: click a content heading navigates to its anchor (:target reveal); affordance/non-heading clicks + Escape handled", () => {
+// single -- re-hides any previously-targeted heading (single-active). The skip-redundant-nav guard
+// matches the current fragment against BOTH the encoded form and the raw id, because browsers
+// disagree on whether location.hash is percent-encoded and in-page hrefs are raw (no re-nav loop /
+// duplicate history on a reserved-char id). There is NO Escape handler (it would wipe any #fragment
+// and scroll to top). A click on an affordance (edit/share) or any link/button, off a heading, on a
+// heading with no affordances / no id, or on a heading outside .wiki-content, must NOT navigate.
+test("heading reveal: a content-heading click navigates to its anchor (:target reveal); encoding-robust guard; affordance/non-heading clicks ignored", () => {
   const w = load(
     '<div class="wiki-content">' +
     '<h2 id="A">A<span class="heading-actions"><span class="mw-editsection"><a href="#">e</a></span></span></h2>' +
     '<h2 id="B">B<span class="heading-actions"><span class="mw-editsection"><a href="#">e</a></span></span></h2>' +
+    '<h2 id="A,B">C,D<span class="heading-actions"><a href="#">e</a></span></h2>' +  // reserved char: encodeURIComponent encodes the comma, the URL fragment does not
     '<h3 id="C">C</h3>' +                                   // a content heading carrying no affordance
     '<h2>NoId<span class="heading-actions"><a href="#">e</a></span></h2>' +   // a heading with no id
     '<p id="body">text</p></div>' +
     '<h2 id="Z">Z<span class="heading-actions"><a href="#">e</a></span></h2>');  // a heading OUTSIDE .wiki-content
   const d = w.document;
   const click = (el) => el.dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true }));
-  const esc = () => d.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   const [hA, hB, hC, hZ] = ["A", "B", "C", "Z"].map((id) => d.getElementById(id));
+  const hComma = d.getElementById("A,B");
   const hNoId = d.querySelector(".wiki-content h2:not([id])");
   // a click on a content heading navigates to its anchor (the reveal is CSS :target, driven by this)
   click(hA);
   assert.equal(w.location.hash, "#A", "a click on a content heading navigates to its anchor");
-  // a second click on the SAME (already-targeted) heading does not re-navigate (no redundant entry)
+  // a second click on the SAME (already-targeted) heading does not re-navigate -- cur === frag skip
   click(hA);
   assert.equal(w.location.hash, "#A", "re-clicking the targeted heading is a no-op (hash unchanged)");
   // another heading re-targets -> single-active (the previous :target drops, CSS-side)
   click(hB);
   assert.equal(w.location.hash, "#B", "clicking another heading re-targets it (single-active via :target)");
+  // encoding-robust guard: a RAW reserved-char fragment (as an in-page TOC href or Firefox leaves
+  // it) already matches the heading -- the guard must skip via `cur === h.id`, NOT re-navigate to
+  // the percent-encoded form (the single-form guard looped here, spamming history). This FAILS on a
+  // `location.hash !== "#" + encodeURIComponent(id)` guard.
+  w.location.hash = "A,B";
+  click(hComma);
+  assert.equal(w.location.hash, "#A,B", "a raw reserved-char fragment already at the heading is not re-navigated to its encoded form");
   // a click on an affordance INSIDE .heading-actions (edit) must ACT, not navigate; click() returns
   // !defaultPrevented, proving the handler never preventDefaults the nav either
+  w.location.hash = "B";
   assert.ok(click(hB.querySelector(".heading-actions .mw-editsection a")), "an edit control click passes through un-prevented");
   assert.equal(w.location.hash, "#B", "a click on an edit control does not navigate the heading");
-  // Escape clears the active reveal
-  esc();
-  assert.equal(w.location.hash, "", "Escape clears the heading anchor");
-  // Escape again with NO hash is a safe no-op (the && location.hash guard); a non-Escape key is ignored
-  esc();
-  assert.equal(w.location.hash, "", "Escape with no active hash is a no-op");
-  d.dispatchEvent(new w.KeyboardEvent("keydown", { key: "a", bubbles: true }));
-  assert.equal(w.location.hash, "", "a non-Escape key does not clear/alter the hash");
   // none of these navigate: an affordance-less heading, a heading with no id, a heading outside
-  // .wiki-content, and a non-heading element
+  // .wiki-content, and a non-heading element (hash left where the last real nav put it)
   click(hC);
-  assert.equal(w.location.hash, "", "a content heading carrying no affordance does not navigate");
+  assert.equal(w.location.hash, "#B", "a content heading carrying no affordance does not navigate");
   click(hNoId);
-  assert.equal(w.location.hash, "", "a heading with no id does not navigate");
+  assert.equal(w.location.hash, "#B", "a heading with no id does not navigate");
   click(hZ);
-  assert.equal(w.location.hash, "", "a heading outside .wiki-content does not navigate");
+  assert.equal(w.location.hash, "#B", "a heading outside .wiki-content does not navigate");
   click(d.getElementById("body"));
-  assert.equal(w.location.hash, "", "a click off any heading does not navigate");
+  assert.equal(w.location.hash, "#B", "a click off any heading does not navigate");
 });
 
 test("touch heading reveal: a hover-capable (desktop) pointer binds NO tap handler -- reveal stays pure CSS :hover", () => {
