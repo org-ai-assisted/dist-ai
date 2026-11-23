@@ -203,6 +203,54 @@ chmod 0755 -- "${repo}/usr/bin/new_recurring.sh"
 commit_and_range "${repo}" "${base_sha}"
 assert_clean "a new flat script of recurring aligned continuations is not flagged"
 
+## Emit a top-level `case` dispatcher: patterns indented PAT, bodies indented
+## BODY (switch-case-indent). The arm PATTERNS are the only line at the pattern
+## level -- they are not statements, so a statement-only scan misses that level.
+case_dispatch() {
+  local pat body
+  pat="$1"
+  body="$2"
+  # shellcheck disable=SC2016  # literal fixture text, not an expansion in this script
+  printf '%s\n' \
+    '#!/bin/bash' \
+    '' \
+    'set -o errexit' \
+    'set -o nounset' \
+    'set -o pipefail' \
+    'set -o errtrace' \
+    'shopt -s inherit_errexit' \
+    'shopt -s shift_verbose' \
+    'export LC_ALL=C' \
+    '' \
+    'case "${1:-}" in' \
+    "${pat}start)" \
+    "${body}printf '%s\\n' starting" \
+    "${body};;" \
+    "${pat}*)" \
+    "${body}printf '%s\\n' usage" \
+    "${body};;" \
+    'esac'
+}
+
+## 2d. A new 2-space top-level `case` dispatcher (patterns at 2, bodies at 4 --
+## canonical `shfmt -i 2 -ci`) is NOT flagged: the arm-pattern level pins the
+## unit to 2 even though every statement body sits at 4.
+repo="${test_dir}/new_case_two"
+base_sha="$(build_base "${repo}")"
+case_dispatch '  ' '    ' >"${repo}/usr/bin/new_case_two.sh"
+chmod 0755 -- "${repo}/usr/bin/new_case_two.sh"
+commit_and_range "${repo}" "${base_sha}"
+assert_clean "a new 2-space top-level case dispatcher is not flagged"
+
+## 2e. A new 3-space top-level `case` (patterns at 3, bodies at 6) IS flagged --
+## case indentation is still detected, not merely ignored.
+repo="${test_dir}/new_case_three"
+base_sha="$(build_base "${repo}")"
+case_dispatch '   ' '      ' >"${repo}/usr/bin/new_case_three.sh"
+chmod 0755 -- "${repo}/usr/bin/new_case_three.sh"
+commit_and_range "${repo}" "${base_sha}"
+assert_flagged "a new 3-space top-level case dispatcher is flagged"
+
 ## 3. MODIFYING an existing 3-space file does not reindent it (new-file-only).
 repo="${test_dir}/modify_legacy"
 base_sha="$(build_base "${repo}")"

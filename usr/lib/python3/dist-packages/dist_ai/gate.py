@@ -304,27 +304,39 @@ def _added_shell_names(names, base_ref, staged_mode, base_cwd):
 
 def _indent_unit(tree):
     """The file's block-indent step from the shfmt AST, or None when
-    indeterminate. The indent is the leading column of each line that STARTS a
-    statement -- read straight off the existing parse, NOT by scanning raw lines
-    (never reinvent a bash parser). Keying on statement starts is what makes it
-    correct: a line-continuation or aligned argument is mid-statement, never a
-    statement start, so it never contributes a spurious width -- the false-FAIL
-    class a text scan cannot avoid (a flat script of aligned multi-line commands
-    has every statement at column 1 -> no indent -> pass). GCD over the per-line
-    starts gives the step; several statements sharing a line (a ';' chain) count
-    once at the line's first. Unit < 2 (tabs, mixed) -> None (pass). Failure mode
-    is always a MISS, never a false FAIL."""
+    indeterminate. The indent is the leading column of each line that opens a
+    STRUCTURAL unit -- read straight off the existing parse, NOT by scanning raw
+    lines (never reinvent a bash parser). Two kinds of structural line, together
+    covering every indented line that is NOT a statement body:
+      - statement starts (bash_ast.iter_stmts);
+      - case-arm patterns (CaseClause Items), which are indented but are NOT Stmt
+        nodes -- under switch-case-indent (shfmt -ci) they hold the ONLY line at
+        their level (bodies sit one level deeper), so missing them reads a
+        top-level case as indent 4 and false-FAILs a clean 2-space file.
+    Keying on structural starts is what makes it correct: a line-continuation or
+    aligned argument is mid-statement, never a structural start, so it never
+    contributes a spurious width. GCD over the per-line starts gives the step;
+    several starts sharing a line (a ';' chain, 'a|b)' patterns) count once at the
+    line's first. Unit < 2 (tabs, mixed) -> None (pass). Failure mode is always a
+    MISS, never a false FAIL."""
     if tree is None:
         return None
     first_col = {}
-    for stmt in bash_ast.iter_stmts(tree):
-        pos = stmt.get("Pos") or {}
-        line = pos.get("Line")
-        col = pos.get("Col")
+
+    def record(pos):
+        line = (pos or {}).get("Line")
+        col = (pos or {}).get("Col")
         if not line or not col:
-            continue
+            return
         if line not in first_col or col < first_col[line]:
             first_col[line] = col
+
+    for stmt in bash_ast.iter_stmts(tree):
+        record(stmt.get("Pos"))
+    for case in bash_ast.nodes_of_type(tree, "CaseClause"):
+        for item in case.get("Items") or []:
+            for pattern in item.get("Patterns") or []:
+                record(pattern.get("Pos"))
     indents = [col - 1 for col in first_col.values() if col > 1]
     if not indents:
         return None
