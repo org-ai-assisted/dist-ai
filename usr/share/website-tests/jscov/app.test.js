@@ -1093,6 +1093,42 @@ test("search dropdown row: a cross-origin img url is dropped to the glyph (navSa
     "only the thumb was dropped -- the row still links to its same-origin target");
 });
 
+test("search dropdown row: a backslash-authority img url is dropped too (navSafe, not just //)", async () => {
+  // Browsers normalize a backslash to '/' in a URL, so "\\evil.example/x.png" and "/\evil..."
+  // resolve cross-origin exactly like "//evil...". navSafe must reject all four leading-pair
+  // forms; the old slice(0,2)==="//" check let the backslash forms through (false same-origin).
+  const w = load('<input id="search-input">',
+    { appSrc: "../../vendor-bundle.js",
+      searchIndex: [{ t: "Tor", u: "wiki/Tor/", d: "Anonymity network, long enough to show.",
+                      img: "\\\\evil.example/x.png" }] });   // two backslashes -> protocol-relative
+  const input = w.document.getElementById("search-input");
+  input.value = "tor";
+  input.dispatchEvent(new w.Event("input"));
+  await tick();
+  const a = w.document.querySelector(".search-results li:not(.search-all)").firstElementChild;
+  assert.equal(a.querySelectorAll("img").length, 0, "a backslash-authority thumb url renders no <img>");
+  assert.ok(a.querySelector(".search-thumb--fallback i.fa-file-lines"),
+    "the backslash cross-origin thumb falls back to the glyph, same as the // form");
+});
+
+test("search dropdown row: a title whose lower-case changes length is not mis-highlighted", async () => {
+  // U+0130 (Turkish I-with-dot) lower-cases to TWO code units, so an offset found in the
+  // lower-cased title would mis-slice the original-case title. The highlight is cosmetic, so
+  // such a title renders plain (no .match span) rather than with a shifted/garbled boundary.
+  const w = load('<input id="search-input">',
+    { appSrc: "../../vendor-bundle.js",
+      searchIndex: [{ t: "\u0130stanbul", u: "wiki/Istanbul/", d: "A city, long enough to show here." }] });
+  const input = w.document.getElementById("search-input");
+  input.value = "stanbul";                   // matches via the lower-cased ranking, but length differs
+  input.dispatchEvent(new w.Event("input"));
+  await tick();
+  const a = w.document.querySelector(".search-results li:not(.search-all)").firstElementChild;
+  assert.equal(a.querySelector(".search-row-title .match"), null,
+    "a length-changing-lowercase title is not highlighted (no mis-sliced .match)");
+  assert.equal(a.querySelector(".search-row-title").textContent, "\u0130stanbul",
+    "the full original-case title still renders intact");
+});
+
 // ---- Trailing controls: the clear-x (#search-clear, shown only while the field holds text) and
 // the "Search" submit (#search-submit, whose #q= href tracks the typed query). These fixtures carry
 // both controls so the clearBtn/submitLink-PRESENT branches run; the minimal '<input id=...>'
