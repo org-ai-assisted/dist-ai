@@ -327,7 +327,7 @@ def _indent_unit(tree):
     MISS, never a false FAIL."""
     if tree is None:
         return None
-    first_col = {}
+    first_col: dict[int, int] = {}
 
     def record(pos):
         line = (pos or {}).get("Line")
