@@ -3520,26 +3520,30 @@ def check_seo(root, policy=None):
                     # key (_url_path_key): a literal char matches its %-escaped form (':' ==
                     # '%3A'), while ';params'/'#fragment' keep distinct resources distinct.
                     # A malformed <loc> keys to nothing (covers no page).
-                    # Only a <loc> that is a DIRECT CHILD of a <url> (urlset) or
-                    # <sitemap> (sitemapindex) container counts as page coverage --
-                    # the sitemaps.org schema shape. An <image:loc> (sitemap-image
-                    # extension) sits under <image:image>, so a page whose own
-                    # <url><loc> is missing but whose URL happens to appear as an
-                    # image loc must NOT read as covered (that would be a fail-open).
-                    # Excluded by STRUCTURE (parent is not url/sitemap), not by the
-                    # namespace string, so it holds for any prefix. Namespace-agnostic
-                    # on the container name; a comment node (non-str .tag) is skipped
-                    # exactly as before.
+                    # A page URL is a <loc> that is a DIRECT CHILD of a <url>
+                    # entry AND in the SAME namespace as that <url> (the sitemaps.org
+                    # urlset namespace). Both conditions matter:
+                    #  - parent is <url>: a <sitemap><loc> in a sitemapindex is the
+                    #    URL of another sitemap FILE, not a page, so it is not counted
+                    #    (this check does not fetch child sitemaps).
+                    #  - same namespace: a sitemap-image <image:loc> is a different
+                    #    namespace. Matching only the local name 'loc' would count it
+                    #    (whether nested under <image:image> or placed directly under
+                    #    <url>), so a page present only as an image loc would falsely
+                    #    read as covered -- a fail-open. Keying on the url's own
+                    #    namespace excludes every foreign-namespace loc, for any
+                    #    prefix and at any version of the urlset namespace.
+                    # A comment node (non-str .tag) is skipped as before.
                     locs = set()
-                    for container in sitemap_root.iter():
-                        if not isinstance(container.tag, str):
+                    for url_el in sitemap_root.iter():
+                        if not isinstance(url_el.tag, str):
                             continue
-                        if container.tag.rsplit('}', 1)[-1].lower() not in ('url', 'sitemap'):
+                        if url_el.tag.rsplit('}', 1)[-1].lower() != 'url':
                             continue
-                        for child in container:
-                            if not isinstance(child.tag, str):
-                                continue
-                            if child.tag.rsplit('}', 1)[-1].lower() != 'loc':
+                        brace = url_el.tag.rfind('}')
+                        loc_tag = (url_el.tag[:brace + 1] if brace >= 0 else '') + 'loc'
+                        for child in url_el:
+                            if child.tag != loc_tag:
                                 continue
                             try:
                                 locs.add(_url_path_key((child.text or '').strip()))

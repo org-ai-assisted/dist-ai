@@ -266,22 +266,36 @@ def run():
         check('a page covered only by a commented-out <loc> element is flagged',
               any('does not list' in p and p.rstrip().endswith('/') for p in _probs),
               repr(_probs))
-        # an <image:loc> (sitemap-image extension, under <image:image>) is NOT page
-        # coverage: only a <loc> that is a direct child of <url> counts. The home
-        # page here has NO <url><loc> of its own -- its URL appears only as an image
-        # loc -- so it must still be flagged (a raw any-namespace 'loc' scan would
-        # false-pass it: a fail-open).
+        # an <image:loc> (sitemap-image namespace) is NOT a page <loc>, even as a
+        # DIRECT child of <url>: only a <loc> in the url's own namespace counts. The
+        # home page here has no sitemap-namespace <loc> -- its URL appears only as an
+        # image loc -- so it must still be flagged (a local-name-only 'loc' match
+        # would false-pass it: a fail-open).
         _seed(root, host)
         with open(os.path.join(root, 'sitemap.xml'), 'w', encoding='utf-8') as h:
             h.write('<?xml version="1.0"?>'
                     '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"'
                     ' xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">'
                     '<url><loc>https://%s/sub/</loc></url>'
-                    '<url><image:image><image:loc>https://%s/</image:loc>'
-                    '</image:image></url>'
+                    '<url><image:loc>https://%s/</image:loc></url>'
                     '</urlset>\n' % (host, host))
         _probs = cs.check_seo(root)
         check('a page present only as an <image:loc> is flagged (not coverage)',
+              any('does not list' in p and p.rstrip().endswith('/') for p in _probs),
+              repr(_probs))
+        # a <sitemap><loc> in a sitemapindex is the URL of another sitemap FILE, not
+        # a page: it must not count as page coverage even when it equals a page URL
+        # (this check does not fetch child sitemaps). The home page is listed only as
+        # a <sitemap><loc> here, so it must still be flagged.
+        _seed(root, host)
+        with open(os.path.join(root, 'sitemap.xml'), 'w', encoding='utf-8') as h:
+            h.write('<?xml version="1.0"?>'
+                    '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+                    '<sitemap><loc>https://%s/</loc></sitemap>'
+                    '<sitemap><loc>https://%s/sub/</loc></sitemap>'
+                    '</sitemapindex>\n' % (host, host))
+        _probs = cs.check_seo(root)
+        check('a sitemapindex <sitemap><loc> does not count as page coverage',
               any('does not list' in p and p.rstrip().endswith('/') for p in _probs),
               repr(_probs))
         # a malformed sitemap is a real SEO defect, reported (not silently skipped)
