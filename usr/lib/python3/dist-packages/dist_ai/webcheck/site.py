@@ -3544,10 +3544,15 @@ def check_seo(root, policy=None):
                     #  - <loc> child in the SAME namespace as its <url>: a sitemap-image
                     #    <image:loc> or any foreign 'loc' is excluded, so a page present
                     #    only via such an element is not counted.
-                    #  - the loc's full string value, trimming only XML whitespace
-                    #    (#x9/#xA/#xD/#x20): ''.join(itertext()) defeats a split <loc>
-                    #    whose first text node alone equals a page URL, and a non-XML
-                    #    space (e.g. U+00A0) is kept so it cannot collapse onto a page.
+                    #  - <loc> is a text-only xs:anyURI: a loc carrying ELEMENT children
+                    #    is invalid and skipped, never stitched back into a URL from the
+                    #    text around its children (which would let an invalid <loc> whose
+                    #    own text is not a page URL, or one split mid-host, read as
+                    #    covered). The childless text is trimmed of XML whitespace only
+                    #    (#x9/#xA/#xD/#x20) -- a non-XML space (e.g. U+00A0) is kept so it
+                    #    cannot collapse onto a page -- and a value with an interior
+                    #    TAB/CR/LF is rejected, since urlsplit DELETES those and could
+                    #    thereby move '@' to rewrite the authority onto a real host.
                     locs = set()
                     root_tag = sitemap_root.tag
                     if root_tag.startswith('{'):
@@ -3562,11 +3567,13 @@ def check_seo(root, policy=None):
                             if url_el.tag != url_tag:
                                 continue
                             for child in url_el:
-                                if child.tag != loc_tag:
+                                if child.tag != loc_tag or len(child):
+                                    continue
+                                value = (child.text or '').strip(' \t\r\n')
+                                if '\t' in value or '\n' in value or '\r' in value:
                                     continue
                                 try:
-                                    locs.add(_url_path_key(
-                                        ''.join(child.itertext()).strip(' \t\r\n')))
+                                    locs.add(_url_path_key(value))
                                 except ValueError:
                                     continue
                     # Coverage, not byte-identity: a clean-URL server serves a built

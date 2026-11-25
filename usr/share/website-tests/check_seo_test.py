@@ -354,18 +354,46 @@ def run():
         _probs = cs.check_seo(root)
         check('a case-folded <URLSET> root does not count as page coverage',
               _home_missing in _probs, repr(_probs))
-        # a <loc> whose string value is split by a child element: coverage keys the FULL
-        # string value (''.join(itertext())), not just the first text node, so the first
-        # node alone equalling a page URL must not false-pass it.
+        # a <loc> carrying ELEMENT children is invalid (xs:anyURI is text-only) and must
+        # not be stitched back into a URL from the text around its children: here the
+        # home URL exists only split across a <span/>, so it must still be flagged (a
+        # string-value reconstruction would false-pass it).
         _seed(root, host)
         with open(os.path.join(root, 'sitemap.xml'), 'w', encoding='utf-8') as h:
             h.write('<?xml version="1.0"?>'
                     '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
                     '<url><loc>https://%s/sub/</loc></url>'
-                    '<url><loc>https://%s/<span/>NOT</loc></url>'
+                    '<url><loc>https://exam<span/>ple.github.io/</loc></url>'
+                    '</urlset>\n' % host)
+        _probs = cs.check_seo(root)
+        check('a <loc> with element children does not count as page coverage',
+              _home_missing in _probs, repr(_probs))
+        # a childless <loc> whose value carries an interior TAB/CR/LF is rejected:
+        # urlsplit DELETES those, which could move '@' and rewrite the authority onto a
+        # real host. Here a newline would splice evil.example as userinfo of the home
+        # host; the loc must not count, so the home page is flagged.
+        _seed(root, host)
+        with open(os.path.join(root, 'sitemap.xml'), 'w', encoding='utf-8') as h:
+            h.write('<?xml version="1.0"?>'
+                    '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+                    '<url><loc>https://evil.example\n@%s/</loc></url>'
+                    '<url><loc>https://%s/sub/</loc></url>'
                     '</urlset>\n' % (host, host))
         _probs = cs.check_seo(root)
-        check('a <loc> split by a child element keys its full value (not just .text)',
+        check('a <loc> with an interior control char does not rewrite the authority',
+              _home_missing in _probs, repr(_probs))
+        # a <loc> trailing a non-XML space (U+00A0): only XML whitespace (#x9/#xA/#xD/#x20)
+        # is trimmed, so a NBSP cannot be stripped to collapse the loc onto a real page.
+        _seed(root, host)
+        _nbsp = chr(0xa0)  # U+00A0, a non-XML space; keep the source ASCII
+        with open(os.path.join(root, 'sitemap.xml'), 'w', encoding='utf-8') as h:
+            h.write('<?xml version="1.0"?>'
+                    '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+                    '<url><loc>https://%s/%s</loc></url>'
+                    '<url><loc>https://%s/sub/</loc></url>'
+                    '</urlset>\n' % (host, _nbsp, host))
+        _probs = cs.check_seo(root)
+        check('a <loc> with a trailing non-XML space does not collapse onto a page',
               _home_missing in _probs, repr(_probs))
         # a <loc> trailing a non-XML space (U+00A0): only XML whitespace (#x9/#xA/#xD/#x20)
         # is trimmed, so a NBSP cannot be stripped to collapse the loc onto a real page.
