@@ -282,16 +282,22 @@ _INDENT_RULE = "R-003"
 
 def _added_shell_names(names, base_ref, staged_mode, base_cwd):
     """The subset of NAMES this change ADDS as a brand-new path (git status 'A'),
-    with rename/copy detection on (-M/-C) so a renamed LEGACY file is an R/C, not
-    an A, and is never forced to reindent. Keyed on git's own diff, not a
-    'cat-file -e base:path' existence test, exactly so a rename is excluded."""
+    with rename detection on (-M) so a renamed LEGACY file is an R, not an A, and
+    is never forced to reindent -- a pure relocation is not new code (R-152). Copy
+    detection is OFF on purpose: a copy is a second new file and IS gated like any
+    new file. Keyed on git's own diff, not a 'cat-file -e base:path' existence
+    test, exactly so a rename is excluded.
+    Staged mode diffs the index with '--cached' alone (no explicit HEAD): with a
+    HEAD it compares index vs HEAD; on an UNBORN branch (initial commit, no HEAD)
+    it compares index vs the empty tree, so a new file is status A and IS gated --
+    '--cached HEAD' would instead exit 128 there and silently gate nothing."""
     if staged_mode:
-        spec = ["--cached", "HEAD"]
+        spec = ["--cached"]
     else:
         spec = ["%s...HEAD" % base_ref]
     try:
         out = subprocess.run(
-            ["git", "-c", "core.quotePath=false", "diff", "-M", "-C",
+            ["git", "-c", "core.quotePath=false", "diff", "-M",
              "--diff-filter=A", "--name-only", "-z"] + spec,
             capture_output=True, cwd=base_cwd)
     except OSError:

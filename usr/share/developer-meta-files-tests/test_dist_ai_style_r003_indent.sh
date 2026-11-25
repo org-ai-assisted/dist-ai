@@ -282,6 +282,35 @@ git -C "${repo}" -c core.hooksPath=/dev/null add --all
 gate_output="$( cd -- "${repo}" && "${GATE}" --check --staged 2>&1 )" || true
 assert_flagged "a newly-added 3-space file is flagged in --staged mode"
 
+## 7. The staged path flags a new 3-space file on an UNBORN branch too: a brand-new
+## repo's initial commit, before any commit exists, so HEAD does not resolve. THE
+## CANARY: the old '--cached HEAD' spec exits 128 here, the error is swallowed, and
+## NO added file is gated -- the file silently escapes. '--cached' alone diffs the
+## index against the empty tree, so the new file is status A and IS flagged.
+repo="${test_dir}/unborn_staged_three"
+mkdir --parents -- "${repo}/usr/bin"
+git -c init.defaultBranch=master -c core.hooksPath=/dev/null \
+  init --quiet -- "${repo}"
+body_indented '   ' >"${repo}/usr/bin/unborn_three.sh"
+chmod 0755 -- "${repo}/usr/bin/unborn_three.sh"
+git -C "${repo}" -c core.hooksPath=/dev/null add --all
+gate_output="$( cd -- "${repo}" && "${GATE}" --check --staged 2>&1 )" || true
+assert_flagged "a new 3-space file is flagged in --staged mode on an unborn branch"
+
+## 8. COPYING a legacy 3-space file into a NEW path IS gated: a copy is a second
+## new file, not a relocation (only a rename is excluded). The source is modified
+## in the same commit, which is exactly the condition under which git's copy
+## detection (-C) WOULD have classified the new path as a copy (C) and excluded it
+## -- so this pins that dropping -C closes that escape.
+repo="${test_dir}/copy_legacy"
+base_sha="$(build_base "${repo}")"
+cp -- "${repo}/usr/bin/legacy.sh" "${repo}/usr/bin/copied.sh"
+chmod 0755 -- "${repo}/usr/bin/copied.sh"
+{ body_indented '   ' ; printf '%s\n' '   true "touch source"' ; } \
+  >"${repo}/usr/bin/legacy.sh"
+commit_and_range "${repo}" "${base_sha}"
+assert_flagged "a new file copied from a legacy 3-space file is gated"
+
 if [ "${fail}" -ne 0 ]; then
   printf '%s\n' "" "FAILED"
   exit 1
