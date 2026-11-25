@@ -227,6 +227,9 @@ def run():
     # check_seo: a sitemap that does NOT cover every indexable page is flagged (coverage,
     # not byte-identity -- any generator's sitemap passes as long as it lists the pages).
     with tempfile.TemporaryDirectory() as root:
+        # the exact 'home page not listed' diagnostic: assert THIS, not merely a problem
+        # ending in '/', so a /sub/-only diagnostic can never pass a home-coverage test.
+        _home_missing = 'sitemap.xml does not list https://%s/' % host
         _seed(root, host)
         with open(os.path.join(root, 'sitemap.xml'), encoding='utf-8') as h:
             _sm = h.read()
@@ -246,26 +249,26 @@ def run():
         # (or only as a prefix of another <loc>) is NOT counted -- it is flagged.
         _seed(root, host)
         with open(os.path.join(root, 'sitemap.xml'), 'w', encoding='utf-8') as h:
-            h.write('<?xml version="1.0"?><urlset>'
+            h.write('<?xml version="1.0"?>'
+                    '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
                     '<url><loc>https://%s/sub/</loc></url>'
                     '<!-- https://%s/ -->'
                     '</urlset>\n' % (host, host))
         _probs = cs.check_seo(root)
         check('home URL present only in a comment/prefix is flagged (not substring-matched)',
-              any('does not list' in p and p.rstrip().endswith('/') for p in _probs),
-              repr(_probs))
+              _home_missing in _probs, repr(_probs))
         # a COMMENTED-OUT <loc> element does not cover its page: XML parsing sees a comment
         # node, not a <loc>, so the page is flagged (a raw regex over the text would false-pass).
         _seed(root, host)
         with open(os.path.join(root, 'sitemap.xml'), 'w', encoding='utf-8') as h:
-            h.write('<?xml version="1.0"?><urlset>'
+            h.write('<?xml version="1.0"?>'
+                    '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
                     '<url><loc>https://%s/sub/</loc></url>'
                     '<!-- <url><loc>https://%s/</loc></url> -->'
                     '</urlset>\n' % (host, host))
         _probs = cs.check_seo(root)
         check('a page covered only by a commented-out <loc> element is flagged',
-              any('does not list' in p and p.rstrip().endswith('/') for p in _probs),
-              repr(_probs))
+              _home_missing in _probs, repr(_probs))
         # an <image:loc> (sitemap-image namespace) is NOT a page <loc>, even as a
         # DIRECT child of <url>: only a <loc> in the url's own namespace counts. The
         # home page here has no sitemap-namespace <loc> -- its URL appears only as an
@@ -281,8 +284,7 @@ def run():
                     '</urlset>\n' % (host, host))
         _probs = cs.check_seo(root)
         check('a page present only as an <image:loc> is flagged (not coverage)',
-              any('does not list' in p and p.rstrip().endswith('/') for p in _probs),
-              repr(_probs))
+              _home_missing in _probs, repr(_probs))
         # a <sitemap><loc> in a sitemapindex is the URL of another sitemap FILE, not
         # a page: it must not count as page coverage even when it equals a page URL
         # (this check does not fetch child sitemaps). The home page is listed only as
@@ -296,8 +298,7 @@ def run():
                     '</sitemapindex>\n' % (host, host))
         _probs = cs.check_seo(root)
         check('a sitemapindex <sitemap><loc> does not count as page coverage',
-              any('does not list' in p and p.rstrip().endswith('/') for p in _probs),
-              repr(_probs))
+              _home_missing in _probs, repr(_probs))
         # a <url> is a page entry only as a TOP-LEVEL child of <urlset>: a <url>
         # nested inside some other element is not a sitemap page record, so it must
         # not count as coverage (scanning every descendant would be a fail-open). The
@@ -311,8 +312,7 @@ def run():
                     '</urlset>\n' % (host, host))
         _probs = cs.check_seo(root)
         check('a non-top-level nested <url> does not count as page coverage',
-              any('does not list' in p and p.rstrip().endswith('/') for p in _probs),
-              repr(_probs))
+              _home_missing in _probs, repr(_probs))
         # a foreign-namespace element merely NAMED 'url' (even as a direct child of
         # <urlset>) is not a page entry: <url> and its <loc> must be in the urlset's
         # own namespace. A local-name-only match would trust the extension element's
@@ -327,8 +327,59 @@ def run():
                     '</urlset>\n' % (host, host))
         _probs = cs.check_seo(root)
         check('a foreign-namespace <ext:url> is not page coverage',
-              any('does not list' in p and p.rstrip().endswith('/') for p in _probs),
-              repr(_probs))
+              _home_missing in _probs, repr(_probs))
+        # a root in an unrelated namespace is not a sitemaps.org <urlset>: the match is
+        # namespace-exact (_SITEMAP_NS), not "any namespace the root declares", so a
+        # document merely named 'urlset' provides no coverage -- a fail-open otherwise.
+        _seed(root, host)
+        with open(os.path.join(root, 'sitemap.xml'), 'w', encoding='utf-8') as h:
+            h.write('<?xml version="1.0"?>'
+                    '<x:urlset xmlns:x="urn:not-a-sitemap">'
+                    '<x:url><x:loc>https://%s/</x:loc></x:url>'
+                    '<x:url><x:loc>https://%s/sub/</x:loc></x:url>'
+                    '</x:urlset>\n' % (host, host))
+        _probs = cs.check_seo(root)
+        check('a foreign-namespace root is not a sitemaps.org urlset (no coverage)',
+              _home_missing in _probs, repr(_probs))
+        # XML element names are case-sensitive: <URLSET> is NOT the schema's <urlset>, so
+        # a case-folded root must not unlock coverage (root matched case-insensitively
+        # while children are case-sensitive was a fail-open).
+        _seed(root, host)
+        with open(os.path.join(root, 'sitemap.xml'), 'w', encoding='utf-8') as h:
+            h.write('<?xml version="1.0"?>'
+                    '<URLSET xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+                    '<url><loc>https://%s/</loc></url>'
+                    '<url><loc>https://%s/sub/</loc></url>'
+                    '</URLSET>\n' % (host, host))
+        _probs = cs.check_seo(root)
+        check('a case-folded <URLSET> root does not count as page coverage',
+              _home_missing in _probs, repr(_probs))
+        # a <loc> whose string value is split by a child element: coverage keys the FULL
+        # string value (''.join(itertext())), not just the first text node, so the first
+        # node alone equalling a page URL must not false-pass it.
+        _seed(root, host)
+        with open(os.path.join(root, 'sitemap.xml'), 'w', encoding='utf-8') as h:
+            h.write('<?xml version="1.0"?>'
+                    '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+                    '<url><loc>https://%s/sub/</loc></url>'
+                    '<url><loc>https://%s/<span/>NOT</loc></url>'
+                    '</urlset>\n' % (host, host))
+        _probs = cs.check_seo(root)
+        check('a <loc> split by a child element keys its full value (not just .text)',
+              _home_missing in _probs, repr(_probs))
+        # a <loc> trailing a non-XML space (U+00A0): only XML whitespace (#x9/#xA/#xD/#x20)
+        # is trimmed, so a NBSP cannot be stripped to collapse the loc onto a real page.
+        _seed(root, host)
+        _nbsp = chr(0xa0)  # U+00A0, a non-XML space; keep the source ASCII
+        with open(os.path.join(root, 'sitemap.xml'), 'w', encoding='utf-8') as h:
+            h.write('<?xml version="1.0"?>'
+                    '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+                    '<url><loc>https://%s/%s</loc></url>'
+                    '<url><loc>https://%s/sub/</loc></url>'
+                    '</urlset>\n' % (host, _nbsp, host))
+        _probs = cs.check_seo(root)
+        check('a <loc> with a trailing non-XML space does not collapse onto a page',
+              _home_missing in _probs, repr(_probs))
         # a malformed sitemap is a real SEO defect, reported (not silently skipped)
         _seed(root, host)
         with open(os.path.join(root, 'sitemap.xml'), 'w', encoding='utf-8') as h:

@@ -3355,10 +3355,15 @@ def _sitemap_page_forms(root, host):
     return forms
 
 
+# The sitemaps.org protocol namespace. 0.9 is the only version the protocol
+# defines; render_sitemap emits it and check_seo requires it (one source).
+_SITEMAP_NS = 'http://www.sitemaps.org/schemas/sitemap/0.9'
+
+
 def render_sitemap(root, host):
     """The canonical sitemap.xml text for a site (trailing newline included)."""
     lines = ['<?xml version="1.0" encoding="UTF-8"?>',
-             '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">']
+             '<urlset xmlns="%s">' % _SITEMAP_NS]
     for url in seo_page_urls(root, host):
         # Percent-encoding already removes XML metacharacters from the path;
         # escape defensively so a host or scheme could never inject markup.
@@ -3520,31 +3525,37 @@ def check_seo(root, policy=None):
                     # key (_url_path_key): a literal char matches its %-escaped form (':' ==
                     # '%3A'), while ';params'/'#fragment' keep distinct resources distinct.
                     # A malformed <loc> keys to nothing (covers no page).
-                    # A page URL is a <loc> that is a DIRECT CHILD of a top-level
-                    # <url> entry of the root <urlset>, with <urlset>/<url>/<loc> all
-                    # in ONE namespace -- the one the root <urlset> itself declares (so
-                    # ANY version/prefix of the sitemaps.org namespace is honored, but a
-                    # foreign element merely named 'url'/'loc' is not). Each condition
-                    # closes a fail-open:
-                    #  - root is <urlset>, <url> is a DIRECT CHILD: the sitemap schema
-                    #    places page entries only as top-level children of <urlset>. A
-                    #    descendant scan would let a bogus <url> nested in some other
-                    #    element satisfy coverage. A non-<urlset> root (e.g. a
-                    #    <sitemapindex>, whose <sitemap><loc> is another sitemap FILE,
-                    #    not a page) therefore lists no pages here -- this check does not
-                    #    fetch child sitemaps.
-                    #  - <url> AND <loc> in the urlset's OWN namespace: a foreign
-                    #    element named 'url' (or a sitemap-image <image:loc> under a
-                    #    real <url>) is a different namespace. A local-name-only match
-                    #    would count it, so a page present only via such an element would
-                    #    falsely read as covered.
-                    # A comment/PI node (non-str, callable .tag) never equals url_tag or
-                    # loc_tag, so it is skipped.
+                    # A page URL is a <loc> that is a DIRECT CHILD of a top-level <url>
+                    # entry of the root <urlset>, matched EXACTLY and case-sensitively
+                    # (XML names are case-sensitive), with <url>/<loc> in the root
+                    # <urlset>'s own namespace. The root <urlset> is accepted only in the
+                    # sitemaps.org namespace (_SITEMAP_NS) or with no namespace (a crawler
+                    # accepts an undeclared urlset); a FOREIGN namespace is rejected.
+                    # Every deviation fails CLOSED (the page reads as uncovered and is
+                    # flagged), never open -- the posture an SEO self-check must have.
+                    # Each condition closes a real fail-open:
+                    #  - root <urlset> in _SITEMAP_NS or no namespace, and DIRECT-CHILD
+                    #    <url>: the schema places page entries only as top-level <url>
+                    #    children of <urlset>. A descendant scan would let a bogus <url>
+                    #    nested in some other element count; a foreign-namespace
+                    #    (<x:urlset xmlns:x=...>) or wrong-case (<URLSET>) root, or a
+                    #    <sitemapindex> (whose <sitemap><loc> is another sitemap FILE --
+                    #    not fetched here), lists no pages.
+                    #  - <loc> child in the SAME namespace as its <url>: a sitemap-image
+                    #    <image:loc> or any foreign 'loc' is excluded, so a page present
+                    #    only via such an element is not counted.
+                    #  - the loc's full string value, trimming only XML whitespace
+                    #    (#x9/#xA/#xD/#x20): ''.join(itertext()) defeats a split <loc>
+                    #    whose first text node alone equals a page URL, and a non-XML
+                    #    space (e.g. U+00A0) is kept so it cannot collapse onto a page.
                     locs = set()
                     root_tag = sitemap_root.tag
-                    if isinstance(root_tag, str) and root_tag.rsplit('}', 1)[-1].lower() == 'urlset':
-                        brace = root_tag.rfind('}')
-                        ns = root_tag[:brace + 1] if brace >= 0 else ''
+                    if root_tag.startswith('{'):
+                        root_ns, _sep, root_local = root_tag[1:].partition('}')
+                    else:
+                        root_ns, root_local = '', root_tag
+                    if root_local == 'urlset' and root_ns in ('', _SITEMAP_NS):
+                        ns = '{%s}' % root_ns if root_ns else ''
                         url_tag = ns + 'url'
                         loc_tag = ns + 'loc'
                         for url_el in sitemap_root:
@@ -3554,7 +3565,8 @@ def check_seo(root, policy=None):
                                 if child.tag != loc_tag:
                                     continue
                                 try:
-                                    locs.add(_url_path_key((child.text or '').strip()))
+                                    locs.add(_url_path_key(
+                                        ''.join(child.itertext()).strip(' \t\r\n')))
                                 except ValueError:
                                     continue
                     # Coverage, not byte-identity: a clean-URL server serves a built
