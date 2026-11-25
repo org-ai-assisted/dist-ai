@@ -298,6 +298,37 @@ def run():
         check('a sitemapindex <sitemap><loc> does not count as page coverage',
               any('does not list' in p and p.rstrip().endswith('/') for p in _probs),
               repr(_probs))
+        # a <url> is a page entry only as a TOP-LEVEL child of <urlset>: a <url>
+        # nested inside some other element is not a sitemap page record, so it must
+        # not count as coverage (scanning every descendant would be a fail-open). The
+        # home page here appears only inside a nested <url>, so it must still be flagged.
+        _seed(root, host)
+        with open(os.path.join(root, 'sitemap.xml'), 'w', encoding='utf-8') as h:
+            h.write('<?xml version="1.0"?>'
+                    '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+                    '<url><loc>https://%s/sub/</loc></url>'
+                    '<extra><url><loc>https://%s/</loc></url></extra>'
+                    '</urlset>\n' % (host, host))
+        _probs = cs.check_seo(root)
+        check('a non-top-level nested <url> does not count as page coverage',
+              any('does not list' in p and p.rstrip().endswith('/') for p in _probs),
+              repr(_probs))
+        # a foreign-namespace element merely NAMED 'url' (even as a direct child of
+        # <urlset>) is not a page entry: <url> and its <loc> must be in the urlset's
+        # own namespace. A local-name-only match would trust the extension element's
+        # own namespace for 'loc' and false-pass the page -- a fail-open.
+        _seed(root, host)
+        with open(os.path.join(root, 'sitemap.xml'), 'w', encoding='utf-8') as h:
+            h.write('<?xml version="1.0"?>'
+                    '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"'
+                    ' xmlns:ext="http://example.com/ext">'
+                    '<url><loc>https://%s/sub/</loc></url>'
+                    '<ext:url><ext:loc>https://%s/</ext:loc></ext:url>'
+                    '</urlset>\n' % (host, host))
+        _probs = cs.check_seo(root)
+        check('a foreign-namespace <ext:url> is not page coverage',
+              any('does not list' in p and p.rstrip().endswith('/') for p in _probs),
+              repr(_probs))
         # a malformed sitemap is a real SEO defect, reported (not silently skipped)
         _seed(root, host)
         with open(os.path.join(root, 'sitemap.xml'), 'w', encoding='utf-8') as h:
