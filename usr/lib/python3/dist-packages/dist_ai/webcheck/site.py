@@ -3520,11 +3520,29 @@ def check_seo(root, policy=None):
                     # key (_url_path_key): a literal char matches its %-escaped form (':' ==
                     # '%3A'), while ';params'/'#fragment' keep distinct resources distinct.
                     # A malformed <loc> keys to nothing (covers no page).
+                    # Only a <loc> that is a DIRECT CHILD of a <url> (urlset) or
+                    # <sitemap> (sitemapindex) container counts as page coverage --
+                    # the sitemaps.org schema shape. An <image:loc> (sitemap-image
+                    # extension) sits under <image:image>, so a page whose own
+                    # <url><loc> is missing but whose URL happens to appear as an
+                    # image loc must NOT read as covered (that would be a fail-open).
+                    # Excluded by STRUCTURE (parent is not url/sitemap), not by the
+                    # namespace string, so it holds for any prefix. Namespace-agnostic
+                    # on the container name; a comment node (non-str .tag) is skipped
+                    # exactly as before.
                     locs = set()
-                    for el in sitemap_root.iter():
-                        if isinstance(el.tag, str) and el.tag.rsplit('}', 1)[-1].lower() == 'loc':
+                    for container in sitemap_root.iter():
+                        if not isinstance(container.tag, str):
+                            continue
+                        if container.tag.rsplit('}', 1)[-1].lower() not in ('url', 'sitemap'):
+                            continue
+                        for child in container:
+                            if not isinstance(child.tag, str):
+                                continue
+                            if child.tag.rsplit('}', 1)[-1].lower() != 'loc':
+                                continue
                             try:
-                                locs.add(_url_path_key((el.text or '').strip()))
+                                locs.add(_url_path_key((child.text or '').strip()))
                             except ValueError:
                                 continue
                     # Coverage, not byte-identity: a clean-URL server serves a built
