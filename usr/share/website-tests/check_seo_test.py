@@ -382,6 +382,21 @@ def run():
         _probs = cs.check_seo(root)
         check('a <loc> with an interior control char does not rewrite the authority',
               _home_missing in _probs, repr(_probs))
+        # a <loc> with a backslash is rejected: urlsplit reads 'evil.invalid\' as
+        # userinfo and the home host as the authority, while a WHATWG crawler reads '\'
+        # as '/' and fetches evil.invalid -- a parser differential, so the home page is
+        # not truly covered and must be flagged.
+        _seed(root, host)
+        _bs = chr(0x5c)  # backslash; keep the source free of an invalid escape
+        with open(os.path.join(root, 'sitemap.xml'), 'w', encoding='utf-8') as h:
+            h.write('<?xml version="1.0"?>'
+                    '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+                    '<url><loc>https://evil.invalid%s@%s/</loc></url>'
+                    '<url><loc>https://%s/sub/</loc></url>'
+                    '</urlset>\n' % (_bs, host, host))
+        _probs = cs.check_seo(root)
+        check('a <loc> with a backslash authority differential is flagged',
+              _home_missing in _probs, repr(_probs))
         # a <loc> trailing a non-XML space (U+00A0): only XML whitespace (#x9/#xA/#xD/#x20)
         # is trimmed, so a NBSP cannot be stripped to collapse the loc onto a real page.
         _seed(root, host)

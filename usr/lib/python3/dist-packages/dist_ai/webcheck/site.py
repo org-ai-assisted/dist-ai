@@ -3551,9 +3551,17 @@ def check_seo(root, policy=None):
                     #    covered). The childless text is trimmed of XML whitespace only
                     #    (#x9/#xA/#xD/#x20) -- a non-XML space (e.g. U+00A0) is kept so it
                     #    cannot collapse onto a page -- and a value with an interior
-                    #    TAB/CR/LF is rejected, since urlsplit DELETES those and could
-                    #    thereby move '@' to rewrite the authority onto a real host.
+                    #    TAB/CR/LF or a backslash is rejected: urlsplit DELETES TAB/CR/LF
+                    #    and reads '\' RFC-style, so either could move '@' to rewrite the
+                    #    authority onto a real host while a WHATWG crawler fetches another
+                    #    (the page is then not truly covered).
+                    # SCOPE: a COVERAGE check (is every page LISTED), not a full schema
+                    # validator. A namespace-less <urlset> is accepted (crawlers are
+                    # lenient; our render_sitemap always declares _SITEMAP_NS anyway), and
+                    # a <url> need not carry exactly one <loc> -- such conformance nits
+                    # leave the page textually listed, so they hide no unlisted page.
                     locs = set()
+                    _bad_url_chars = '\t\n\r' + chr(0x5c)  # TAB/CR/LF + backslash
                     root_tag = sitemap_root.tag
                     if root_tag.startswith('{'):
                         root_ns, _sep, root_local = root_tag[1:].partition('}')
@@ -3570,7 +3578,7 @@ def check_seo(root, policy=None):
                                 if child.tag != loc_tag or len(child):
                                     continue
                                 value = (child.text or '').strip(' \t\r\n')
-                                if '\t' in value or '\n' in value or '\r' in value:
+                                if any(c in value for c in _bad_url_chars):
                                     continue
                                 try:
                                     locs.add(_url_path_key(value))
