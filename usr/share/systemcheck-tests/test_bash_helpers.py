@@ -55,10 +55,12 @@ class TestRemediationInstructions(SystemcheckTestBase):
         ## sysmaint is a sudo-capable session, so sudo is still shown.
         self.assertIn('sudo dpkg --configure -a', out)
 
-    def test_sysmaint_requested_but_landed_as_user(self) -> None:
-        ## Mismatch: SYSMAINT requested at boot but logged in unprivileged.
-        ## No panel / sudo is available here, so the fix must be the reboot
-        ## advice, NOT "Open Terminal in the System Maintenance Panel".
+    def test_booted_sysmaint_landed_as_user_still_panel_guidance(self) -> None:
+        ## Booted into a sysmaint session but landed on an unprivileged account:
+        ## an insecure GUI login that "shall not be taken into account"
+        ## (preparation.bsh). The guidance keys on the SESSION
+        ## (booted_in_sysmaint_session), not who_ami, so it is the same panel
+        ## advice as a proper sysmaint login -- NOT a who_ami-specific reboot path.
         out = run_sourced(
             fragment_sources(),
             'remediation_instructions "dpkg --configure -a"',
@@ -66,8 +68,9 @@ class TestRemediationInstructions(SystemcheckTestBase):
                   'who_ami=user\n'
                   'user_sysmaint_split_installed=true',
         )
-        self.assertIn('reboot into', out)
-        self.assertIn('SYSMAINT Session', out)
+        self.assertIn('Open Terminal', out)
+        self.assertIn('System Maintenance Panel', out)
+        self.assertNotIn('reboot into', out)
         self.assertIn('sudo dpkg --configure -a', out)
 
     def test_sysmaint_account_without_boot_role_not_panel_guidance(self) -> None:
