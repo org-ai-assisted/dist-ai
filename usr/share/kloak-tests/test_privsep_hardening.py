@@ -20,13 +20,22 @@ transition, several invariants must hold together or the daemon dies at startup:
     list of individual syscall names. Groups are arch-neutral (systemd expands
     each to the syscalls that exist on the running arch), so no x86-only name can
     be silently omitted on arm64 -- the root cause of the original arm64 SIGSYS
-    crash loop. A bare hand-list is the regression this guards against.
-  * RestrictNamespaces must PERMIT the namespaces kloakwl unshares; the former
-    RestrictNamespaces=true denied all of them and killed the sandbox.
-  * NoNewPrivileges must be OFF: kloak execs kloakwl under a SEPARATE, broader
-    AppArmor profile (Px), and no_new_privs forbids an exec transition to a
-    non-subset profile, so the spawn is denied ("info=no new privs"). The unit
-    SystemCallFilter still installs (root executor) and is inherited by kloakwl.
+    crash loop. A bare hand-list is the regression this guards against. It must
+    carry @system-service (baseline, which already includes @setuid for the
+    uid/gid drop) and @mount (kloakwl's mount/pivot_root/chroot, NOT part of
+    @system-service). @sandbox (seccomp/landlock) and @privileged are NOT needed:
+    kloakwl uses neither seccomp nor landlock, and its unshare runs under the
+    baseline. Verified empirically: kloakwl's full unshare(CLONE_NEW*) plus
+    mount/pivot_root run under `@system-service @mount`.
+  * RestrictNamespaces, IF SET, must PERMIT the namespaces kloakwl unshares; a
+    bare RestrictNamespaces=true denies all of them and kills the sandbox. It is
+    OPTIONAL: absent (no restriction, every namespace allowed) is the current,
+    correct state -- even a specific allow-list did not cleanly permit
+    CLONE_NEWTIME on systemd < 258.
+  * NoNewPrivileges must not be =true: kloak execs kloakwl under a SEPARATE,
+    broader AppArmor profile (Px), and no_new_privs forbids an exec transition to
+    a non-subset profile, so the spawn is denied ("info=no new privs"). Absent
+    (default no) is correct; only an explicit =true breaks it.
   * CapabilityBoundingSet must grant CAP_SETUID/CAP_SETGID: kloakwl drops to an
     unprivileged uid BEFORE it unshares, while its effective set is masked to the
     bounding set, so the drop fails EPERM without them. sys_admin/sys_chroot are
@@ -51,15 +60,19 @@ import tempfile
 import unittest
 from unittest import mock
 
-## systemd syscall groups the unit must grant for kloak's proxy work plus
-## kloakwl's sandbox setup (unshare, mount/pivot_root, capset, uid/gid drop,
-## rlimit). Their presence is the arch-neutral replacement for the old hand-list.
+## systemd syscall groups kloak's unit genuinely needs, arch-neutral (the
+## replacement for a bare arm64-fragile hand-list):
+##   * @system-service -- the service baseline; already includes @setuid
+##     (kloakwl's setresuid/setgid/setgroups drop) and @process, so neither is
+##     listed separately.
+##   * @mount -- kloakwl's mount/pivot_root/chroot; NOT part of @system-service.
+## NOT required: @sandbox (seccomp/landlock -- kloakwl uses neither) and
+## @privileged (kloakwl's unshare + mount run via @system-service/@mount; no
+## privileged syscall is needed). Verified empirically: kloakwl's full
+## unshare(CLONE_NEW*) + mount/pivot_root run under `@system-service @mount`.
 REQUIRED_SYSCALL_GROUPS = (
     '@system-service',
-    '@sandbox',
     '@mount',
-    '@privileged',
-    '@setuid',
 )
 
 ## Namespaces kloakwl's self_sandbox unshares that RestrictNamespaces must allow;
@@ -162,17 +175,35 @@ class PrivsepHardening(unittest.TestCase):
             tokens[0].startswith('~'),
             'SystemCallFilter starts as a deny-list (%r); kloak uses an '
             'allow-list of groups with optional ~subtractions' % tokens)
+        ## The arm64 SIGSYS guard proper: every ADDITIVE token must be a @group,
+        ## never a bare individual syscall name (a hand-list silently omits
+        ## arm64-only syscalls). A ~subtraction (e.g. ~memfd_create, so
+        ## MemoryDenyWriteExecute works) is allowed and does not reintroduce the
+        ## risk -- the groups still cover the needed syscalls.
+        non_groups = [
+            token for token in tokens
+            if not token.startswith('~') and not token.startswith('@')]
+        self.assertFalse(
+            non_groups,
+            'SystemCallFilter lists bare individual syscalls %r, not arch-neutral '
+            '@groups; a hand-list is the arm64 SIGSYS regression this guards. '
+            'Filter: %r' % (non_groups, tokens))
         for group in REQUIRED_SYSCALL_GROUPS:
             self.assertIn(
                 group, tokens,
-                "SystemCallFilter is missing the %s syscall group. A bare "
-                "individual-syscall allow-list is the arm64 SIGSYS trap this "
-                "guards against -- arch-neutral groups must cover kloak's proxy "
-                "work and kloakwl's sandbox setup. Filter: %r" % (group, tokens))
+                "SystemCallFilter is missing the %s syscall group kloak needs "
+                "(@system-service = baseline incl. @setuid; @mount = kloakwl's "
+                "mount/pivot_root). Filter: %r" % (group, tokens))
 
     def test_restrictnamespaces_permits_sandbox(self) -> None:
         values = self._directive_values(self.service_text, 'RestrictNamespaces')
-        self.assertTrue(values, 'kloak.service has no RestrictNamespaces')
+        if not values:
+            ## Absent RestrictNamespaces = no namespace restriction = every
+            ## namespace kloakwl unshares is permitted; this is the current,
+            ## correct service. A PRESENT value must still permit the required
+            ## namespaces (checked below) so a future re-add cannot silently
+            ## reintroduce the RestrictNamespaces=true sandbox kill.
+            return
         ## Compute the EFFECTIVE allowed namespace set the way systemd merges
         ## repeated RestrictNamespaces= in order (systemd.exec(5)); kloakwl can
         ## only unshare a namespace that ends up allowed:
@@ -221,7 +252,11 @@ class PrivsepHardening(unittest.TestCase):
 
     def test_no_new_privileges_off_for_profile_transition(self) -> None:
         tokens = self._directive_tokens(self.service_text, 'NoNewPrivileges')
-        self.assertTrue(tokens, 'kloak.service has no NoNewPrivileges')
+        if not tokens:
+            ## Absent NoNewPrivileges defaults to no (off), which is what the
+            ## kloak->kloakwl AppArmor Px transition needs. Absence is correct;
+            ## only an explicit =true would break the transition (checked below).
+            return
         self.assertNotIn(
             tokens[-1].lower(), SYSTEMD_TRUE,
             "NoNewPrivileges=%s blocks the kloak->kloakwl AppArmor Px transition: "
