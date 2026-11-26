@@ -76,7 +76,7 @@ trap cleanup EXIT
 ## Extract the guard: from its lead comment down to the 'fi' that closes it. The
 ## block sources nothing and touches only 'pkg' and 'dist_build_qubes', so this
 ## slice is the whole behavior under test.
-guard="$( sed -n '/## Fail fast, before any apt work/,/^   fi$/p' -- "${subject}" )"
+guard="$( sed -n '/## dist_build_qubes must be set if pkg isn.t\./,/^   fi$/p' -- "${subject}" )"
 if [ -z "${guard}" ]; then
    fail "could not extract the dist_build_qubes guard (pre-fix tool has none)"
    printf '%s\n' "FAILED: ${test_failures} assertion(s) (${pass_count} passed)." >&2
@@ -171,8 +171,7 @@ fi
 ## --- 5. CANARY: the stubbed error path can actually fail the run ------------
 ## Without this, assertion 1 is satisfiable by a driver whose 'error' is a no-op.
 canary_rc=0
-env GUARD_PKG="" GUARD_QUBES="__UNSET__" \
-   bash -c 'error() { exit 3; }; error' >/dev/null 2>&1 || canary_rc="$?"
+( error() { exit 3; }; error ) >/dev/null 2>&1 || canary_rc="$?"
 if [ "${canary_rc}" -eq 3 ]; then
    pass "canary: a failing error stub exits non-zero (assertions are not vacuous)"
 else

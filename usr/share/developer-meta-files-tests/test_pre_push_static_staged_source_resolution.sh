@@ -74,8 +74,10 @@ cat >"${repo}/usr/libexec/private-ai-config/vt-gate.sh" <<'LIB'
 #!/bin/bash
 
 ## style-ok: no-strict
+## style-ok: R-003
 ##
-## Sourced, never executed.
+## Sourced, never executed. 3-space body matches vt-gate.sh's real indent; R-003
+## (2-space for new files) is not the axis under test here.
 # shellcheck shell=bash
 
 ## Caller-contract var with a fail-closed default set at source time (so the lib is
