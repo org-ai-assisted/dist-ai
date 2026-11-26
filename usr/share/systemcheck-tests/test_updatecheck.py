@@ -52,6 +52,7 @@ class UpdatecheckTestBase(unittest.TestCase):
     script: str
     text: str
     hs_root: str
+    strings: str
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -350,9 +351,10 @@ class TestPermissionDeniedPopupSurfacing(UpdatecheckTestBase):
 
     def test_raw_popup_surfaces_failure_at_single_call_site(self) -> None:
         ## The raw one-time-popup.py is invoked inline from exactly ONE place, and
-        ## that call must SURFACE a failed popup ('|| exit'), not let the branch's
-        ## unconditional 'exit 0' fabricate success. A loose substring check greens
-        ## even with different spacing/quoting, so parse non-comment lines instead.
+        ## that call must SURFACE the popup's own exit code ('|| exit "$?"'), not a
+        ## hardcoded '|| exit 0' that fabricates success on a killed popup. A loose
+        ## substring check greens even with different spacing/quoting, so parse
+        ## non-comment lines instead.
         popup_lines = [
             line for line in self.text.splitlines()
             if 'one-time-popup.py' in line and not line.lstrip().startswith('#')
@@ -363,7 +365,7 @@ class TestPermissionDeniedPopupSurfacing(UpdatecheckTestBase):
             f"found {len(popup_lines)}: {popup_lines}")
         call = popup_lines[0]
         self.assertIn('"${MSGCOLLECTOR_REPO:-}"', call)
-        self.assertIn('|| exit', call)
+        self.assertIn('|| exit "$?"', call)
 
 
 if __name__ == '__main__':
