@@ -20,6 +20,7 @@ strings.bsh is sourced for is_whole_number, never reimplemented (dist-ai/CLAUDE.
 
 import os
 import subprocess
+import tempfile
 import unittest
 
 from systemcheck_testlib import read, systemcheck_dir
@@ -303,17 +304,27 @@ class TestPermissionDeniedPopupSurfacing(UpdatecheckTestBase):
     success -- the real-world bug this change fixes.
 
     Drives the real main() through that branch with the readiness probes stubbed
-    to pass, leaprun_check_function stubbed to fail, and show_permission_popup
-    stubbed to a chosen exit code (the single seam the popup call was wrapped in).
+    to pass, leaprun_check_function stubbed to fail, and the raw one-time-popup.py
+    stubbed (via MSGCOLLECTOR_REPO) to a chosen exit code. The inline popup call
+    is the seam -- there is no wrapper function (systemcheck's design).
     """
 
     def _run_perm_denied(self, popup_rc: int):
+        ## Stub the raw one-time-popup.py the branch calls inline: point
+        ## MSGCOLLECTOR_REPO at a tree whose one-time-popup.py exits popup_rc, so
+        ## the REAL inline call runs and its code is what updatecheck must surface.
+        msgdir = tempfile.mkdtemp()
+        popup = os.path.join(msgdir, 'usr/libexec/msgcollector/one-time-popup.py')
+        os.makedirs(os.path.dirname(popup))
+        with open(popup, 'w', encoding='utf-8') as handle:
+            handle.write(f'#!/bin/bash\nexit {popup_rc}\n')
+        os.chmod(popup, 0o755)
         stubs = (
             'light_sleep() { :; }\n'
             'system_ready_check_function() { return 0; }\n'
             'leaprun_availability_test() { return 0; }\n'
             'leaprun_check_function() { return 1; }\n'
-            f'show_permission_popup() {{ return {popup_rc}; }}\n'
+            f'export MSGCOLLECTOR_REPO={msgdir!r}\n'
         )
         ## HOME -> throwaway: the branch does 'mkdir -p ~/.systemcheck/...'.
         body = 'export HOME="$(mktemp -d)"\nmain\n'
@@ -337,28 +348,22 @@ class TestPermissionDeniedPopupSurfacing(UpdatecheckTestBase):
         res = self._run_perm_denied(0)
         self.assertEqual(res.returncode, 0)
 
-    def test_raw_popup_invoked_only_via_wrapper(self) -> None:
-        ## The raw one-time-popup.py must be invoked from exactly ONE place -- the
-        ## show_permission_popup wrapper -- so the branch's failure mode stays
-        ## stubbable. A loose substring check greens even if the raw helper is
-        ## still called directly with different spacing/quoting (e.g. two spaces,
-        ## or "$HOME/..."), so parse non-comment lines instead.
+    def test_raw_popup_surfaces_failure_at_single_call_site(self) -> None:
+        ## The raw one-time-popup.py is invoked inline from exactly ONE place, and
+        ## that call must SURFACE a failed popup ('|| exit'), not let the branch's
+        ## unconditional 'exit 0' fabricate success. A loose substring check greens
+        ## even with different spacing/quoting, so parse non-comment lines instead.
         popup_lines = [
             line for line in self.text.splitlines()
             if 'one-time-popup.py' in line and not line.lstrip().startswith('#')
         ]
         self.assertEqual(
             len(popup_lines), 1,
-            'raw one-time-popup.py must be invoked exactly once (inside the '
-            f"show_permission_popup wrapper); found {len(popup_lines)}: "
-            f"{popup_lines}")
-        wrapper = popup_lines[0]
-        self.assertIn('"${MSGCOLLECTOR_REPO:-}"', wrapper)
-        self.assertIn('"$@"', wrapper)
-        ## and the permission-denied branch must call the wrapper (any spacing).
-        self.assertRegex(
-            self.text,
-            r'(?m)^[ \t]*show_permission_popup[ \t]+~/\.systemcheck/status-files')
+            'raw one-time-popup.py must be invoked exactly once; '
+            f"found {len(popup_lines)}: {popup_lines}")
+        call = popup_lines[0]
+        self.assertIn('"${MSGCOLLECTOR_REPO:-}"', call)
+        self.assertIn('|| exit', call)
 
 
 if __name__ == '__main__':
