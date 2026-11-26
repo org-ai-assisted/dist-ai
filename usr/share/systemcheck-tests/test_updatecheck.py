@@ -318,7 +318,7 @@ class TestPermissionDeniedPopupSurfacing(UpdatecheckTestBase):
         os.makedirs(os.path.dirname(popup))
         with open(popup, 'w', encoding='utf-8') as handle:
             handle.write(f'#!/bin/bash\nexit {popup_rc}\n')
-        os.chmod(popup, 0o755)
+        os.chmod(popup, 0o700)
         stubs = (
             'light_sleep() { :; }\n'
             'system_ready_check_function() { return 0; }\n'
