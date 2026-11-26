@@ -1315,6 +1315,32 @@ test("Special:Search page: renders ranked results from the #q= URL query", async
     "the status announces the count (singular)");
 });
 
+// Canary: the Special:Search PAGE shares the dropdown's ONE rich row builder (thumbnail + bold
+// title + one-line intro), NOT a bare title link. Pre-change app.js rendered a.textContent only --
+// no .search-thumb / .match / .search-row-desc -- so this fails on it. The combobox ARIA stays
+// dropdown-only: a page row is a plain <li> (no role=option), a navigable list not a listbox.
+test("Special:Search page row: the SAME rich row as the dropdown (thumb + highlighted title + intro), no role=option", async () => {
+  const w = load(
+    '<input id="search-input"><div data-search-page></div>',
+    { url: "https://x.test/wiki/Special:Search", appSrc: "../app.min.js", hash: "#q=tor",
+      searchIndex: [{ t: "Tor Browser", u: "wiki/Tor_Browser/",
+                      d: "Hardened browser that routes traffic through Tor.",
+                      img: "media/thumb/Tor-128.webp" }] });
+  await tick();
+  const li = w.document.querySelector("#search-page-results li");
+  assert.equal(li.getAttribute("role"), null, "a page row is a plain <li>, not a combobox role=option");
+  const a = li.firstElementChild;
+  const img = a.querySelector(".search-thumb img");
+  assert.ok(img, "the page row renders the same <img> thumbnail as the dropdown");
+  assert.equal(img.getAttribute("src"), "../media/thumb/Tor-128.webp",
+    "the thumb src has the page-to-root prefix prepended (rootPrefix '../'), like the dropdown");
+  assert.equal(a.querySelector(".search-row-title .match").textContent, "Tor",
+    "the typed prefix is highlighted in the title (original case preserved)");
+  assert.equal(a.querySelector(".search-row-title").textContent, "Tor Browser", "the full bold title renders");
+  assert.equal(a.querySelector(".search-row-desc").textContent,
+    "Hardened browser that routes traffic through Tor.", "the non-bold one-line intro renders below the title");
+});
+
 test("Special:Search page: typing re-renders; a <2-char query clears the list + status", async () => {
   const w = load(
     '<input id="search-input"><div data-search-page></div>',
