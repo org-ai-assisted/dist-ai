@@ -163,8 +163,36 @@ class PrivsepHardening(unittest.TestCase):
             values.append(match.group(1).strip())
         return values
 
-    def test_syscall_filter_is_group_based(self) -> None:
-        tokens = self._directive_tokens(self.service_text, 'SystemCallFilter')
+    def _syscall_additive_tokens(self, text: str) -> list[str]:
+        ## The ADDITIVE SystemCallFilter tokens only -- what the arm64
+        ## bare-syscall guard must vet; a subtraction never reintroduces that
+        ## risk. systemd subtracts via TWO mechanisms (systemd.exec(5)):
+        ##   * a whole assignment whose FIRST char is '~' is a deny-list -- every
+        ##     name on that line is subtracted (e.g. '~memfd_create memfd_secret'
+        ##     removes both), so skip the line entirely;
+        ##   * on an otherwise-additive line, an inline '~name' removes just that
+        ##     name (kloak's '@system-service @mount ~memfd_create'), so drop the
+        ##     '~'-prefixed tokens and keep the rest.
+        ## An empty value resets the list.
+        additive: list[str] = []
+        for line in text.splitlines():
+            match = re.match(r'\s*SystemCallFilter=(.*)', line)
+            if match is None:
+                continue
+            value = match.group(1).strip()
+            if value == '':
+                additive = []
+                continue
+            if value.startswith('~'):
+                continue
+            additive.extend(
+                token for token in value.split() if not token.startswith('~'))
+        return additive
+
+    def _check_syscall_filter_group_based(self, text: str) -> None:
+        ## Shared body so a regression test can drive it with a synthetic
+        ## SystemCallFilter= config, not only the real service.
+        tokens = self._directive_tokens(text, 'SystemCallFilter')
         self.assertTrue(tokens, 'kloak.service has no SystemCallFilter')
         ## The first (post-reset) token sets the filter MODE. It must be an
         ## allow-list of groups, never a deny-list. A later ~syscall subtracts
@@ -177,12 +205,11 @@ class PrivsepHardening(unittest.TestCase):
             'allow-list of groups with optional ~subtractions' % tokens)
         ## The arm64 SIGSYS guard proper: every ADDITIVE token must be a @group,
         ## never a bare individual syscall name (a hand-list silently omits
-        ## arm64-only syscalls). A ~subtraction (e.g. ~memfd_create, so
-        ## MemoryDenyWriteExecute works) is allowed and does not reintroduce the
-        ## risk -- the groups still cover the needed syscalls.
+        ## arm64-only syscalls). Polarity is PER ASSIGNMENT: a leading '~'
+        ## subtracts the whole line, so a '~a b' line adds nothing to vet.
+        additive = self._syscall_additive_tokens(text)
         non_groups = [
-            token for token in tokens
-            if not token.startswith('~') and not token.startswith('@')]
+            token for token in additive if not token.startswith('@')]
         self.assertFalse(
             non_groups,
             'SystemCallFilter lists bare individual syscalls %r, not arch-neutral '
@@ -190,10 +217,32 @@ class PrivsepHardening(unittest.TestCase):
             'Filter: %r' % (non_groups, tokens))
         for group in REQUIRED_SYSCALL_GROUPS:
             self.assertIn(
-                group, tokens,
+                group, additive,
                 "SystemCallFilter is missing the %s syscall group kloak needs "
                 "(@system-service = baseline incl. @setuid; @mount = kloakwl's "
                 "mount/pivot_root). Filter: %r" % (group, tokens))
+
+    def test_syscall_filter_is_group_based(self) -> None:
+        self._check_syscall_filter_group_based(self.service_text)
+
+    def test_syscall_filter_subtraction_forms_accepted(self) -> None:
+        ## Both systemd subtraction forms are valid and must pass:
+        ##   * inline '~name' on an additive line (kloak's real service);
+        ##   * a whole line whose first char is '~' (every name subtracted) -- a
+        ##     per-token check wrongly rejected its 2nd+ bare name as additive.
+        inline = 'SystemCallFilter=@system-service @mount ~memfd_create\n'
+        self._check_syscall_filter_group_based(inline)
+        deny_line = (
+            'SystemCallFilter=@system-service @mount\n'
+            'SystemCallFilter=~memfd_create memfd_secret\n')
+        self._check_syscall_filter_group_based(deny_line)
+
+    def test_syscall_filter_rejects_bare_additive_syscall(self) -> None:
+        ## The arm64 SIGSYS guard still fires: a bare (non-@group, non-'~')
+        ## syscall on an additive line is the hand-list regression it catches.
+        bare = 'SystemCallFilter=@system-service @mount read\n'
+        with self.assertRaises(AssertionError):
+            self._check_syscall_filter_group_based(bare)
 
     def test_restrictnamespaces_permits_sandbox(self) -> None:
         values = self._directive_values(self.service_text, 'RestrictNamespaces')
