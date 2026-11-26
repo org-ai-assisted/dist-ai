@@ -70,6 +70,16 @@ trap cleanup EXIT
 cmdline_file="${workdir}/cmdline"
 export PERSISTENT_BOOT_CMDLINE_FILE="${cmdline_file}"
 
+## Inject a deterministic grub config so base-cmdline extraction does not depend
+## on the host's /etc/default/grub (absent under CI). The '.d/*.cfg' drop-in
+## exercises grub-mkconfig-style drop-in sourcing (regression: the glob once read
+## '<file>/*', treating the file as a directory, so drop-ins were never sourced).
+grub_default="${workdir}/grub"
+export PERSISTENT_BOOT_GRUB_DEFAULT="${grub_default}"
+printf '%s\n' 'GRUB_CMDLINE_LINUX_DEFAULT="quiet"' > "${grub_default}"
+mkdir --parents -- "${grub_default}.d"
+printf '%s\n' 'GRUB_CMDLINE_LINUX="apparmor=1"' > "${grub_default}.d/50_hardening.cfg"
+
 ## --- persistent_boot_cmdline ------------------------------------------------
 
 ## A1: strip BOOT_IMAGE/initrd, keep the base live tokens, append the canonical
@@ -86,6 +96,14 @@ if [[ "${out}" != *"BOOT_IMAGE="* ]] \
    pass "cmdline: strips boot/initrd, keeps base, appends overlay, no luks"
 else
    fail "cmdline A1 wrong: '${out}'"
+fi
+
+## A1b: the grub '<file>.d/*.cfg' drop-in is sourced (grub-mkconfig parity) and
+## its safe tokens flow into the persistent cmdline.
+if [[ "${out}" == *"apparmor=1"* ]]; then
+   pass "cmdline: grub.d/*.cfg drop-in tokens are honored"
+else
+   fail "cmdline A1b: grub.d drop-in not sourced: '${out}'"
 fi
 
 ## A2: a LUKS uuid is appended when given.
@@ -264,18 +282,16 @@ fi
 
 ## --- hardening: injection + misuse ------------------------------------------
 
-## A token carrying a grub metacharacter is dropped whole (grub separates
-## commands by ';'/newline/'$', never by spaces -- so what must not survive is
-## the metacharacter, not a bare word). Safe tokens are kept.
-printf '%s\n' "quiet;echo\$x root=live:CDLABEL=DM_LIVE rd.live.overlay.overlayfs=1" > "${cmdline_file}"
+## A grub token carrying a metacharacter (';'/newline/'$', which grub treats as a
+## separator) is dropped WHOLE by the safe-token filter; safe grub tokens stay.
+## The boot cmdline is read only for the volume label, so inject the hostile
+## token via the grub config -- the path that is actually filtered.
+printf '%s\n' 'root=live:CDLABEL=DM_LIVE' > "${cmdline_file}"
+printf '%s\n' 'GRUB_CMDLINE_LINUX_DEFAULT="safetoken=1 evil;reboot"' > "${grub_default}"
 out="$(persistent_boot_cmdline persistence)"
-meta_semi=";"
-meta_dollar="\$"
-meta_btick="\`"
-if [[ "${out}" != *"${meta_semi}"* ]] && [[ "${out}" != *"${meta_dollar}"* ]] \
-   && [[ "${out}" != *"${meta_btick}"* ]] && [[ "${out}" != *"echo"* ]] \
-   && [[ "${out}" == *"root=live:CDLABEL=DM_LIVE"* ]] \
-   && [[ "${out}" == *"rd.live.overlay.overlayfs=1"* ]]; then
+if [[ "${out}" != *"evil"* ]] && [[ "${out}" != *";"* ]] \
+   && [[ "${out}" == *"safetoken=1"* ]] \
+   && [[ "${out}" == *"root=live:CDLABEL=DM_LIVE"* ]]; then
    pass "cmdline: drops a grub-metacharacter token, keeps safe tokens"
 else
    fail "cmdline injection-drop wrong: '${out}'"
@@ -324,8 +340,10 @@ else
    fail "cmdline malformed-uuid-arg not refused (rc=${uuid_rc})"
 fi
 
-## A legit kernel param with '!' (acpi_osi=!) is NOT dropped (not a grub metachar).
-printf '%s\n' 'quiet acpi_osi=! root=live:CDLABEL=DM_LIVE' > "${cmdline_file}"
+## A legit kernel param with '!' (acpi_osi=!) is a safe token and is kept. It is
+## a grub hardening option, so inject it via the grub config, not the boot line.
+printf '%s\n' 'root=live:CDLABEL=DM_LIVE' > "${cmdline_file}"
+printf '%s\n' 'GRUB_CMDLINE_LINUX_DEFAULT="acpi_osi=!"' > "${grub_default}"
 out="$(persistent_boot_cmdline persistence)"
 if [[ "${out}" == *"acpi_osi=!"* ]]; then
    pass "cmdline: keeps a legit '!' parameter"
