@@ -334,7 +334,7 @@ class PrivsepHardening(unittest.TestCase):
         ## sysusers 'u' line creates the user and its matching group; kloakwl
         ## getpwnam/getgrnam("kloakwl") and FATALs if either is absent.
         self.assertRegex(
-            self.sysusers_text, r'(?m)^\s*u!?\s+kloakwl\b',
+            self.sysusers_text, r'(?m)^\s*u!?\s+kloakwl(?=\s|$)',
             'usr/lib/sysusers.d/kloak.conf does not create the kloakwl system user')
 
 
