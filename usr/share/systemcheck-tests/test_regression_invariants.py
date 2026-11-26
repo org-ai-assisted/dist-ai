@@ -100,6 +100,10 @@ class TestRegressionInvariants(SystemcheckTestBase):
         """The shared preparation.bsh helpers the check fragments rely on must
         all be defined at column 0."""
         text = read(self.preparation)
+        ## running_as_sysmaint / in_working_sysmaint_session were intentionally
+        ## dropped: 'sysmaint' is the only account supported for GUI login in a
+        ## sysmaint session, so the gating keys on booted_in_sysmaint_session
+        ## alone (preparation.bsh's own note).
         for func in (
             'run_if_verbose',
             'html_link',
@@ -107,8 +111,6 @@ class TestRegressionInvariants(SystemcheckTestBase):
             'emit_message',
             'leaprun_cmd_describe',
             'remediation_instructions',
-            'running_as_sysmaint',
-            'in_working_sysmaint_session',
         ):
             self.assertRegex(text, rf"(?m)^{func}\(\) \{{", f"{func} missing")
 
