@@ -91,15 +91,15 @@ def _read(rel_path: str) -> str:
 
 
 def _require_source() -> None:
-    ## Skip unless KLOAK_REPO points at a kloak SOURCE checkout. kloak.service
-    ## and the apparmor profiles also exist on an INSTALLED system under '/', so
-    ## keying the guard on one of them lets an installed-only invocation
-    ## (KLOAK_REPO unset -> '/') pass and then crash setUpClass with
-    ## FileNotFoundError on the source-only debian/kloak.sysusers. The debian/
-    ## packaging dir exists ONLY in a source checkout and is where that sysusers
-    ## file lives, so it is the right discriminator: a real checkout (debian/
-    ## present) RUNS the assertions -- a present-but-wrong config is caught, not
-    ## skipped -- while an installed system skips cleanly.
+    ## Skip unless KLOAK_REPO points at a kloak SOURCE checkout. Every config
+    ## file setUpClass reads (kloak.service, the apparmor profiles, the sysusers
+    ## drop-in) also exists on an INSTALLED system under '/', so keying the guard
+    ## on one of them lets an installed-only invocation (KLOAK_REPO unset -> '/')
+    ## pass and then crash setUpClass with FileNotFoundError. The debian/
+    ## packaging dir exists ONLY in a source checkout, so it is the right
+    ## discriminator: a real checkout (debian/ present) RUNS the assertions -- a
+    ## present-but-wrong config is caught, not skipped -- while an installed
+    ## system skips cleanly.
     if not os.path.isdir(os.path.join(_repo(), 'debian')):
         ## style-ok: allow-skip: kloak source absent (not a --component run)
         raise unittest.SkipTest(
@@ -119,7 +119,7 @@ class PrivsepHardening(unittest.TestCase):
         cls.service_text = _read('usr/lib/systemd/system/kloak.service')
         cls.kloak_aa = _read('etc/apparmor.d/usr.bin.kloak')
         cls.kloakwl_aa = _read('etc/apparmor.d/usr.bin.kloakwl')
-        cls.sysusers_text = _read('debian/kloak.sysusers')
+        cls.sysusers_text = _read('usr/lib/sysusers.d/kloak.conf')
 
     def _directive_tokens(self, text: str, name: str) -> list[str]:
         ## systemd MERGES repeated SystemCallFilter=/RestrictNamespaces= (and the
@@ -334,8 +334,8 @@ class PrivsepHardening(unittest.TestCase):
         ## sysusers 'u' line creates the user and its matching group; kloakwl
         ## getpwnam/getgrnam("kloakwl") and FATALs if either is absent.
         self.assertRegex(
-            self.sysusers_text, r'(?m)^\s*u\s+kloakwl\b',
-            'debian/kloak.sysusers does not create the kloakwl system user')
+            self.sysusers_text, r'(?m)^\s*u!?\s+kloakwl\b',
+            'usr/lib/sysusers.d/kloak.conf does not create the kloakwl system user')
 
 
 class RequireSourceGuard(unittest.TestCase):
