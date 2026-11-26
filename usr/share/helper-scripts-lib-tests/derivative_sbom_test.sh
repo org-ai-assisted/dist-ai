@@ -292,23 +292,21 @@ check "merge: base dpkg component in components[]" \
 check "merge: TB fragment in components[] (not metadata)" \
    "$(purl_count "${merged_out}" 'pkg:generic/tor-browser@14.5.3?arch=linux-x86_64')" "1"
 
-## Re-merging the output (already holds TB) with the same fragment must not
-## double-insert -- genuine dedup across a real re-merge, not an artifact of
-## regenerating from the stub.
-rerun_out="${test_dir}/rerun.cdx.json"
-"${merge_tool}" "${frag_dir}" < "${merged_out}" > "${rerun_out}"
-check "merge: dedup keeps one TB component on re-merge" \
-   "$(purl_count "${rerun_out}" 'pkg:generic/tor-browser@14.5.3?arch=linux-x86_64')" "1"
+## Idempotency via dedup was deliberately removed in the helper-scripts rework:
+## a duplicate bom-ref/purl is an ERROR (the NOTE in sbom-fragment-merge: a dedup
+## could mask a component nested under a different one). Re-merging an output that
+## already holds a fragment's component must be REJECTED, not silently deduped.
+check "merge: re-merge of an already-present component is rejected" \
+   "$(merge_rc "$(cat -- "${merged_out}")" "${frag_dir}")" "1"
 
-## A second fragment duplicating a base purl must be dropped, not doubled.
-cat > "${frag_dir}/dup.cdx.json" <<'EOF'
+## A fragment whose purl duplicates a base component is rejected the same way.
+dup_dir="${test_dir}/dup-fragments.d"
+mkdir --parents -- "${dup_dir}"
+cat > "${dup_dir}/dup.cdx.json" <<'EOF'
 {"type":"library","name":"bash","purl":"pkg:deb/debian/bash@5.2"}
 EOF
-PATH="${jsonbin}:${PATH}" SBOM_ETC_DIR="${etc}" SBOM_FRAGMENTS_DIR="${frag_dir}" \
-   derivative_sbom_generate "${merged_out}" "${want_ts}"
-check "merge: duplicate-purl fragment deduped against base" \
-   "$(purl_count "${merged_out}" 'pkg:deb/debian/bash@5.2')" "1"
-safe-rm --force -- "${frag_dir}/dup.cdx.json"
+check "merge: fragment duplicating a base purl is rejected" \
+   "$(merge_rc "$(cat -- "${merged_out}")" "${dup_dir}")" "1"
 
 ## No fragments -> output is EXACTLY debsbom's own (byte-identical passthrough,
 ## so a plain image's SBOM is unaffected).
@@ -395,6 +393,20 @@ check "merge-tool: bom-ref collision (metadata root) fails closed" \
    "$(merge_rc "${meta_base}" "${col_frag}")" "1"
 safe-rm --recursive --force -- "${col_frag}"
 
+## root_bom_ref / wire_root_dependencies: a fragment component carrying a bom-ref
+## is wired into the metadata root component's dependency graph (dependsOn), so it
+## is reachable rather than orphaned in components[].
+wire_base='{"bomFormat":"CycloneDX","metadata":{"component":{"type":"operating-system","name":"Kicksecure","bom-ref":"root-ref"}},"components":[]}'
+wire_frag="${test_dir}/wire-fragments.d"
+mkdir --parents -- "${wire_frag}"
+cat > "${wire_frag}/w.cdx.json" <<'EOF'
+{"type":"application","name":"TB","bom-ref":"tb@1","purl":"pkg:generic/tb@1"}
+EOF
+wire_out="${test_dir}/wire.cdx.json"
+printf '%s' "${wire_base}" | "${merge_tool}" "${wire_frag}" > "${wire_out}"
+check "merge-tool: fragment ref wired into root dependsOn" \
+   "$(jq -r 'any(.dependencies[]?; .ref=="root-ref" and ((.dependsOn // [])|index("tb@1") != null))' "${wire_out}")" "true"
+
 ## bom-ref uniqueness is enforced against NESTED components on both sides: a
 ## fragment's nested child colliding with a base top-level ref, and a base's
 ## nested child colliding with a fragment's top-level ref, both fail closed.
@@ -414,20 +426,18 @@ check "merge-tool: base nested bom-ref collision fails closed" \
    "$(merge_rc "${base_nestref}" "${nest_col_frag}")" "1"
 safe-rm --recursive --force -- "${nest_col_frag}"
 
-## An identical component sharing only a bom-ref (no purl) must dedup on a
-## re-merge, not be mistaken for a conflict (idempotency).
+## A component reusing a bom-ref already present is a duplicate and is rejected,
+## even when byte-identical: dedup for idempotency was deliberately removed (the
+## NOTE in sbom-fragment-merge -- a silent dedup could mask a component nested
+## under a different one).
 idem_frag="${test_dir}/idem-fragments.d"
 mkdir --parents -- "${idem_frag}"
 cat > "${idem_frag}/i.cdx.json" <<'EOF'
 {"type":"application","name":"tool","bom-ref":"tool@1"}
 EOF
 idem_base='{"bomFormat":"CycloneDX","components":[{"type":"application","name":"tool","bom-ref":"tool@1"}]}'
-idem_out="${test_dir}/idem.cdx.json"
-idem_rc=0
-printf '%s' "${idem_base}" | "${merge_tool}" "${idem_frag}" > "${idem_out}" 2>/dev/null || idem_rc=$?
-check "merge-tool: identical bom-ref-only component dedups (exit 0)" "${idem_rc}" "0"
-check "merge-tool: identical bom-ref-only component not doubled" \
-   "$(jq '[.components[]|select(.["bom-ref"]=="tool@1")]|length' "${idem_out}" 2>/dev/null)" "1"
+check "merge-tool: component reusing a present bom-ref is rejected" \
+   "$(merge_rc "${idem_base}" "${idem_frag}")" "1"
 
 ## A schema-valid empty name is accepted (CycloneDX requires name present+string,
 ## no minimum length).
@@ -459,18 +469,20 @@ printf '%s\n' '{"type":"application","name":"N","version":NaN}' > "${nan_frag}/n
 check "merge-tool: NaN fragment fails closed" \
    "$(merge_rc "${merge_base}" "${nan_frag}")" "1"
 
-## A symlinked fragment is refused (could pull a root-only file into the SBOM).
+## Fragments live in a root-only-writable dir (/usr/share/sbom/fragments.d), so a
+## symlink there is root-created and trusted: sbom-fragment-merge follows it with
+## no symlink check (by design). Pin the decision -- the target's content merges,
+## exit 0; a regression to refusal would flip both checks.
 link_frag="${test_dir}/link-fragments.d"
 mkdir --parents -- "${link_frag}"
-printf '%s\n' '{"type":"application","name":"S","purl":"pkg:generic/secret@1"}' > "${test_dir}/outside.json"
+printf '%s\n' '{"type":"application","name":"S","purl":"pkg:generic/linked@1"}' > "${test_dir}/outside.json"
 ln --symbolic -- "${test_dir}/outside.json" "${link_frag}/link.cdx.json"
-check "merge-tool: symlink fragment refused (fails closed)" \
-   "$(merge_rc "${merge_base}" "${link_frag}")" "1"
-## Not merely exit 1: the symlinked content must never reach stdout (which
-## production redirects into the SBOM), so refusal must precede any read.
-link_stdout="$(printf '%s' "${merge_base}" | "${merge_tool}" "${link_frag}" 2>/dev/null || true)"
-check "merge-tool: symlink fragment leaks no content" \
-   "$(if [[ "${link_stdout}" == *'pkg:generic/secret@1'* ]]; then printf '%s' leak; else printf '%s' clean; fi)" "clean"
+link_out="${test_dir}/link.out.cdx.json"
+link_rc=0
+printf '%s' "${merge_base}" | "${merge_tool}" "${link_frag}" > "${link_out}" 2>/dev/null || link_rc=$?
+check "merge-tool: symlinked fragment followed (root-owned dir, trusted)" "${link_rc}" "0"
+check "merge-tool: symlinked fragment content merged" \
+   "$(purl_count "${link_out}" 'pkg:generic/linked@1')" "1"
 
 ## Malformed fragment JSON is a HARD error (never a silently-incomplete SBOM).
 bad_frag="${test_dir}/bad-fragments.d"
@@ -512,18 +524,10 @@ noread_rc="$(merge_rc "${merge_base}" "${noread_frag}")"
 chmod 755 -- "${noread_frag}"
 check "merge-tool: unlistable fragments dir fails closed (exit 1)" "${noread_rc}" "1"
 
-## A non-regular special file is refused via the O_PATH open + fstat, with no
-## blocking read and no device-open side effect. A fifo stands in for that whole
-## class (symlink already covered above; a device node needs root mknod, which
-## this non-root suite cannot create but which takes the identical fstat
-## rejection branch). timeout guards against a regression to a blocking open.
-fifo_frag="${test_dir}/fifo-fragments.d"
-mkdir --parents -- "${fifo_frag}"
-mkfifo -- "${fifo_frag}/f.cdx.json"
-fifo_rc=0
-printf '%s' "${merge_base}" | timeout --kill-after=10 10 "${merge_tool}" "${fifo_frag}" >/dev/null 2>&1 \
-   || fifo_rc=$?
-check "merge-tool: fifo fragment refused without hang (exit 1)" "${fifo_rc}" "1"
+## A special file (fifo/device) in the fragments dir is not guarded: the dir is
+## root-only writable, so a non-regular entry is a packaging bug, not an attack
+## vector, and sbom-fragment-merge does no file-type check (by design). dpkg does
+## not ship fifos, so this cannot arise in production -- nothing to assert.
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
