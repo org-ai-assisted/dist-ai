@@ -5,19 +5,22 @@
 
 ## AI-Assisted
 
-## developer-meta-files 'dm-prepare-release': image_sbom_sidecar_sign publishes
-## the image's embedded CycloneDX SBOM as a signed sidecar next to one artifact.
+## developer-meta-files 'dm-prepare-release': copy_and_sign_sbom publishes the
+## image's embedded CycloneDX SBOM as a signed sidecar next to one artifact.
 ##
 ## CONSUMER side of the cross-flavor clobbering fix (ai-review, 3 reviewers):
 ## the sidecar content MUST come from this build's own
-## ${binary_image_raw_file}.cdx.json (named per flavor/target), and only IMAGE
-## artifacts (a non-empty target: ova/raw/qcow2/iso) get it -- source/installer
-## artifacts must not, matching .dm-buildinfo.
+## ${binary_image_raw_file}.cdx.json (named per flavor/target). The image-vs-non-
+## image decision lives at the CALL SITE: copy_and_sign_sbom is invoked only under
+## 'if [ -n "${dm_target_item}" ]', so only IMAGE artifacts (ova/raw/qcow2/iso)
+## get a sidecar and source/installer artifacts do not, matching .dm-buildinfo.
+## The function itself gates only on the staging SBOM being present.
 ##
 ## dm-prepare-release sources help-steps/pre + variables at load, so it cannot
 ## be sourced whole; dm-build-step-fn extracts just this function. The test
 ## defines it with sign_and_verify_all stubbed (recording), against tmpdir
-## fixtures. No root, no network, no build.
+## fixtures, and asserts the call-site guard statically. No root, no network,
+## no build.
 
 set -o errexit
 set -o nounset
@@ -88,30 +91,23 @@ yn() { if "$@"; then printf '%s' yes; else printf '%s' no; fi; }
 export binary_image_raw_file="${work}/Kicksecure-A-18.0.amd64.raw"
 printf '%s\n' 'SBOM-OF-THIS-BUILD' > "${binary_image_raw_file}.cdx.json"
 
-eval "$("${tool}" --file "${subject}" --fn image_sbom_sidecar_sign)"
-check "function extracted" "$(type -t image_sbom_sidecar_sign)" "function"
+eval "$("${tool}" --file "${subject}" --fn copy_and_sign_sbom)"
+check "function extracted" "$(type -t copy_and_sign_sbom)" "function"
 
-## ---- image artifact (compressed raw) gets a signed sidecar ----
+## ---- staging present: sidecar is copied from THIS build's SBOM and signed ----
 printf '%s' "" > "${signed_rec}"
 raw_xz="${work}/Kicksecure-A-18.0.amd64.raw.libvirt.xz"
-image_sbom_sidecar_sign "${raw_xz}" "raw"
-check "image: sidecar created next to the artifact" "$(exists "${raw_xz}.cdx.json")" "yes"
-check "image: sidecar content from THIS build's staging" "$(cat -- "${raw_xz}.cdx.json" 2>/dev/null)" "SBOM-OF-THIS-BUILD"
-check "image: the sidecar was signed" "$(yn signed_with "${raw_xz}.cdx.json")" "yes"
-
-## ---- non-image artifact (empty target: source/installer) gets NO sidecar ----
-printf '%s' "" > "${signed_rec}"
-src_xz="${work}/derivative-maker-source.tar.xz"
-image_sbom_sidecar_sign "${src_xz}" ""
-check "non-image: no sidecar for an empty target" "$(exists "${src_xz}.cdx.json")" "no"
-check "non-image: nothing signed" "$(yn signed_with "${src_xz}.cdx.json")" "no"
+copy_and_sign_sbom "${raw_xz}"
+check "staging: sidecar created next to the artifact" "$(exists "${raw_xz}.cdx.json")" "yes"
+check "staging: sidecar content from THIS build's staging" "$(cat -- "${raw_xz}.cdx.json" 2>/dev/null)" "SBOM-OF-THIS-BUILD"
+check "staging: the sidecar was signed" "$(yn signed_with "${raw_xz}.cdx.json")" "yes"
 
 ## ---- staging SBOM absent (hook skipped upstream) -> no-op ----
 printf '%s' "" > "${signed_rec}"
 safe-rm --force -- "${binary_image_raw_file}.cdx.json"
 iso="${work}/Kicksecure-A-18.0.amd64.iso"
 rc=0
-image_sbom_sidecar_sign "${iso}" "iso" || rc=$?
+copy_and_sign_sbom "${iso}" || rc=$?
 check "absent-staging: returns 0 (no-op)" "${rc}" "0"
 check "absent-staging: no sidecar" "$(exists "${iso}.cdx.json")" "no"
 check "absent-staging: nothing signed" "$(yn signed_with "${iso}.cdx.json")" "no"
@@ -123,10 +119,28 @@ ova="${work}/Kicksecure-A-18.0.amd64.ova"
 sentinel="${work}/sentinel-must-not-change"
 printf '%s\n' 'SENTINEL-UNTOUCHED' > "${sentinel}"
 ln --symbolic -- "${sentinel}" "${ova}.cdx.json"
-image_sbom_sidecar_sign "${ova}" "virtualbox"
+copy_and_sign_sbom "${ova}"
 check "symlink: dest is now a regular file" \
    "$(if [ -L "${ova}.cdx.json" ]; then printf '%s' symlink; else printf '%s' regular; fi)" "regular"
 check "symlink: the symlink target was NOT overwritten" "$(cat -- "${sentinel}")" "SENTINEL-UNTOUCHED"
+
+## ---- call-site guard: the image-vs-source gate (source/installer artifacts get
+##      NO sidecar) now lives at the caller, so assert copy_and_sign_sbom is
+##      invoked ONLY under 'if [ -n "${dm_target_item}" ]'. A function-definition
+##      line is excluded; every real call line must be guarded. ----
+read -r call_lines guarded_lines < <(awk '
+   {
+      line = $0
+      if (line ~ /copy_and_sign_sbom/ && line !~ /copy_and_sign_sbom[[:space:]]*\(\)/) {
+         calls++
+         if (prev ~ /\[[[:space:]]+-n[[:space:]]+"\$\{dm_target_item\}"[[:space:]]+\]/) { guarded++ }
+      }
+      if (line !~ /^[[:space:]]*$/) { prev = line }
+   }
+   END { printf "%d %d\n", calls, guarded }
+' "${subject}")
+check "call-site: copy_and_sign_sbom has a call site" "$(if [ "${call_lines}" -ge 1 ]; then printf '%s' yes; else printf '%s' no; fi)" "yes"
+check "call-site: every call is guarded by a non-empty dm_target_item" "${call_lines}" "${guarded_lines}"
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
