@@ -32,6 +32,11 @@ else
    persistent_boot_sh_path='/usr/libexec/helper-scripts/persistent-boot.sh'
 fi
 
+## persistent-boot.sh sources its sibling live-boot-cmdline.bsh via
+## ${HELPER_SCRIPTS_PATH} at source time; point it at the same tree so the
+## sibling resolves to the checkout (empty -> the installed /usr/libexec).
+export HELPER_SCRIPTS_PATH="${HELPER_SCRIPTS_REPO}"
+
 if [ ! -r "${persistent_boot_sh_path}" ]; then
    printf '%s\n' "FATAL: persistent-boot.sh not readable at '${persistent_boot_sh_path}'" >&2
    printf '%s\n' "set HELPER_SCRIPTS_REPO to a checkout, or install helper-scripts" >&2
