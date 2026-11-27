@@ -1,17 +1,26 @@
 #!/bin/bash
 
+## These globals cross the sourced-subject boundary (set here, read by the
+## subject's validate_encryption_args) or come from the subject (default_luks_uuid,
+## persist_type_guid_*), so shellcheck cannot see their use/assignment.
+# shellcheck disable=SC2034,SC2154
+
 ## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
 ## See the file COPYING for copying conditions.
 
 ## AI-Assisted
 
-## persistence-setup is NON-INTERACTIVE: driven by mandatory flags, no prompts.
-## This drives the REAL script (sourced; its main() is behind a was_executed
-## guard so sourcing does not run it) and asserts the ARGUMENT-VALIDATION layer:
-## --encrypt is mandatory, the --key-type combo rules, and the mutually-exclusive
-## checks. Validation runs BEFORE any device is touched, and even valid args stop
-## at a later safe gate (preflight / as_root / rd.live.image) on this non-live,
-## non-root host -- so no case can reach systemd-repart. No root, no device, no network.
+## persistence-setup validates its encryption arguments in validate_encryption_args(),
+## a seam extracted from main() so the rules can be exercised without as_root /
+## live-mode / a device. This sources the REAL script (its main() is behind a
+## was_executed guard, so sourcing defines functions without running anything),
+## sets the argument globals, and calls validate_encryption_args() in a subshell
+## (a die ends only the subshell). Regressions covered:
+##   * org-ai-assisted/live-config-dist#3 (h84): --passphrase-file '-' (stdin) must
+##     NOT be rejected by the file-readability check.
+##   * org-ai-assisted/live-config-dist#3 (h87): an omitted --luks-uuid must get the
+##     default BEFORE the UUID-format validation, not die on the empty string.
+## No root, no device, no network.
 
 set -o errexit
 set -o nounset
@@ -33,8 +42,6 @@ if [ ! -r "${subject}" ]; then
    exit 1
 fi
 
-## persistence-setup sources helper-scripts via HELPER_SCRIPTS_PATH; derive it
-## from the sibling checkout when the suite did not wire it.
 [ -v HELPER_SCRIPTS_PATH ] || HELPER_SCRIPTS_PATH=""
 if [ -z "${HELPER_SCRIPTS_PATH}" ] && [ -n "${LIVE_CONFIG_DIST_REPO}" ]; then
    HELPER_SCRIPTS_PATH="$(dirname -- "${LIVE_CONFIG_DIST_REPO}")/helper-scripts"
@@ -44,94 +51,132 @@ export HELPER_SCRIPTS_PATH
 # shellcheck disable=SC1090
 source "${subject}"
 
-if [ ! "$(type -t main)" = 'function' ]; then
-   printf '%s\n' "FATAL: sourcing '${subject}' defined no 'main' function" >&2
+if [ ! "$(type -t validate_encryption_args)" = 'function' ]; then
+   printf '%s\n' "FATAL: sourcing '${subject}' defined no 'validate_encryption_args'" >&2
    exit 1
 fi
+
+work="$(mktemp --directory --tmpdir persistence-setup-argval.XXXXXX)"
+# shellcheck disable=SC2317  ## EXIT trap
+cleanup() { safe-rm --recursive --force -- "${work}"; }
+trap cleanup EXIT
+
+## A real, adequately-sized keyfile and passphrase file for the valid cases.
+good_keyfile="${work}/keyfile"; head --bytes=64 /dev/zero | tr '\0' 'k' > "${good_keyfile}"
+good_passfile="${work}/passfile"; printf '%s\n' 'swordfish' > "${good_passfile}"
 
 pass_count=0
 fail_count=0
 
-## Run main in a SUBSHELL so its globals never leak between cases and a die's
-## exit ends only the subshell. Captures combined output + exit code.
-run_main() {
-   main_rc=0
-   main_out="$( ( main "$@" ) 2>&1 )" || main_rc=$?
-}
-
-## A validation rejection: non-zero exit AND the message contains the needle.
-check_rejects() {
-   local desc needle
-   desc="$1"
-   needle="$2"
-   shift 2
-   run_main "$@"
-   if [ "${main_rc}" -ne 0 ] && [[ "${main_out}" == *"${needle}"* ]]; then
-      pass_count=$(( pass_count + 1 ))
-      printf '%s\n' "PASS: ${desc}"
+## read_passphrase does real I/O; isolate it so the VALIDATION logic is what is
+## under test. It mirrors the real behaviour: '-' reads stdin, else reads the file.
+# shellcheck disable=SC2317  ## invoked by validate_encryption_args
+read_passphrase() {
+   if [ "${passphrase_file}" = '-' ]; then
+      IFS= read -r passphrase || true
    else
-      fail_count=$(( fail_count + 1 ))
-      printf '%s\n' "FAIL: ${desc} (rc=${main_rc} out='${main_out}')"
+      passphrase="$(< "${passphrase_file}")"
    fi
 }
 
-## Validation PASSED: the run stopped at a later, safe post-validation gate
-## (missing dependency / not root / not live), never a validation message.
-check_passes_validation() {
-   local desc
-   desc="$1"
-   shift
-   run_main "$@"
-   if [ "${main_rc}" -ne 0 ] \
-      && [[ "${main_out}" != *"mandatory"* ]] \
-      && [[ "${main_out}" != *"meaningless"* ]] \
-      && [[ "${main_out}" != *"unknown method"* ]] \
-      && [[ "${main_out}" != *"requires"* ]] \
-      && [[ "${main_out}" != *"selected no method"* ]]; then
-      pass_count=$(( pass_count + 1 ))
-      printf '%s\n' "PASS: ${desc}"
+## Reset all encryption-arg globals to a known base before each case.
+reset_globals() {
+   do_encrypt='true'; passphrase_file=''; keyfile=''; luks_uuid=''
+   use_tpm='false'; passphrase=''; persist_type_guid=''
+}
+
+## Run validate_encryption_args in a subshell, capturing rc + combined output and,
+## when it returns 0, the resolved luks_uuid / persist_type_guid. $1 = stdin text.
+run_validate() {
+   local stdin_data="${1:-}"
+   rc=0
+   ## '|| rc=$?' both captures a die's exit status and suppresses the test's
+   ## own errexit on the assignment.
+   out="$(
+      ( validate_encryption_args \
+         && printf '%s\n' "RESOLVED_UUID=${luks_uuid}" "RESOLVED_GUID=${persist_type_guid}" \
+      ) 2>&1 <<< "${stdin_data}"
+   )" || rc=$?
+}
+
+check() {
+   if [ "$2" = 'true' ]; then
+      pass_count=$(( pass_count + 1 )); printf '%s\n' "PASS: $1"
    else
-      fail_count=$(( fail_count + 1 ))
-      printf '%s\n' "FAIL: ${desc} (rc=${main_rc} out='${main_out}')"
+      fail_count=$(( fail_count + 1 )); printf '%s\n' "FAIL: $1 (rc=${rc} out='${out}')"
    fi
 }
 
-## --- mandatory --encrypt ---------------------------------------------------
-check_rejects "missing --encrypt is rejected" "--encrypt is mandatory"
-check_rejects "non-boolean --encrypt is rejected" "Option 'encrypt' cannot be 'maybe'" --encrypt maybe
+## --- h87 REGRESSION: default luks uuid applied BEFORE validation ------------
+reset_globals; passphrase_file="${good_passfile}"
+run_validate
+## Must NOT die on the empty uuid; must resolve to the built-in default.
+check "h87: omitted --luks-uuid passes validation (not 'must be a UUID')" \
+   "$( [ "${rc}" -eq 0 ] && [[ "${out}" != *'must be a UUID'* ]] && printf '%s' true || printf '%s' false )"
+check "h87: omitted --luks-uuid resolves to default_luks_uuid" \
+   "$( [[ "${out}" == *"RESOLVED_UUID=${default_luks_uuid}"* ]] && printf '%s' true || printf '%s' false )"
 
-## --- key-type rules (encrypt true) -----------------------------------------
-check_rejects "--encrypt true without --key-type" "--key-type is mandatory" --encrypt true
-check_rejects "--key-type password without --passphrase-file" "requires --passphrase-file" \
-   --encrypt true --key-type password
-check_rejects "--key-type keyfile without --keyfile" "requires --keyfile" \
-   --encrypt true --key-type keyfile
-check_rejects "unknown --key-type method" "unknown method" \
-   --encrypt true --key-type bogus --passphrase-file /dev/null
+## An explicit, valid uuid still overrides the default.
+reset_globals; passphrase_file="${good_passfile}"; luks_uuid='12345678-1234-1234-1234-1234567890ab'
+run_validate
+check "h87: explicit valid --luks-uuid overrides the default" \
+   "$( [ "${rc}" -eq 0 ] && [[ "${out}" == *'RESOLVED_UUID=12345678-1234-1234-1234-1234567890ab'* ]] && printf '%s' true || printf '%s' false )"
 
-## --- forbidden with encrypt false ------------------------------------------
-check_rejects "--key-type with --encrypt false" "meaningless" \
-   --encrypt false --key-type password
-check_rejects "--passphrase-file with --encrypt false" "meaningless" \
-   --encrypt false --passphrase-file /dev/null
+## A malformed explicit uuid is still rejected.
+reset_globals; passphrase_file="${good_passfile}"; luks_uuid='not-a-uuid'
+run_validate
+check "malformed explicit --luks-uuid is rejected" \
+   "$( [ "${rc}" -ne 0 ] && [[ "${out}" == *'must be a UUID'* ]] && printf '%s' true || printf '%s' false )"
 
-## --- target/device ---------------------------------------------------------
-check_rejects "--target disk without --device" "requires --device" \
-   --encrypt false --target disk
+## --- h84 REGRESSION: --passphrase-file '-' (stdin) not rejected -------------
+reset_globals; passphrase_file='-'
+run_validate 'from-stdin-secret'
+check "h84: --passphrase-file '-' is not rejected as unreadable" \
+   "$( [ "${rc}" -eq 0 ] && [[ "${out}" != *'does not exist or cannot be read'* ]] && printf '%s' true || printf '%s' false )"
 
-## --- keyfile size floor (a 1-byte/newline key is trivially weak) -----------
-tiny_keyfile="$(mktemp)"
-printf '%s\n' "" > "${tiny_keyfile}"
-check_rejects "tiny keyfile is rejected" "too small" \
-   --encrypt true --key-type keyfile --keyfile "${tiny_keyfile}"
-safe-rm --force -- "${tiny_keyfile}"
+## A real but unreadable passphrase file IS still rejected.
+reset_globals; passphrase_file="${work}/nope-does-not-exist"
+run_validate
+check "nonexistent --passphrase-file is rejected" \
+   "$( [ "${rc}" -ne 0 ] && [[ "${out}" == *'does not exist or cannot be read'* ]] && printf '%s' true || printf '%s' false )"
 
-## --- valid combinations pass validation (stop at a later safe gate) --------
-check_passes_validation "valid: --encrypt false" --encrypt false
-check_passes_validation "valid: password" \
-   --encrypt true --key-type password --passphrase-file /dev/null
-check_passes_validation "valid: password,tpm combo" \
-   --encrypt true --key-type password,tpm --passphrase-file /dev/null
+## --- unchanged rules still hold --------------------------------------------
+reset_globals; passphrase_file=''; keyfile=''
+run_validate
+check "encrypt true with neither passphrase nor keyfile is rejected" \
+   "$( [ "${rc}" -ne 0 ] && [[ "${out}" == *'Cannot proceed'* ]] && printf '%s' true || printf '%s' false )"
+
+## --use-tpm is not a primary unlock method: tpm alone (no passphrase/keyfile) is
+## refused, and the tpm-specific hint fires. A portable overlay cannot be TPM-only.
+## The hint is a 'log info', suppressed at the default notice level -- raise the
+## level so the tpm-specific branch (not just the generic refusal) is observed.
+reset_globals; passphrase_file=''; keyfile=''; use_tpm='true'
+log_level='info'
+run_validate
+log_level='notice'
+check "tpm-only (use-tpm without a passphrase/keyfile) is rejected with the tpm hint" \
+   "$( [ "${rc}" -ne 0 ] && [[ "${out}" == *'Cannot proceed'* ]] && [[ "${out}" == *'cannot be used as an encryption method by itself'* ]] && printf '%s' true || printf '%s' false )"
+
+reset_globals; keyfile="${good_keyfile}"
+run_validate
+check "valid keyfile passes and selects the LUKS type GUID" \
+   "$( [ "${rc}" -eq 0 ] && [[ "${out}" == *"RESOLVED_GUID=${persist_type_guid_luks}"* ]] && printf '%s' true || printf '%s' false )"
+
+tiny="${work}/tiny"; printf '%s' 'x' > "${tiny}"
+reset_globals; keyfile="${tiny}"
+run_validate
+check "undersized keyfile is rejected" \
+   "$( [ "${rc}" -ne 0 ] && [[ "${out}" == *'too small'* ]] && printf '%s' true || printf '%s' false )"
+
+reset_globals; do_encrypt='false'; keyfile="${good_keyfile}"
+run_validate
+check "encrypt false with an encryption option is rejected" \
+   "$( [ "${rc}" -ne 0 ] && [[ "${out}" == *'encryption-specific option'* ]] && printf '%s' true || printf '%s' false )"
+
+reset_globals; do_encrypt='false'
+run_validate
+check "encrypt false with no encryption options selects the plain type GUID" \
+   "$( [ "${rc}" -eq 0 ] && [[ "${out}" == *"RESOLVED_GUID=${persist_type_guid_plain}"* ]] && printf '%s' true || printf '%s' false )"
 
 printf '%s\n' ""
 printf '%s\n' "===== persistence-setup arg validation: ${pass_count} pass, ${fail_count} fail ====="
