@@ -579,6 +579,60 @@ check "merge-tool: unlistable fragments dir fails closed (exit 1)" "${noread_rc}
 ## vector, and sbom-fragment-merge does no file-type check (by design). dpkg does
 ## not ship fifos, so this cannot arise in production -- nothing to assert.
 
+## --- #13: argument-count misuse exits nonzero (no IndexError, no silent success)
+## Pre-fix the usage line was printed but execution continued: extra args merged
+## using argv[1] and exited 0; zero args raised an IndexError. Both now exit
+## nonzero, and the zero-arg path reports usage cleanly (no Python traceback).
+extra_rc=0
+printf '%s' "${merge_base}" | "${merge_tool}" "${empty_frag}" "${empty_frag}" >/dev/null 2>&1 \
+   || extra_rc=$?
+check "merge-tool: extra arguments exit nonzero (not silent success)" \
+   "$(if [ "${extra_rc}" -ne 0 ]; then printf '%s' nonzero; else printf '%s' zero; fi)" "nonzero"
+noarg_rc=0
+noarg_err="$(printf '%s' "${merge_base}" | "${merge_tool}" 2>&1 >/dev/null)" || noarg_rc=$?
+check "merge-tool: zero arguments exit nonzero" \
+   "$(if [ "${noarg_rc}" -ne 0 ]; then printf '%s' nonzero; else printf '%s' zero; fi)" "nonzero"
+check "merge-tool: zero arguments report usage, not a Python traceback" \
+   "$(if [[ "${noarg_err}" == *Traceback* ]]; then printf '%s' traceback; else printf '%s' clean; fi)" "clean"
+
+## --- #14: a base service's bom-ref is reserved; a fragment reusing it fails closed
+## Services are passed through to the output, so a fragment component reusing a
+## base service's bom-ref would emit two objects sharing one reference and
+## violate BOM-wide 'bom-ref' uniqueness. Pre-fix service refs were never
+## registered, so the collision went undetected (exit 0).
+svc_base='{"bomFormat":"CycloneDX","services":[{"name":"API","bom-ref":"shared-svc"}],"components":[]}'
+svc_frag="${test_dir}/svc-fragments.d"
+mkdir --parents -- "${svc_frag}"
+cat > "${svc_frag}/s.cdx.json" <<'EOF'
+{"type":"application","name":"Dup","bom-ref":"shared-svc"}
+EOF
+check "merge-tool: fragment reusing a base service bom-ref fails closed" \
+   "$(merge_rc "${svc_base}" "${svc_frag}")" "1"
+
+## A NESTED service's bom-ref is reserved too.
+svc_nested_base='{"bomFormat":"CycloneDX","services":[{"name":"Outer","bom-ref":"outer-svc","services":[{"name":"Inner","bom-ref":"inner-svc"}]}],"components":[]}'
+cat > "${svc_frag}/s.cdx.json" <<'EOF'
+{"type":"application","name":"Dup","bom-ref":"inner-svc"}
+EOF
+check "merge-tool: fragment reusing a nested service bom-ref fails closed" \
+   "$(merge_rc "${svc_nested_base}" "${svc_frag}")" "1"
+
+## A service-bearing base with NO collision still merges; the service survives.
+svc_ok_frag="${test_dir}/svc-ok-fragments.d"
+mkdir --parents -- "${svc_ok_frag}"
+cat > "${svc_ok_frag}/s.cdx.json" <<'EOF'
+{"type":"application","name":"Uniq","purl":"pkg:generic/uniq@1"}
+EOF
+svc_ok_out="${test_dir}/svc-ok.cdx.json"
+svc_ok_rc=0
+printf '%s' "${svc_base}" | "${merge_tool}" "${svc_ok_frag}" > "${svc_ok_out}" 2>/dev/null \
+   || svc_ok_rc=$?
+check "merge-tool: service-bearing base without collision still merges" "${svc_ok_rc}" "0"
+check "merge-tool: base service survives the merge" \
+   "$(jq -r '[.services[]?|select(.["bom-ref"]=="shared-svc")]|length' "${svc_ok_out}" 2>/dev/null)" "1"
+check "merge-tool: the unique fragment component is present" \
+   "$(purl_count "${svc_ok_out}" 'pkg:generic/uniq@1')" "1"
+
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
    printf '%s\n' "FAILED"

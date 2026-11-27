@@ -514,6 +514,64 @@ else
    fail "write_grub_cfg: symlinked-grub delete/write-through not prevented (rc=${symtoctou_rc}, target cfg='${sym_target_cfg}')"
 fi
 
+## --- #9 REGRESSION: reset/overlay/luks tokens from GRUB defaults are stripped
+## rd.live.overlay.reset=1 is DESTRUCTIVE and must ride ONLY the confirmation-
+## wrapped RESET entry. It is a safe token, so the pre-fix code copied a copy
+## arriving via /etc/default/grub(.d) into the shared cmdline, and every plain
+## USER/SYSMAINT entry would then silently reset the persistent overlay on a
+## normal boot. The base overlay label and luks uuid are re-added canonically,
+## so a stray copy must likewise be dropped, never duplicated/leaked.
+printf '%s\n' 'root=live:CDLABEL=DM_LIVE' > "${cmdline_file}"
+printf '%s\n' 'GRUB_CMDLINE_LINUX_DEFAULT="quiet rd.live.overlay.reset=1 rd.live.overlay=LABEL=evil:/x rd.luks.uuid=deadbeef apparmor=1"' > "${grub_default}"
+true > "${grub_default}.d/50_hardening.cfg"
+out="$(persistent_boot_cmdline persistence)"
+if [[ "${out}" != *"rd.live.overlay.reset"* ]] \
+   && [[ "${out}" != *"LABEL=evil"* ]] \
+   && [[ "${out}" != *"deadbeef"* ]] \
+   && [[ "${out}" == *"quiet"* ]] \
+   && [[ "${out}" == *"apparmor=1"* ]] \
+   && [[ "${out}" == *"rd.live.overlay=LABEL=persistence:/live/overlay"* ]]; then
+   pass "cmdline: strips reset/overlay/luks from the GRUB defaults (no silent-reset leak)"
+else
+   fail "cmdline reset-leak not prevented: '${out}'"
+fi
+
+## Defense in depth at the grub.cfg sink: 'rd.live.overlay.reset=1' must appear
+## ONLY on the confirmed (WARNING) RESET entries. With the leak stripped, the
+## reset-token line count equals the destructive-WARNING count; the pre-fix leak
+## put a reset on every USER/SYSMAINT linux line too (counts diverge).
+reset_boot="${workdir}/reset-boot"
+mkdir --parents -- "${reset_boot}"
+touch -- "${reset_boot}/vmlinuz-1.0" "${reset_boot}/initrd.img-1.0"
+persistent_boot_write_grub_cfg "${reset_boot}" "${out}"
+reset_cfg="${reset_boot}/grub/grub.cfg"
+reset_line_count="$(grep --count 'rd.live.overlay.reset=1' "${reset_cfg}" || true)"
+warn_line_count="$(grep --count 'WARNING: This is destructive' "${reset_cfg}" || true)"
+if [ "${reset_line_count}" = "${warn_line_count}" ] && [ "${reset_line_count}" -gt 0 ]; then
+   pass "write_grub_cfg: reset token only on confirmed RESET entries (reset=${reset_line_count} warn=${warn_line_count})"
+else
+   fail "write_grub_cfg: reset token leaked to non-RESET entries (reset=${reset_line_count} warn=${warn_line_count})"
+fi
+
+## --- #12 REGRESSION: a failed final rename must not clobber a valid grub.cfg
+## and must not leave the temp file behind. Force the rename to fail by making
+## grub.cfg a NON-EMPTY directory (mv --no-target-directory of a file over it
+## fails). Pre-fix: the temp file was left behind (and a mid-write failure could
+## rename a truncated file over a good config). Fix: rm temp + return nonzero.
+mvfail_boot="${workdir}/mvfail-boot"
+mkdir --parents -- "${mvfail_boot}/grub/grub.cfg/occupied"
+touch -- "${mvfail_boot}/vmlinuz-1.0" "${mvfail_boot}/initrd.img-1.0"
+mvfail_rc=0
+persistent_boot_write_grub_cfg "${mvfail_boot}" "${test_cmdline}" > /dev/null 2>&1 || mvfail_rc=$?
+shopt -s nullglob
+mvfail_leftovers=( "${mvfail_boot}/grub/".grub.cfg.* )
+shopt -u nullglob
+if [ "${mvfail_rc}" -ne 0 ] && [ "${#mvfail_leftovers[@]}" -eq 0 ] && [ -d "${mvfail_boot}/grub/grub.cfg" ]; then
+   pass "write_grub_cfg: failed rename returns nonzero, leaves no temp file, keeps old config"
+else
+   fail "write_grub_cfg mv-failure cleanup wrong (rc=${mvfail_rc} leftovers=${#mvfail_leftovers[@]})"
+fi
+
 printf '%s\n' ""
 printf '%s\n' "===== persistent-boot: ${pass_count} pass, ${fail_count} fail ====="
 [ "${fail_count}" -eq 0 ]
