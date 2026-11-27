@@ -1,0 +1,47 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Regression suite for sudoers-command-audit: runs every *_test.sh payload in
+## the share directory, names any that fail, and never lets one failure hide a
+## later one. Self-contained -- no checkout of another component, no network,
+## no root; it drives the real tool against fixtures it builds itself.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d "${script_dir}/../share/sudoers-command-audit-tests" ]; then
+  share="${script_dir}/../share/sudoers-command-audit-tests"
+else
+  share='/usr/share/sudoers-command-audit-tests'
+fi
+
+rc=0
+ran=0
+shopt -s nullglob
+for payload in "${share}"/*_test.sh; do
+  ran=$(( ran + 1 ))
+  payload_rc=0
+  bash -- "${payload}" "$@" || payload_rc=$?
+  if [ "${payload_rc}" -ne 0 ]; then
+    printf '%s\n' "FAIL: sudoers-command-audit-tests: '${payload##*/}' exited ${payload_rc}." >&2
+    rc="${payload_rc}"
+  fi
+done
+
+if [ "${ran}" -eq 0 ]; then
+  printf '%s\n' "FAIL: sudoers-command-audit-tests: no *_test.sh payload found in '${share}'; the suite ran nothing." >&2
+  exit 1
+fi
+
+exit "${rc}"

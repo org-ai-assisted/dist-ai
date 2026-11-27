@@ -107,6 +107,7 @@ core_suites=(
    private-ai-config-tests
    private-ai-config-tests-coverage
    dist-ai-registry-tests
+   sudoers-command-audit-tests
    github-org-tools-tests
    dm-gitlink-upstream-check-tests
    dm-gitlink-bump-tests
@@ -1142,6 +1143,11 @@ wire() {
          ## checkout itself.
          wire_env=( "DIST_AI_REPO=$( pkg_dir dist-ai )" )
          ;;
+      sudoers-command-audit)
+         ## dist-ai's own generic tool; the suite drives it from this checkout
+         ## (else the installed copy). Fixtures are self-built; no network, no root.
+         wire_env=( "DIST_AI_REPO=$( pkg_dir dist-ai )" )
+         ;;
       image-optimize)
          ## dist-ai's own tool. It sources helper-scripts strings.bsh
          ## (validate_safe_filename); the suite requires it real, not stubbed.
@@ -1324,7 +1330,7 @@ suite_component() {
       dist-encrypted)
          printf '%s' 'dist-encrypted'
          ;;
-      clusterfuzzlite-lib|dist-ai-registry|github-api|image-optimize|iso-download|dm-release-test|dm-build-account|dm-calamares-install|dm-image-build|test-results-site|vbox-image-test|dm-vm-lock|dm-firmware-identity|dm-ci-job-watch|dm-gitlink-upstream-check|dm-gitlink-bump|iso-boot|tirdad-isn-nat|webcheck-lint-tidy-honesty-test)
+      clusterfuzzlite-lib|dist-ai-registry|sudoers-command-audit|github-api|image-optimize|iso-download|dm-release-test|dm-build-account|dm-calamares-install|dm-image-build|test-results-site|vbox-image-test|dm-vm-lock|dm-firmware-identity|dm-ci-job-watch|dm-gitlink-upstream-check|dm-gitlink-bump|iso-boot|tirdad-isn-nat|webcheck-lint-tidy-honesty-test)
          printf '%s' 'dist-ai'
          ;;
       anon-apt-sources-list)

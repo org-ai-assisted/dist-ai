@@ -1,0 +1,272 @@
+#!/usr/bin/python3 -Bsu
+
+## Shell-invocation guard.
+"exec" "bash" "-c" "printf '%s\n' '$0: ERROR: Do not execute this script with bash!' >&2; exit 1"
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+"""Audit sudoers policy for command paths that no longer exist.
+
+A sudoers rule naming an absolute command path that is not present on the
+filesystem is dead config and a latent grant: if the path is ever (re)created,
+the rule silently re-arms. This happens when a binary is removed but its
+sudoers.d grant is left behind.
+
+This tool reports every absolute command path referenced by one or more sudoers
+sources that does not exist under the chosen root. It is generic: it audits the
+running system by default, or any explicit file(s)/dir(s), or a mounted image
+root via --root/--find.
+
+Parser reuse: the sudoers grammar is NOT parsed here. Each source is handed to
+cvtsudoers (the sudo project's own converter, ships with the 'sudo' package),
+which emits JSON; this tool only extracts command strings from that JSON and
+stat()s them. It is NOT a reimplementation of, and does not duplicate,
+dm-root-scripts-enum (a derivative-maker source-tree LPE-surface enumerator):
+different scope (any running system vs the dm tree), different purpose
+(existence audit vs privilege-escalation surface), and no hand-rolled parser.
+
+Exit codes:
+  0  every referenced command path exists (clean).
+  1  at least one referenced command path is missing (findings printed).
+  2  the audit could not be completed faithfully: usage error, cvtsudoers
+     missing, a source that cvtsudoers could not parse, or a coverage warning
+     (e.g. an includedir cvtsudoers skipped) -- never reported as clean.
+"""
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+
+CVTSUDOERS = "/usr/bin/cvtsudoers"
+
+
+def find_cvtsudoers():
+    """Locate cvtsudoers. It is a hard dependency (the 'sudo' package); its
+    absence is a setup error, not a reason to fall back to a hand parser."""
+    if os.access(CVTSUDOERS, os.X_OK):
+        return CVTSUDOERS
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        candidate = os.path.join(directory, "cvtsudoers")
+        if os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def dropin_loadable(name):
+    """Mirror sudo's includedir rule: a drop-in whose filename contains '.' or
+    ends with '~' is ignored. Auditing exactly what sudo would load avoids
+    flagging editor backups and disabled '.bak' copies."""
+    return "." not in name and not name.endswith("~")
+
+
+def discover(trees):
+    """Yield sudoers source files found under each tree: any regular file named
+    'sudoers', and any loadable drop-in inside a 'sudoers.d' directory."""
+    seen = set()
+    for tree in trees:
+        for dirpath, _dirnames, filenames in os.walk(tree):
+            in_dropin_dir = os.path.basename(dirpath) == "sudoers.d"
+            for name in sorted(filenames):
+                full = os.path.join(dirpath, name)
+                if not os.path.isfile(full):
+                    continue
+                if name == "sudoers":
+                    pass
+                elif in_dropin_dir and dropin_loadable(name):
+                    pass
+                else:
+                    continue
+                real = os.path.realpath(full)
+                if real not in seen:
+                    seen.add(real)
+                    yield full
+
+
+def expand_inputs(paths):
+    """Turn the positional paths (files or directories) into a flat file list.
+    A directory is treated as a sudoers.d-style drop-in directory."""
+    files = []
+    for path in paths:
+        if os.path.isdir(path):
+            for name in sorted(os.listdir(path)):
+                full = os.path.join(path, name)
+                if os.path.isfile(full) and dropin_loadable(name):
+                    files.append(full)
+        else:
+            files.append(path)
+    return files
+
+
+def command_path(command_string):
+    """Return the absolute command path from a cvtsudoers command string, or
+    None when the entry is not a stat-able path (ALL, sudoedit, list, a bare
+    word, or a relative command). Arguments are stripped: the path is the first
+    whitespace-separated token."""
+    token = command_string.split(" ", 1)[0]
+    if token.startswith("/"):
+        return token
+    return None
+
+
+def parse_source(cvt, path):
+    """Run cvtsudoers on one source file. Return (commands, warnings, error)
+    where commands is a list of (abs_path, negated) and error is a string on a
+    hard parse failure (else None)."""
+    ## abspath so a filename beginning with '-' is never read as an option.
+    proc = subprocess.run(
+        [cvt, "-f", "json", "-i", "sudoers", os.path.abspath(path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        encoding="utf-8",
+        check=False,
+    )
+    if proc.returncode != 0:
+        detail = proc.stderr.strip().splitlines()
+        return [], [], detail[0] if detail else "cvtsudoers exited %d" % proc.returncode
+    ## cvtsudoers can warn (e.g. skipping a mis-owned includedir) and still exit
+    ## 0; such a warning means reduced coverage, so surface it rather than let a
+    ## partial parse read as clean.
+    warnings = [line for line in proc.stderr.strip().splitlines() if line]
+    try:
+        data = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        return [], warnings, "cvtsudoers emitted unparseable JSON: %s" % exc
+
+    commands = []
+
+    def collect(entries):
+        for entry in entries or []:
+            if not isinstance(entry, dict) or "command" not in entry:
+                ## A {"cmndalias": NAME} reference is an alias defined outside
+                ## this file (normal for a drop-in); its members are checked
+                ## wherever the alias is defined. Nothing to stat here.
+                continue
+            abs_path = command_path(entry["command"])
+            if abs_path is not None:
+                commands.append((abs_path, bool(entry.get("negated"))))
+
+    for spec in data.get("User_Specs", []):
+        for cmnd_spec in spec.get("Cmnd_Specs", []):
+            collect(cmnd_spec.get("Commands"))
+    for members in (data.get("Command_Aliases") or {}).values():
+        collect(members)
+
+    return commands, warnings, None
+
+
+def missing(root, abs_path, require_executable):
+    """True if the command is absent (or, with require_executable, present but
+    not executable) under root. Symlinks are followed; a broken symlink counts
+    as absent."""
+    target = os.path.join(root, abs_path.lstrip("/"))
+    if not os.path.exists(target):
+        return "missing"
+    if require_executable and not os.access(target, os.X_OK):
+        return "not-executable"
+    return None
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(
+        prog="sudoers-command-audit",
+        description="Report sudoers command paths that do not exist on disk.",
+    )
+    parser.add_argument(
+        "paths",
+        nargs="*",
+        help="sudoers file(s) and/or directory(ies) to audit; default: the "
+        "running system (/etc/sudoers and /etc/sudoers.d).",
+    )
+    parser.add_argument(
+        "--root",
+        default="/",
+        help="filesystem root to check command existence against "
+        "(default: /). Point at a mounted image to audit it offline.",
+    )
+    parser.add_argument(
+        "--find",
+        action="store_true",
+        help="treat each path (or --root when none given) as a tree to search "
+        "for sudoers files, instead of auditing it directly.",
+    )
+    parser.add_argument(
+        "--require-executable",
+        action="store_true",
+        help="also report a command that exists but is not executable.",
+    )
+    args = parser.parse_args(argv[1:])
+
+    cvt = find_cvtsudoers()
+    if cvt is None:
+        sys.stderr.write("sudoers-command-audit: ERROR: cvtsudoers not found; "
+                         "install the 'sudo' package.\n")
+        return 2
+
+    root = args.root
+
+    if args.find:
+        trees = args.paths if args.paths else [root]
+        sources = list(discover(trees))
+    elif args.paths:
+        sources = expand_inputs(args.paths)
+    else:
+        sources = []
+        default_main = os.path.join(root, "etc/sudoers")
+        if os.path.isfile(default_main):
+            sources.append(default_main)
+        default_dir = os.path.join(root, "etc/sudoers.d")
+        if os.path.isdir(default_dir):
+            sources.extend(expand_inputs([default_dir]))
+
+    if not sources:
+        sys.stderr.write("sudoers-command-audit: no sudoers sources found.\n")
+        return 2
+
+    findings = 0
+    inconclusive = False
+    for source in sources:
+        commands, warnings, error = parse_source(cvt, source)
+        for warning in warnings:
+            sys.stderr.write("%s: WARNING: %s\n" % (source, warning))
+            inconclusive = True
+        if error is not None:
+            sys.stderr.write("%s: ERROR: %s\n" % (source, error))
+            inconclusive = True
+            continue
+        reported = set()
+        for abs_path, negated in commands:
+            verdict = missing(root, abs_path, args.require_executable)
+            if verdict is None:
+                continue
+            key = (abs_path, negated, verdict)
+            if key in reported:
+                continue
+            reported.add(key)
+            tags = []
+            if verdict == "not-executable":
+                tags.append("not executable")
+            if negated:
+                tags.append("deny rule")
+            suffix = (" [%s]" % ", ".join(tags)) if tags else ""
+            sys.stdout.write("%s: %s: %s%s\n"
+                             % (source, verdict, abs_path, suffix))
+            findings += 1
+
+    sys.stderr.write(
+        "sudoers-command-audit: %d source(s) audited, %d finding(s)%s.\n"
+        % (len(sources), findings, ", INCONCLUSIVE" if inconclusive else ""))
+
+    if inconclusive:
+        return 2
+    if findings:
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
