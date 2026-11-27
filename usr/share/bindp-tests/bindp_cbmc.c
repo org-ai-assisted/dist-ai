@@ -42,11 +42,16 @@ char nondet_char(void);
    g_sock_domain / g_getsockopt_rc steer the modeled SO_DOMAIN query so a proof
    can pin the socket's real family and exercise both the query-ok and
    query-failed (fall back to caller family) paths. g_setsockopt_calls counts
-   IP-option applications so the gate can be proved exactly.
+   IP-option applications; g_set_reuseaddr / g_set_reuseport / g_set_iptransparent
+   record WHICH specific option was requested, so a proof asserts each one was
+   applied (not merely that some setsockopt happened).
 */
 int g_sock_domain = 0;
 int g_getsockopt_rc = 0;
 int g_setsockopt_calls = 0;
+int g_set_reuseaddr = 0;
+int g_set_reuseport = 0;
+int g_set_iptransparent = 0;
 
 /* ---- libc / syscall models (environment, not bindp logic) ---- */
 
@@ -99,9 +104,12 @@ char *dlerror(void) {
 
 int getsockopt(int fd, int level, int optname, void *optval, socklen_t *optlen) {
     (void)fd;
-    (void)level;
-    (void)optname;
     (void)optlen;
+    /* The family gate is only sound if bindp asks for the socket DOMAIN. Assert
+       the exact query so a proof cannot pass on a wrong level/optname (e.g. a
+       SO_TYPE query the model would otherwise answer with g_sock_domain). */
+    __CPROVER_assert(level == SOL_SOCKET && optname == SO_DOMAIN,
+        "bindp queries the socket family via SOL_SOCKET/SO_DOMAIN");
     if (g_getsockopt_rc == 0) {
         *(int *)optval = g_sock_domain;
         return 0;
@@ -112,11 +120,20 @@ int getsockopt(int fd, int level, int optname, void *optval, socklen_t *optlen) 
 int setsockopt(int fd, int level, int optname, const void *optval,
     socklen_t optlen) {
     (void)fd;
-    (void)level;
-    (void)optname;
     (void)optval;
     (void)optlen;
     g_setsockopt_calls++;
+    /* Record the SPECIFIC option so a proof asserts each configured option was
+       requested, not merely that one setsockopt call happened. */
+    if (level == SOL_SOCKET && optname == SO_REUSEADDR) {
+        g_set_reuseaddr = 1;
+    }
+    if (level == SOL_SOCKET && optname == SO_REUSEPORT) {
+        g_set_reuseport = 1;
+    }
+    if (level == SOL_IP && optname == IP_TRANSPARENT) {
+        g_set_iptransparent = 1;
+    }
     return nondet_int();
 }
 
@@ -146,6 +163,9 @@ static void reset_bindp_state(void) {
     reuse_port = 0;
     ip_transparent = 0;
     g_setsockopt_calls = 0;
+    g_set_reuseaddr = 0;
+    g_set_reuseport = 0;
+    g_set_iptransparent = 0;
 }
 
 /* parse_int_flag maps any NUL-terminated string to exactly 0 or 1. */
@@ -164,6 +184,12 @@ void verify_parse_int_flag(void) {
    _init over arbitrary environment: memory-safe (default checks), the parsed
    reuse flags stay in {0,1}, and -- via --conversion-check -- the
    strtol -> (in_port_t) BIND_PORT cast never truncates an in-range value.
+
+   SCOPE: the modeled getenv returns an up-to-SEVEN-character symbolic string
+   (an 8-byte NUL-terminated buffer), and __isoc23_strtol is modeled by its
+   CONTRACT (nondet result, errno clear or ERANGE). So this proves the numeric
+   CONVERSION path over every strtol outcome, NOT the textual parsing of
+   unbounded BIND_PORT strings (e.g. "000000008080" is outside the 7-char model).
 */
 void verify_init_env_parsing(void) {
     reset_bindp_state();
@@ -176,13 +202,16 @@ void verify_init_env_parsing(void) {
         "ip_transparent parsed into {0,1}");
 }
 
-/* get_address_family reads exactly the first two bytes, in bounds. */
+/*
+   get_address_family reads exactly the sa_family field and nothing past it.
+   Back it with an object that ENDS at the family field (not a full sockaddr_in)
+   so --bounds-check makes any read beyond those two bytes FAIL the proof.
+*/
 void verify_get_address_family(void) {
-    struct sockaddr_in sa;
-    sa.sin_family = nondet_ushort();
-    unsigned short f = get_address_family((struct sockaddr *)&sa);
-    __CPROVER_assert(f == sa.sin_family,
-        "get_address_family reads the sockaddr family field");
+    unsigned short fam = nondet_ushort();
+    unsigned short f = get_address_family((struct sockaddr *)&fam);
+    __CPROVER_assert(f == fam,
+        "get_address_family reads the sockaddr family field, in bounds");
 }
 
 /*
@@ -222,8 +251,12 @@ void verify_bind_ip_applies_options(void) {
     sa.sin_addr.s_addr = (in_addr_t)nondet_uint();
     sa.sin_port = nondet_ushort();
     bind(nondet_int(), (struct sockaddr *)&sa, sizeof(sa));
-    __CPROVER_assert(g_setsockopt_calls >= 1,
-        "IP socket options applied to an IP socket");
+    __CPROVER_assert(g_set_reuseaddr == 1,
+        "SO_REUSEADDR requested on an IP socket");
+    __CPROVER_assert(g_set_reuseport == 1,
+        "SO_REUSEPORT requested on an IP socket");
+    __CPROVER_assert(g_set_iptransparent == 1,
+        "IP_TRANSPARENT requested on an IP socket");
 }
 
 /*
@@ -243,8 +276,10 @@ void verify_bind_af_unspec_caller_still_applies_options(void) {
     sa.sin_addr.s_addr = (in_addr_t)nondet_uint();
     sa.sin_port = nondet_ushort();
     bind(nondet_int(), (struct sockaddr *)&sa, sizeof(sa));
-    __CPROVER_assert(g_setsockopt_calls >= 1,
-        "AF_UNSPEC caller on an AF_INET socket still gets reuse options");
+    __CPROVER_assert(g_set_reuseaddr == 1,
+        "AF_UNSPEC caller on an AF_INET socket still gets SO_REUSEADDR");
+    __CPROVER_assert(g_set_reuseport == 1,
+        "AF_UNSPEC caller on an AF_INET socket still gets SO_REUSEPORT");
 }
 
 /* A non-IP socket (real family AF_UNIX) never gets the IP socket options. */
@@ -261,7 +296,10 @@ void verify_bind_non_ip_skips_options(void) {
     sa.sun_path[0] = '\0';
     bind(nondet_int(), (struct sockaddr *)&sa, sizeof(sa));
     __CPROVER_assert(g_setsockopt_calls == 0,
-        "no IP socket options on a non-IP socket");
+        "no setsockopt at all on a non-IP socket");
+    __CPROVER_assert(g_set_reuseaddr == 0 && g_set_reuseport == 0
+        && g_set_iptransparent == 0,
+        "no IP socket option requested on a non-IP socket");
 }
 
 /*

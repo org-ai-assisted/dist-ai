@@ -93,11 +93,14 @@ class BindpVerificationTest(unittest.TestCase):
                     [self.cbmc, HARNESS, "-I", self.src_dir,
                      "--function", function, *CBMC_CHECKS],
                     capture_output=True, text=True)
-                self.assertIn(
-                    "VERIFICATION SUCCESSFUL", proc.stdout,
-                    msg=(f"{function}: proof did not verify\n"
-                         f"--- stdout ---\n{proc.stdout}\n"
-                         f"--- stderr ---\n{proc.stderr}"))
+                msg = (f"{function}: proof did not verify\n"
+                       f"--- stdout ---\n{proc.stdout}\n"
+                       f"--- stderr ---\n{proc.stderr}")
+                ## A failed proof prints VERIFICATION FAILED and exits non-zero;
+                ## a CBMC crash may print neither. Require BOTH the success line
+                ## and a clean exit so neither path reads as a pass.
+                self.assertEqual(proc.returncode, 0, msg=msg)
+                self.assertIn("VERIFICATION SUCCESSFUL", proc.stdout, msg=msg)
 
 
 if __name__ == "__main__":
