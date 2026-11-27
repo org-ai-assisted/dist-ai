@@ -475,16 +475,19 @@ def run() -> int:
     ck(390 in _widths and any(w >= 1000 for w in _widths),
        "_VIEWPORTS audits both a mobile (390) and a desktop width: %r" % _widths)
 
-    # WEDGE RETRY + teardown isolation (operator decision 2026-11-27, dev1877 task #87; grok review
-    # fixes). The hard wall-clock budget is the SINGLE timeout authority and times ONLY the audit
-    # (_audit_page); page.close() runs OUTSIDE it. So an asyncio.TimeoutError is a genuine audit WEDGE
-    # (a timing fault under concurrent-lane contention) -> retried once on a fresh browser; any OTHER
-    # exception is a real navigation / axe-evaluation ERROR -> recorded now, never retried (a retry
-    # could MASK a real failure); a completed audit returns BEFORE its close, so a slow/failing
-    # teardown never discards it; and a relaunch FAILURE is a safe mid-run _EngineUnavailable, not a
-    # crash that loses collected keys. Drive the REAL check() with _audit_page faked per (page,
-    # viewport); the fake async_playwright supplies browsers (pages carry their viewport) and counts
-    # launches (one initial + one relaunch per wedge/error).
+    # WEDGE RETRY + teardown isolation + mid-run engine resilience (operator decision 2026-11-27,
+    # dev1877 task #87; codex/grok/reviewdrain review fixes). The single hard wall-clock budget times
+    # page creation AND the audit together (_open_and_audit); page.close() runs OUTSIDE it. So an
+    # asyncio.TimeoutError is a genuine WEDGE (a timing fault under concurrent-lane contention,
+    # including a wedged new_page) -> retried once on a fresh browser; any OTHER exception (a
+    # dead-browser new_page crash, or a navigation / axe-evaluation error) is recorded now, never
+    # retried (a retry could MASK a real failure); a completed audit returns BEFORE its close, so a
+    # slow/failing teardown never discards it; and a mid-run chromium death that cannot relaunch
+    # records the remaining pages as audit errors and RETURNS the collected keys (a hard FAIL), never a
+    # traceback and never a SKIP(77) that would mask an already-found violation -- only the INITIAL
+    # launch failure raises _EngineUnavailable. Drive the REAL check() with _audit_page faked per
+    # (page, viewport); the fake async_playwright supplies browsers (pages carry their viewport) and
+    # can fail a given launch (relaunch failure) or a given new_page (mid-run browser crash).
     _pw_mod = sys.modules.setdefault("playwright.async_api", _types.ModuleType("playwright.async_api"))
 
     class _FakePage3:
@@ -497,11 +500,15 @@ def run() -> int:
                 raise self._close_exc
 
     class _FakeBrowser3:
-        def __init__(self, close_exc):
-            self._close_exc = close_exc
+        def __init__(self, state):
+            self._state = state
 
         async def new_page(self, viewport=None):
-            return _FakePage3(viewport, self._close_exc)
+            self._state["new_pages"] = self._state.get("new_pages", 0) + 1
+            if self._state["new_pages"] == self._state.get("new_page_fail_on"):
+                # chromium died between pages -> new_page raises (e.g. TargetClosedError).
+                raise RuntimeError("TargetClosedError: browser has been closed")
+            return _FakePage3(viewport, self._state.get("close_exc"))
 
         async def close(self):
             pass
@@ -514,7 +521,7 @@ def run() -> int:
             self._state["launches"] += 1
             if self._state["launches"] == self._state.get("launch_fail_on"):
                 raise RuntimeError("chromium launch failed: too many open files")
-            return _FakeBrowser3(self._state.get("close_exc"))
+            return _FakeBrowser3(self._state)
 
     class _FakePW3:
         def __init__(self, state):
@@ -529,17 +536,20 @@ def run() -> int:
     _WBASE = "http://127.0.0.1:8000"
 
     def _run_check(paths, wedge_counts=None, hard_timeout=1, error_counts=None,
-                   violations=None, close_exc=None, launch_fail_on=None):
-        # wedge_counts:   {(path,width): N} -- raise TimeoutError (a WEDGE) the first N audit calls for
+                   violations=None, close_exc=None, launch_fail_on=None, new_page_fail_on=None):
+        # wedge_counts:    {(path,width): N} -- raise TimeoutError (a WEDGE) the first N audit calls for
         #   that (page, viewport), then audit clean. N >= _WEDGE_ATTEMPTS models a REAL double wedge.
-        # error_counts:   {(path,width): N} -- raise RuntimeError (a NON-timeout ERROR) the first N.
-        # violations:     {(path,width): [axe-violation,...]} -- the clean audit returns these.
-        # close_exc:      an exception page.close() raises (teardown failure), else None.
-        # launch_fail_on: the Nth chromium.launch() to fail (models a relaunch failure), else None.
+        # error_counts:    {(path,width): N} -- raise RuntimeError (a NON-timeout ERROR) the first N.
+        # violations:      {(path,width): [axe-violation,...]} -- the clean audit returns these.
+        # close_exc:       an exception page.close() raises (teardown failure), else None.
+        # launch_fail_on:  the Nth chromium.launch() to fail (models a relaunch failure), else None.
+        # new_page_fail_on: the Nth browser.new_page() to raise (models a mid-run browser crash
+        #   between pages), else None -- counted GLOBALLY across (re)launched browsers.
         wedge_counts = wedge_counts or {}
         error_counts = error_counts or {}
         violations = violations or {}
-        state = {"launches": 0, "close_exc": close_exc, "launch_fail_on": launch_fail_on}
+        state = {"launches": 0, "new_pages": 0, "close_exc": close_exc,
+                 "launch_fail_on": launch_fail_on, "new_page_fail_on": new_page_fail_on}
         seen: dict = {}
 
         async def _fake_audit_page(page, url, _axe_src, _settle_ms):
@@ -605,18 +615,56 @@ def run() -> int:
     ck(("/", "color-contrast", "a.bad") in _ks and _ps == [],
        "a completed audit whose teardown FAILS keeps its violation (close outside the budget): "
        "keys=%r problems=%r" % (sorted(_ks), _ps))
-    # grok finding (2026-11-27): a relaunch (post-wedge) whose chromium.launch() FAILS is a safe
-    # mid-run _EngineUnavailable (the caller records a hard FAIL), NOT an uncaught crash that loses
-    # the keys collected so far. First desktop attempt wedges -> relaunch -> the 2nd launch fails.
+    # codex+grok+reviewdrain finding (2026-11-27): browser.new_page() is a mid-run browser call that
+    # can RAISE if chromium dies between pages (TargetClosedError) OR hang. It is now INSIDE the timed,
+    # caught region (_open_and_audit), so a crash is recorded as ONE audit-error problem and the run
+    # RECOVERS (relaunch) and CONTINUES with already-collected keys intact -- never an uncaught
+    # traceback that aborts the whole gate (and every remaining docroot). '/' desktop collects a
+    # violation; '/' mobile's new_page (#2) crashes; '/wiki/B' then audits clean on the fresh browser.
+    _nv = [{"id": "image-alt", "nodes": [{"target": ["img.x"]}]}]
+    _kn, _pn, _ln = _run_check(["/", "/wiki/B"], violations={("/", 1280): _nv}, new_page_fail_on=2)
+    ck(("/", "image-alt", "img.x") in _kn,
+       "a mid-run new_page crash does NOT discard already-collected keys: %r" % sorted(_kn))
+    ck(_pn == ["audit error: / [mobile]"],
+       "a mid-run new_page crash is ONE recorded audit error; the run recovers and continues "
+       "(/wiki/B audits clean, no traceback): %r" % _pn)
+    # new_page is bounded + caught STRUCTURALLY: check() creates no page outside the timed region --
+    # it time-boxes _open_and_audit (new_page + audit together), so a wedged new_page is a retryable
+    # WEDGE and a crashing one a caught error, never an unbounded hang or an escaping traceback.
+    _check_src2 = inspect.getsource(ax.check)
+    ck("browser.new_page" not in _check_src2,
+       "check() creates no page outside the timed region (new_page lives in _open_and_audit)")
+    ck("_open_and_audit" in _check_src2 and "wait_for" in _check_src2,
+       "check() time-boxes page creation + audit together via _open_and_audit")
+
+    # grok finding (2026-11-27): a mid-run relaunch whose chromium.launch() FAILS must NOT raise
+    # _EngineUnavailable out of check() -- reaching check_roots with audited==0 it would become a
+    # SKIP(77) that MASKS a violation already collected from an earlier page. Instead the
+    # un-relaunchable pages are recorded as audit errors and check() RETURNS its collected keys, so the
+    # caller FAILs (never a silent env-unmet SKIP). '/' desktop collects a violation; '/' mobile wedges
+    # -> the relaunch (launch #2) fails.
+    _rv = [{"id": "image-alt", "nodes": [{"target": ["img.y"]}]}]
+    _kr, _pr, _lr = _run_check(["/", "/wiki/B"], {("/", 390): 1},
+                               violations={("/", 1280): _rv}, launch_fail_on=2)
+    ck(("/", "image-alt", "img.y") in _kr,
+       "a mid-run relaunch failure does NOT discard already-collected keys (no SKIP mask): %r"
+       % sorted(_kr))
+    ck(_pr and all(p.startswith("audit error:") for p in _pr),
+       "a relaunch failure records the un-auditable pages as audit errors (a FAIL), never raising "
+       "_EngineUnavailable to be masked as SKIP: %r" % _pr)
+
+    # The INITIAL launch failure (nothing audited yet) is the ONE honest env-unmet case: check() still
+    # raises _EngineUnavailable so the caller (check_roots) can SKIP(77). (A mid-run relaunch failure
+    # degrades to audit errors instead; see above.)
     try:
-        _run_check(["/"], {("/", 1280): 1}, launch_fail_on=2)
-        _raised = "none"
+        _run_check(["/"], launch_fail_on=1)
+        _ri = "none"
     except ax._EngineUnavailable:
-        _raised = "engine"
+        _ri = "engine"
     except Exception as _exc:          # noqa: BLE001
-        _raised = type(_exc).__name__
-    ck(_raised == "engine",
-       "a relaunch launch-failure raises _EngineUnavailable (safe mid-run FAIL), not a crash: %r" % _raised)
+        _ri = type(_exc).__name__
+    ck(_ri == "engine",
+       "the INITIAL chromium launch failure raises _EngineUnavailable (caller decides SKIP): %r" % _ri)
 
     # per-page TIMEOUT budget (operator decision 2026-11-27: "retry AND suitable timeout"). A single
     # wall-clock budget is the ONLY timeout authority (page.goto carries no own timeout), so it must
