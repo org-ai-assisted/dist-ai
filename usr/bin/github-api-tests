@@ -648,8 +648,68 @@ else
   fails=$(( fails + 1 ))
 fi
 
+## The default Accept is the JSON REST media type.
+out="$(PATH="${tmp}/bin:${PATH}" GITHUB_TOKEN_FILE="${tmp}/token" \
+  "${git_api}" GET /rate_limit 2>&1)"
+case "${out}" in
+  *'Accept: application/vnd.github+json'*)
+    printf '%s\n' 'ok   default Accept is application/vnd.github+json'
+    ;;
+  *)
+    printf '%s\n' "FAIL: default Accept header not set: ${out}" >&2
+    fails=$(( fails + 1 ))
+    ;;
+esac
+
+## GITHUB_API_ACCEPT overrides it -- needed for the binary release-asset download
+## path (the asset endpoint serves metadata under JSON, the bytes under
+## octet-stream). The override REPLACES the default, so the JSON type must be gone.
+out="$(PATH="${tmp}/bin:${PATH}" GITHUB_TOKEN_FILE="${tmp}/token" \
+  GITHUB_API_ACCEPT='application/octet-stream' "${git_api}" GET /x 2>&1)"
+case "${out}" in
+  *'Accept: application/octet-stream'*)
+    case "${out}" in
+      *'application/vnd.github+json'*)
+        printf '%s\n' "FAIL: default JSON Accept still present after override: ${out}" >&2
+        fails=$(( fails + 1 ))
+        ;;
+      *)
+        printf '%s\n' 'ok   GITHUB_API_ACCEPT overrides the Accept header'
+        ;;
+    esac
+    ;;
+  *)
+    printf '%s\n' "FAIL: GITHUB_API_ACCEPT did not set the Accept header: ${out}" >&2
+    fails=$(( fails + 1 ))
+    ;;
+esac
+
+## SECURITY (Accept injection): GITHUB_API_ACCEPT reaches the SAME --config
+## document as the token, so a byte outside the media-type set -- here a newline
+## plus a quote -- must be REFUSED before the transport runs, or it would break
+## out of the curl --config Accept directive. Asserted: non-zero exit AND the
+## stub transport never invoked.
+rc=0
+out="$(PATH="${tmp}/bin:${PATH}" GITHUB_TOKEN_FILE="${tmp}/token" \
+  GITHUB_API_ACCEPT='application/json"
+url = "https://evil.example.com"' "${git_api}" GET /rate_limit 2>&1)" || rc=$?
+if [ "${rc}" -eq 0 ]; then
+  printf '%s\n' "FAIL: an injecting GITHUB_API_ACCEPT was accepted (rc 0): ${out}" >&2
+  fails=$(( fails + 1 ))
+else
+  case "${out}" in
+    *'ARGV:'*)
+      printf '%s\n' "FAIL: transport ran despite a rejected GITHUB_API_ACCEPT: ${out}" >&2
+      fails=$(( fails + 1 ))
+      ;;
+    *)
+      printf '%s\n' 'ok   an injecting GITHUB_API_ACCEPT is refused before the transport ran'
+      ;;
+  esac
+fi
+
 if (( fails > 0 )); then
   printf '%s\n' "github-api-tests: ${fails} check(s) FAILED" >&2
   exit 1
 fi
-printf '%s\n' 'github-api-tests: PASSED (29 checks, 0 failed, 0 skipped)'
+printf '%s\n' 'github-api-tests: PASSED (32 checks, 0 failed, 0 skipped)'

@@ -44,6 +44,12 @@ export LC_ALL=C
 
 [ -v GITHUB_TOKEN_FILE ] || GITHUB_TOKEN_FILE="${HOME:-}/.config/github-token"
 
+## Override the Accept header. Default is the JSON REST media type; a binary
+## release-asset download needs 'application/octet-stream' (the asset endpoint
+## serves metadata under JSON Accept, the bytes under octet-stream), and
+## 'application/vnd.github.raw' fetches raw file contents.
+[ -v GITHUB_API_ACCEPT ] || GITHUB_API_ACCEPT="application/vnd.github+json"
+
 if [ "$#" -lt 2 ]; then
   printf '%s\n' 'Usage: github-api <METHOD> <PATH-or-URL> [extra curl args...]' >&2
   exit 2
@@ -150,6 +156,18 @@ case "${token}" in
     ;;
 esac
 
+## GITHUB_API_ACCEPT reaches curl inside the same --config document as
+## header = "Accept: <value>" -- the identical config-injection surface as the
+## token, so restrict it to media-type characters: a newline or quote could end
+## the directive and turn the rest into further curl config. The set covers the
+## real media types ('application/octet-stream', 'application/vnd.github.raw').
+case "${GITHUB_API_ACCEPT}" in
+  *[!A-Za-z0-9/.+-]*)
+    printf '%s\n' 'github-api: refusing GITHUB_API_ACCEPT with characters outside [A-Za-z0-9/.+-] (a newline or quote could break out of the curl --config Accept directive)' >&2
+    exit 1
+    ;;
+esac
+
 curl_program='curl'
 curl_args=(--tlsv1.3 --proto '=https')
 if command -v scurl >/dev/null 2>&1; then
@@ -159,7 +177,7 @@ if command -v scurl >/dev/null 2>&1; then
   curl_args=()
 fi
 
-config_document="header = \"Accept: application/vnd.github+json\"
+config_document="header = \"Accept: ${GITHUB_API_ACCEPT}\"
 header = \"X-GitHub-Api-Version: 2022-11-28\""
 if [ -n "${token}" ]; then
   config_document="header = \"Authorization: Bearer ${token}\"
