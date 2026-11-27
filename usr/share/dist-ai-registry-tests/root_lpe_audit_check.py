@@ -49,10 +49,12 @@ EXPECTED = [
 ## Paths that must have ZERO findings: the safe counterparts, AND a root-guarded
 ## home-write vuln under ci/ that must never enter the root surface (no FHS
 ## install path -> not a shipped root entry point), AND a launcher whose own
-## root_check refuses root, AND an inline refusal message.
+## root_check refuses root, AND an inline refusal message, AND a script that only
+## mentions root_check in a string literal, AND a ${SUDO_TO_ROOT}-escalation
+## script that calls the refusing help-steps/pre root_check.
 SAFE_PATHS = ("safe-boot", "safe-guarded", "safe-round2", "vuln-ci",
               "safe-env-dashdash", "safe-env-expand", "safe-refuses-root",
-              "safe-text-refusal")
+              "safe-text-refusal", "safe-string-mention", "safe-sudo-escalation")
 
 
 def _sev_ok(actual, minimum):

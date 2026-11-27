@@ -87,10 +87,11 @@ DIRECT_SCRIPT_CATEGORIES = frozenset((
 ))
 
 ## A script self-asserting it must run as root -- a root entry point the
-## reference-driven enum cannot see. Simple textual signals only (no parse of
-## the conditional): a require-root helper name, or a 'must be run as root'
+## reference-driven enum cannot see. Signals: a require-root helper CALL (an AST
+## command, not a bare word in a string/comment), or a 'must be run as root'
 ## message. The not-root direction ('must NOT be run as root', not_as_root) is
-## explicitly excluded so a refusal guard is not mistaken for a root gate.
+## explicitly excluded so a refusal guard is not mistaken for a root gate, as is
+## the ${SUDO_TO_ROOT} per-command escalation idiom (the script runs as user).
 ROOT_REQUIRE_FUNCS = ("root_check", "require_root", "check_root", "ensure_root",
                       "assert_root", "must_be_root")
 ## '\broot\b' so 'needs rootless mode' does not read as 'needs root'.
@@ -248,21 +249,46 @@ def _local_refusal_func(tree, raw, name):
     return bool(bodies) and all(_is_refusal_body(body) for body in bodies)
 
 
+def _func_called(tree, name):
+    ## NAME invoked as a command (AST), not merely present as text. A word in a
+    ## string literal or a comment (a changelog array entry 'add root_check') is
+    ## not a call and must not read as a root gate.
+    for call in bash_ast.call_exprs(tree):
+        if bash_ast.command_basename(call) == name:
+            return True
+    return False
+
+
+## derivative-maker sudo-escalation idiom: a script that escalates per command
+## via ${SUDO_TO_ROOT} runs as the UNPRIVILEGED user ('' when already root,
+## 'sudo' otherwise; set in help-steps/variables). Its use means the script is
+## NOT a wholesale-root entry point -- the shared root_check it calls lives in
+## help-steps/pre and REFUSES root. A genuine must-be-root helper never uses it.
+SUDO_ESCALATION_RE = re.compile(r"\bSUDO_TO_ROOT\b")
+
+
 def is_root_guarded(source):
-    ## A root-require FUNCTION call is authoritative -- a script that calls
+    ## A root-require FUNCTION CALL is authoritative -- a script that calls
     ## root_check IS a root entry point even if it elsewhere mentions a refusal
-    ## phrase -- unless the script defines that function itself as a refusal.
-    ## The weaker TEXT signal counts only root-require text that is not part of
-    ## a refusal phrase.
+    ## phrase -- unless the script defines that function itself as a refusal, or
+    ## uses the ${SUDO_TO_ROOT} escalation idiom (runs as user, escalates per
+    ## command). A bare textual occurrence (string literal, comment) is NOT a
+    ## call. The weaker TEXT signal counts only root-require text that is not part
+    ## of a refusal phrase.
     try:
         tree = bash_ast.parse_normalized(source)
     except bash_ast.BashParseError:
         tree = None
     raw = source.encode("utf-8")
     for name in ROOT_REQUIRE_FUNCS:
-        if not re.search(r"\b" + re.escape(name) + r"\b", source):
+        if tree is not None:
+            if not _func_called(tree, name):
+                continue
+        elif not re.search(r"\b" + re.escape(name) + r"\b", source):
             continue
         if tree is not None and _local_refusal_func(tree, raw, name):
+            continue
+        if SUDO_ESCALATION_RE.search(source):
             continue
         return True
     return _requires_root_text(source)

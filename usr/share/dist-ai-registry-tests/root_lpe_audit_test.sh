@@ -358,6 +358,32 @@ fi
 . "${HOME}/derivative-maker/help-steps/pre"
 EOF
 
+## SAFE: a build helper that only MENTIONS root_check in a changelog-string array
+## (developer-meta-files dm-packaging-helper-script shape). The word in a string
+## literal is not a call; it must not make the script a root entry point.
+write 'packages/kicksecure/targetpkg/usr/bin/safe-string-mention#targetpkg-shared' <<'EOF'
+#!/bin/bash
+changelog_entries=(
+   'more fixes'
+   'add root_check'
+   'ignore'
+)
+user_name="user"
+chown --recursive "${user_name}:${user_name}" "/home/${user_name}/stringmentiondir"
+EOF
+
+## SAFE: runs as the UNPRIVILEGED user and escalates per command via
+## ${SUDO_TO_ROOT} (dm-mount-vdi shape). It CALLS root_check, but that root_check
+## is the help-steps/pre one that REFUSES root (not defined here); the escalation
+## idiom must keep it off the root surface.
+write 'packages/kicksecure/targetpkg/usr/bin/safe-sudo-escalation#targetpkg-shared' <<'EOF'
+#!/bin/bash
+root_check
+user_name="user"
+source "/home/${user_name}/sudoescdir/config"
+${SUDO_TO_ROOT} guestmount -a "/home/${user_name}/sudoescdir/disk.vdi" -m /dev/sda1 /mnt
+EOF
+
 ## VULN: a real root gate; a refusal phrase OUTSIDE root_check's own body (about
 ## a different program) must not cancel it.
 write 'packages/kicksecure/targetpkg/usr/libexec/targetpkg/vuln-refusal-elsewhere#targetpkg-shared' <<'EOF'
