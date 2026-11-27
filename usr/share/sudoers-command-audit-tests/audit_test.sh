@@ -21,21 +21,34 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
-## --- locate the subject tool (checkout copy preferred, else installed) -------
+## --- locate the subject tool ------------------------------------------------
+## DIST_AI_REPO set (orchestrated run): REQUIRE that checkout's tool -- never
+## silently fall back to a stale installed copy that could not judge this
+## checkout. Unset (direct run): prefer the checkout-relative tool over any
+## installed one so a standalone run still tests the changed tool.
 payload_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
-subject=''
-for candidate in \
-  "${DIST_AI_REPO:-}/usr/bin/sudoers-command-audit" \
-  "${payload_dir}/../../bin/sudoers-command-audit" \
-  '/usr/bin/sudoers-command-audit'; do
-  if [ -n "${candidate}" ] && [ -x "${candidate}" ]; then
-    subject="$(readlink --canonicalize -- "${candidate}")"
-    break
+if [ -n "${DIST_AI_REPO:-}" ]; then
+  subject="${DIST_AI_REPO}/usr/bin/sudoers-command-audit"
+  if [ ! -x "${subject}" ]; then
+    printf '%s\n' \
+      "FATAL: sudoers-command-audit-tests: DIST_AI_REPO set but ${subject} is not executable." >&2
+    exit 1
   fi
-done
-if [ -z "${subject}" ]; then
-  printf '%s\n' "FATAL: sudoers-command-audit-tests: subject tool not found." >&2
-  exit 1
+  subject="$(readlink --canonicalize -- "${subject}")"
+else
+  subject=''
+  for candidate in \
+    "${payload_dir}/../../bin/sudoers-command-audit" \
+    '/usr/bin/sudoers-command-audit'; do
+    if [ -x "${candidate}" ]; then
+      subject="$(readlink --canonicalize -- "${candidate}")"
+      break
+    fi
+  done
+  if [ -z "${subject}" ]; then
+    printf '%s\n' "FATAL: sudoers-command-audit-tests: subject tool not found." >&2
+    exit 1
+  fi
 fi
 
 ## cvtsudoers (the 'sudo' package) is a hard dependency in debian/control and is
@@ -221,6 +234,69 @@ chmod +x -- "${root}/opt/my dir/tool"
 printf '%s\n' 'user ALL=NOPASSWD: /opt/my\ dir/tool' > "${work}/spaced"
 run_audit --root "${root}" "${work}/spaced"
 check "spaced command path matched, not mis-split (exit 0)" rc_is 0
+
+## 11. an escaped-space command PATH whose real file is absent is NOT masked by
+##     an existing shorter prefix: the boundary is recovered, so a bare prefix
+##     no longer reads as the command (the dangling-grant false-clean).
+printf '%s\n' '#!/bin/sh' > "${root}/opt/tool"
+chmod +x -- "${root}/opt/tool"
+printf '%s\n' 'user ALL=NOPASSWD: /opt/tool\ old subcmd' > "${work}/prefix-mask"
+run_audit --root "${root}" "${work}/prefix-mask"
+check "spaced path removed, prefix present -> missing (exit 1)" rc_is 1
+check "spaced command named in full, not its prefix" out_has '/opt/tool old'
+run_audit --root "${root}" --require-executable "${work}/prefix-mask"
+check "removed spaced path still missing with --require-executable (exit 1)" rc_is 1
+## 11-canary: create the real spaced command -> now clean (verdict is genuinely
+## sensitive to the full path, not satisfied by the executable prefix).
+printf '%s\n' '#!/bin/sh' > "${root}/opt/tool old"
+chmod +x -- "${root}/opt/tool old"
+run_audit --root "${root}" "${work}/prefix-mask"
+check "canary: spaced command present -> clean (exit 0)" rc_is 0
+safe-rm --force -- "${root}/opt/tool old" "${root}/opt/tool"
+
+## 12. --find over a search tree that cannot be fully read is inconclusive, not
+##     clean: a silently-omitted tree must never let the audit pass.
+findtree="${work}/findtree"
+mkdir -p -- "${findtree}/etc/sudoers.d"
+cp -- "${work}/clean" "${findtree}/etc/sudoers.d/ok"
+run_audit --root "${root}" --find "${findtree}"
+check "readable --find tree alone is not inconclusive (exit 0)" rc_is 0
+run_audit --root "${root}" --find "${findtree}" "${work}/no-such-tree"
+check "an unreadable search tree -> inconclusive (exit 2)" rc_is 2
+
+## 13. a source that @includes an absolute path under a non-default --root is
+##     inconclusive: cvtsudoers would resolve the include against the HOST, not
+##     the image, so the parse is not faithful and must not read as clean.
+printf '%s\n' 'user ALL=NOPASSWD: /usr/bin/present' '@includedir /etc/sudoers.d' \
+  > "${work}/with-include"
+run_audit --root "${root}" "${work}/with-include"
+check "@include under --root -> inconclusive (exit 2)" rc_is 2
+## 13-canary: the same rule without the include audits normally (not inconclusive).
+printf '%s\n' 'user ALL=NOPASSWD: /usr/bin/present' > "${work}/no-include"
+run_audit --root "${root}" "${work}/no-include"
+check "no include -> audited, not inconclusive (exit 0)" rc_is 0
+
+## 14. a wildcard command path is resolved as a glob confined to --root: a
+##     pattern with a matching command is clean; with none it is missing.
+printf '%s\n' '#!/bin/sh' > "${root}/usr/bin/globbed-tool"
+chmod +x -- "${root}/usr/bin/globbed-tool"
+printf '%s\n' 'user ALL=NOPASSWD: /usr/bin/globbed-*' > "${work}/wildcard"
+run_audit --root "${root}" "${work}/wildcard"
+check "wildcard command path with a match is clean (exit 0)" rc_is 0
+safe-rm --force -- "${root}/usr/bin/globbed-tool"
+run_audit --root "${root}" "${work}/wildcard"
+check "wildcard command path with no match is missing (exit 1)" rc_is 1
+check "unmatched wildcard pattern named in output" out_has '/usr/bin/globbed-*'
+
+## 15. two distinct spaced command paths sharing a first token are each named in
+##     full, not collapsed to that token and deduplicated to one finding.
+printf '%s\n' \
+  'user ALL=NOPASSWD: /opt/My\ App/tool' \
+  'user ALL=NOPASSWD: /opt/My\ Other/tool' > "${work}/spaced-pair"
+run_audit --root "${root}" "${work}/spaced-pair"
+check "both spaced commands missing (exit 1)" rc_is 1
+check "first spaced command named in full" out_has '/opt/My App/tool'
+check "second spaced command named in full" out_has '/opt/My Other/tool'
 
 ## --- report ------------------------------------------------------------------
 printf '%s\n' "sudoers-command-audit-tests: ${pass} pass, ${fail} fail, 0 skip"

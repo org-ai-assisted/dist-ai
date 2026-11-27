@@ -34,11 +34,18 @@ def _resolve(rel_from_repo: str, installed: str, label: str) -> str:
         cand = os.path.join(repo, rel_from_repo)
         if os.path.isfile(cand):
             return cand
-        print(f"TB_UPDATER_REPO={repo!r} has no {rel_from_repo}; skipping.",
+        ## The checkout IS present but this required subject is gone: a real
+        ## regression, not an unavailable target -> FATAL (exit 1), never a
+        ## skip. A skip here would silently drop the subject's regression
+        ## checks (a removed hook reading as green).
+        print(f"FATAL: TB_UPDATER_REPO={repo!r} has no {rel_from_repo}.",
               file=sys.stderr)
-        sys.exit(77)
+        sys.exit(1)
     if os.path.isfile(installed):
         return installed
+    ## No checkout and nothing installed: the target is genuinely unavailable.
+    ## target_available_probe.py turns this (77) into a whole-suite SKIP; it is
+    ## the single authorized skip point.
     print(f"{label} not found (set TB_UPDATER_REPO); skipping.", file=sys.stderr)
     sys.exit(77)
 

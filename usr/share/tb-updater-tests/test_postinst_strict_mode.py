@@ -40,7 +40,12 @@ import tb_updater_testlib as T  # noqa: E402
 
 try:
     POSTINST = T.postinst_script()
-except SystemExit:
+except SystemExit as exc:
+    ## 77 = target genuinely unavailable (no checkout, nothing installed) -> the
+    ## one authorized module skip. Any other code is a FATAL resolution error
+    ## (checkout present, subject gone) and must not be swallowed into a skip.
+    if exc.code != 77:
+        raise
     pytest.skip("tb-updater postinst not available", allow_module_level=True)
 
 ## The postinst sources these by absolute path (a dpkg maintainer script has no

@@ -31,18 +31,36 @@ different scope (any running system vs the dm tree), different purpose
 Exit codes:
   0  every referenced command path exists (clean).
   1  at least one referenced command path is missing (findings printed).
-  2  the audit could not be completed faithfully: usage error, cvtsudoers
-     missing, a source that cvtsudoers could not parse, or a coverage warning
-     (e.g. an includedir cvtsudoers skipped) -- never reported as clean.
+  2  the audit could not be completed faithfully -- never reported as clean:
+     usage error; cvtsudoers missing; a source cvtsudoers could not parse; a
+     coverage warning (e.g. an includedir cvtsudoers skipped); a search tree
+     that could not be read in full (--find); or a source that pulls in an
+     absolute @include under a non-default --root, which cvtsudoers resolves in
+     the HOST namespace, not the image.
 """
 
 import argparse
+import fnmatch
 import json
 import os
+import re
 import subprocess
 import sys
 
 CVTSUDOERS = "/usr/bin/cvtsudoers"
+
+## A sudoers @include / @includedir (or the older #include form) whose target is
+## resolved by cvtsudoers against ABSOLUTE host paths, ignoring --root.
+INCLUDE_RE = re.compile(r"^[ \t]*[@#]include(?:dir)?\b", re.MULTILINE)
+
+## An absolute command token in cvtsudoers' -f sudoers output: a run beginning
+## with '/' in which a space may be backslash-escaped (the only way a command
+## PATH carries a literal space). Arguments are de-escaped by cvtsudoers, so an
+## escaped space survives only on the command path -- exactly what we recover.
+SUDOERS_TOKEN_RE = re.compile(r"/(?:\\.|[^\s,])*")
+
+## Glob metacharacters sudoers honours in a command path.
+GLOB_META = "*?["
 
 
 def find_cvtsudoers():
@@ -57,6 +75,22 @@ def find_cvtsudoers():
     return None
 
 
+def probe_baseline(cvt):
+    """cvtsudoers prints environment advisories on EVERY run (e.g. a mis-owned
+    /etc/sudo.conf on the auditing host) that are unrelated to any audited
+    source's coverage. Capture them once from an empty parse so they can be
+    subtracted, keeping the verdict independent of the host's sudo-config state
+    -- otherwise a non-root CI host would turn every audit inconclusive."""
+    proc = subprocess.run(
+        [cvt, "-f", "json", "-i", "sudoers", os.devnull],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        encoding="utf-8",
+        check=False,
+    )
+    return {line for line in proc.stderr.strip().splitlines() if line}
+
+
 def dropin_loadable(name):
     """Mirror sudo's includedir rule: a drop-in whose filename contains '.' or
     ends with '~' is ignored. Auditing exactly what sudo would load avoids
@@ -64,12 +98,17 @@ def dropin_loadable(name):
     return "." not in name and not name.endswith("~")
 
 
-def discover(trees):
+def discover(trees, errors):
     """Yield sudoers source files found under each tree: any regular file named
-    'sudoers', and any loadable drop-in inside a 'sudoers.d' directory."""
+    'sudoers', and any loadable drop-in inside a 'sudoers.d' directory.
+
+    os.walk silently omits a tree it cannot descend, which would drop part of
+    the policy from the audit while a readable sibling still yields sources --
+    so a missing grant could read as clean. Every walk error is recorded into
+    `errors`; the caller turns a non-empty list into an inconclusive result."""
     seen = set()
     for tree in trees:
-        for dirpath, _dirnames, filenames in os.walk(tree):
+        for dirpath, _dirnames, filenames in os.walk(tree, onerror=errors.append):
             in_dropin_dir = os.path.basename(dirpath) == "sudoers.d"
             for name in sorted(filenames):
                 full = os.path.join(dirpath, name)
@@ -102,44 +141,102 @@ def expand_inputs(paths):
     return files
 
 
-def command_path(command_string):
-    """Return the absolute command path from a cvtsudoers command string, or
-    None when the entry is not a stat-able path (ALL, sudoedit, list, a bare
-    word, or a relative command). Arguments are stripped: the path is the first
-    whitespace-separated token."""
+def extract_spaced_paths(sudoers_text):
+    """Set of command paths that contain a literal (backslash-escaped) space,
+    recovered from cvtsudoers' -f sudoers output. cvtsudoers' JSON collapses the
+    command/argument boundary (an escaped-space path and a path+arguments both
+    serialise to one space-joined string), but the -f sudoers round-trip keeps
+    the escape on the command PATH while de-escaping arguments -- so an escaped
+    space survives only where it is part of the path. Each is unescaped to its
+    real on-disk form."""
+    paths = set()
+    for token in SUDOERS_TOKEN_RE.findall(sudoers_text):
+        if "\\ " in token:
+            paths.add(re.sub(r"\\(.)", r"\1", token))
+    return paths
+
+
+def command_path(command_string, spaced_paths):
+    """Return the absolute command path from a cvtsudoers JSON command string,
+    or None when the entry is not a stat-able path (ALL, sudoedit, list, a bare
+    word, or a relative command). The path is the longest known escaped-space
+    path that is a token-boundary prefix of the string; otherwise it is the
+    first whitespace-separated token (arguments stripped). This recovers the
+    real boundary instead of accepting any existing prefix as the command."""
+    best = None
+    for candidate in spaced_paths:
+        if command_string == candidate or command_string.startswith(candidate + " "):
+            if best is None or len(candidate) > len(best):
+                best = candidate
+    if best is not None:
+        return best
     token = command_string.split(" ", 1)[0]
     if token.startswith("/"):
         return token
     return None
 
 
-def parse_source(cvt, path):
-    """Run cvtsudoers on one source file. Return (commands, warnings, error)
-    where commands is a list of (command_string, negated) for entries naming an
-    absolute command, and error is a string on a hard parse failure (else
-    None). The full command string is kept, not just the first token, because
-    cvtsudoers joins an escaped-space command path to its arguments with a
-    space and does not mark the boundary -- the existence check tries
-    progressive prefixes to recover a spaced path."""
+def source_has_include(path):
+    """True if the raw source carries an @include/@includedir (or #include)
+    directive. cvtsudoers resolves such a target against absolute HOST paths,
+    ignoring --root, so under a non-default root the parse is not faithful to
+    the image and the result must be inconclusive rather than clean."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            return INCLUDE_RE.search(handle.read()) is not None
+    except OSError:
+        ## Unreadable here means cvtsudoers will fail too; that surfaces as a
+        ## parse error (inconclusive) on the cvtsudoers pass.
+        return False
+
+
+def parse_source(cvt, path, baseline):
+    """Run cvtsudoers on one source file. Return
+    (commands, spaced_paths, has_include, warnings, error) where commands is a
+    list of (command_string, negated) for entries naming an absolute command,
+    spaced_paths is the set recovered by extract_spaced_paths, has_include flags
+    an absolute include directive in the raw source, and error is a string on a
+    hard parse failure (else None). `baseline` is the environment-advisory
+    stderr (probe_baseline) subtracted so only source-specific messages count."""
+    abs_path = os.path.abspath(path)
     ## abspath so a filename beginning with '-' is never read as an option.
     proc = subprocess.run(
-        [cvt, "-f", "json", "-i", "sudoers", os.path.abspath(path)],
+        [cvt, "-f", "json", "-i", "sudoers", abs_path],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         encoding="utf-8",
         check=False,
     )
+    stderr_lines = [line for line in proc.stderr.strip().splitlines()
+                    if line and line not in baseline]
     if proc.returncode != 0:
-        detail = proc.stderr.strip().splitlines()
-        return [], [], detail[0] if detail else "cvtsudoers exited %d" % proc.returncode
+        return [], set(), False, [], (
+            stderr_lines[0] if stderr_lines
+            else "cvtsudoers exited %d" % proc.returncode)
     ## cvtsudoers can warn (e.g. skipping a mis-owned includedir) and still exit
     ## 0; such a warning means reduced coverage, so surface it rather than let a
     ## partial parse read as clean.
-    warnings = [line for line in proc.stderr.strip().splitlines() if line]
+    warnings = stderr_lines
+    has_include = source_has_include(abs_path)
     try:
         data = json.loads(proc.stdout or "{}")
     except json.JSONDecodeError as exc:
-        return [], warnings, "cvtsudoers emitted unparseable JSON: %s" % exc
+        return [], set(), has_include, warnings, (
+            "cvtsudoers emitted unparseable JSON: %s" % exc)
+
+    ## Second pass in sudoers format to recover command/argument boundaries the
+    ## JSON loses. A failure here is non-fatal: without it the first-token
+    ## reading still applies, which is correct for every path without a literal
+    ## space (the overwhelming majority).
+    round_trip = subprocess.run(
+        [cvt, "-f", "sudoers", "-i", "sudoers", abs_path],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        encoding="utf-8",
+        check=False,
+    )
+    spaced_paths = (extract_spaced_paths(round_trip.stdout)
+                    if round_trip.returncode == 0 else set())
 
     commands = []
 
@@ -150,7 +247,7 @@ def parse_source(cvt, path):
                 ## this file (normal for a drop-in); its members are checked
                 ## wherever the alias is defined. Nothing to stat here.
                 continue
-            if command_path(entry["command"]) is not None:
+            if command_path(entry["command"], spaced_paths) is not None:
                 commands.append((entry["command"], bool(entry.get("negated"))))
 
     for spec in data.get("User_Specs", []):
@@ -159,7 +256,7 @@ def parse_source(cvt, path):
     for members in (data.get("Command_Aliases") or {}).values():
         collect(members)
 
-    return commands, warnings, None
+    return commands, spaced_paths, has_include, warnings, None
 
 
 def resolve_within_root(root_real, abs_path):
@@ -195,28 +292,61 @@ def resolve_within_root(root_real, abs_path):
     return resolved if os.path.exists(resolved) else None
 
 
-def classify(root_real, command_string, require_executable):
-    """Verdict for one cvtsudoers command string: 'missing', 'not-executable',
-    or None when present. Tries progressive space-joined prefixes so a command
-    PATH that legitimately contains a space -- indistinguishable in cvtsudoers'
-    JSON from the path/arguments boundary -- is matched when it exists."""
-    tokens = command_string.split(" ")
-    found = None
-    executable = False
-    for count in range(1, len(tokens) + 1):
-        candidate = " ".join(tokens[:count])
-        if not candidate.startswith("/"):
-            continue
-        resolved = resolve_within_root(root_real, candidate)
-        if resolved is not None:
-            found = resolved
-            if os.access(resolved, os.X_OK):
-                executable = True
-    if found is None:
-        return "missing"
+def glob_within_root(root_real, abs_path):
+    """Resolve a glob command path confined to root_real and return the list of
+    existing host-side matches. Sudoers permits wildcards (* ? [..]) in a
+    command path; a dead grant is one with NO match, so a literal lookup would
+    falsely flag a pattern that does match an installed command. Metacharacter
+    components are matched with fnmatch against the directory contents at that
+    level; plain components join literally."""
+    comps = [comp for comp in abs_path.split("/") if comp and comp != "."]
+    matches = []
+
+    def walk(base, index):
+        if index == len(comps):
+            if os.path.exists(base):
+                matches.append(base)
+            return
+        comp = comps[index]
+        if any(meta in comp for meta in GLOB_META):
+            try:
+                names = os.listdir(base)
+            except OSError:
+                return
+            for name in names:
+                if fnmatch.fnmatch(name, comp):
+                    walk(os.path.join(base, name), index + 1)
+        else:
+            candidate = os.path.join(base, comp)
+            if os.path.lexists(candidate):
+                walk(candidate, index + 1)
+
+    walk(root_real, 0)
+    return matches
+
+
+def classify(root_real, command_string, spaced_paths, require_executable):
+    """Verdict for one cvtsudoers command string plus the command path it was
+    judged against: ('missing'|'not-executable', path) or (None, path) when
+    present, or (None, None) when the entry is not a stat-able path. The command
+    path is the recovered boundary (not any existing prefix); a wildcard path is
+    resolved as a root-confined glob."""
+    path = command_path(command_string, spaced_paths)
+    if path is None:
+        return None, None
+    if any(meta in path for meta in GLOB_META):
+        resolved = glob_within_root(root_real, path)
+        if not resolved:
+            return "missing", path
+        executable = any(os.access(match, os.X_OK) for match in resolved)
+    else:
+        match = resolve_within_root(root_real, path)
+        if match is None:
+            return "missing", path
+        executable = os.access(match, os.X_OK)
     if require_executable and not executable:
-        return "not-executable"
-    return None
+        return "not-executable", path
+    return None, path
 
 
 def main(argv):
@@ -256,12 +386,21 @@ def main(argv):
                          "install the 'sudo' package.\n")
         return 2
 
+    baseline = probe_baseline(cvt)
+
     root = args.root
     root_real = os.path.realpath(root)
 
+    inconclusive = False
+
     if args.find:
         trees = args.paths if args.paths else [root]
-        sources = list(discover(trees))
+        walk_errors = []
+        sources = list(discover(trees, walk_errors))
+        for walk_error in walk_errors:
+            sys.stderr.write("sudoers-command-audit: WARNING: search tree not "
+                             "fully readable: %s\n" % walk_error)
+            inconclusive = True
     elif args.paths:
         sources = expand_inputs(args.paths)
     else:
@@ -280,10 +419,12 @@ def main(argv):
         sys.stderr.write("sudoers-command-audit: no sudoers sources found.\n")
         return 2
 
+    offline = root_real != os.sep
+
     findings = 0
-    inconclusive = False
     for source in sources:
-        commands, warnings, error = parse_source(cvt, source)
+        commands, spaced_paths, has_include, warnings, error = parse_source(
+            cvt, source, baseline)
         for warning in warnings:
             sys.stderr.write("%s: WARNING: %s\n" % (source, warning))
             inconclusive = True
@@ -291,12 +432,21 @@ def main(argv):
             sys.stderr.write("%s: ERROR: %s\n" % (source, error))
             inconclusive = True
             continue
+        if offline and has_include:
+            ## cvtsudoers resolved the @include against the HOST, not --root, so
+            ## this source's parse is not faithful to the image: skip its
+            ## findings rather than emit host-derived verdicts, and refuse clean.
+            sys.stderr.write("%s: WARNING: @include resolved in the host "
+                             "namespace under --root %s; cannot audit "
+                             "faithfully.\n" % (source, root))
+            inconclusive = True
+            continue
         reported = set()
         for command_string, negated in commands:
-            verdict = classify(root_real, command_string, args.require_executable)
+            verdict, abs_path = classify(
+                root_real, command_string, spaced_paths, args.require_executable)
             if verdict is None:
                 continue
-            abs_path = command_path(command_string)
             key = (abs_path, negated, verdict)
             if key in reported:
                 continue

@@ -1140,14 +1140,18 @@ wire() {
          wire_args=()
          ;;
       dist-ai-registry)
-         ## Lints this repo's own suite registry, so its subject is the dist-ai
-         ## checkout itself.
-         wire_env=( "DIST_AI_REPO=$( pkg_dir dist-ai )" )
+         ## Lints this repo's own suite registry; its subject is THIS checkout.
+         ## Derive it from mydir (usr/bin) -- pkg_dir dist-ai is empty under
+         ## --repo-root (dist-ai has no packages/ subpath), which would let the
+         ## suite fall back to a stale installed copy.
+         wire_env=( "DIST_AI_REPO=$( dirname -- "$( dirname -- "${mydir}" )" )" )
          ;;
       sudoers-command-audit)
-         ## dist-ai's own generic tool; the suite drives it from this checkout
-         ## (else the installed copy). Fixtures are self-built; no network, no root.
-         wire_env=( "DIST_AI_REPO=$( pkg_dir dist-ai )" )
+         ## dist-ai's own generic tool, driven from THIS checkout. mydir-derived
+         ## for the same reason as dist-ai-registry: pkg_dir dist-ai is empty
+         ## under --repo-root, so the suite could silently test the installed
+         ## tool and miss defects in this checkout. Fixtures self-built; no root.
+         wire_env=( "DIST_AI_REPO=$( dirname -- "$( dirname -- "${mydir}" )" )" )
          ;;
       image-optimize)
          ## dist-ai's own tool. It sources helper-scripts strings.bsh

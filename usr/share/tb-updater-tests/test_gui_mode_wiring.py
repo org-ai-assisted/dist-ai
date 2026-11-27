@@ -44,7 +44,11 @@ import tb_updater_testlib as T  # noqa: E402
 try:
     WRAPPER = T.desktop_starter_wrapper()
     UPDATER = T.update_torbrowser_script()
-except SystemExit:
+except SystemExit as exc:
+    ## 77 = target genuinely unavailable -> authorized module skip; any other
+    ## code is a FATAL resolution error and must not be masked into a skip.
+    if exc.code != 77:
+        raise
     pytest.skip("tb-updater not available", allow_module_level=True)
 
 ## The two msgcollector dialogs update-torbrowser drives for GUI confirmation,

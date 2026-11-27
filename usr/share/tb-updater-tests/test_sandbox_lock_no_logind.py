@@ -37,7 +37,11 @@ import tb_updater_testlib as T  # noqa: E402
 
 try:
     SANDBOX_BIN = T.sandbox_update_torbrowser_script()
-except SystemExit:
+except SystemExit as exc:
+    ## 77 = target genuinely unavailable -> authorized module skip; any other
+    ## code is a FATAL resolution error and must not be masked into a skip.
+    if exc.code != 77:
+        raise
     pytest.skip("sandbox-update-torbrowser not available",
                 allow_module_level=True)
 

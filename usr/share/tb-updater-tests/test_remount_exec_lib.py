@@ -37,11 +37,13 @@ import tb_updater_testlib as T
 
 try:
     LIB = T.remount_exec_lib()
-except SystemExit:
-    ## Resolver exits 77 when the helper is absent (partial checkout / pre-install).
-    ## Catch it: an unhandled SystemExit during collection is a BaseException that
-    ## pytest reraises as an INTERNALERROR, aborting the WHOLE suite instead of
-    ## skipping just this module -- every sibling test guards the same way.
+except SystemExit as exc:
+    ## 77 = helper genuinely absent (no checkout, nothing installed) -> the one
+    ## authorized module skip (an unhandled SystemExit during collection would
+    ## otherwise abort the WHOLE suite). Any other code is a FATAL resolution
+    ## error (checkout present, subject gone) and must fail, not skip.
+    if exc.code != 77:
+        raise
     pytest.skip("tb-remount-exec.bsh not available", allow_module_level=True)
 
 
