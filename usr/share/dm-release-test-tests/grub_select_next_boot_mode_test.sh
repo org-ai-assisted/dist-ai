@@ -159,6 +159,31 @@ MOUNTPOINT="${root_title}" "${helper}" persistent-sysmaint >/dev/null
 check "id-shaped title ignored -> selects the real --id argument" \
    "gnulinux-persistent-sysmaint-feedface" "$(next_entry_of "${root_title}")"
 
+## 1e. CANARY: an id-shaped string in a trailing '# ...' comment (after the '{') must NOT win
+## over the real --id in the menuentry head. GRUB ignores the comment, so the entry's id is
+## feedface; the selector (anchored before the '{') must pick it, not the comment's deadbeef.
+root_cmt="${work_dir}/trailing_comment"
+mkdir --parents -- "${root_cmt}/boot/grub"
+printf '%s\n' \
+   "menuentry 'Generic entry' --id 'gnulinux-persistent-sysmaint-feedface' { # --id 'gnulinux-persistent-sysmaint-deadbeef'" \
+   "	true" \
+   "}" > "${root_cmt}/boot/grub/grub.cfg"
+MOUNTPOINT="${root_cmt}" "${helper}" persistent-sysmaint >/dev/null
+check "trailing-comment id ignored -> selects the head --id" \
+   "gnulinux-persistent-sysmaint-feedface" "$(next_entry_of "${root_cmt}")"
+
+## 1f. CANARY: GRUB accepts the '--id=VALUE' form as well as '--id VALUE'. The selector must
+## accept an '=' between the option and its quoted value, not only whitespace.
+root_eq="${work_dir}/id_equals_form"
+mkdir --parents -- "${root_eq}/boot/grub"
+printf '%s\n' \
+   "menuentry 'Generic entry' --id='gnulinux-persistent-sysmaint-feedface' {" \
+   "	true" \
+   "}" > "${root_eq}/boot/grub/grub.cfg"
+MOUNTPOINT="${root_eq}" "${helper}" persistent-sysmaint >/dev/null
+check "--id=VALUE form accepted" \
+   "gnulinux-persistent-sysmaint-feedface" "$(next_entry_of "${root_eq}")"
+
 ## 2. CANARY: an image with NEITHER a per-mode id NOR a per-mode menu title (shared
 ## gnulinux-simple-<dev> and only a generic 'Kicksecure GNU/Linux' title) -> the helper
 ## MUST fail loud, never select blindly.

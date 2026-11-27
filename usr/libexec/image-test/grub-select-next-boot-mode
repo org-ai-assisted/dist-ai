@@ -151,12 +151,15 @@ main() {
    ##    an invalid prefix like 'persistent' is followed by 'sysmaint' (non-hex), no match ->
    ##    both drop to the title fallback, which rejects them too.
    local selector=''
-   ## Anchor to the --id argument: '.*menuentry_id_option' (greedy) consumes the title and
-   ## everything before the id option, then capture the mode-scoped id between MATCHED quotes
-   ## (backref \1). Printing only \2 yields the bare id -- no title collision, no truncation.
+   ## Anchor to the --id argument within the menuentry HEAD (before the opening '{'): '^[^{]*'
+   ## stays left of the brace, so an id-shaped TITLE (not preceded by the id option) and an
+   ## id-shaped string in a trailing '# ...' comment (which follows the '{') are both unreachable.
+   ## The option is 'menuentry_id_option' / '--id', its value introduced by whitespace OR '='
+   ## (GRUB accepts '--id=VALUE'); capture the mode-scoped id between MATCHED quotes (backref \3)
+   ## and print only it (\4) -- no title collision, no comment capture, no truncation.
    selector="$(grep --extended-regexp '^menuentry ' "${grub_cfg}" \
       | sed --quiet --regexp-extended \
-         "s/.*(menuentry_id_option|--id)[[:space:]]+(['\"])(gnulinux-${mode}-[0-9a-fA-F][0-9a-fA-F-]*)\\2.*/\\3/p" \
+         "s/^[^{]*(menuentry_id_option|--id)([[:space:]]+|=)(['\"])(gnulinux-${mode}-[0-9a-fA-F][0-9a-fA-F-]*)\\3.*/\\4/p" \
       | head -n 1)" || true
    if [ -z "${selector}" ]; then
       ## 2. Fallback: select by the menuentry TITLE. Part A changed the --id, never the title,
