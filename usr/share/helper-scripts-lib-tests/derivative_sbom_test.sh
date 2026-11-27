@@ -393,6 +393,20 @@ check "merge-tool: bom-ref collision (metadata root) fails closed" \
    "$(merge_rc "${meta_base}" "${col_frag}")" "1"
 safe-rm --recursive --force -- "${col_frag}"
 
+## The base SBOM is validated on the same footing as fragments: an internally
+## inconsistent base (two components sharing a purl) is by definition not
+## mergeable and fails closed, even with zero fragments. Guards the removal of
+## the validation-skipping base-seed optimization (a silent pass before).
+dupbase_frag="${test_dir}/dupbase-fragments.d"
+mkdir --parents -- "${dupbase_frag}"
+dupbase_purl='{"bomFormat":"CycloneDX","components":[{"type":"library","name":"bash","purl":"pkg:deb/debian/bash@5.2"},{"type":"library","name":"bash-rebuild","purl":"pkg:deb/debian/bash@5.2"}]}'
+check "merge-tool: internally-duplicate base purl fails closed" \
+   "$(merge_rc "${dupbase_purl}" "${dupbase_frag}")" "1"
+## Same for a base component whose bom-ref duplicates the metadata root's.
+dupbase_ref='{"bomFormat":"CycloneDX","metadata":{"component":{"type":"operating-system","name":"Kicksecure","bom-ref":"root-ref"}},"components":[{"type":"library","name":"x","bom-ref":"root-ref"}]}'
+check "merge-tool: base component reusing the root bom-ref fails closed" \
+   "$(merge_rc "${dupbase_ref}" "${dupbase_frag}")" "1"
+
 ## root_bom_ref / wire_root_dependencies: a fragment component carrying a bom-ref
 ## is wired into the metadata root component's dependency graph (dependsOn), so it
 ## is reachable rather than orphaned in components[].
