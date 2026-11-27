@@ -119,7 +119,7 @@ fi
 
 ## --- a missing tree must be NAMED, not surfaced as a bash sourcing error ---
 case "${block}" in
-   *'no derivative-maker source tree at'*)
+   *'cannot locate the derivative-maker checkout at'*)
       pass "an unresolvable tree fails with a named error"
       ;;
    *)
@@ -127,7 +127,7 @@ case "${block}" in
       ;;
 esac
 case "${block}" in
-   *"Set 'source_code_folder_dist'"*)
+   *"Set 'DERIVATIVE_MAKER_ROOT' or 'source_code_folder_dist'"*)
       pass "the error says what to set"
       ;;
    *)
@@ -280,7 +280,7 @@ case "${out}" in
    *"No such file or directory"*)
       fail "unresolvable tree: still surfaces bash's raw sourcing error -- ${out}"
       ;;
-   *"no derivative-maker source tree at"*)
+   *"cannot locate the derivative-maker checkout at"*)
       pass "unresolvable tree: reports the named error, not a raw sourcing failure"
       ;;
    *)
