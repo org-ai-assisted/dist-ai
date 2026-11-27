@@ -101,6 +101,7 @@ core_suites=(
    developer-meta-files-tests
    dist-base-files-tests
    dist-encrypted-tests
+   dm-qubes-template-build-tests
    grub-live-tests
    live-config-dist-tests
    libvirt-dist-tests
@@ -1146,6 +1147,12 @@ wire() {
          ## suite fall back to a stale installed copy.
          wire_env=( "DIST_AI_REPO=$( dirname -- "$( dirname -- "${mydir}" )" )" )
          ;;
+      dm-qubes-template-build)
+         ## Subject ships in THIS repo's usr/bin; point the suite at it (mydir is
+         ## usr/bin) so a wired / --component run uses this checkout, not a stale
+         ## installed copy.
+         wire_env=( "DM_QUBES_TEMPLATE_BUILD=${mydir}/dm-qubes-template-build" )
+         ;;
       sudoers-command-audit)
          ## dist-ai's own generic tool, driven from THIS checkout. mydir-derived
          ## for the same reason as dist-ai-registry: pkg_dir dist-ai is empty
@@ -1335,7 +1342,7 @@ suite_component() {
       dist-encrypted)
          printf '%s' 'dist-encrypted'
          ;;
-      clusterfuzzlite-lib|dist-ai-registry|sudoers-command-audit|github-api|image-optimize|iso-download|dm-release-test|dm-build-account|dm-calamares-install|dm-image-build|test-results-site|vbox-image-test|dm-vm-lock|dm-firmware-identity|dm-ci-job-watch|dm-gitlink-upstream-check|dm-gitlink-bump|iso-boot|tirdad-isn-nat|webcheck-lint-tidy-honesty-test)
+      clusterfuzzlite-lib|dist-ai-registry|sudoers-command-audit|github-api|image-optimize|iso-download|dm-release-test|dm-build-account|dm-calamares-install|dm-image-build|test-results-site|vbox-image-test|dm-vm-lock|dm-qubes-template-build|dm-firmware-identity|dm-ci-job-watch|dm-gitlink-upstream-check|dm-gitlink-bump|iso-boot|tirdad-isn-nat|webcheck-lint-tidy-honesty-test)
          printf '%s' 'dist-ai'
          ;;
       anon-apt-sources-list)
