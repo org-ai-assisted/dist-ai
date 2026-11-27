@@ -9,11 +9,17 @@
 Scenario tests for check_mount_options -- systemcheck's presenter over
 security-misc's `remount-secure --check` mount-options audit.
 
-check_mount_options runs `remount-secure --check` (no explicit level, so the
-audit targets the configured drop-in level) and translates its verdict into a
-systemcheck result: exit 0 -> green info (verbose-gated); a deviation
-exit -> an orange "Not hardened" warning listing the DEVIATION lines; a failed
-run (no deviation lines) -> an orange "Indeterminate" warning. All set EXIT_CODE.
+check_mount_options first surfaces the configured level via
+`remount-secure --get-level`: level 3 (most restrictive) is a verbose-gated
+green line; a level below 3 is an orange INFO notice, a hard failure (EXIT_CODE)
+ONLY under --ci (interactively a lowered level is a deliberate admin choice);
+an unreadable level is an orange "Indeterminate" notice.
+
+It then runs `remount-secure --check` (no explicit level, so the audit targets
+the configured drop-in level) and translates its verdict into a systemcheck
+result: exit 0 -> green info (verbose-gated); a deviation exit -> an orange
+"Not hardened" warning listing the DEVIATION lines; a failed run (no deviation
+lines) -> an orange "Indeterminate" warning. All set EXIT_CODE.
 
 remount-secure is stubbed as the branch sink; its own set-based audit logic is
 covered in the security-misc-tests suite (test_remount_secure_check_audit.py).
@@ -29,10 +35,25 @@ from systemcheck_testlib import (
     run_check_scenario,
 )
 
-## Guards that --check is actually passed; otherwise emits an error and a
-## sentinel exit so the caller's assertions (info / DEVIATION) cannot be met.
+## Answers both subcommands the check calls. `--get-level` returns
+## ${STUB_LEVEL:-3} (3 = most restrictive, so the level line stays silent for
+## the audit-focused scenarios); STUB_LEVEL=fail simulates an older
+## remount-secure without the query. `--check` is asserted to be passed and to
+## run with NEWROOT cleared; otherwise it emits an error and a sentinel exit so
+## the caller's assertions (info / DEVIATION) cannot be met -- a regression that
+## called `remount-secure 3` instead would, as root, enter mutating remount mode.
 _REQUIRE_CHECK = (
     "remount-secure() {\n"
+    "   case \" $* \" in\n"
+    "      *\" --get-level \"*)\n"
+    "         if [ \"${STUB_LEVEL:-3}\" = \"fail\" ]; then\n"
+    "            printf '%s\\n' \"STUB: --get-level unsupported\" >&2\n"
+    "            return 2\n"
+    "         fi\n"
+    "         printf '%s\\n' \"${STUB_LEVEL:-3}\"\n"
+    "         return 0\n"
+    "         ;;\n"
+    "   esac\n"
     "   case \" $* \" in\n"
     "      *\" --check \"*)\n"
     "         true\n"
@@ -145,6 +166,51 @@ class CheckMountOptionsScenarios(ScenarioTestBase):
         self.assertEqual(r.exit_code, '1')
         self.assertIn('/boot', r.joined())
         self.assertIn('Not hardened', r.joined())
+
+    def test_level_below_max_is_orange_info_not_ci(self) -> None:
+        ## A configured level below the most restrictive (3) is a deliberate
+        ## admin choice: interactively an orange INFO notice, never a hard fail
+        ## (EXIT_CODE stays 0). The clean audit is verbose-gated, so the only
+        ## visible record is the level line.
+        r = run_check_scenario(self.check(self.FILE), 'check_mount_options',
+                               env_setup='verbose=0\nSTUB_LEVEL=2', stubs=CLEAN_STUB)
+        self.assertIn('Mount Options Hardening Level', r.joined())
+        self.assertIn('Level 2 (below 3)', r.joined())
+        self.assertTrue(r.has_severity('info'))
+        self.assertFalse(r.has_severity('warning'))
+        self.assertEqual(r.exit_code, '0')
+
+    def test_level_below_max_fails_in_ci(self) -> None:
+        ## Under --ci a lowered level is a hard failure (non-zero exit) so it
+        ## cannot ship unnoticed.
+        r = run_check_scenario(self.check(self.FILE), 'check_mount_options',
+                               env_setup='verbose=0\nci=true\nSTUB_LEVEL=0', stubs=CLEAN_STUB)
+        self.assertIn('Level 0 (below 3)', r.joined())
+        self.assertEqual(r.exit_code, '1')
+
+    def test_level_max_is_silent_when_not_verbose(self) -> None:
+        ## The most restrictive level (3) is the OK state: verbose-gated, so a
+        ## fully-hardened system shows no level line.
+        r = run_check_scenario(self.check(self.FILE), 'check_mount_options',
+                               env_setup='verbose=0\nSTUB_LEVEL=3', stubs=CLEAN_STUB)
+        self.assertNotIn('Hardening Level', r.joined())
+        self.assertEqual(r.exit_code, '0')
+
+    def test_level_indeterminate_is_orange_info_not_ci(self) -> None:
+        ## --get-level unreadable (e.g. an older remount-secure) -> an orange
+        ## Indeterminate level notice; a hard fail only under --ci.
+        r = run_check_scenario(self.check(self.FILE), 'check_mount_options',
+                               env_setup='verbose=0\nSTUB_LEVEL=fail', stubs=CLEAN_STUB)
+        self.assertIn('Mount Options Hardening Level', r.joined())
+        self.assertIn('Indeterminate', r.joined())
+        self.assertEqual(r.exit_code, '0')
+
+    def test_level_indeterminate_fails_in_ci(self) -> None:
+        ## The same unreadable-level case is a hard failure under --ci.
+        r = run_check_scenario(self.check(self.FILE), 'check_mount_options',
+                               env_setup='verbose=0\nci=true\nSTUB_LEVEL=fail', stubs=CLEAN_STUB)
+        self.assertIn('Mount Options Hardening Level', r.joined())
+        self.assertEqual(r.exit_code, '1')
 
 
 if __name__ == '__main__':
