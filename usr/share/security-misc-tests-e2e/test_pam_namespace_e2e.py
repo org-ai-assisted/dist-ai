@@ -216,13 +216,31 @@ class PamNamespaceE2E(unittest.TestCase):
             self.assertNotIn('elevated-secret', probe.stdout,
                              'elevated root saw the caller user poly /tmp file - '
                              'Option B unmnt_only NOT effective: %r' % probe.stdout)
-            ## The elevated root /tmp must resolve to the SYSTEM instance, not the
-            ## caller's per-user tmp-inst bind.
-            src = login_sh(
-                user, 'sudo --non-interactive findmnt -no SOURCE --target /tmp | head -1')
-            self.assertNotIn('tmp-inst/%s' % user, src.stdout,
-                             'elevated root /tmp is the caller user instance: %s'
-                             % src.stdout)
+            ## The elevated root /tmp must resolve to the SYSTEM /tmp. Capture the
+            ## system source OUTSIDE any login session (the test's own root
+            ## context runs no pam_namespace), then require the elevated probe to
+            ## resolve to that SAME source. Equality -- not merely "not the
+            ## caller's tmp-inst" -- also rejects any OTHER per-account instance
+            ## (e.g. a tmp-inst/root), which a caller-only exclusion would pass.
+            system_src = sh('findmnt -no SOURCE --target /tmp')
+            self.assertEqual(system_src.returncode, 0,
+                             'could not read system /tmp source: %s'
+                             % system_src.stderr)
+            self.assertTrue(system_src.stdout.strip(),
+                            'system /tmp source came back empty')
+            ## No `| head` pipeline: head exits 0 even when findmnt fails, which
+            ## would feed an EMPTY source into the comparison and pass vacuously.
+            ## Require rc 0 and nonempty output before comparing.
+            probe_src = login_sh(
+                user, 'sudo --non-interactive findmnt -no SOURCE --target /tmp')
+            self.assertEqual(probe_src.returncode, 0,
+                             'elevated findmnt failed: %s' % probe_src.stderr)
+            self.assertTrue(probe_src.stdout.strip(),
+                            'elevated /tmp source came back empty')
+            self.assertEqual(
+                probe_src.stdout.strip(), system_src.stdout.strip(),
+                'elevated root /tmp is not the system instance (got %r, system %r)'
+                % (probe_src.stdout.strip(), system_src.stdout.strip()))
         finally:
             if os.path.exists(ELEV_SUDOERS):
                 os.remove(ELEV_SUDOERS)
