@@ -101,6 +101,27 @@ lock_held() {
    [ -e "${lockfile_one}" ] && ! flock --exclusive --nonblock "${lockfile_one}" true 2>/dev/null
 }
 
+## Wait until a backgrounded holder has ACTUALLY acquired its lock: its ready file
+## (written only AFTER the flock) exists AND a direct probe confirms the lock held.
+## Bounded by the holder's liveness (a dead holder = setup failure, return 1) and a
+## generous safety cap. A fixed short spin flaked under CPU saturation: the holder
+## subshell was scheduled late, the spin fell through with the lock NOT yet held, and
+## the contender then acquired the free lock -- misreported as a subject regression.
+wait_holder_ready() {
+   local ready="${1}" lockpath="${2}" pid="${3}"
+   for _ in $(seq 1 600); do
+      if [ -e "${ready}" ] && [ -e "${lockpath}" ] \
+         && ! flock --exclusive --nonblock "${lockpath}" true 2>/dev/null; then
+         return 0
+      fi
+      if proc_dead "${pid}"; then
+         return 1
+      fi
+      sleep 0.05
+   done
+   return 1
+}
+
 ## --- Assertion 1: lockfile.sh acquires a free lock and runs the command -------
 ## This also creates the flocker-temp-folder and the key_one lock file that the
 ## holder below opens directly.
@@ -115,28 +136,28 @@ fi
 ## that fd open with no child -- SIGKILL releases the lock immediately and orphans
 ## nothing. The fd is opened INSIDE the subshell, so neither this shell nor the
 ## acquirers under test inherit it.
+ready_one="${work}/holder_one.ready"
 ## style-ok: allow-exec -- the holder execs 'sleep' so the lock-holder is a single
 ## killable PID holding the fd, leaving no orphaned child to pin the lock.
-( exec {hf}>"${lockfile_one}"; flock --exclusive --nonblock "${hf}" || exit 1; exec sleep 3600 ) &
+( exec {hf}>"${lockfile_one}"; flock --exclusive --nonblock "${hf}" || exit 1; touch -- "${ready_one}"; exec sleep 3600 ) &
 holder_pid="$!"
 ## Drop it from the job table so bash does not print an async "Killed" notice when
 ## we SIGKILL it below; liveness is polled via proc_dead (/proc), not wait.
 disown "${holder_pid}" 2>/dev/null || true
 
-for _ in $(seq 1 200); do
-   lock_held && break
-   sleep 0.05
-done
-
-contend_rc=0
-bash "${subject}" "${key_one}" -- true >/dev/null 2>&1 || contend_rc=$?
-## Exit MUST be 75 (EX_TEMPFAIL -- the conventional 'resource busy, retry later'
-## code), not merely non-zero, so a regression to flock's generic default (1) or a
-## dropped --conflict-exit-code is caught.
-if [ "${contend_rc}" -eq 75 ] && lock_held; then
-   ok "second acquirer refused while the lock is held (exit 75 EX_TEMPFAIL)"
+if wait_holder_ready "${ready_one}" "${lockfile_one}" "${holder_pid}"; then
+   contend_rc=0
+   bash "${subject}" "${key_one}" -- true >/dev/null 2>&1 || contend_rc=$?
+   ## Exit MUST be 75 (EX_TEMPFAIL -- the conventional 'resource busy, retry later'
+   ## code), not merely non-zero, so a regression to flock's generic default (1) or a
+   ## dropped --conflict-exit-code is caught.
+   if [ "${contend_rc}" -eq 75 ] && lock_held; then
+      ok "second acquirer refused while the lock is held (exit 75 EX_TEMPFAIL)"
+   else
+      notok "second acquirer not refused with exit 75 while the lock is held" "contend_rc=${contend_rc}"
+   fi
 else
-   notok "second acquirer not refused with exit 75 while the lock is held" "contend_rc=${contend_rc}"
+   notok "assertion 2 setup: holder never established the lock (inconclusive)" "holder_pid=${holder_pid}"
 fi
 
 ## --- Assertion 3: re-acquirable after the holder exits ------------------------
@@ -187,16 +208,17 @@ key_src="guardkeysource"
 lockfile_src="${XDG_RUNTIME_DIR}/flocker-temp-folder/${key_src}"
 
 ## Hold the key_src lock directly (same fd-holder pattern as assertion 2); the '>'
-## redirect creates the lock file, so no prior lockfile.sh run is needed.
-( exec {hf}>"${lockfile_src}"; flock --exclusive --nonblock "${hf}" || exit 1; exec sleep 3600 ) &
+## redirect creates the lock file, so no prior lockfile.sh run is needed. The ready
+## file is written AFTER the flock so the contender runs only once the lock is truly
+## held (a fixed spin flaked under CPU saturation -- see wait_holder_ready).
+ready_src="${work}/holder_src.ready"
+( exec {hf}>"${lockfile_src}"; flock --exclusive --nonblock "${hf}" || exit 1; touch -- "${ready_src}"; exec sleep 3600 ) &
 holder_pid="$!"
 disown "${holder_pid}" 2>/dev/null || true
-for _ in $(seq 1 200); do
-   if [ -e "${lockfile_src}" ] && ! flock --exclusive --nonblock "${lockfile_src}" true 2>/dev/null; then
-      break
-   fi
-   sleep 0.05
-done
+holder_src_ready=0
+if wait_holder_ready "${ready_src}" "${lockfile_src}" "${holder_pid}"; then
+   holder_src_ready=1
+fi
 
 ## Contender: a strict-mode script that SOURCES the real lockfile.sh with
 ## LOCK_NAME=key_src (locking the held key). Its ERR trap prints a marker and exits
@@ -214,17 +236,21 @@ printf 'PROCEEDED\n'
 EOF
 chmod +x -- "${src_caller}"
 
-src_out="${work}/selflock.out"
-src_rc=0
-"${src_caller}" >"${src_out}" 2>&1 || src_rc=$?
+if [ "${holder_src_ready}" -eq 1 ]; then
+   src_out="${work}/selflock.out"
+   src_rc=0
+   "${src_caller}" >"${src_out}" 2>&1 || src_rc=$?
 
-if [ "${src_rc}" -eq 75 ] \
-   && ! grep --quiet 'ERRTRAP' -- "${src_out}" \
-   && ! grep --quiet 'PROCEEDED' -- "${src_out}"; then
-   ok "sourced self-lock under strict mode refused cleanly (exit 75, no ERR-trap abort)"
+   if [ "${src_rc}" -eq 75 ] \
+      && ! grep --quiet 'ERRTRAP' -- "${src_out}" \
+      && ! grep --quiet 'PROCEEDED' -- "${src_out}"; then
+      ok "sourced self-lock under strict mode refused cleanly (exit 75, no ERR-trap abort)"
+   else
+      notok "sourced self-lock mishandled a held lock -- bug #1 regression" \
+         "src_rc=${src_rc} out=[$(tr '\n' '|' < "${src_out}" 2>/dev/null || true)]"
+   fi
 else
-   notok "sourced self-lock mishandled a held lock -- bug #1 regression" \
-      "src_rc=${src_rc} out=[$(tr '\n' '|' < "${src_out}" 2>/dev/null || true)]"
+   notok "assertion 5 setup: holder never established the lock (inconclusive)" "holder_pid=${holder_pid}"
 fi
 
 if [ -n "${holder_pid}" ]; then kill -s KILL -- "${holder_pid}" 2>/dev/null || true; fi
