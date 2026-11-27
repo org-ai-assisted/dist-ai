@@ -875,11 +875,14 @@ else
       fi
    }
    ## dm-submodule-ai-sync's real knobs: want 8, floor 2, ~500MB/job.
-   ramcap_check "ample RAM (8 GB) rises to want"           "$(ramcap 8396800 8 2 500)"  8
-   ramcap_check "tight RAM (2 GB) falls below want"        "$(ramcap 2097152 8 2 500)"  4
-   ramcap_check "scarce RAM (0.5 GB) clamps to floor"      "$(ramcap 512000 8 2 500)"   2
-   ramcap_check "huge RAM (16 GB) stays capped at want"    "$(ramcap 16777216 8 2 500)" 8
-   ramcap_check "non-numeric MemAvailable clamps to floor" "$(ramcap abc 8 2 500)"      2
+   ramcap_check "ample RAM (8 GB) rises to want"            "$(ramcap 8396800 8 2 500)"    8
+   ramcap_check "tight RAM (2 GB) falls below want"         "$(ramcap 2097152 8 2 500)"    4
+   ramcap_check "scarce RAM (0.5 GB) drops to 1 (serial)"   "$(ramcap 512000 8 2 500)"     1
+   ramcap_check "huge RAM (16 GB) stays capped at want"     "$(ramcap 16777216 8 2 500)"   8
+   ramcap_check "unreadable MemAvailable uses floor"        "$(ramcap abc 8 2 500)"        2
+   ## Leading-zero readings must be base-10, not octal (octal errors under errexit / miswraps).
+   ramcap_check "leading-zero '08' is base-10, not octal"  "$(ramcap 08 8 2 500)"         1
+   ramcap_check "leading-zero large '010000000' base-10"   "$(ramcap 010000000 8 2 500)"  8
 
    ## Drift guard: dm-tidy carries a byte-identical copy of compute_ram_capped_jobs (a
    ## shared lib would cross the dist-ai / private-ai-config boundary). Fail if the two

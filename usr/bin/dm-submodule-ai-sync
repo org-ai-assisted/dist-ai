@@ -115,8 +115,9 @@ while [ "$#" -gt 0 ]; do
             "  --dir      the derivative-maker checkout to operate on (default: cwd)" \
             "  --dry-run  fetch + classify + report; make no checkout / fast-forward" \
             "" \
-            "Submodule fork fetches run bounded-parallel (default 4 concurrent; the cap bounds" \
-            "peak memory). Override with DM_SUBMODULE_AI_SYNC_FETCH_JOBS=<n> (set 1 to serialize)." \
+            "Submodule fork fetches run bounded-parallel, the cap derived from free RAM (up to 8" \
+            "when memory is ample, fewer under pressure, 1 when scarce; the cap bounds peak memory)." \
+            "Override with DM_SUBMODULE_AI_SYNC_FETCH_JOBS=<n> (set 1 to serialize)." \
             "" \
             "Happy-path only: behind -> fast-forward, detached -> re-attach. Ahead/" \
             "diverged/dirty/unpublished/fetch-failure STOP and are surfaced for a human." \
@@ -239,10 +240,13 @@ fi
 ## loop consumes them instead of fetching inline (falling back to an inline fetch only if a path
 ## was somehow not pre-fetched). Runs in --dry-run too (fetch is the only way to classify).
 ## Cap a desired job count to what free RAM safely allows: a large git fetch (index-pack of a big
-## repo) transiently needs a few hundred MB, so N concurrent fetches OOM a shared host under
-## memory pressure. Derive a ceiling from MemAvailable (the kernel's allocatable-without-swap
-## estimate), ~budget MB per job, clamped to [floor, want]; unreadable MemAvailable -> floor
-## (safe). DM_JOBS_MEMAVAILABLE_KB is a test seam to drive the arithmetic deterministically.
+## repo) transiently needs a few hundred MB, so N concurrent fetches OOM a shared host under memory
+## pressure. Derive a ceiling from MemAvailable (the kernel's allocatable-without-swap estimate) at
+## ~budget MB per job, capped at 'want'. A genuine low reading is HONORED down to 1 (serial) --
+## safety over throughput, never clamped UP past what RAM fits; 'floor' is the fallback used ONLY
+## when MemAvailable is unreadable (a modest fixed default). DM_JOBS_MEMAVAILABLE_KB is a test seam.
+## KEEP IDENTICAL to the copies in dm-tidy and dm-remaster-all (a shared lib would cross the
+## dist-ai / private-ai-config boundary); a drift guard covers the dist-ai pair.
 compute_ram_capped_jobs() {
    local want="$1" floor="$2" budget="$3" avail_kb avail_mb cap
    avail_kb="${DM_JOBS_MEMAVAILABLE_KB:-$(awk '/^MemAvailable:/ { print $2; exit }' /proc/meminfo 2>/dev/null || true)}"
@@ -252,10 +256,13 @@ compute_ram_capped_jobs() {
          return 0
          ;;
    esac
-   avail_mb=$(( avail_kb / 1024 ))
+   ## 10# forces base-10: a leading-zero reading ('08') is otherwise parsed as octal, which
+   ## either errors under errexit or miscomputes the cap. The digit-only case above guarantees
+   ## a valid decimal literal here.
+   avail_mb=$(( 10#${avail_kb} / 1024 ))
    cap=$(( avail_mb / budget ))
-   if [ "${cap}" -lt "${floor}" ]; then
-      cap="${floor}"
+   if [ "${cap}" -lt 1 ]; then
+      cap=1
    fi
    if [ "${cap}" -gt "${want}" ]; then
       cap="${want}"

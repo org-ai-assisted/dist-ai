@@ -616,6 +616,46 @@ else
    fail "prefetch skip wrong; rc=${tidy_rc} labels=$(labels_seen) out:<<<$(cat -- "${tidy_out}")>>>"
 fi
 
+## --- Prefetch E: --dry-run skips prefetch (a preview mutates nothing locally) ---------
+## --prune would delete remote-tracking refs; a dry-run that claims "no changes" must not.
+run_tidy DM_TIDY_PREFETCH="${stubs}/PREFETCH" --dir "${super}" --dry-run
+if [ "${tidy_rc}" -eq 0 ] \
+   && ! grep --quiet -- '^PREFETCH ' "${TIDY_LOG}" \
+   && grep --quiet -- 'skipped (--dry-run' "${tidy_out}"; then
+   pass "--dry-run skips prefetch (no fetch/prune, reported); preview mutates nothing"
+else
+   fail "dry-run prefetch not skipped; rc=${tidy_rc} out:<<<$(cat -- "${tidy_out}")>>>"
+fi
+
+## --- Prefetch D (CANARY): containment -- an ESCAPING .gitmodules path is NOT fetched ---
+## phase_prefetch must realpath-contain submodule paths (like dm-submodule-ai-sync), or a crafted
+## '.gitmodules' path='../victim' gets 'git fetch --prune'd -- a network + ref mutation on a repo
+## OUTSIDE the superproject. Build a sibling 'victim' that passes phase 0 (has 'ai' + both expected
+## remotes, so the sweep is not aborted), point an escaping path at it, and require that prefetch
+## warms the CONTAINED repos but NOT the victim. OLD prefetch (no containment) warms it -> a
+## PREFETCH line for the victim -> this FAILS, as a canary must. Runs while 'super' is pristine.
+victim="${HOME}/victim"
+gitq init --quiet -- "${victim}"
+gitq -C "${victim}" checkout --quiet -b ai
+printf '%s\n' "v" > "${victim}/f"
+gitq -C "${victim}" add f
+gitq -C "${victim}" commit --quiet -m "victim"
+gitq -C "${victim}" remote add org-ai-assisted "file://${fork}"
+gitq -C "${victim}" remote add ArrayBolt3 "file://${fork}"
+victim_real="$( realpath --canonicalize-missing -- "${victim}" )"
+cp -- "${super}/.gitmodules" "${workspace}/gm.bak"
+printf '%s\n' '[submodule "evil"]' '	path = ../victim' '	url = file:///unused' >> "${super}/.gitmodules"
+run_tidy DM_TIDY_PREFETCH="${stubs}/PREFETCH" --dir "${super}"
+cp -- "${workspace}/gm.bak" "${super}/.gitmodules"
+if [ "${tidy_rc}" -eq 0 ] \
+   && grep --quiet --fixed-strings --line-regexp -- "PREFETCH ${super_top}" "${TIDY_LOG}" \
+   && ! grep --quiet --fixed-strings --line-regexp -- "PREFETCH ${victim_real}" "${TIDY_LOG}" \
+   && ! grep --quiet -- 'PREFETCH .*victim' "${TIDY_LOG}"; then
+   pass "prefetch contains submodule paths: an escaping '../victim' is NOT fetched"
+else
+   fail "prefetch containment missing; rc=${tidy_rc} log:<<<$(log_lines)>>>"
+fi
+
 ## --- Case 12 (CANARY): phase 0 refuses early on a MISSING expected remote --------
 ## Remove a dm-tidy-critical remote from the submodule; phase 0's validation must
 ## ABORT before any mutating phase, so a missing remote cannot SILENTLY skip

@@ -448,8 +448,10 @@ phase_remotes() {
 ## Cap a desired parallel-job count to what free RAM safely allows: a large git fetch
 ## (index-pack of a big repo) transiently needs a few hundred MB, so N concurrent fetches
 ## OOM a shared host under memory pressure. Derive a ceiling from MemAvailable (the kernel's
-## allocatable-without-swap estimate), ~budget MB per job, clamped to [floor, want];
-## unreadable MemAvailable -> floor (safe). DM_JOBS_MEMAVAILABLE_KB is a test seam.
+## allocatable-without-swap estimate) at ~budget MB per job, capped at 'want'. A genuine low
+## reading is HONORED down to 1 (serial) -- safety over throughput, never clamped UP past what
+## RAM fits; 'floor' is the fallback used ONLY when MemAvailable is unreadable (a modest fixed
+## default). DM_JOBS_MEMAVAILABLE_KB is a test seam.
 ## KEEP IDENTICAL to the copies in dm-submodule-ai-sync and dm-remaster-all (a shared lib
 ## would cross the dist-ai / private-ai-config boundary); a drift guard covers the dist-ai pair.
 compute_ram_capped_jobs() {
@@ -461,10 +463,13 @@ compute_ram_capped_jobs() {
          return 0
          ;;
    esac
-   avail_mb=$(( avail_kb / 1024 ))
+   ## 10# forces base-10: a leading-zero reading ('08') is otherwise parsed as octal, which
+   ## either errors under errexit or miscomputes the cap. The digit-only case above guarantees
+   ## a valid decimal literal here.
+   avail_mb=$(( 10#${avail_kb} / 1024 ))
    cap=$(( avail_mb / budget ))
-   if [ "${cap}" -lt "${floor}" ]; then
-      cap="${floor}"
+   if [ "${cap}" -lt 1 ]; then
+      cap=1
    fi
    if [ "${cap}" -gt "${want}" ]; then
       cap="${want}"
@@ -473,20 +478,31 @@ compute_ram_capped_jobs() {
 }
 
 ## Phase 1.5: hoist the pipeline's network to the FRONT. The remaster, mirror and
-## submodule-sync phases each FETCH the same fork/upstream tips on demand, so the run
+## submodule-sync phases each FETCH the same fork/trixie tips on demand, so the run
 ## interleaves network (fetch) with compute (merge-tree) and re-downloads the same objects
-## across phases. Warm every ai-workflow repo's remotes HERE, in ONE bounded-parallel pass:
-## the later fetches then negotiate against now-current tracking refs and transfer nothing,
-## so the bulk download happens once, overlapped, up front. 'git fetch --all' warms every
-## remote (fork + upstream + trixie + mirrors) without this tool needing each repo's upstream
-## remote NAME; once the fork's objects are local, a mirror's fetch is cheap. --no-write-fetch-head
-## leaves FETCH_HEAD untouched (a concurrent sibling's 'git merge FETCH_HEAD' stays safe);
-## --prune clears the stale tracking refs that otherwise D/F-conflict a later fetch.
+## across phases. Warm every ai-workflow repo's EXPECTED remotes HERE (the fork +
+## ArrayBolt3/trixie -- the two phase-0 validates), in ONE bounded-parallel pass, so the
+## later fetches negotiate against now-current tracking refs and transfer nothing. The fork's
+## 'master' shares history with upstream, so warming the fork also warms most of what the
+## upstream fetch needs -- no need to know each repo's upstream remote NAME.
+##
+## Fetch by remote NAME, sequentially per repo -- NOT 'git fetch --all'. '--all' honors every
+## configured refspec (a non-standard one could force-overwrite a LOCAL branch) and spawns
+## git's own multi-remote parallelism (which would blow past the RAM cap). The named fetch
+## touches only the two standard remotes' tracking refs. --no-write-fetch-head leaves
+## FETCH_HEAD untouched (a sibling's 'git merge FETCH_HEAD' stays safe); --prune clears the
+## stale tracking refs that otherwise D/F-conflict a later fetch.
+##
+## CONTAINMENT: only the parent + INITIALIZED submodules whose realpath stays strictly under
+## the superproject are warmed. A crafted/stray '.gitmodules' path ('..', '.', a symlink) or an
+## uninitialized submodule (an empty dir makes 'git -C' ASCEND to the parent) would otherwise
+## fetch/prune a repo OUTSIDE the tree, or duplicate-fetch the parent under a ref lock. Same
+## guard as dm-submodule-ai-sync's prefetch.
 ##
 ## BEST-EFFORT, never a gate: a per-repo fetch failure is NOT fatal -- the owning sub-tool still
 ## fetches it for real -- so prefetch never blocks or aborts the sweep, and it is skipped when the
-## sweep is already halted (nothing downstream will fetch). Bounded-parallel + RAM-adaptive so a
-## shared host never OOMs. DM_TIDY_PREFETCH=skip disables it; a stub path drives it in tests.
+## sweep is already halted or under --dry-run (a preview mutates nothing locally). Bounded-parallel
+## + RAM-adaptive so a shared host never OOMs. DM_TIDY_PREFETCH=skip disables it; a stub drives tests.
 phase_prefetch() {
    if mutation_halted; then
       record "1 prefetch" "${mutation_halt_reason}"
@@ -496,19 +512,39 @@ phase_prefetch() {
       record "1 prefetch" "skipped (DM_TIDY_PREFETCH=skip)"
       return 0
    fi
-   log ">>> [1/6] prefetch all remotes in parallel (warm the object DB; best-effort)"
+   if [ "${dry_run}" = "true" ]; then
+      record "1 prefetch" "skipped (--dry-run makes no local change)"
+      return 0
+   fi
+   log ">>> [1/6] prefetch fork + trixie remotes in parallel (warm the object DB; best-effort)"
 
-   ## ai-workflow repos: the parent plus every submodule carrying a local 'ai' (the exact
-   ## set the downstream phases fetch; upstream-only submodules have no 'ai' work).
-   local repos=() path sub_rc=0
+   ## ai-workflow repos: the parent plus every CONTAINED, initialized submodule carrying a local
+   ## 'ai' (the exact set the downstream phases fetch; upstream-only submodules have no 'ai' work).
+   local repos=() path sub sub_real top_real sub_rc=0
+   ## Fallback to a literal 'top' (never empty) so the descendant test cannot fail OPEN.
+   top_real="$( realpath --canonicalize-missing -- "${top}" 2>/dev/null || printf '%s' "${top}" )"
    repos+=( "${top}" )
    read_submodule_paths || sub_rc="$?"
    if [ "${sub_rc}" -eq 0 ]; then
       for path in "${submodule_path_list[@]}"; do
          [ -n "${path}" ] || continue
-         git -C "${top}/${path}" show-ref --verify --quiet "refs/heads/${AI_BRANCH}" 2>/dev/null \
-            || continue
-         repos+=( "${top}/${path}" )
+         sub="${top}/${path}"
+         ## Containment (see header): reject an escaping/equal path, skip an uninitialized
+         ## submodule whose 'git -C' would ASCEND to the parent. realpath resolves symlinks too.
+         sub_real="$( realpath --canonicalize-missing -- "${sub}" 2>/dev/null || true )"
+         [ -n "${sub_real}" ] || continue
+         [ "${sub_real}" = "${top_real}" ] && continue
+         case "${sub_real}/" in
+            "${top_real}"/* )
+               ;;
+            * )
+               continue
+               ;;
+         esac
+         { [ -d "${sub}/.git" ] || [ -f "${sub}/.git" ]; } || continue
+         git -C "${sub}" rev-parse --git-dir >/dev/null 2>&1 || continue
+         git -C "${sub}" show-ref --verify --quiet "refs/heads/${AI_BRANCH}" 2>/dev/null || continue
+         repos+=( "${sub}" )
       done
    fi
 
@@ -530,8 +566,15 @@ phase_prefetch() {
          "${PREFETCH_CMD}" "$1" >/dev/null 2>&1
          return "$?"
       fi
-      git -C "$1" fetch --all --prune --no-tags --no-write-fetch-head \
-         --no-recurse-submodules --quiet >/dev/null 2>&1
+      ## Warm only the two validated remotes, by NAME and sequentially (see header): no
+      ## 'git fetch --all' refspec/parallelism surprises. Best-effort -- a missing/unreachable
+      ## remote just leaves it cold for the owning phase to fetch for real.
+      local r rc=0
+      for r in "${EXPECTED_REMOTES[@]}"; do
+         git -C "$1" fetch --quiet --prune --no-tags --no-write-fetch-head -- "${r}" \
+            >/dev/null 2>&1 || rc=1
+      done
+      return "${rc}"
    }
 
    ## 'wait -n' (no pid) reaps the NEXT finished child and returns its exit status --
