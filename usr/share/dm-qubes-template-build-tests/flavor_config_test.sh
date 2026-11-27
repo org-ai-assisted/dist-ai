@@ -1,7 +1,8 @@
 #!/bin/bash
 ## flavor / stages are the subject globals this test SETS to drive the sourced functions; they are
-## READ only inside those functions (cross-file), so shellcheck cannot see the use (file-wide).
-# shellcheck disable=SC2034
+## READ only inside those functions (cross-file). branch / repo_url are sourced subject constants.
+## shellcheck sees neither assigned here (file-wide).
+# shellcheck disable=SC2034,SC2154
 
 ## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
 ## See the file COPYING for copying conditions.
@@ -148,6 +149,40 @@ if [ "${report_rc}" -ne 0 ] && [ "${diag_found}" -eq 0 ]; then
 else
   printf '%s\n' "  rc=${report_rc} out='${report_out}'" >&2
   check "report() prints diagnostic on missing artifacts dir" 1
+fi
+
+## clone_or_update must REFUSE to reset --hard an existing fork checkout that has uncommitted
+## TRACKED changes (the dirty check runs before any fetch, so this stays offline). CANARY:
+## pre-guard code ran straight to 'reset --hard' and would discard the edit instead of refusing.
+gitrepo="${work}/dirtyco"
+## Neutralize the host's global/system git config so the origin check sees the literal https
+## url (a dev-host url.insteadOf would otherwise rewrite 'git remote get-url' to ssh). Production
+## build hosts carry no such rewrite, so this mirrors their behavior.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+git -c init.defaultBranch="${branch}" init --quiet "${gitrepo}"
+git -C "${gitrepo}" -c core.hooksPath=/dev/null config user.email ci@example.invalid
+git -C "${gitrepo}" -c core.hooksPath=/dev/null config user.name ci
+git -C "${gitrepo}" remote add origin "${repo_url}"
+printf '%s\n' orig >"${gitrepo}/tracked"
+git -C "${gitrepo}" -c core.hooksPath=/dev/null add tracked
+git -C "${gitrepo}" -c core.hooksPath=/dev/null commit --quiet -m init
+printf '%s\n' changed >>"${gitrepo}/tracked"
+dir="${gitrepo}"
+clone_rc=0
+clone_out="$( (clone_or_update) 2>&1)" || clone_rc=$?
+case "${clone_out}" in
+*"uncommitted changes to tracked files"*)
+  clone_diag=0
+  ;;
+*)
+  clone_diag=1
+  ;;
+esac
+if [ "${clone_rc}" -ne 0 ] && [ "${clone_diag}" -eq 0 ]; then
+  check "clone_or_update refuses a dirty tracked checkout" 0
+else
+  printf '%s\n' "  rc=${clone_rc} out='${clone_out}'" >&2
+  check "clone_or_update refuses a dirty tracked checkout" 1
 fi
 
 printf '%s\n' "" "flavor_config_test: ${pass} pass, ${fail} fail"

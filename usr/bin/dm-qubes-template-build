@@ -157,6 +157,12 @@ clone_or_update() {
       printf '%s\n' "${me}: ${dir} is a git checkout whose origin is not the pinned fork -- remove it or pass --dir" >&2
       exit 1
     fi
+    ## reset --hard below pins to the fork tip and would silently discard tracked edits; refuse
+    ## if any exist. Untracked files (the generated builder.yml is gitignored) are unaffected.
+    if ! git -C "${dir}" diff --quiet || ! git -C "${dir}" diff --cached --quiet; then
+      printf '%s\n' "${me}: ${dir} has uncommitted changes to tracked files -- refusing to reset --hard; commit/stash them or pass a fresh --dir" >&2
+      exit 1
+    fi
     git -C "${dir}" fetch --quiet origin "${branch}"
     git -C "${dir}" checkout --quiet "${branch}"
     git -C "${dir}" reset --quiet --hard "origin/${branch}"
