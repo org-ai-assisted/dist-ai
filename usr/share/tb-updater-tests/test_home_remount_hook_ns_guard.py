@@ -73,6 +73,21 @@ def test_ns_guard_precedes_the_remount():
     assert self_ns < apply_at.start(), "ns guard does not precede the remount"
 
 
+def test_propagation_hardened_between_guard_and_remount():
+    ## An unshared namespace is necessary but not sufficient: unshare keeps each
+    ## mount's propagation type, so the hook must detach this session's tree from
+    ## init's peer group (make-rslave / make-private) or the exec remount propagates
+    ## back to init. It must sit AFTER the ns guard and BEFORE the remount.
+    prop = re.search(r"mount\s+--make-r?(?:slave|private)\b", CODE)
+    assert prop is not None, "no propagation hardening (make-rslave/make-private)"
+    self_ns = CODE.index("/proc/self/ns/mnt")
+    apply_at = re.search(r"\btb_remount_exec_apply\b", CODE)
+    assert apply_at is not None, "hook never calls tb_remount_exec_apply"
+    assert self_ns < prop.start() < apply_at.start(), (
+        "propagation hardening must sit between the ns guard and the remount"
+    )
+
+
 def test_creation_goes_through_prepare_owner_not_direct_root():
     ## Creation is delegated to the shared helper (privilege-dropped there); the
     ## hook must not add its own root mkdir/chown back in.
