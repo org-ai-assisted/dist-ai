@@ -141,6 +141,24 @@ MOUNTPOINT="${root_dq}" "${helper}" persistent-sysmaint >/dev/null
 check "double-quoted --id selected (delimiter-agnostic)" \
    "gnulinux-persistent-sysmaint-${dev}" "$(next_entry_of "${root_dq}")"
 
+## 1d. CANARY: an id-shaped TITLE must not win over the real --id. Entry 1's TITLE is
+## 'gnulinux-persistent-sysmaint-deadbeef' but its actual --id is the USER-mode
+## 'gnulinux-user-cafebabe'; entry 2 is the real persistent-sysmaint. The selector must
+## read the --id ARGUMENT, not any id-shaped text elsewhere on the line, and pick entry 2.
+## RED on a whole-line matcher (it would select the title 'gnulinux-persistent-sysmaint-deadbeef').
+root_title="${work_dir}/id_shaped_title"
+mkdir --parents -- "${root_title}/boot/grub"
+printf '%s\n' \
+   "menuentry \"gnulinux-persistent-sysmaint-deadbeef\" --class os \$menuentry_id_option \"gnulinux-user-cafebabe\" {" \
+   "	true" \
+   "}" \
+   "menuentry \"PERSISTENT Mode | SYSMAINT Session\" --class os \$menuentry_id_option \"gnulinux-persistent-sysmaint-feedface\" {" \
+   "	true" \
+   "}" > "${root_title}/boot/grub/grub.cfg"
+MOUNTPOINT="${root_title}" "${helper}" persistent-sysmaint >/dev/null
+check "id-shaped title ignored -> selects the real --id argument" \
+   "gnulinux-persistent-sysmaint-feedface" "$(next_entry_of "${root_title}")"
+
 ## 2. CANARY: an image with NEITHER a per-mode id NOR a per-mode menu title (shared
 ## gnulinux-simple-<dev> and only a generic 'Kicksecure GNU/Linux' title) -> the helper
 ## MUST fail loud, never select blindly.
