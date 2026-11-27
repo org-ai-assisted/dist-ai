@@ -270,6 +270,16 @@ _VIEWPORTS = (("desktop", {"width": 1280, "height": 720}),
 # under contention. 2 == the initial attempt + one retry.
 _WEDGE_ATTEMPTS = 2
 
+# Per-page audit budget. The old 55s whole-page wall clock left almost no room above the 45s
+# networkidle nav below it, so a heavy page whose load merely SLOWED under concurrent-lane
+# contention (not hung) got cut off and false-wedged. Raise both, consistently: a longer nav
+# ceiling for a slow-but-progressing load, and a whole-page budget that sits COMFORTABLY above the
+# nav (nav + force-render + settle + axe inject/run + close). A genuinely hung page still trips the
+# budget (then the one retry, then it is reported) -- the larger budget only stops a slow-but-
+# progressing audit from false-wedging. Invariant (guarded by the test): budget > nav ceiling.
+_NAV_TIMEOUT_MS = 90000           # networkidle navigation ceiling (page.goto), ms
+_HARD_TIMEOUT_DEFAULT = 120       # whole-page wall-clock budget, seconds
+
 
 async def _axe_page(browser, url: str, axe_src: str, settle_ms: int,
                     viewport: Optional[dict] = None) -> dict:
@@ -312,7 +322,7 @@ async def _axe_page(browser, url: str, axe_src: str, settle_ms: int,
     await page.route("**/*", _hermetic)
     try:
         try:
-            resp = await page.goto(url, wait_until="networkidle", timeout=45000)
+            resp = await page.goto(url, wait_until="networkidle", timeout=_NAV_TIMEOUT_MS)
         except Exception:
             # A blocked redirect navigation can surface as a main-frame navigation error -- that is
             # the redirect-stub case, not a wedge. Re-raise anything else (a real load failure).
@@ -345,7 +355,7 @@ async def _axe_page(browser, url: str, axe_src: str, settle_ms: int,
 
 
 async def check(base: str, paths: List[str], axe_source: str, settle_ms: int = 1000,
-                hard_timeout: int = 55) -> Tuple[Set[Key], List[str]]:
+                hard_timeout: int = _HARD_TIMEOUT_DEFAULT) -> Tuple[Set[Key], List[str]]:
     """Audit every page served at `base`, returning (fresh_keys, problems). A problem (a wedged
     page, a bad HTTP status) is a hard fault the caller fails on -- an unauditable page is never a
     silent clean. A content VIOLATION is never retried: a localhost mount is deterministic (mirrors
@@ -560,7 +570,7 @@ def _serve_and_audit(docroot: str, entry: dict, axe_source: str, settle_ms: int,
 
 
 def check_roots(roots: List[str], baseline_dir: str, settle_ms: int = 1000,
-                hard_timeout: int = 55, restrict: Optional[List[str]] = None) -> int:
+                hard_timeout: int = _HARD_TIMEOUT_DEFAULT, restrict: Optional[List[str]] = None) -> int:
     """FAMILY/stage entry (run in the sandbox): audit each root vs its committed accepted-violation
     baseline. SKIPs(77) when Playwright/chromium/axe-core is absent. A missing baseline for a root
     fails CLOSED (seed it first)."""
@@ -631,7 +641,7 @@ def check_roots(roots: List[str], baseline_dir: str, settle_ms: int = 1000,
 
 
 def write_roots(roots: List[str], baseline_dir: str, settle_ms: int = 1000,
-                hard_timeout: int = 55, restrict: Optional[List[str]] = None) -> int:
+                hard_timeout: int = _HARD_TIMEOUT_DEFAULT, restrict: Optional[List[str]] = None) -> int:
     """Seed (overwrite) a per-site baseline from the CURRENT violation set. Refuses to seed a site
     whose pages could not all be audited (a problem) -- a baseline seeded from a half-audited site
     would silently accept nothing for the pages that failed."""

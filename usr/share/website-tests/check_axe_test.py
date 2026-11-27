@@ -561,6 +561,21 @@ def run() -> int:
     ck(_p2 == ["wedged: / [desktop]"],
        "wedge RETRY: a page wedging on every attempt is STILL reported (retry does not mask it): %r" % _p2)
 
+    # per-page TIMEOUT budget (operator decision 2026-11-27: "retry AND suitable timeout"). The
+    # whole-page wall-clock budget must sit ABOVE the networkidle nav ceiling, or a slow nav eats the
+    # entire budget and axe never runs -- the thin 55s-over-45s margin that let contention
+    # false-wedge. Guard the RELATION (not the magic numbers) and that the nav ceiling was not cut.
+    ck(ax._HARD_TIMEOUT_DEFAULT * 1000 > ax._NAV_TIMEOUT_MS,
+       "per-page wall-clock budget exceeds the nav ceiling: %rs vs %rms"
+       % (ax._HARD_TIMEOUT_DEFAULT, ax._NAV_TIMEOUT_MS))
+    ck(ax._NAV_TIMEOUT_MS >= 45000,
+       "nav ceiling not reduced below the original 45s: %rms" % ax._NAV_TIMEOUT_MS)
+    # the raised budget is the default every entry point audits with (not just check()).
+    import inspect as _inspect2
+    for _fn in (ax.check, ax.check_roots, ax.write_roots):
+        ck(_inspect2.signature(_fn).parameters["hard_timeout"].default == ax._HARD_TIMEOUT_DEFAULT,
+           "%s defaults hard_timeout to _HARD_TIMEOUT_DEFAULT" % _fn.__name__)
+
     # identical-links-same-purpose (WCAG 2.4.9 AAA) is OFF by default in axe-core; the run options
     # must keep it explicitly enabled, or the gate silently stops catching two same-name links that
     # point at different destinations. Guard the explicit enable against an accidental revert.
