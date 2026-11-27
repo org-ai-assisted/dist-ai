@@ -88,11 +88,16 @@ def test_refuse_symlinks_rejects_a_symlink(tmp_path):
     assert str(link) in proc.stderr
 
 
-def test_prepare_owner_creates_and_chowns(tmp_path):
+def test_prepare_owner_creates_as_owner_privilege_dropped(tmp_path):
+    ## Creation must DROP to the owner ('runuser -u <owner> -- mkdir ...'), never
+    ## run as root: a root 'mkdir --parents' follows a user-planted PARENT symlink
+    ## (the final-component guard misses it and is racy), an LPE primitive. So there
+    ## must be NO direct root mkdir and NO root chown.
     rec = tmp_path / "rec"
     d1 = tmp_path / "d1"
     d2 = tmp_path / "d2"
     body = (
+        'runuser() { printf "RUNUSER %s\\n" "$*" >> "${REC}"; }\n'
         'mkdir() { printf "MKDIR %s\\n" "$*" >> "${REC}"; }\n'
         'chown() { printf "CHOWN %s\\n" "$*" >> "${REC}"; }\n'
         f'tb_remount_exec_prepare_owner alice "{d1}" "{d2}"\n'
@@ -101,8 +106,10 @@ def test_prepare_owner_creates_and_chowns(tmp_path):
     assert proc.returncode == 0, proc.stderr
     text = rec.read_text()
     for d in (d1, d2):
-        assert f"MKDIR --parents -- {d}" in text, text
-        assert f"CHOWN --no-dereference -- alice:alice {d}" in text, text
+        assert f"RUNUSER -u alice -- mkdir --parents -- {d}" in text, text
+    ## No root-privileged create or chown: the escalation primitive is gone.
+    assert "MKDIR" not in text, text
+    assert "CHOWN" not in text, text
 
 
 def test_apply_remounts_when_noexec(tmp_path):

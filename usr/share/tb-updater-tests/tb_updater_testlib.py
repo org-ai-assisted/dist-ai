@@ -90,6 +90,13 @@ def remount_exec_lib() -> str:
                     "tb-remount-exec.bsh")
 
 
+def home_remount_hook() -> str:
+    """Absolute path of the PAM session hook (pam_exec) under test."""
+    return _resolve("usr/libexec/tb-updater/tb-home-remount-exec",
+                    "/usr/libexec/tb-updater/tb-home-remount-exec",
+                    "tb-home-remount-exec")
+
+
 def read(path: str) -> str:
     with open(path, encoding="utf-8", errors="replace") as handle:
         return handle.read()
