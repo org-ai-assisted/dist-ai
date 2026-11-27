@@ -1,4 +1,7 @@
 #!/bin/bash
+## flavor / stages are the subject globals this test SETS to drive the sourced functions; they are
+## READ only inside those functions (cross-file), so shellcheck cannot see the use (file-wide).
+# shellcheck disable=SC2034
 
 ## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
 ## See the file COPYING for copying conditions.
@@ -11,9 +14,11 @@
 ##       whonix-gateway-18     -> example-configs/qubes-os-r4.3.yml
 ##       whonix-workstation-18 -> example-configs/qubes-os-r4.3.yml
 ##     and returns non-zero for an unknown flavor (so main() errors instead of building nothing).
-##   - write_builder_conf emits a builder.yml that includes the mapped config AND overrides the
-##     executor to docker with the builder image -- the override is what makes the build run off
-##     Qubes (the example-configs ship executor type qubes).
+##   - write_builder_conf includes the mapped config AND overrides the executor to docker; it
+##     injects use-qubes-repo for the whonix flavors (qubes-os-r4.3.yml lacks it) but NOT for
+##     kicksecure (kicksecure.yml already sets it).
+##   - stages_build_requested recognizes both 'build' and its 'b' alias (so report() finds the rpm).
+##   - report() prints its diagnostic (not a silent errexit abort) when the artifacts dir is absent.
 ## Drives the REAL functions, sourced define-only (the subject's BASH_SOURCE guard skips main()).
 ## No docker, no network, no git, no root.
 
@@ -52,13 +57,27 @@ source "${subject}"
 
 pass=0
 fail=0
-check() { if [ "$2" -eq 0 ]; then
-  pass=$((pass + 1))
-  printf '%s\n' "PASS: $1"
-else
-  fail=$((fail + 1))
-  printf '%s\n' "FAIL: $1"
-fi; }
+check() {
+  if [ "$2" -eq 0 ]; then
+    pass=$((pass + 1))
+    printf '%s\n' "PASS: $1"
+  else
+    fail=$((fail + 1))
+    printf '%s\n' "FAIL: $1"
+  fi
+}
+
+## assert MSG CMD...: pass if CMD succeeds. assert_not: pass if CMD fails.
+assert() {
+  local msg="$1"
+  shift
+  if "$@"; then check "${msg}" 0; else check "${msg}" 1; fi
+}
+assert_not() {
+  local msg="$1"
+  shift
+  if "$@"; then check "${msg}" 1; else check "${msg}" 0; fi
+}
 
 ## expect_config FLAVOR EXPECTED: flavor_to_config prints EXPECTED and returns 0.
 expect_config() {
@@ -76,34 +95,60 @@ expect_config kicksecure-18 "example-configs/kicksecure.yml"
 expect_config whonix-gateway-18 "example-configs/qubes-os-r4.3.yml"
 expect_config whonix-workstation-18 "example-configs/qubes-os-r4.3.yml"
 
-## Unknown flavor must return non-zero.
-unknown_rc=0
-flavor_to_config "not-a-real-flavor" >/dev/null 2>&1 || unknown_rc=$?
-if [ "${unknown_rc}" -ne 0 ]; then
-  check "flavor_to_config rejects unknown flavor" 0
-else
-  check "flavor_to_config rejects unknown flavor" 1
-fi
+assert_not "flavor_to_config rejects unknown flavor" flavor_to_config "not-a-real-flavor"
 
-## write_builder_conf emits include + docker executor override.
+## stages_build_requested: 'build' and the 'b' alias -> yes; fetch-only -> no.
+# shellcheck disable=SC2034  ## stages is read by the sourced stages_build_requested
+stages="fetch prep build"
+assert "stages_build_requested matches 'build'" stages_build_requested
+stages="b"
+assert "stages_build_requested matches 'b' alias" stages_build_requested
+stages="fetch prep"
+assert_not "stages_build_requested rejects fetch-only" stages_build_requested
+
+## write_builder_conf: kicksecure -> no use-qubes-repo; whonix -> use-qubes-repo injected. dir and
+## flavor are the subject globals the function reads.
 dir="${work}/co"
-# shellcheck disable=SC2034  ## consumed by the sourced write_builder_conf (reads the global)
-image="qubes-builder-fedora:latest"
 mkdir -p -- "${dir}"
-write_builder_conf "example-configs/kicksecure.yml"
 conf="${dir}/builder.yml"
 
-grep --quiet --line-regexp --fixed-strings "include:" "${conf}" && c1=0 || c1=1
-check "builder.yml has include:" "${c1}"
+# shellcheck disable=SC2034  ## flavor is read by the sourced write_builder_conf / flavor_needs_qubes_repo
+flavor="kicksecure-18"
+write_builder_conf "example-configs/kicksecure.yml"
+assert "kicksecure builder.yml has include:" grep --quiet --line-regexp --fixed-strings "include:" "${conf}"
+assert "kicksecure builder.yml includes the mapped config" grep --quiet --fixed-strings "example-configs/kicksecure.yml" "${conf}"
+assert "kicksecure builder.yml overrides executor to docker" grep --quiet --fixed-strings "type: docker" "${conf}"
+assert "kicksecure builder.yml pins the builder image" grep --quiet --fixed-strings "image: \"qubes-builder-fedora:latest\"" "${conf}"
+assert_not "kicksecure builder.yml omits use-qubes-repo" grep --quiet --fixed-strings "use-qubes-repo:" "${conf}"
 
-grep --quiet --fixed-strings "example-configs/kicksecure.yml" "${conf}" && c2=0 || c2=1
-check "builder.yml includes the mapped config" "${c2}"
+flavor="whonix-gateway-18"
+write_builder_conf "example-configs/qubes-os-r4.3.yml"
+assert "whonix builder.yml includes the mapped config" grep --quiet --fixed-strings "example-configs/qubes-os-r4.3.yml" "${conf}"
+assert "whonix builder.yml injects use-qubes-repo" grep --quiet --fixed-strings "use-qubes-repo:" "${conf}"
+assert "whonix builder.yml overrides executor to docker" grep --quiet --fixed-strings "type: docker" "${conf}"
 
-grep --quiet --fixed-strings "type: docker" "${conf}" && c3=0 || c3=1
-check "builder.yml overrides executor to docker" "${c3}"
-
-grep --quiet --fixed-strings "image: \"qubes-builder-fedora:latest\"" "${conf}" && c4=0 || c4=1
-check "builder.yml pins the builder image" "${c4}"
+## report() must PRINT the diagnostic and exit 1 (not abort silently via errexit) when the rpm
+## artifacts dir is absent. CANARY: without the find '|| true', the assignment trips errexit and
+## report exits 1 with NO output -- report_out would be empty.
+flavor="kicksecure-18"
+stages="fetch prep build"
+dir="${work}/absent-build"
+report_rc=0
+report_out="$( (report) 2>&1)" || report_rc=$?
+case "${report_out}" in
+*"no template rpm"*)
+  diag_found=0
+  ;;
+*)
+  diag_found=1
+  ;;
+esac
+if [ "${report_rc}" -ne 0 ] && [ "${diag_found}" -eq 0 ]; then
+  check "report() prints diagnostic on missing artifacts dir" 0
+else
+  printf '%s\n' "  rc=${report_rc} out='${report_out}'" >&2
+  check "report() prints diagnostic on missing artifacts dir" 1
+fi
 
 printf '%s\n' "" "flavor_config_test: ${pass} pass, ${fail} fail"
 [ "${fail}" -eq 0 ]

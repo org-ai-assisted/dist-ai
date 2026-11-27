@@ -16,16 +16,20 @@
 ## host. podman is NOT usable (it cannot build DEB packages, qubes-issues #10280), so DEB-based
 ## templates require docker.
 ##
-## Pins org-ai-assisted/qubes-builderv2 @ ai, which carries the trixie archive-keyring fix:
-## upstream ships trixie-debian-archive-keyring.gpg as a symlink to the bookworm keyring, which
-## no longer verifies Debian 13's Release, so debootstrap aborts on an unknown key
-## (762F67A0B2C39DE4, the Debian Stable Release Key 13/trixie).
+## Pins org-ai-assisted/qubes-builderv2 @ ai (repo + branch are constants, not flags), which
+## carries the trixie archive-keyring fix: upstream ships trixie-debian-archive-keyring.gpg as a
+## symlink to the bookworm keyring, which no longer verifies Debian 13's Release, so debootstrap
+## aborts on an unknown key (762F67A0B2C39DE4, the Debian Stable Release Key 13/trixie).
 ##
 ## Runs as the invoking NON-root user (needs passwordless sudo for apt and the docker group).
-## Provisioning is idempotent: clone/update the pinned checkout, install dependencies-debian.txt,
-## ensure the docker group, build the builder container image if absent -- then build the
-## template. Multi-user by design: every path derives from the invoking user's HOME; nothing is
-## hardcoded to a specific account.
+## Provisioning is idempotent: clone/update the pinned checkout, install dependencies-debian.txt
+## (which installs docker.io), ensure the docker group, build the builder container image if
+## absent -- then build the template. Multi-user by design: every path derives from the invoking
+## user's HOME; nothing is hardcoded to a specific account.
+##
+## E2E-verified for kicksecure-18 (built on a plain Debian 13 host). whonix-gateway-18 /
+## whonix-workstation-18 are config-complete (use-qubes-repo injected) but NOT yet E2E-verified
+## here.
 ##
 ## core.symlinks: a hardened host (security-misc) may set core.symlinks=false, under which the
 ## upstream 'qb' entry point checks out as a dead text file. We invoke qubesbuilder-cli directly,
@@ -45,24 +49,25 @@ export DEBIAN_FRONTEND=noninteractive
 
 me="${0##*/}"
 
+## Constants (the pin): changing these would defeat the whole point of this helper.
+readonly repo_url="https://github.com/org-ai-assisted/qubes-builderv2.git"
+readonly branch="ai"
+## The only tag tools/generate-container-image.sh produces.
+readonly image="qubes-builder-fedora:latest"
+
 flavor="kicksecure-18"
 stages="fetch prep build"
-repo_url="https://github.com/org-ai-assisted/qubes-builderv2.git"
-branch="ai"
-image="qubes-builder-fedora:latest"
 dir="${HOME}/qubes-builderv2"
 
 usage() {
-  printf '%s\n' "usage: ${me} [--flavor F] [--dir DIR] [--stages 'S..'] [--repo URL] [--branch B] [--image IMG]
+  printf '%s\n' "usage: ${me} [--flavor F] [--dir DIR] [--stages 'S..']
 
 Build a Qubes template on this Debian host via qubes-builderv2's docker executor.
+Pins org-ai-assisted/qubes-builderv2 @ ai.
 
   --flavor   kicksecure-18 | whonix-gateway-18 | whonix-workstation-18 (default: ${flavor})
   --dir      qubes-builderv2 checkout directory (default: \${HOME}/qubes-builderv2)
   --stages   template stages to run (default: '${stages}')
-  --repo     qubes-builderv2 git url to pin (default: our fork)
-  --branch   branch to pin (default: ${branch})
-  --image    builder container image tag (default: ${image})
 
 Produces <dir>/artifacts/templates/rpm/qubes-template-<flavor>-*.noarch.rpm" >&2
   exit "${1:-2}"
@@ -85,6 +90,31 @@ flavor_to_config() {
   esac
 }
 
+## True if the flavor's example-config lacks use-qubes-repo and the generated builder.yml must
+## supply it (qubes-os-r4.3.yml does not set it; kicksecure.yml does).
+flavor_needs_qubes_repo() {
+  case "$1" in
+  whonix-gateway-18 | whonix-workstation-18)
+    return 0
+    ;;
+  *)
+    return 1
+    ;;
+  esac
+}
+
+## True if STAGE (or its one-letter qubes-builderv2 alias) is among the space-separated ${stages}.
+stages_build_requested() {
+  case " ${stages} " in
+  *" build "* | *" b "*)
+    return 0
+    ;;
+  *)
+    return 1
+    ;;
+  esac
+}
+
 ## True if USER is in the docker group.
 in_docker_group() {
   case " $(id -nG -- "$1") " in
@@ -97,38 +127,34 @@ in_docker_group() {
   esac
 }
 
-## Ensure docker is usable by the invoking user. Joins the docker group (idempotent) and, since
-## a new supplementary group is not active in the current session, re-executes once under it.
+## Ensure docker is usable by the invoking user. Runs AFTER install_deps (which installs
+## docker.io and creates the docker group). A freshly-joined group is not active in this
+## session, so we add the user and ask them to re-run rather than re-exec through a shell whose
+## quoting we cannot control.
 ensure_docker() {
   if docker ps >/dev/null 2>&1; then
     return 0
   fi
   local user
   user="$(id -un)"
-  if ! in_docker_group "${user}"; then
-    printf '%s\n' "${me}: adding ${user} to the docker group (sudo)" >&2
-    sudo usermod --append --groups docker -- "${user}"
-  fi
-  if [ "${dm_qtb_regrouped:-}" = "1" ]; then
-    printf '%s\n' "${me}: docker still not usable after joining the docker group" >&2
+  if in_docker_group "${user}"; then
+    printf '%s\n' "${me}: docker is not usable in this session though ${user} is in the docker group" >&2
+    printf '%s\n' "${me}: open a new login session (or run 'newgrp docker'), or start the docker service, then re-run" >&2
     exit 1
   fi
-  printf '%s\n' "${me}: re-executing under the docker group" >&2
-  local relaunch
-  relaunch="$(printf '%q ' "$0" "$@")"
-  export dm_qtb_regrouped=1
-  ## style-ok: R-103 -- intentional re-exec: the docker group just joined is not active in this
-  ## session, so replace this process with one that has it (guarded against looping by
-  ## dm_qtb_regrouped).
-  exec sg docker -c "${relaunch}"
+  printf '%s\n' "${me}: adding ${user} to the docker group (sudo)" >&2
+  sudo usermod --append --groups docker -- "${user}"
+  printf '%s\n' "${me}: ${user} added to the docker group; open a new login session (or 'newgrp docker') and re-run" >&2
+  exit 1
 }
 
-provision() {
+clone_or_update() {
   if [ -d "${dir}/.git" ]; then
     local origin
     origin="$(git -C "${dir}" remote get-url origin 2>/dev/null || true)"
     if [ "${origin}" != "${repo_url}" ]; then
-      printf '%s\n' "${me}: ${dir} exists with origin ${origin:-none}, not ${repo_url} -- refusing to clobber; pass --dir" >&2
+      ## Do not echo the existing origin -- it may embed credentials.
+      printf '%s\n' "${me}: ${dir} is a git checkout whose origin is not the pinned fork -- remove it or pass --dir" >&2
       exit 1
     fi
     git -C "${dir}" fetch --quiet origin "${branch}"
@@ -140,62 +166,67 @@ provision() {
   ## No submodule init: the fetch/prep/build stages need only in-tree plugins. The sole
   ## submodule (publish/mirrors, publish-only) uses a relative URL that resolves against the
   ## fork's org, where the sibling repo was never forked -- and we never publish.
+}
 
+install_deps() {
   ## style-ok: allow-apt-get -- runs on a generic Debian build host where the
   ## apt-get-noninteractive wrapper is not present; DEBIAN_FRONTEND is exported above.
   sudo apt-get update
-  ## dependencies-debian.txt is one package per line; word-splitting is intended.
+  ## dependencies-debian.txt is one package per line; word-splitting is intended. '--' stops a
+  ## stray leading-dash line from being read as an apt option.
   # shellcheck disable=SC2046
   ## style-ok: allow-apt-get -- see above.
-  sudo apt-get install --yes $(cat -- "${dir}/dependencies-debian.txt")
+  sudo apt-get install --yes -- $(cat -- "${dir}/dependencies-debian.txt")
+}
 
+ensure_image() {
   if ! docker image inspect "${image}" >/dev/null 2>&1; then
     printf '%s\n' "${me}: building the builder container image ${image}" >&2
     (cd -- "${dir}" && tools/generate-container-image.sh docker)
   fi
 }
 
+provision() {
+  clone_or_update
+  install_deps
+  ensure_docker
+  ensure_image
+}
+
 write_builder_conf() {
   local config="$1"
-  cat >"${dir}/builder.yml" <<EOF
-include:
-  - ${config}
-
-executor:
-  type: docker
-  options:
-    image: "${image}"
-EOF
+  {
+    printf '%s\n' "include:"
+    printf '%s\n' "  - ${config}"
+    printf '%s\n' ""
+    if flavor_needs_qubes_repo "${flavor}"; then
+      printf '%s\n' "use-qubes-repo:"
+      printf '%s\n' "  version: '4.3'"
+      printf '%s\n' ""
+    fi
+    printf '%s\n' "executor:"
+    printf '%s\n' "  type: docker"
+    printf '%s\n' "  options:"
+    printf '%s\n' "    image: \"${image}\""
+  } >"${dir}/builder.yml"
 }
 
 build() {
-  cd -- "${dir}"
   ## 'qb' is a symlink to qubesbuilder-cli; call the real entry point so a core.symlinks=false
-  ## host is unaffected. Unquoted \${stages} intentionally splits into separate stage words.
+  ## host is unaffected. Unquoted ${stages} intentionally splits into separate stage words.
   # shellcheck disable=SC2086
-  ./qubesbuilder-cli -t "${flavor}" template ${stages}
-}
-
-## True if STAGE is one of the space-separated ${stages}.
-stages_include() {
-  case " ${stages} " in
-  *" $1 "*)
-    return 0
-    ;;
-  *)
-    return 1
-    ;;
-  esac
+  (cd -- "${dir}" && ./qubesbuilder-cli -t "${flavor}" template ${stages})
 }
 
 report() {
-  ## Only a run that included the 'build' stage produces a template rpm.
-  if ! stages_include build; then
+  ## Only a run that included the build stage (or its 'b' alias) produces a template rpm.
+  if ! stages_build_requested; then
     printf '%s\n' "${me}: stages '${stages}' complete (no build stage -> no template rpm)"
     return 0
   fi
   local rpm
-  rpm="$(find "${dir}/artifacts/templates/rpm" -name "qubes-template-${flavor}-*.noarch.rpm" 2>/dev/null | sort | tail -1)"
+  ## Newest by mtime; '|| true' so a missing artifacts dir hits the diagnostic below, not errexit.
+  rpm="$(find "${dir}/artifacts/templates/rpm" -name "qubes-template-${flavor}-*.noarch.rpm" -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2- || true)"
   if [ -n "${rpm}" ]; then
     printf '%s\n' "${me}: built ${rpm}"
     printf '%s\n' "DM-QUBES-TEMPLATE-BUILD-DONE rpm=${rpm}"
@@ -206,9 +237,6 @@ report() {
 }
 
 main() {
-  ## Keep the original argv for ensure_docker's re-exec (the parse loop consumes "$@").
-  local -a argv=("$@")
-
   while [ "$#" -gt 0 ]; do
     case "$1" in
     --flavor)
@@ -221,18 +249,6 @@ main() {
       ;;
     --stages)
       stages="$2"
-      shift 2
-      ;;
-    --repo)
-      repo_url="$2"
-      shift 2
-      ;;
-    --branch)
-      branch="$2"
-      shift 2
-      ;;
-    --image)
-      image="$2"
       shift 2
       ;;
     --help | -h)
@@ -253,6 +269,11 @@ main() {
     esac
   done
 
+  if [ "$#" -gt 0 ]; then
+    printf '%s\n' "${me}: unexpected argument: $1" >&2
+    usage 2
+  fi
+
   if [ "$(id -u)" = "0" ]; then
     printf '%s\n' "${me}: run as a non-root user with docker-group access, not root" >&2
     exit 1
@@ -264,8 +285,8 @@ main() {
     usage 2
   fi
 
-  ## After the no-side-effect checks (help, root, flavor): docker may add to a group + re-exec.
-  ensure_docker "${argv[@]}"
+  ## Absolutize so build()/report() agree on the path regardless of the current directory.
+  dir="$(readlink -m -- "${dir}")"
 
   provision
   write_builder_conf "${config}"
