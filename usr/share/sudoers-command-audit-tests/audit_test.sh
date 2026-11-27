@@ -385,6 +385,24 @@ run_audit --root "${root}" "${work}/cidr-plain"
 check "non-spaced command after CIDR is audited -> missing (exit 1)" rc_is 1
 check "non-spaced CIDR command named" out_has '/opt/no-such-cidr-cmd'
 
+## 21. a rule whose -f sudoers run is polluted must not borrow a SIBLING rule's
+##     clean resolution of the same JSON command string. Rule Q grants
+##     /usr/bin/foo with an argument (JSON '/usr/bin/foo bar', /usr/bin/foo
+##     present); rule P carries a CIDR host spec and the spaced PATH
+##     '/usr/bin/foo bar' (absent, a dead grant), collapsing to the SAME JSON
+##     string. P's polluted run adds no clean entry, so without the run-count vs
+##     JSON-count check Q's '/usr/bin/foo' would resolve BOTH (a false clean);
+##     the count mismatch marks the shared string inconclusive instead.
+printf '%s\n' '#!/bin/sh' > "${root}/usr/bin/foo"
+chmod +x -- "${root}/usr/bin/foo"
+## /usr/bin/foo bar (P's real spaced path) deliberately absent.
+printf '%s\n' \
+  'user ALL=NOPASSWD: /usr/bin/foo bar' \
+  'user 10.0.0.0/8 = NOPASSWD: /usr/bin/foo\ bar' > "${work}/polluted-share"
+run_audit --root "${root}" "${work}/polluted-share"
+check "polluted rule sharing a sibling's JSON string -> inconclusive (exit 2)" rc_is 2
+safe-rm --force -- "${root}/usr/bin/foo"
+
 ## --- report ------------------------------------------------------------------
 printf '%s\n' "sudoers-command-audit-tests: ${pass} pass, ${fail} fail, 0 skip"
 [ "${fail}" -eq 0 ]

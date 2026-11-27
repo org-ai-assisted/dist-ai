@@ -158,9 +158,10 @@ def _unescape(token):
 
 
 def extract_command_map(sudoers_text):
-    """Map each rule's full de-escaped command string (path + arguments, the
-    exact form cvtsudoers' JSON emits) to that rule's command PATH, recovered
-    from cvtsudoers' -f sudoers output. cvtsudoers' JSON collapses the
+    """Return (mapping, counts) from cvtsudoers' -f sudoers output. mapping takes
+    each rule's full de-escaped command string (path + arguments, the exact form
+    cvtsudoers' JSON emits) to that rule's command PATH; counts is how many clean
+    runs produced each full string. cvtsudoers' JSON collapses the
     command/argument boundary (an escaped-space path and a path+arguments both
     serialise to one space-joined string), but the -f sudoers round-trip keeps
     the escape on the command PATH while de-escaping arguments -- so the first
@@ -170,17 +171,22 @@ def extract_command_map(sudoers_text):
     command string. When two rules collapse to the SAME JSON string but have
     DIFFERENT recovered paths (a spaced PATH vs a path+argument), the key is
     marked AMBIGUOUS_BOUNDARY: the JSON cannot distinguish them, so the audit
-    must refuse rather than pick one by text order."""
+    must refuse rather than pick one by text order. counts lets the caller catch
+    a rule whose run was polluted (a host spec / option '/' earlier on the line
+    consumed its command): that rule produces no clean run for its full string,
+    so the string is under-counted versus the JSON pass."""
     mapping: "dict[str, str]" = {}
+    counts: "dict[str, int]" = {}
     for run in SUDOERS_COMMAND_RE.findall(sudoers_text):
         full = _unescape(run.rstrip())
         match = SUDOERS_TOKEN_RE.match(run)
         path = _unescape(match.group(0)) if match else full
+        counts[full] = counts.get(full, 0) + 1
         if full not in mapping:
             mapping[full] = path
         elif mapping[full] != path:
             mapping[full] = AMBIGUOUS_BOUNDARY
-    return mapping
+    return mapping, counts
 
 
 def command_path(command_string, command_map):
@@ -287,10 +293,12 @@ def parse_source(cvt, path, root_real, baseline):
         encoding="utf-8",
         check=False,
     )
-    command_map = (extract_command_map(round_trip.stdout)
-                   if round_trip.returncode == 0 else {})
+    command_map, run_counts = (extract_command_map(round_trip.stdout)
+                               if round_trip.returncode == 0 else ({}, {}))
 
-    commands = []
+    ## Gather every command entry first, so each JSON command string can be
+    ## counted against the clean -f sudoers runs for it.
+    raw = []
 
     def collect(entries):
         for entry in entries or []:
@@ -299,14 +307,30 @@ def parse_source(cvt, path, root_real, baseline):
                 ## this file (normal for a drop-in); its members are checked
                 ## wherever the alias is defined. Nothing to stat here.
                 continue
-            if command_path(entry["command"], command_map) is not None:
-                commands.append((entry["command"], bool(entry.get("negated"))))
+            raw.append((entry["command"], bool(entry.get("negated"))))
 
     for spec in data.get("User_Specs", []):
         for cmnd_spec in spec.get("Cmnd_Specs", []):
             collect(cmnd_spec.get("Commands"))
     for members in (data.get("Command_Aliases") or {}).values():
         collect(members)
+
+    ## A command string produced by MORE rules than there are clean -f sudoers
+    ## runs for it means some rule's run was polluted (its command consumed into
+    ## a host spec / option earlier on the line). That rule's boundary must NOT
+    ## be taken from a sibling rule that happens to share the JSON string, so the
+    ## string is marked ambiguous (inconclusive) rather than resolved via the
+    ## sibling's clean entry.
+    json_counts: "dict[str, int]" = {}
+    for command_string, _negated in raw:
+        json_counts[command_string] = json_counts.get(command_string, 0) + 1
+    for full, run_count in run_counts.items():
+        if (command_map.get(full) != AMBIGUOUS_BOUNDARY
+                and json_counts.get(full, 0) != run_count):
+            command_map[full] = AMBIGUOUS_BOUNDARY
+
+    commands = [(command_string, negated) for command_string, negated in raw
+                if command_path(command_string, command_map) is not None]
 
     return commands, command_map, include_gap, warnings, None
 

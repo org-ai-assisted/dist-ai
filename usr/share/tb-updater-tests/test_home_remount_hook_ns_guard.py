@@ -42,11 +42,15 @@ _GUARD_OPEN_RE = re.compile(
 ## A shell if/fi KEYWORD: in command position (line start or after a `; & | (`
 ## separator, or a then/do/else that introduces a command) and terminated by
 ## whitespace / `; & |` / `)` / end-of-line. This rejects a bare word that merely
-## contains the letters -- `echo fi`, `dd if=...`, a quoted "fi", `fi#x` -- which
-## a plain `\b(if|fi)\b` miscounts. It is a bounded structural heuristic for our
-## own simple hook, NOT a full bash tokenizer; an adversarially obfuscated hook
-## (heredocs, `case..esac`, nested quoting) is out of scope -- the hook is our
-## code, and the shipped hook is what the live tests assert against.
+## contains the letters -- `echo fi`, `dd if=...`, `fi#x` -- which a plain
+## `\b(if|fi)\b` miscounts. It is a bounded structural heuristic for our own
+## simple hook, NOT a bash tokenizer, and does NOT track quote state: a
+## keyword-like WORD inside a quoted string or an inline comment (e.g.
+## `logger "then fi"`) is still counted. Tokenizing bash to exclude those is the
+## "too complex to catch simply -> do not reinvent a bash parser" case and is
+## deliberately OUT OF SCOPE -- the hook is our own code and the shipped hook is
+## what the live tests assert against; an adversarially obfuscated hook
+## (heredocs, `case..esac`, keyword words buried in strings) is not the threat.
 _IF_FI_RE = re.compile(
     r"(?:^|[;&|(]|\bthen\b|\bdo\b|\belse\b)[ \t]*(if|fi)(?=[ \t;&|)]|$)",
     re.MULTILINE)
