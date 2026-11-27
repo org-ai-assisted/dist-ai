@@ -174,7 +174,7 @@ class BindpBehaviorTest(unittest.TestCase):
     def test_invalid_bind_addr_not_applied(self):
         ## A bad BIND_ADDR must be rejected (address left wildcard), with a warning.
         out = self._probe_run("bind-inet", BIND_ADDR="not.an.ip")
-        self.assertEqual(out["addr"], "0.0.0.0")
+        self.assertEqual(out["addr"], "0.0.0.0")  # nosec B104 -- wildcard-address readback assertion, not a bind
         self.assertIn("BIND_ADDR", out["_stderr"])
 
     def test_invalid_bind_port_not_applied(self):
