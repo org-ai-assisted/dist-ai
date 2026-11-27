@@ -179,6 +179,7 @@ core_suites=(
    strip-markup-tests
    systemcheck-tests
    systemcheck-tests-bwrap
+   tb-starter-tests
    tb-updater-tests
    terminal-poc-corpus-tests
    tirdad-tests
@@ -819,6 +820,15 @@ wire() {
             )
          fi
          ;;
+      tb-starter)
+         ## check_noexec_do_test sources the REAL torbrowser from the checkout
+         ## (TB_STARTER_REPO) and the helper-scripts libraries it loads at
+         ## source time (HELPER_SCRIPTS_REPO; the test derives HELPER_SCRIPTS_PATH).
+         wire_env=( "TB_STARTER_REPO=$( pkg_dir tb-starter )" )
+         if [ -n "${hs}" ]; then
+            wire_env+=( "HELPER_SCRIPTS_REPO=${hs}" )
+         fi
+         ;;
       tb-updater)
          ## The core suite reads update-torbrowser / desktop-starter-wrapper /
          ## version-validator source from the checkout; the e2e suite installs
@@ -1375,6 +1385,9 @@ suite_component() {
          ;;
       swap-file-creator)
          printf '%s' 'swap-file-creator'
+         ;;
+      tb-starter)
+         printf '%s' 'tb-starter'
          ;;
       tb-updater)
          printf '%s' 'tb-updater'
