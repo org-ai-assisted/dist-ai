@@ -29,7 +29,6 @@ import os
 import shutil
 import socket
 import subprocess
-import sys
 import tempfile
 import unittest
 
@@ -52,6 +51,10 @@ def _free_udp_port():
 
 
 class BindpBehaviorTest(unittest.TestCase):
+    _tmp: str
+    _lib: str
+    _probe: str
+
     @classmethod
     def setUpClass(cls):
         src_dir = _bindp_src_dir()
@@ -191,4 +194,4 @@ class BindpBehaviorTest(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    sys.exit(unittest.main())
+    unittest.main()

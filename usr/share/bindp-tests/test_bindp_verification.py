@@ -73,6 +73,9 @@ def _require(tool):
 
 
 class BindpVerificationTest(unittest.TestCase):
+    src_dir: str
+    cbmc: str
+
     @classmethod
     def setUpClass(cls):
         cls.src_dir = _bindp_src_dir()
@@ -98,4 +101,4 @@ class BindpVerificationTest(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    sys.exit(unittest.main())
+    unittest.main()

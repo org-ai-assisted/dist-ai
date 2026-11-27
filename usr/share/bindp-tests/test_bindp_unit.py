@@ -24,7 +24,6 @@ missing subject (no bindp.c under BINDP_REPO) skips.
 import os
 import shutil
 import subprocess
-import sys
 import tempfile
 import unittest
 
@@ -42,6 +41,9 @@ def _bindp_src_dir():
 
 
 class BindpUnitTest(unittest.TestCase):
+    _tmp: str
+    _bin: str
+
     @classmethod
     def setUpClass(cls):
         src_dir = _bindp_src_dir()
@@ -76,4 +78,4 @@ class BindpUnitTest(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    sys.exit(unittest.main())
+    unittest.main()
