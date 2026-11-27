@@ -72,9 +72,12 @@ def _modes_on_line(tokens):
 
     Scope: realistic GNU spellings a maintainer would actually write to
     (re)create this dir -- long flags, and attached OR clustered short mode
-    options (-m0775, -pm0775, -pm 0775). Deliberately NOT a getopt emulator:
-    option abbreviations (--mod=0775) and chmod --reference are out of scope
-    (the house style mandates canonical long flags), as is adversarial shell.
+    options (-m0775, -pm0775, -pm 0775). A clustered argument-taking option
+    (-g GROUP, -o OWNER, -m MODE) consumes the rest of its token as the value,
+    so `-gadm` is group 'adm' with no mode, not a cluster ending in a mode
+    letter. Deliberately NOT a getopt emulator: option abbreviations
+    (--mod=0775) and chmod --reference are out of scope (the house style
+    mandates canonical long flags), as is adversarial shell.
     """
     command = tokens[0].split('/')[-1]
     modes = []
@@ -95,17 +98,32 @@ def _modes_on_line(tokens):
             elif token in ('-m', '--mode') and index + 1 < len(tokens):
                 modes.append(tokens[index + 1])
                 index += 1
-            elif token.startswith('-') and not token.startswith('--') \
-                    and 'm' in token:
-                ## Attached or clustered short form: -m0775, -pm0775, -Dm2775,
-                ## or -pm with the mode in the next token. The mode follows the
-                ## 'm': attached here, else the next operand.
-                attached = token[token.index('m') + 1:]
-                if attached:
-                    modes.append(attached)
-                elif index + 1 < len(tokens):
-                    modes.append(tokens[index + 1])
-                    index += 1
+            elif token.startswith('-') and not token.startswith('--'):
+                ## Short-option cluster. Walk letters left to right. An
+                ## argument-taking option (-m MODE, -g GROUP, -o OWNER) consumes
+                ## the REST of the token as its value, so letters after it are
+                ## NOT options (install -gadm = group 'adm', no mode). No-arg
+                ## flags (-d -p -D -v -Z ...) continue the cluster. Only -m
+                ## yields a mode: attached (-m0775, -dm0775) or next token (-pm).
+                cluster = token[1:]
+                position = 0
+                while position < len(cluster):
+                    letter = cluster[position]
+                    if letter not in ('m', 'g', 'o'):
+                        position += 1
+                        continue
+                    value = cluster[position + 1:]
+                    if letter == 'm':
+                        if value:
+                            modes.append(value)
+                        elif index + 1 < len(tokens):
+                            modes.append(tokens[index + 1])
+                            index += 1
+                    elif not value and index + 1 < len(tokens):
+                        ## -g/-o with a detached value consumes the next token;
+                        ## skip it so it is not re-read as a path or mode.
+                        index += 1
+                    break
             index += 1
     return modes
 
@@ -197,6 +215,13 @@ class ModeHelperTestCase(unittest.TestCase):
             (['mkdir', '-pm', '2777', '/d'], ['2777']),
             ## A cluster with no mode letter sets no explicit mode.
             (['mkdir', '-pv', '/d'], []),
+            ## An argument-taking option (-g GROUP) consumes its attached value;
+            ## a trailing 'm' in the group name is NOT a mode option, and the
+            ## path must not be swallowed as a mode.
+            (['install', '-d', '-m0755', '-gadm', STATUS_FILES_DIR], ['0755']),
+            (['install', '-dgadm', '/d'], []),
+            ## Detached -g argument (the group is the next token, not a mode).
+            (['install', '-d', '-g', 'adm', '-m0755', '/d'], ['0755']),
         ]
         for tokens, expected in cases:
             self.assertEqual(_modes_on_line(tokens), expected, tokens)

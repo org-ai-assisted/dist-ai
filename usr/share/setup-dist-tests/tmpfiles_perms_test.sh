@@ -12,7 +12,10 @@
 ## group/world-writable. The "setup done" markers there are written by root
 ## via privleap; a group/world-writable directory would let any local user
 ## plant a .done/.skip and skip the wizard. Fails if the declared mode grants
-## group or other write.
+## group or other write, OR if the mode/owner is left unspecified ('-'):
+## systemd only applies a default on creation and preserves an existing dir's
+## mode/owner, so an explicit safe mode and explicit root owner are required to
+## enforce the property idempotently.
 ##
 ## Subject: the shipped tmpfiles conf. Set SETUP_DIST_REPO to a checkout, else
 ## the installed package. No root, no network.
@@ -41,12 +44,17 @@ if [ ! -r "${conf}" ]; then
    exit 1
 fi
 
-## True (rc 0) if an octal tmpfiles mode grants write to group or other.
-mode_grants_group_or_other_write() {
+## True (rc 0) if a tmpfiles mode does NOT enforce safe, root-only-writable
+## perms on this dir: an unspecified '-', an unparseable mode, or an explicit
+## octal granting group/other write. A security-sensitive dir needs an EXPLICIT
+## safe octal: with '-' systemd leaves mode_set false and sets the mode only on
+## CREATION, preserving an existing dir's perms, so a pre-set 0777 is never
+## corrected. Only an explicit non-group/other-write octal enforces idempotently.
+mode_not_safe_enforced() {
    local mode="$1"
    if [ "${mode}" = "-" ]; then
-      ## '-' = systemd's default mode (0755 for a 'd' entry); root-write only.
-      return 1
+      ## Unspecified: not enforced on an existing dir -- require explicit octal.
+      return 0
    fi
    ## Strip a leading tmpfiles mode modifier ('~' mask, ':' only-on-create).
    mode="${mode#[~:]}"
@@ -62,12 +70,15 @@ mode_grants_group_or_other_write() {
    return 1
 }
 
-## True (rc 0) if a tmpfiles owner field names a non-root user. '-'/'0'/'root'
-## all resolve to root for a root-run 'd' entry.
-owner_is_nonroot() {
+## True (rc 0) if a tmpfiles owner field does NOT enforce root ownership: a
+## non-root name, OR an unspecified '-'. With '-' systemd leaves uid_set false
+## and preserves an existing dir's owner, so a pre-existing non-root (e.g. UID
+## 1000) owner is never corrected and can still plant .done/.skip. Only an
+## explicit 'root'/'0' enforces root ownership idempotently.
+owner_not_root_enforced() {
    local owner="$1"
    case "${owner}" in
-      root|0|-)
+      root|0)
          return 1
          ;;
       *)
@@ -78,27 +89,30 @@ owner_is_nonroot() {
 
 ## Self-canary: neither checker may green a bad conf, so prove each flags the
 ## unsafe cases and passes the safe ones before trusting it on the real conf.
-for safe_mode in 0755 0700 -; do
-   if mode_grants_group_or_other_write "${safe_mode}"; then
+for safe_mode in 0755 0700; do
+   if mode_not_safe_enforced "${safe_mode}"; then
       printf '%s\n' "FAIL: checker flagged safe mode ${safe_mode}" >&2
       exit 1
    fi
 done
-for bad_mode in 0775 0757 0777 0070; do
-   if ! mode_grants_group_or_other_write "${bad_mode}"; then
-      printf '%s\n' "FAIL: checker missed writable mode ${bad_mode}" >&2
+## '-' is unenforced on an existing dir (systemd preserves perms), so it must be
+## flagged as unsafe, not waved through as a safe default.
+for bad_mode in 0775 0757 0777 0070 -; do
+   if ! mode_not_safe_enforced "${bad_mode}"; then
+      printf '%s\n' "FAIL: checker missed unenforced/writable mode ${bad_mode}" >&2
       exit 1
    fi
 done
-for root_owner in root 0 -; do
-   if owner_is_nonroot "${root_owner}"; then
+for root_owner in root 0; do
+   if owner_not_root_enforced "${root_owner}"; then
       printf '%s\n' "FAIL: owner checker flagged root owner ${root_owner}" >&2
       exit 1
    fi
 done
-for bad_owner in user nobody 1000; do
-   if ! owner_is_nonroot "${bad_owner}"; then
-      printf '%s\n' "FAIL: owner checker missed non-root owner ${bad_owner}" >&2
+## '-' preserves an existing dir's owner (unenforced), so it must be flagged.
+for bad_owner in user nobody 1000 -; do
+   if ! owner_not_root_enforced "${bad_owner}"; then
+      printf '%s\n' "FAIL: owner checker missed unenforced/non-root owner ${bad_owner}" >&2
       exit 1
    fi
 done
@@ -120,23 +134,24 @@ fi
 
 # shellcheck disable=SC2086
 set -- ${line}
-## Field 3 is the mode, field 4 the owner; an omitted/`-` field means the
-## systemd default (mode 0755, owner root), both safe. ${n:--} also avoids a
-## set -u abort on a short line.
+## Field 3 is the mode, field 4 the owner. An omitted/`-` field is NOT a safe
+## default here: systemd only applies the default on creation and preserves an
+## existing dir's mode/owner, so this security-sensitive dir must declare both
+## explicitly. ${n:--} maps a short line to '-', which the checks then reject.
 mode="${3:--}"
 owner="${4:--}"
 
-if mode_grants_group_or_other_write "${mode}"; then
-   printf '%s\n' "FAIL: ${conf} declares ${status_files_dir} mode ${mode} (group/world-writable)" >&2
+if mode_not_safe_enforced "${mode}"; then
+   printf '%s\n' "FAIL: ${conf} declares ${status_files_dir} mode ${mode} (not an enforced root-only mode)" >&2
    exit 1
 fi
 
-## Root-owned is half the property: a non-root owner of a 0755 dir can still
-## plant .done/.skip.
-if owner_is_nonroot "${owner}"; then
-   printf '%s\n' "FAIL: ${conf} declares ${status_files_dir} owner ${owner} (not root)" >&2
+## Enforced root ownership is half the property: a non-root owner of a 0755 dir
+## can still plant .done/.skip.
+if owner_not_root_enforced "${owner}"; then
+   printf '%s\n' "FAIL: ${conf} declares ${status_files_dir} owner ${owner} (not enforced root)" >&2
    exit 1
 fi
 
-printf '%s\n' "PASS: ${status_files_dir} declared mode ${mode} owner ${owner} (root-owned, no group/other write)"
+printf '%s\n' "PASS: ${status_files_dir} declared mode ${mode} owner ${owner} (explicit root-owned, no group/other write)"
 exit 0
