@@ -9,8 +9,9 @@
 Scenario tests for check_mount_options -- systemcheck's presenter over
 security-misc's `remount-secure --check` mount-options audit.
 
-check_mount_options runs `remount-secure --check 3` and translates its verdict
-into a systemcheck result: exit 0 -> green info (verbose-gated); a deviation
+check_mount_options runs `remount-secure --check` (no explicit level, so the
+audit targets the configured drop-in level) and translates its verdict into a
+systemcheck result: exit 0 -> green info (verbose-gated); a deviation
 exit -> an orange "Not hardened" warning listing the DEVIATION lines; a failed
 run (no deviation lines) -> an orange "Indeterminate" warning. All set EXIT_CODE.
 

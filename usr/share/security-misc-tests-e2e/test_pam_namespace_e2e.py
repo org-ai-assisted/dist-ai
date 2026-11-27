@@ -30,6 +30,9 @@ HARDENED_TMPFS = '/run/pam-namespace'
 NS_CONF = '/etc/security/namespace.d/30_security-misc.conf'
 USERS = ('smnse2e1', 'smnse2e2')
 HARDEN_OPTS = ('nosuid', 'nodev', 'noexec')
+## Temporary passwordless-sudo grant for the Option-B elevation test; swept in
+## teardown. 'zzz-' sorts last so it overrides, no dot so sudo reads it.
+ELEV_SUDOERS = '/etc/sudoers.d/zzz-sm-ns-e2e'
 
 
 def sh(cmd):
@@ -79,6 +82,8 @@ class PamNamespaceE2E(unittest.TestCase):
     def tearDownClass(cls):
         if os.geteuid() != 0:
             return
+        if os.path.exists(ELEV_SUDOERS):
+            os.remove(ELEV_SUDOERS)
         for user in getattr(cls, '_created', []):
             sh('loginctl disable-linger %s 2>/dev/null' % user)
             sh('pkill -u %s 2>/dev/null; sleep 1; userdel -rf %s 2>/dev/null'
@@ -177,6 +182,50 @@ class PamNamespaceE2E(unittest.TestCase):
         self.assertEqual(active.stdout.strip(), 'active',
                          'transient --user unit not active: %s' % active.stdout)
         sh('systemctl --user --machine %s@ stop sm-e2e-probe.service' % user)
+
+    def test_8_elevated_root_gets_system_tmp(self):
+        """Option B: root reached by elevation (sudo) must see the SYSTEM /tmp,
+        not the calling user's polyinstantiated instance. The pam-config runs a
+        second, uid-0-gated `pam_namespace.so unmnt_only` that unmounts the
+        inherited per-user binds in the elevated process's fresh namespace;
+        without it an unprivileged user could prime a /tmp view that root then
+        operates in (a categorical privilege-escalation surface). The documented
+        accepted consequence is that a `echo x >/tmp/f; sudo cat /tmp/f` handoff
+        no longer works -- which is exactly what this asserts."""
+        user = USERS[0]
+        with open(ELEV_SUDOERS, 'w', encoding='utf-8') as handle:
+            handle.write('%s ALL=(root) NOPASSWD: ALL\n' % user)
+        ## sudoers.d requires 0440; a looser mode makes sudo ignore the file.
+        os.chmod(ELEV_SUDOERS, 0o440)
+        try:
+            ## The user writes a sentinel into its OWN polyinstantiated /tmp.
+            wrote = login_sh(
+                user, 'umask 077; echo elevated-secret > /tmp/elev-probe && echo OK')
+            self.assertIn('OK', wrote.stdout,
+                          'user write to its poly /tmp failed: %s' % wrote.stderr)
+            ## Root reached by sudo FROM that user session must NOT see the file:
+            ## it operates in the system /tmp. Check sudo itself worked first, so
+            ## a broken sudo grant is reported as such, not as a false pass.
+            probe = login_sh(
+                user, 'sudo --non-interactive sh -c '
+                "'id -u; cat /tmp/elev-probe 2>&1 || true'")
+            self.assertEqual(probe.returncode, 0,
+                             'sudo elevation failed: %s' % probe.stderr)
+            self.assertTrue(probe.stdout.lstrip().startswith('0'),
+                            'sudo did not elevate to uid 0: %r' % probe.stdout)
+            self.assertNotIn('elevated-secret', probe.stdout,
+                             'elevated root saw the caller user poly /tmp file - '
+                             'Option B unmnt_only NOT effective: %r' % probe.stdout)
+            ## The elevated root /tmp must resolve to the SYSTEM instance, not the
+            ## caller's per-user tmp-inst bind.
+            src = login_sh(
+                user, 'sudo --non-interactive findmnt -no SOURCE --target /tmp | head -1')
+            self.assertNotIn('tmp-inst/%s' % user, src.stdout,
+                             'elevated root /tmp is the caller user instance: %s'
+                             % src.stdout)
+        finally:
+            if os.path.exists(ELEV_SUDOERS):
+                os.remove(ELEV_SUDOERS)
 
 
 if __name__ == '__main__':
