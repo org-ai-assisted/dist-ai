@@ -47,25 +47,60 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PROBE = os.path.join(HERE, "namespace_propagation_probe.bash")
 
 
-def _userns_available() -> bool:
-    result = subprocess.run(
+def _userns_probe() -> "subprocess.CompletedProcess[str]":
+    return subprocess.run(
         ["unshare", "--map-root-user", "--", "true"],
-        capture_output=True, check=False)
-    return result.returncode == 0
+        capture_output=True, text=True, check=False)
+
+
+def _userns_env_diag() -> str:
+    ## The governing knobs + caps, so a failure names its OWN cause instead of a
+    ## guess. max_user_namespaces=0 (exhausted/hardened), unprivileged_userns_clone=0
+    ## (legacy Debian switch), a set CapEff bit or the apparmor sysctl each fail
+    ## unshare differently; reporting them turns "unavailable" into a diagnosis.
+    bits = []
+    try:
+        who = subprocess.run(["id"], capture_output=True, text=True, check=False)
+        bits.append("id=%s" % who.stdout.strip())
+    except OSError as exc:
+        bits.append("id=<%s>" % exc)
+    for path in (
+            "/proc/sys/user/max_user_namespaces",
+            "/proc/sys/kernel/unprivileged_userns_clone",
+            "/proc/sys/kernel/apparmor_restrict_unprivileged_userns"):
+        try:
+            with open(path, encoding="ascii") as handle:
+                bits.append("%s=%s" % (path, handle.read().strip()))
+        except OSError as exc:
+            bits.append("%s=<%s>" % (path, exc.strerror or exc))
+    try:
+        with open("/proc/self/status", encoding="ascii") as handle:
+            for line in handle:
+                if line.startswith(("CapEff", "CapBnd")):
+                    bits.append(line.strip().replace("\t", " "))
+    except OSError:
+        pass
+    return " | ".join(bits)
 
 
 class NamespacePropagationTest(unittest.TestCase):
     def setUp(self) -> None:
         if not os.path.isfile(PROBE):
             raise AssertionError("probe missing: %s" % PROBE)
-        if not _userns_available():
+        probe = _userns_probe()
+        if probe.returncode != 0:
             ## Not a skip: the invariant must actually be exercised. A CI lacking
-            ## unprivileged user namespaces is misconfigured, not exempt.
+            ## unprivileged user namespaces is misconfigured, not exempt. Report
+            ## the ACTUAL failure (unshare stderr + governing /proc knobs + caps),
+            ## never a guessed cause -- the real reason drives the fix.
             self.fail(
-                "unprivileged user namespaces unavailable: cannot exercise the "
-                "namespace-propagation invariant. Enable them (ubuntu-24.04: "
-                "sysctl kernel.apparmor_restrict_unprivileged_userns=0); this is "
-                "an environment bug, not a reason to skip.")
+                "unprivileged user namespaces unavailable (unshare rc=%d): "
+                "cannot exercise the namespace-propagation invariant.\n"
+                "unshare stderr: %s\nenv: %s\n"
+                "Enable them (ubuntu-24.04: sysctl "
+                "kernel.apparmor_restrict_unprivileged_userns=0); this is an "
+                "environment bug, not a reason to skip."
+                % (probe.returncode, probe.stderr.strip(), _userns_env_diag()))
 
     def _run_probe(self):
         result = subprocess.run(
