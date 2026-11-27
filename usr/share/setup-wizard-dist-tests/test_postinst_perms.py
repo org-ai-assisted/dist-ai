@@ -55,6 +55,9 @@ def _octal_mode_grants_group_or_other_write(mode):
 
 
 def _mode_grants_group_or_other_write(mode):
+    ## A shell token keeps its quotes after str.split (chmod '0755' dir), so
+    ## strip them before classifying, else a safe quoted octal misreads.
+    mode = mode.strip('\'"')
     if re.fullmatch(r'0?[0-7]{3,4}', mode):
         return _octal_mode_grants_group_or_other_write(mode)
     return _symbolic_mode_grants_group_or_other_write(mode)
@@ -86,34 +89,39 @@ def _modes_on_line(tokens):
             elif token in ('-m', '--mode') and index + 1 < len(tokens):
                 modes.append(tokens[index + 1])
                 index += 1
+            elif token.startswith('-m') and not token.startswith('--') \
+                    and len(token) > 2:
+                ## Attached short form: -m0775, install -d -m2775.
+                modes.append(token[2:])
             index += 1
     return modes
 
 
-def _find_postinst():
-    """Locate the shipped setup-wizard-dist.postinst, or None."""
-    repo = os.environ.get('SETUP_WIZARD_DIST_REPO', '').strip()
-    candidates = []
-    if repo:
-        candidates.append(
-            os.path.join(repo, 'debian', 'setup-wizard-dist.postinst')
-        )
-    ## Installed maintainer script, for a run on a target system.
-    candidates.append('/var/lib/dpkg/info/setup-wizard-dist.postinst')
-    for candidate in candidates:
-        if os.path.isfile(candidate):
-            return candidate
-    return None
-
-
 class PostinstPermsTestCase(unittest.TestCase):
     def setUp(self):
-        self.postinst = _find_postinst()
-        if self.postinst is None:
-            self.skipTest(
-                'setup-wizard-dist.postinst not found; set '
-                'SETUP_WIZARD_DIST_REPO to a checkout or install the package'
+        ## When SETUP_WIZARD_DIST_REPO names a checkout, test ITS postinst and
+        ## nothing else -- never fall back to the installed maintainer script,
+        ## which would silently test the wrong (stale) file.
+        repo = os.environ.get('SETUP_WIZARD_DIST_REPO', '').strip()
+        if repo:
+            self.postinst = os.path.join(
+                repo, 'debian', 'setup-wizard-dist.postinst'
             )
+            if not os.path.isfile(self.postinst):
+                self.fail(
+                    f'SETUP_WIZARD_DIST_REPO={repo} lacks '
+                    'debian/setup-wizard-dist.postinst'
+                )
+            return
+        ## Installed maintainer script, for a run on a target system.
+        installed = '/var/lib/dpkg/info/setup-wizard-dist.postinst'
+        if os.path.isfile(installed):
+            self.postinst = installed
+            return
+        self.skipTest(
+            'setup-wizard-dist.postinst not found; set '
+            'SETUP_WIZARD_DIST_REPO to a checkout or install the package'
+        )
 
     def test_status_files_dir_not_group_or_world_writable(self):
         with open(self.postinst, encoding='ascii') as handle:
@@ -165,9 +173,19 @@ class ModeHelperTestCase(unittest.TestCase):
             (['mkdir', '--parents', '"/d"'], []),
             (['install', '-d', '-m', '0750', '/d'], ['0750']),
             (['install', '-d', '--mode=0700', '/d'], ['0700']),
+            ## Attached short form must not escape the guard.
+            (['install', '-d', '-m0775', '/d'], ['0775']),
+            (['mkdir', '-m0777', '/d'], ['0777']),
+            (['install', '-d', '-m2775', '/d'], ['2775']),
         ]
         for tokens, expected in cases:
             self.assertEqual(_modes_on_line(tokens), expected, tokens)
+
+    def test_quoted_modes_classified(self):
+        for mode in ("'0755'", '"0755"', "'0700'"):
+            self.assertFalse(_mode_grants_group_or_other_write(mode), mode)
+        for mode in ("'0775'", '"0757"', "'0777'"):
+            self.assertTrue(_mode_grants_group_or_other_write(mode), mode)
 
 
 if __name__ == '__main__':
