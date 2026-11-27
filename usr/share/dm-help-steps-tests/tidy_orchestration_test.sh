@@ -656,6 +656,19 @@ else
    fail "prefetch containment missing; rc=${tidy_rc} log:<<<$(log_lines)>>>"
 fi
 
+## --- Prefetch F (CANARY): the warm-up fetch keeps its safety flags -------------------
+## Regression guard (prefetch_one is stubbed above, so assert on the tool SOURCE): the real
+## warm-up fetch MUST pass --no-recurse-submodules (a repo-level submodule.recurse would else
+## fetch a submodule's 'origin' off the allowlist, race the per-submodule prefetch on ref locks,
+## and spawn git jobs past the RAM cap) AND pin an explicit tracking refspec (so a non-standard
+## configured refspec cannot redirect the fetch onto a local branch). Drop either -> this FAILS.
+if grep --quiet --extended-regexp -- 'fetch[^\n]*--no-recurse-submodules' "${tool}" \
+   && grep --quiet --extended-regexp -- '[+]refs/heads/[*]:refs/remotes/' "${tool}"; then
+   pass "prefetch warm-up fetch keeps --no-recurse-submodules + a pinned tracking refspec"
+else
+   fail "prefetch fetch missing --no-recurse-submodules and/or an explicit tracking refspec"
+fi
+
 ## --- Case 12 (CANARY): phase 0 refuses early on a MISSING expected remote --------
 ## Remove a dm-tidy-critical remote from the submodule; phase 0's validation must
 ## ABORT before any mutating phase, so a missing remote cannot SILENTLY skip

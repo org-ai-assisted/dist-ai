@@ -495,9 +495,13 @@ compute_ram_capped_jobs() {
 ##
 ## CONTAINMENT: only the parent + INITIALIZED submodules whose realpath stays strictly under
 ## the superproject are warmed. A crafted/stray '.gitmodules' path ('..', '.', a symlink) or an
-## uninitialized submodule (an empty dir makes 'git -C' ASCEND to the parent) would otherwise
-## fetch/prune a repo OUTSIDE the tree, or duplicate-fetch the parent under a ref lock. Same
-## guard as dm-submodule-ai-sync's prefetch.
+## uninitialized submodule (a bare empty dir, no '.git') would otherwise fetch/prune a repo
+## OUTSIDE the tree, or duplicate-fetch the parent under a ref lock. Same guard as
+## dm-submodule-ai-sync's prefetch. SCOPE (matches that guard): this catches the realistic cases;
+## a deliberately crafted/corrupted local state -- a '.git' GITFILE or linked-worktree commondir
+## pointing OUTSIDE, or an empty '.git' DIRECTORY -- is out of scope (availability-only: the fetch
+## stays pinned to the tracking namespace, so at worst a repo that is already a corrupted part of
+## this checkout gets its tracking refs touched; never a false-clean of the tidy).
 ##
 ## BEST-EFFORT, never a gate: a per-repo fetch failure is NOT fatal -- the owning sub-tool still
 ## fetches it for real -- so prefetch never blocks or aborts the sweep, and it is skipped when the
@@ -569,10 +573,16 @@ phase_prefetch() {
       ## Warm only the two validated remotes, by NAME and sequentially (see header): no
       ## 'git fetch --all' refspec/parallelism surprises. Best-effort -- a missing/unreachable
       ## remote just leaves it cold for the owning phase to fetch for real.
+      ## --no-recurse-submodules: a repo-level 'submodule.recurse' / 'fetch.recurseSubmodules'
+      ## must NOT make a parent fetch recurse into submodules -- that fetches their 'origin' (not
+      ## the two allowlisted remotes), races the parallel per-submodule prefetch on ref locks, and
+      ## spawns git's OWN fetch jobs past the RAM cap. The explicit refspec pins the destination to
+      ## the tracking namespace, so a non-standard configured refspec cannot redirect the fetch onto
+      ## a local branch; --prune then prunes only that namespace.
       local r rc=0
       for r in "${EXPECTED_REMOTES[@]}"; do
-         git -C "$1" fetch --quiet --prune --no-tags --no-write-fetch-head -- "${r}" \
-            >/dev/null 2>&1 || rc=1
+         git -C "$1" fetch --quiet --prune --no-tags --no-write-fetch-head --no-recurse-submodules \
+            -- "${r}" "+refs/heads/*:refs/remotes/${r}/*" >/dev/null 2>&1 || rc=1
       done
       return "${rc}"
    }
