@@ -32,39 +32,9 @@ nonqubes_lib_dir="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}"
 # shellcheck source=./leaktest_lib.sh
 source "${nonqubes_lib_dir}/leaktest_lib.sh"
 
-## proc_dead / proc_diag: a readiness wait must tell a bound-and-serving helper
-## from one that DIED during startup, and a bare 'kill -0' reports a killed-but-
-## unreaped zombie as alive (false survivor under a slow-reaping CI-container PID 1).
-nonqubes_proc_lib="${nonqubes_lib_dir}/../dist-ai-tests-common/proc-lib.bash"
-if [ ! -r "${nonqubes_proc_lib}" ]; then
-   printf '%s\n' "FATAL: proc-lib.bash not found: ${nonqubes_proc_lib}" >&2
-   exit 1
-fi
-# shellcheck source=../dist-ai-tests-common/proc-lib.bash
-source "${nonqubes_proc_lib}"
-
-## Wait (bounded, ~5s) until a backgrounded helper has BOUND its socket(s): the
-## helper creates READY_FILE only AFTER every bind succeeds, so its presence is
-## positive proof the port is absorbing -- not a fixed 'sleep' that returns before
-## the bind and lets a probe measure an unbound port. Fail the setup loudly if the
-## helper (PID) dies first or never signals, so a harness miss never masquerades as
-## a firewall verdict. Mirrors the leaktest_assert_* 'fail_case; return 1' idiom.
-leaktest_wait_ready() {
-   local pid="$1" ready_file="$2" label="$3" _
-   for _ in $(seq 1 50); do
-      if [ -e "${ready_file}" ]; then
-         return 0
-      fi
-      if proc_dead "${pid}"; then
-         fail_case "${label} exited before binding its socket(s)"
-         return 1
-      fi
-      sleep 0.1
-   done
-   proc_diag "${label}" "${pid}"
-   fail_case "${label} did not signal readiness within 5s"
-   return 1
-}
+## proc-lib.bash (proc_dead / proc_diag) and leaktest_wait_ready are provided by the
+## base leaktest_lib.sh sourced above -- the base owns the stub listener, so it owns
+## the readiness wait and its deps; this extension reuses them, no local copy.
 
 ## Reused scratch file for leaktest_fire_gw_origin's stderr (allocated once).
 LEAKTEST_GW_SEND_ERR=''

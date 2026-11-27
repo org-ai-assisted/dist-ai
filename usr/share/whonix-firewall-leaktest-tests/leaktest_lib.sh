@@ -111,6 +111,41 @@ LEAKTEST_EGRESS_BPF="\
        and ( (src port 68 and dst port 67) or (src port 67 and dst port 68) ) ) \
 )"
 
+## proc_dead / proc_diag: a readiness wait must tell a bound-and-serving helper from
+## one that DIED during startup; a bare 'kill -0' reports a killed-but-unreaped zombie
+## as alive (false survivor under a slow-reaping CI-container PID 1).
+leaktest_lib_dir="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")"
+leaktest_proc_lib="${leaktest_lib_dir}/../dist-ai-tests-common/proc-lib.bash"
+if [ ! -r "${leaktest_proc_lib}" ]; then
+   printf '%s\n' "FATAL: proc-lib.bash not found: ${leaktest_proc_lib}" >&2
+   exit 1
+fi
+# shellcheck source=../dist-ai-tests-common/proc-lib.bash
+source "${leaktest_proc_lib}"
+
+## Wait (bounded, ~5s) until a backgrounded helper has BOUND its socket(s): the
+## helper creates READY_FILE only AFTER every bind succeeds, so its presence is
+## positive proof the port is absorbing -- not a fixed 'sleep' that returns before
+## the bind and lets a probe measure an unbound port. Fail the setup loudly if the
+## helper (PID) dies first or never signals, so a harness miss never masquerades as
+## a firewall verdict. Mirrors the leaktest_assert_* 'fail_case; return 1' idiom.
+leaktest_wait_ready() {
+   local pid="$1" ready_file="$2" label="$3" _
+   for _ in $(seq 1 50); do
+      if [ -e "${ready_file}" ]; then
+         return 0
+      fi
+      if proc_dead "${pid}"; then
+         fail_case "${label} exited before binding its socket(s)"
+         return 1
+      fi
+      sleep 0.1
+   done
+   proc_diag "${label}" "${pid}"
+   fail_case "${label} did not signal readiness within 5s"
+   return 1
+}
+
 LEAKTEST_LISTENER_PID=''
 LEAKTEST_TCPDUMP_PID=''
 ## The tcpdump- and injector-stderr scratch files. Each is a mktemp path (root-
@@ -323,8 +358,11 @@ leaktest_setup() {
    ip netns exec up ethtool --offload eth0 tso off gso off gro off tx off rx off >/dev/null 2>&1 || true
 
    ## Fail-closed cases pass 'nolistener' to leave the Tor TransPort dead.
+   local listener_ready_dir='' listener_ready=''
    if [ "${2:-}" != 'nolistener' ]; then
-      ip netns exec gw python3 "$(leaktest_helpers_dir)/stub_transport.py" &
+      listener_ready_dir="$(mktemp --directory)"
+      listener_ready="${listener_ready_dir}/ready"
+      ip netns exec gw python3 "$(leaktest_helpers_dir)/stub_transport.py" "${listener_ready}" &
       LEAKTEST_LISTENER_PID="$!"
    fi
 
@@ -333,11 +371,24 @@ leaktest_setup() {
       return 1
    fi
 
-   ## Unconditional settle: give the freshly-built veths / addresses / ruleset (and
-   ## the stub, when started) a moment to become fully operational before any inject.
-   ## Must run on every path -- skipping it on the nolistener path races the inject
-   ## against topology setup and makes those cases flaky.
+   ## Unconditional settle: give the freshly-built veths / addresses / ruleset a
+   ## moment to become fully operational before any inject. Must run on every path --
+   ## skipping it on the nolistener path races the inject against topology setup and
+   ## makes those cases flaky.
    sleep 1
+
+   ## Gate on the stub actually BINDING 9040/5300 before any probe runs: the bare
+   ## settle let the positive control's :443 connect (transparently redirected to the
+   ## stub's TransPort) race an unbound port under load and RST -- a harness miss
+   ## misreported as a firewall/redirect regression. A failed/slow bind now fails the
+   ## setup loudly (via leaktest_wait_ready) instead.
+   if [ -n "${LEAKTEST_LISTENER_PID}" ]; then
+      local listener_rc=0
+      leaktest_wait_ready "${LEAKTEST_LISTENER_PID}" "${listener_ready}" 'gw Tor stub' \
+         || listener_rc=1
+      safe-rm --recursive --force -- "${listener_ready_dir}" || true
+      [ "${listener_rc}" -eq 0 ] || return 1
+   fi
 }
 
 ## Build the standard topology + load <ruleset>, THEN add a VPN-tunnel interface: a

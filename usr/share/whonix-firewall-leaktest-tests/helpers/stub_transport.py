@@ -15,17 +15,20 @@ IPv4 and IPv6. Runs until killed. Never talks to a real network.
 """
 
 import socket
+import sys
 import threading
 import time
+from typing import Callable
 
 
-def serve_tcp(family: int, addr: str) -> None:
+def serve_tcp(family: int, addr: str, on_ready: Callable[[], None]) -> None:
     sock = socket.socket(family, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     if family == socket.AF_INET6:
         sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
     sock.bind((addr, 9040))
     sock.listen(64)
+    on_ready()
     while True:
         try:
             conn, _ = sock.accept()
@@ -34,7 +37,7 @@ def serve_tcp(family: int, addr: str) -> None:
             break
 
 
-def serve_udp(family: int, addr: str) -> None:
+def serve_udp(family: int, addr: str, on_ready: Callable[[], None]) -> None:
     sock = socket.socket(family, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     if family == socket.AF_INET6:
@@ -46,6 +49,7 @@ def serve_udp(family: int, addr: str) -> None:
         ## A wildcard bind that lets the kernel pick the source would silently mask it.
         sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_RECVPKTINFO, 1)
         sock.bind((addr, 5300))
+        on_ready()
         while True:
             try:
                 _data, ancdata, _flags, peer = sock.recvmsg(4096, socket.CMSG_SPACE(64))
@@ -71,6 +75,7 @@ def serve_udp(family: int, addr: str) -> None:
     ## distinct path from the IPv6 case.
     sock.setsockopt(socket.IPPROTO_IP, socket.IP_PKTINFO, 1)
     sock.bind((addr, 5300))
+    on_ready()
     while True:
         try:
             _data, ancdata, _flags, peer = sock.recvmsg(4096, socket.CMSG_SPACE(64))
@@ -90,13 +95,37 @@ def serve_udp(family: int, addr: str) -> None:
 
 
 def main() -> None:
-    for target, family, addr in (
+    ## Optional argv[1]: a ready-file path, created only AFTER every socket is
+    ## bound+listening, so a caller that waits for it never races a probe against an
+    ## unbound TransPort/DnsPort (a bare settle sleep flaked under load).
+    ready_file = sys.argv[1] if len(sys.argv) > 1 else None
+    specs = (
         (serve_tcp, socket.AF_INET6, "::"),
         (serve_tcp, socket.AF_INET, "0.0.0.0"),  # nosec B104 -- leak-test stub MUST bind every interface to observe egress
         (serve_udp, socket.AF_INET6, "::"),
         (serve_udp, socket.AF_INET, "0.0.0.0"),  # nosec B104 -- leak-test stub MUST bind every interface to observe egress
-    ):
-        threading.Thread(target=target, args=(family, addr), daemon=True).start()
+    )
+    barrier = threading.Barrier(len(specs) + 1)
+
+    def on_ready() -> None:
+        try:
+            barrier.wait()
+        except threading.BrokenBarrierError:
+            pass
+
+    for target, family, addr in specs:
+        threading.Thread(
+            target=target, args=(family, addr, on_ready), daemon=True
+        ).start()
+    ## Block until all four threads have bound (a failed bind breaks the barrier, so
+    ## the ready file is never written and the caller's bounded wait fails honestly).
+    try:
+        barrier.wait()
+    except threading.BrokenBarrierError:
+        return
+    if ready_file is not None:
+        with open(ready_file, "w", encoding="ascii"):
+            pass
     while True:
         time.sleep(1)
 
