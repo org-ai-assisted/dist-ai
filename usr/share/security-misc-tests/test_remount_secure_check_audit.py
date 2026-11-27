@@ -150,6 +150,23 @@ class RemountSecureCheckAuditTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertTrue(self._deviation_lines(result.stdout))
 
+    def test_sys_mountpoint_is_dispatched(self) -> None:
+        ## Regression: _sys must be wired into main()'s dispatch. A defined-but-
+        ## uncalled _sys silently drops /sys from BOTH enforcement and the audit,
+        ## leaving sysfs unhardened (sysfs is not nosuid,nodev,noexec by default).
+        ## NONCOMPLIANT -> /sys must appear as a deviation missing all three; if
+        ## _sys is undispatched, no /sys line exists and this fails.
+        result = self._run_check([NONCOMPLIANT])
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        sys_line = next((ln for ln in self._deviation_lines(result.stdout)
+                         if "'/sys'" in ln), "")
+        self.assertTrue(
+            sys_line, "/sys must be audited (is _sys dispatched?):\n%s" % result.stdout)
+        self.assertIn("missing", sys_line)
+        self.assertIn("nosuid", sys_line)
+        self.assertIn("nodev", sys_line)
+        self.assertIn("noexec", sys_line)
+
     def test_partial_compliance_flags_deviation(self) -> None:
         ## Some intended options present, some missing: the matcher must require
         ## ALL (AND), not any (OR).
