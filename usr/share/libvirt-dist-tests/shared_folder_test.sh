@@ -71,7 +71,7 @@ fi
 
 ## --- running as an unprivileged user with a session runtime dir ---
 
-domain_list=(Whonix-Gateway Whonix-Workstation)
+domain_list=(Whonix-Gateway Whonix-Workstation Kicksecure)
 test_home=''
 test_failures=0
 pass_count=0
