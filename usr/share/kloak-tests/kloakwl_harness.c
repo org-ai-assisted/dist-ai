@@ -790,52 +790,73 @@ static void unit_kb_handle_keymap_identical_closes_fd(void)
     CHECK(run_keymap_leak_child() == CH_EXIT0);
 }
 
-/* Regression (Whonix/kloak#41): update_virtual_cursor must not abort when the
- * only non-NULL output geometry is 0x0. labwc emits wl_output::done before the
- * xdg-output logical size, and display_sync_maybe records a 0x0 geometry until
- * the size arrives; with the cursor homeless, the relocation loop hit
- * assert(sane_location_valid) and aborted. It must skip the unusable geometry
- * and return NULL when no screen is usable. */
-static enum child_outcome run_cursor_zero_geom_child(void)
+/* Regression (Whonix/kloak#41): display_sync_maybe is the single choke point
+ * that copies a pending output geometry into state.output_geometries, and it
+ * must reject a 0x0 geometry so the stored set is always NULL-or-non-0x0. That
+ * is the invariant update_virtual_cursor relies on -- its relocation loop
+ * asserts sane_location_valid rather than skipping a 0x0 screen, which is sound
+ * only because a 0x0 geometry can never reach output_geometries. labwc emits
+ * wl_output::done before the xdg-output logical size, so a pending geometry is
+ * transiently 0x0; both a fresh 0x0 slot and a previously-valid slot whose
+ * pending resized to 0x0 must leave output_geometries untouched (never stored,
+ * never clobbered). */
+static enum child_outcome run_display_sync_zero_geom_child(void)
 {
     static struct output_geometry zero_geom = { .x = 0, .y = 0,
         .width = 0, .height = 0 };
+    static struct output_geometry valid_geom = { .x = 0, .y = 0,
+        .width = 1920, .height = 1080 };
     pid_t pid;
     int status = 0;
 
     pid = fork();
     assert(pid >= 0);
     if (pid == 0) {
-        struct input_packet *pkt = NULL;
         ssize_t i;
         (void)!freopen("/dev/null", "w", stderr);
         for (i = 0; i < MAX_SCREEN_COUNT; i++) {
             state.output_geometries[i] = NULL;
+            state.pending_output_geometries[i] = NULL;
+            state.wl_output_remove_flags[i] = false;
         }
-        state.output_geometries[0] = &zero_geom;
-        prev_cursor_x = 0.0;
-        prev_cursor_y = 0.0;
-        cursor_x = 0.0;
-        cursor_y = 0.0;
-        pkt = update_virtual_cursor();
-        /* No usable screen -> must return NULL, not abort. */
-        _exit(pkt == NULL ? 0 : 1);
+        /* Fresh slot: a 0x0 pending geometry must not be stored. */
+        state.pending_output_geometries[0] = &zero_geom;
+        /* Previously-valid slot whose pending resized to 0x0: the old geometry
+         * must be kept, not clobbered to 0x0. */
+        state.output_geometries[1] = &valid_geom;
+        state.pending_output_geometries[1] = &zero_geom;
+        display_sync_maybe();
+        if (state.output_geometries[0] != NULL) {
+            _exit(1);
+        }
+        if (state.output_geometries[1] == NULL
+            || state.output_geometries[1]->width != 1920
+            || state.output_geometries[1]->height != 1080) {
+            _exit(1);
+        }
+        _exit(0);
     }
     assert(waitpid(pid, &status, 0) == pid);
     return classify_child(status);
 }
 
-static void unit_update_virtual_cursor_zero_geometry(void)
+static void unit_display_sync_filters_zero_geometry(void)
 {
-    CHECK(run_cursor_zero_geom_child() == CH_EXIT0);
+    CHECK(run_display_sync_zero_geom_child() == CH_EXIT0);
 }
 
-/* Regression (Whonix/kloak#41): applayer_config_init must not busy-spin at 100%
- * CPU (while it still holds capabilities) if the parent dies before sending
- * config. read_peer_data_to_ring_buffer returns on FIONREAD==0 without read()ing,
- * so it never observes EOF by itself; the config loop must poll and exit on
- * hangup. The child's write end is closed everywhere -> POLLHUP; alarm bounds a
- * pre-fix spin so the canary fails fast rather than hanging the suite. */
+/* Regression (Whonix/kloak#41): applayer_config_init must not busy-spin or hang
+ * (while it still holds capabilities) if the parent dies before sending config.
+ * read_peer_data_to_ring_buffer returns on FIONREAD==0 without read()ing, so it
+ * never observes EOF by itself; the config loop must poll the config fd and exit
+ * on hangup. The config fd is stdin, which the function sets itself
+ * (recv_read_fd = 0); its poll descriptor must track that, NOT recv_read_fd's
+ * entry value. recv_read_fd defaults to -1 and applayer_config_init runs first
+ * in main(), so this child pre-sets recv_read_fd = -1 to reproduce production
+ * exactly: a version that captures the poll fd at declaration time polls fd -1
+ * (ignored, never POLLHUP) and hangs here. The child's write end is closed
+ * everywhere -> POLLHUP; alarm bounds a pre-fix hang so the canary fails fast
+ * rather than wedging the suite. */
 static enum child_outcome run_config_init_hangup_child(void)
 {
     int pfd[2];
@@ -850,8 +871,9 @@ static enum child_outcome run_config_init_hangup_child(void)
         assert(dup2(pfd[0], 0) == 0);   /* applayer_config_init reads fd 0 */
         assert(close(pfd[0]) == 0);
         assert(close(pfd[1]) == 0);     /* no writer remains -> POLLHUP */
-        alarm(10);                      /* a pre-fix spin is killed by SIGALRM */
-        applayer_config_init();         /* must exit via POLLHUP, not spin */
+        recv_read_fd = -1;              /* production default at entry */
+        alarm(10);                      /* a pre-fix hang is killed by SIGALRM */
+        applayer_config_init();         /* must exit via POLLHUP, not hang */
         _exit(0);
     }
     assert(close(pfd[0]) == 0);
@@ -1072,7 +1094,7 @@ int main(void)
     unit_abs_coord_invalid();
     unit_open_wl_sock_connect_degraded();
     unit_kb_handle_keymap_identical_closes_fd();
-    unit_update_virtual_cursor_zero_geometry();
+    unit_display_sync_filters_zero_geometry();
     unit_applayer_config_init_exits_on_hangup();
     printf("kloakwl harness: all assertions passed (%d checks)\n", checks);
     return 0;
