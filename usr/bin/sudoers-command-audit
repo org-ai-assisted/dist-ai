@@ -28,6 +28,23 @@ dm-root-scripts-enum (a derivative-maker source-tree LPE-surface enumerator):
 different scope (any running system vs the dm tree), different purpose
 (existence audit vs privilege-escalation surface), and no hand-rolled parser.
 
+Scope / non-goals (SETTLED -- do not reopen): building a perfect sudoers (or
+bash) pseudo-parser is explicitly OUT OF SCOPE. cvtsudoers' JSON loses the
+command/argument boundary and its -f sudoers output can be polluted by host
+specs / options, and sudoers include resolution has many forms this tool cannot
+faithfully reproduce (absolute vs relative, %h/%u, continuation, escaped-space
+and quoted targets, silent drop of an unreadable target). The design does NOT
+chase each such construct with more parsing. Instead the invariant is one-way:
+the ONLY hard guarantee is NEVER A FALSE CLEAN. Whenever a command boundary or
+include coverage cannot be recovered simply and reliably, the source is reported
+INCONCLUSIVE (exit 2), not clean. So a reviewer edge case that defeats the
+heuristic recovery is answered by the inconclusive fallback, not by growing a
+grammar. Review rounds that keep surfacing crafted parser edge cases are
+expected to CONVERGE on this boundary (do not reinvent a bash parser); fix only
+a genuine FALSE CLEAN (a dead grant that reads as exit 0), never an over-cautious
+inconclusive. The same scope note governs the ns-guard keyword counter in
+usr/share/tb-updater-tests/test_home_remount_hook_ns_guard.py.
+
 Exit codes:
   0  every referenced command path exists (clean).
   1  at least one referenced command path is missing (findings printed).
