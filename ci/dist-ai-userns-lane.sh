@@ -58,7 +58,9 @@ if [ ! -d "${tests_dir}" ]; then
 fi
 
 sudo apt-get update --quiet
-sudo apt-get install --yes --no-install-recommends python3-pytest util-linux
+## safe-rm: dist-ai suites clean up with it (R-120); it ships as a Debian package,
+## matching the container lane's apt_packages_base, not the host private-ai-config.
+sudo apt-get install --yes --no-install-recommends python3-pytest util-linux safe-rm
 
 ## DIST_AI_USERNS_LANE=1: the userns tests FAIL (never skip) if userns is still
 ## unavailable -- this lane promised it, so a regressed sysctl step is loud.
