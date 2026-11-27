@@ -8,7 +8,7 @@
 ## tb-starter torbrowser check_noexec_do: noexec detection for ~/.tb.
 ##
 ## check_noexec_do decides whether tb_home_folder (~/.tb) is executable. Its
-## RETURN POLARITY matches both callers (remount_exec, check_noexec): success (0)
+## RETURN POLARITY matches its caller check_noexec: success (0)
 ## means "executable, no remount needed", failure (1) means "noexec, remount".
 ##
 ## REGRESSION this guards: detecting an INHERITED noexec on a path that may not
@@ -233,6 +233,59 @@ if [ "${target_rc}" = "1" ] && [ "${recorded_target}" = "${real_ancestor}" ]; th
 else
   fail=$((fail + 1))
   printf '%s\n' "FAIL: ancestor query (expected target '${real_ancestor}' rc 1, got target '${recorded_target}' rc ${target_rc})"
+fi
+
+## check_noexec ENFORCEMENT: once check_noexec_do reports noexec (return 1),
+## check_noexec MUST block the launch (exit 5) UNCONDITIONALLY. The pre-fix code
+## re-gated the exit on 'mount | grep <dirname> | grep noexec', which misses an
+## INHERITED noexec (no literal '/home ... noexec' mount line) -- the exact case
+## check_noexec_do detects -- so Tor Browser launched on a noexec home.
+## tb_user_home_dirname is a marker absent from real 'mount' output, so the
+## pre-fix gate matches nothing and that code returns 0 here -> FAILS.
+# shellcheck disable=SC2034  # these are read by the sourced check_noexec.
+output="true"
+# shellcheck disable=SC2034
+output_opts=()
+# shellcheck disable=SC2034
+TITLE="tb-starter-test"
+# shellcheck disable=SC2034
+tb_title="Tor Browser"
+# shellcheck disable=SC2034
+tb_user_home_dirname="/zzz-check-noexec-marker-$$"
+# shellcheck disable=SC2034
+tb_home_folder_mount="test"
+
+## check_noexec calls 'exit 5' on block; run it in a subshell and capture the
+## code without aborting the strict runner.
+run_check_noexec() {
+  local rc=0
+  ( check_noexec >/dev/null 2>&1 ) || rc=$?
+  printf '%s' "${rc}"
+}
+
+# shellcheck disable=SC2034  # read by the sourced check_noexec_do.
+tb_home_folder="${real_ancestor}/.tb"
+export FINDMNT_STUB_OPTIONS="rw,noexec"
+export FINDMNT_STUB_RC="0"
+enforce_rc="$(run_check_noexec)"
+if [ "${enforce_rc}" = "5" ]; then
+  pass=$((pass + 1))
+  printf '%s\n' "PASS: check_noexec blocks (exit 5) on inherited noexec"
+else
+  fail=$((fail + 1))
+  printf '%s\n' "FAIL: check_noexec enforcement (expected exit 5 on inherited noexec, got ${enforce_rc})"
+fi
+
+## Executable home: check_noexec_do returns 0 -> check_noexec must NOT block.
+export FINDMNT_STUB_OPTIONS="rw,nosuid,nodev,relatime"
+export FINDMNT_STUB_RC="0"
+allow_rc="$(run_check_noexec)"
+if [ "${allow_rc}" = "0" ]; then
+  pass=$((pass + 1))
+  printf '%s\n' "PASS: check_noexec allows launch on exec home"
+else
+  fail=$((fail + 1))
+  printf '%s\n' "FAIL: check_noexec false-block (expected 0 on exec home, got ${allow_rc})"
 fi
 
 printf '%s\n' ""
