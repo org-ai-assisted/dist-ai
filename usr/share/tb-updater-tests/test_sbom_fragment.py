@@ -160,6 +160,24 @@ def test_missing_tarball_degrades_to_hashless_fragment(tmp_path):
     assert frag["purl"] == f"pkg:generic/tor-browser@{TB_VERSION}?arch={TB_ARCH}"
 
 
+def test_failed_write_removes_stale_fragment(tmp_path):
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    ## A previous version's fragment already sits in the persistent cache.
+    stale = cache / "sbom-fragment.json"
+    stale.write_text('{"version":"OLD-STALE"}\n', encoding="utf-8")
+    tarball = tmp_path / "tor-browser.tar.xz"
+    tarball.write_bytes(b"x")
+    ## Force the writer to return before its mv: a purl-unsafe version is refused
+    ## by the first validation loop, i.e. an early-return path.
+    env = _base_env(cache, tarball)
+    env["tbb_version_stripped"] = "14.5.3?injected=1"
+    _drive(cache, env, who_ami="tb-updater")
+    ## A failed write must not leave the previous version's fragment behind:
+    ## save_sbom_fragment would otherwise publish it as the current SBOM.
+    assert not stale.is_file()
+
+
 def test_purl_unsafe_version_refused(tmp_path):
     cache = tmp_path / "cache"
     cache.mkdir()
