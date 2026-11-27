@@ -48,13 +48,13 @@ import sys
 
 CVTSUDOERS = "/usr/bin/cvtsudoers"
 
-## A sudoers @include / @includedir (or the older #include form) and its target.
-## cvtsudoers resolves an ABSOLUTE target against the host filesystem, ignoring
-## --root, and SILENTLY drops a target it cannot read -- both make the parse
-## unfaithful. A RELATIVE target is resolved from the source file's own
-## directory, which cvtsudoers reads faithfully.
-INCLUDE_RE = re.compile(
-    r"^[ \t]*[@#]include(dir)?[ \t]+(\"[^\"]*\"|\S+)", re.MULTILINE)
+## A sudoers @include / @includedir (or the older #include form). We key only on
+## PRESENCE, never the target: cvtsudoers' own include resolution -- absolute vs
+## relative, %h/%u escapes, line continuation, escaped-space and quoted targets,
+## and the SILENT drop of a target it cannot read -- is more than this audit can
+## faithfully reproduce, so parsing the target is unreliable. include_coverage_gap
+## decides when presence alone forces inconclusive.
+INCLUDE_RE = re.compile(r"^[ \t]*[@#]include(?:dir)?\b", re.MULTILINE)
 
 ## A full command token in cvtsudoers' -f sudoers output: a run beginning with
 ## '/' spanning the command PATH and its arguments, up to the unescaped comma or
@@ -62,7 +62,11 @@ INCLUDE_RE = re.compile(
 ## escaped (the only way a command path carries one); the boundary between path
 ## and arguments is the first UNescaped space. De-escaped and trimmed, the run
 ## equals the JSON command string for the SAME rule -- so it recovers that rule's
-## boundary per-rule, without pooling one rule's spaced path across others.
+## boundary per-rule. The run can be polluted by a '/' earlier on the line (a
+## CIDR host spec, a CWD=/CHROOT= option): command_path keys on an EXACT match of
+## the full de-escaped run against the JSON string, so a polluted run simply does
+## not match and the command falls through to the safe inconclusive path below.
+AMBIGUOUS_BOUNDARY = ""  ## sentinel: a path is never the empty string
 SUDOERS_TOKEN_RE = re.compile(r"/(?:\\.|[^\s])*")
 SUDOERS_COMMAND_RE = re.compile(r"/(?:\\.|[^,\n])*")
 
@@ -163,41 +167,64 @@ def extract_command_map(sudoers_text):
     UNescaped space in a -f sudoers command run is the real boundary. Keying on
     the FULL de-escaped run (== the JSON string) recovers each rule's boundary
     per-rule, so one rule's escaped-space path is never applied to another rule's
-    command string (the file-global prefix match cross-contaminated them)."""
-    mapping = {}
+    command string. When two rules collapse to the SAME JSON string but have
+    DIFFERENT recovered paths (a spaced PATH vs a path+argument), the key is
+    marked AMBIGUOUS_BOUNDARY: the JSON cannot distinguish them, so the audit
+    must refuse rather than pick one by text order."""
+    mapping: "dict[str, str]" = {}
     for run in SUDOERS_COMMAND_RE.findall(sudoers_text):
         full = _unescape(run.rstrip())
-        path_token = SUDOERS_TOKEN_RE.match(run).group(0)
-        mapping.setdefault(full, _unescape(path_token))
+        match = SUDOERS_TOKEN_RE.match(run)
+        path = _unescape(match.group(0)) if match else full
+        if full not in mapping:
+            mapping[full] = path
+        elif mapping[full] != path:
+            mapping[full] = AMBIGUOUS_BOUNDARY
     return mapping
 
 
 def command_path(command_string, command_map):
     """Return the absolute command path from a cvtsudoers JSON command string,
-    or None when the entry is not a stat-able path (ALL, sudoedit, list, a bare
-    word, or a relative command). The path is the per-rule boundary recovered
-    from the -f sudoers pass (command_map) when the full string is known; else
-    the first whitespace-separated token (arguments stripped)."""
+    AMBIGUOUS_BOUNDARY when the boundary cannot be recovered uniquely, or None
+    when the entry is not a stat-able path (ALL, sudoedit, list, a bare word, or
+    a relative command). The path is the per-rule boundary from the -f sudoers
+    pass (command_map). A command string that carries a space but is NOT a clean
+    map hit has an UNKNOWN boundary -- the -f sudoers run was polluted (a CIDR
+    host spec or an option path consumed it) -- so it is AMBIGUOUS, never guessed
+    via a first-token split (which would be a dead-grant false clean)."""
     recovered = command_map.get(command_string)
     if recovered is not None:
+        if recovered == AMBIGUOUS_BOUNDARY:
+            return AMBIGUOUS_BOUNDARY
         return recovered if recovered.startswith("/") else None
-    token = command_string.split(" ", 1)[0]
-    if token.startswith("/"):
-        return token
-    return None
+    if not command_string.startswith("/"):
+        ## ALL, sudoedit, list, a bare word or a command+args whose name is not a
+        ## path: not a stat-able command path.
+        return None
+    if " " in command_string:
+        ## An absolute path with an unrecoverable boundary (polluted -f sudoers
+        ## run): do not guess a first token.
+        return AMBIGUOUS_BOUNDARY
+    return command_string
 
 
 def include_coverage_gap(path, root_real):
     """Reason string if a source's @include/@includedir cannot be faithfully
-    resolved for this audit, else None. Two unfaithful cases, both of which
-    cvtsudoers reports as a clean exit-0 parse with the included commands simply
-    absent -- so the audit must refuse to call the source clean:
-      - an ABSOLUTE target under a non-default --root: cvtsudoers opens it in the
-        HOST namespace, not the image.
-      - an ABSOLUTE target this process cannot read: cvtsudoers SILENTLY drops
-        it (sudo running as root would still load it).
-    A RELATIVE target is resolved from the source file's own directory, which
-    cvtsudoers reads faithfully, so it is not a gap."""
+    resolved for this audit, else None. cvtsudoers reports an unfaithful include
+    as a clean exit-0 parse with the included commands simply absent, so the
+    audit must refuse clean whenever it cannot trust the include was fully
+    resolved. An include is trusted ONLY in the fully faithful mode -- the live
+    root (root == '/') audited AS root, where cvtsudoers reads every include
+    (absolute or relative, every escape form) against the real system as root.
+    Otherwise it is a gap:
+      - under a non-default --root (offline image), cvtsudoers resolves an
+        absolute include in the HOST namespace, not the image, and a relative
+        one can still escape the image via '..'/symlinks;
+      - run as non-root, an include target this process cannot read is SILENTLY
+        dropped (sudo as root would load it).
+    Only PRESENCE of an include is examined -- the target's form (absolute vs
+    relative, %h/%u, line continuation, escaped space, quoting) is cvtsudoers'
+    job to resolve, not this audit's to re-parse."""
     try:
         with open(path, encoding="utf-8", errors="replace") as handle:
             text = handle.read()
@@ -205,16 +232,12 @@ def include_coverage_gap(path, root_real):
         ## Unreadable here means cvtsudoers failed too; that surfaces as a parse
         ## error (inconclusive) on the cvtsudoers pass.
         return None
-    for match in INCLUDE_RE.finditer(text):
-        is_dir = bool(match.group(1))
-        target = match.group(2).strip('"')
-        if not target.startswith("/"):
-            continue
-        if root_real != os.sep:
-            return "@include %s resolved in the host namespace under --root" % target
-        need = os.R_OK | (os.X_OK if is_dir else 0)
-        if not os.access(target, need):
-            return "@include %s unreadable; cvtsudoers would silently skip it" % target
+    if INCLUDE_RE.search(text) is None:
+        return None
+    if root_real != os.sep:
+        return "@include present under --root is resolved in the host namespace, not the image"
+    if os.geteuid() != 0:
+        return "@include present and the audit is not running as root, so an unreadable include is silently skipped"
     return None
 
 
@@ -325,14 +348,17 @@ def classify(root_real, command_string, command_map, require_executable):
     """Verdict for one cvtsudoers command string plus the command path it was
     judged against: ('missing'|'not-executable'|'inconclusive', path), (None,
     path) when present, or (None, None) when the entry is not a stat-able path.
-    The command path is the recovered boundary (not any existing prefix). A
-    wildcard path is reported INCONCLUSIVE: matching sudo's glob(3)+fnmatch
-    semantics AND confining the match to --root is more than this audit can do
-    reliably, so it refuses rather than risk a false clean (an unconfined glob
-    escaping --root) or a false missing."""
+    The command path is the recovered boundary (not any existing prefix). A path
+    whose boundary could not be recovered uniquely (AMBIGUOUS_BOUNDARY) or that
+    contains a wildcard is reported INCONCLUSIVE -- in the ambiguous case the
+    JSON cannot tell a spaced path from a path+argument; in the wildcard case
+    matching sudo's glob(3)+fnmatch AND confining to --root is beyond this audit
+    -- so each refuses rather than risk a false clean or a false missing."""
     path = command_path(command_string, command_map)
     if path is None:
         return None, None
+    if path == AMBIGUOUS_BOUNDARY:
+        return "inconclusive", command_string
     if any(meta in path for meta in GLOB_META):
         return "inconclusive", path
     match = resolve_within_root(root_real, path)
@@ -439,9 +465,10 @@ def main(argv):
             if verdict is None:
                 continue
             if verdict == "inconclusive":
-                ## A wildcard command path this audit cannot resolve safely.
-                sys.stderr.write("%s: WARNING: wildcard command path %s not "
-                                 "verifiable.\n" % (source, abs_path))
+                ## A wildcard path, or a command whose boundary could not be
+                ## uniquely recovered -- not safely resolvable to a single path.
+                sys.stderr.write("%s: WARNING: command path not verifiable: %s\n"
+                                 % (source, abs_path))
                 inconclusive = True
                 continue
             key = (abs_path, negated, verdict)

@@ -32,11 +32,24 @@ import tb_updater_testlib as T
 ## counting (not a non-greedy '.*?fi'), so a nested conditional in the guard
 ## body cannot close the block early and let a remount still inside the
 ## equal-namespace branch read as after the guard.
+## The opener's trailing `[^\n]*?;\s*then` is NON-greedy so it stops at the FIRST
+## `; then` on the line -- a greedy match would swallow a second `if ...; then`
+## written on the same line, hiding it from the depth count.
 _GUARD_OPEN_RE = re.compile(
     r"if\s*\[\s*\"\$\(\s*readlink[^\n]*/proc/self/ns/mnt[^\n]*\)\"\s*=\s*"
-    r"\"\$\(\s*readlink[^\n]*/proc/1/ns/mnt[^\n]*\)\"\s*\][^\n]*;\s*then"
+    r"\"\$\(\s*readlink[^\n]*/proc/1/ns/mnt[^\n]*\)\"\s*\][^\n]*?;\s*then"
 )
-_IF_FI_RE = re.compile(r"\b(if|fi)\b")
+## A shell if/fi KEYWORD: in command position (line start or after a `; & | (`
+## separator, or a then/do/else that introduces a command) and terminated by
+## whitespace / `; & |` / `)` / end-of-line. This rejects a bare word that merely
+## contains the letters -- `echo fi`, `dd if=...`, a quoted "fi", `fi#x` -- which
+## a plain `\b(if|fi)\b` miscounts. It is a bounded structural heuristic for our
+## own simple hook, NOT a full bash tokenizer; an adversarially obfuscated hook
+## (heredocs, `case..esac`, nested quoting) is out of scope -- the hook is our
+## code, and the shipped hook is what the live tests assert against.
+_IF_FI_RE = re.compile(
+    r"(?:^|[;&|(]|\bthen\b|\bdo\b|\belse\b)[ \t]*(if|fi)(?=[ \t;&|)]|$)",
+    re.MULTILINE)
 _APPLY_RE = re.compile(r"\btb_remount_exec_apply\b")
 _PROP_RE = re.compile(r"mount\s+--make-r?(?:slave|private)\b")
 
@@ -60,14 +73,18 @@ def _hook_code() -> str:
 
 
 def _guard_block(code: str):
-    """(body_start, block_end) of the ns guard: the index just after its
-    'if ... ; then' opener and the index just past its MATCHING 'fi', located by
-    if/fi depth counting. None if there is no guard."""
+    """(body_start, block_end) of the ns guard: body_start is just after its
+    'if ... ; then' opener, block_end just past its MATCHING 'fi', located by
+    if/fi depth counting. Counting starts at the opener's OWN 'if' keyword (depth
+    0 before it, so the opener raises it to 1): an inner 'if ...; then' written
+    on the SAME line as the opener is thereby counted, instead of being hidden
+    because its introducing 'then' fell inside the opener match. None if there is
+    no guard."""
     opener = _GUARD_OPEN_RE.search(code)
     if opener is None:
         return None
-    depth = 1
-    for token in _IF_FI_RE.finditer(code, opener.end()):
+    depth = 0
+    for token in _IF_FI_RE.finditer(code, opener.start()):
         if token.group(1) == "fi":
             depth -= 1
             if depth == 0:
@@ -176,6 +193,58 @@ def test_ordering_predicate_rejects_remount_after_nested_fi_in_branch():
         'fi\n'
     )
     assert not _guard_then_remount_ok(bad)
+
+
+def test_ordering_predicate_rejects_remount_after_same_line_inner_then():
+    ## Canary: a second 'if ...; then' on the SAME line as the opener must still
+    ## be depth-counted. A greedy opener swallowed it and let the remount read as
+    ## after the guard; the non-greedy opener stops at the first '; then'.
+    bad = _strip_comments(
+        '#!/bin/bash\n'
+        'if [ "$(readlink -f /proc/self/ns/mnt)" = '
+        '"$(readlink -f /proc/1/ns/mnt)" ]; then if false; then\n'
+        '    exit 0\n'
+        'fi\n'
+        '    mount --make-rslave /\n'
+        '    tb_remount_exec_apply /home/user\n'
+        'fi\n'
+    )
+    assert not _guard_then_remount_ok(bad)
+
+
+def test_ordering_predicate_rejects_remount_after_echo_fi_in_branch():
+    ## Canary: a bare word 'fi' that is an ARGUMENT ('echo fi'), not the keyword,
+    ## must not close the guard early. A plain \b(if|fi)\b counted it and passed
+    ## a hook that remounts inside the equal-namespace branch.
+    bad = _strip_comments(
+        '#!/bin/bash\n'
+        'if [ "$(readlink -f /proc/self/ns/mnt)" = '
+        '"$(readlink -f /proc/1/ns/mnt)" ]; then\n'
+        '    if false; then\n'
+        '        exit 0\n'
+        '    fi\n'
+        '    echo fi\n'
+        '    mount --make-rslave /\n'
+        '    tb_remount_exec_apply /home/user\n'
+        'fi\n'
+    )
+    assert not _guard_then_remount_ok(bad)
+
+
+def test_ordering_predicate_accepts_guard_with_benign_if_word():
+    ## Canary (false-rejection guard): a benign 'if'/'fi' inside a string argument
+    ## before the exit must NOT inflate the depth and reject a correct hook.
+    good = _strip_comments(
+        '#!/bin/bash\n'
+        'if [ "$(readlink -f /proc/self/ns/mnt)" = '
+        '"$(readlink -f /proc/1/ns/mnt)" ]; then\n'
+        '    logger -t tb-remount "skipping remount if in init namespace"\n'
+        '    exit 0\n'
+        'fi\n'
+        'mount --make-rslave /\n'
+        'tb_remount_exec_apply /home/user\n'
+    )
+    assert _guard_then_remount_ok(good)
 
 
 def test_ordering_predicate_accepts_guard_then_harden_then_remount():

@@ -264,9 +264,10 @@ check "readable --find tree alone is not inconclusive (exit 0)" rc_is 0
 run_audit --root "${root}" --find "${findtree}" "${work}/no-such-tree"
 check "an unreadable search tree -> inconclusive (exit 2)" rc_is 2
 
-## 13. a source that @includes an absolute path under a non-default --root is
-##     inconclusive: cvtsudoers would resolve the include against the HOST, not
-##     the image, so the parse is not faithful and must not read as clean.
+## 13. a source carrying an @include/@includedir under a non-default --root is
+##     inconclusive: cvtsudoers resolves the include in the HOST namespace, not
+##     the image, so the parse is not faithful and must not read as clean. Only
+##     the PRESENCE of an include is keyed on, not the target's form.
 printf '%s\n' 'user ALL=NOPASSWD: /usr/bin/present' '@includedir /etc/sudoers.d' \
   > "${work}/with-include"
 run_audit --root "${root}" "${work}/with-include"
@@ -300,35 +301,33 @@ check "both spaced commands missing (exit 1)" rc_is 1
 check "first spaced command named in full" out_has '/opt/My App/tool'
 check "second spaced command named in full" out_has '/opt/My Other/tool'
 
-## 16. a RELATIVE @include is resolved faithfully by cvtsudoers from the source
-##     file's own directory (not the host namespace), so it is NOT a coverage
-##     gap: the including file's own commands are still audited and a missing one
-##     is reported, never masked as inconclusive.
+## 16. a RELATIVE @include is NOT exempt under --root: it can still escape the
+##     image (via ..\/symlinks or a further include it pulls in), so presence of
+##     any include under --root is inconclusive. A continuation-line target (the
+##     path on a backslash-continued next line) is still detected, because only
+##     presence -- not the parsed target -- is keyed on.
 mkdir -p -- "${work}/relinc"
 printf '%s\n' 'user ALL=NOPASSWD: /usr/bin/present' > "${work}/relinc/extra"
-printf '%s\n' 'user ALL=NOPASSWD: /no/such/relbin' '@include extra' \
+printf '%s\n' 'user ALL=NOPASSWD: /usr/bin/present' '@include extra' \
   > "${work}/relinc/policy"
 run_audit --root "${root}" "${work}/relinc/policy"
-check "relative @include not inconclusive; own missing cmd found (exit 1)" rc_is 1
-check "missing command in a relative-include file named" out_has '/no/such/relbin'
+check "relative @include under --root -> inconclusive (exit 2)" rc_is 2
 
-## 17. an ABSOLUTE @includedir on the live root (--root /) that this process
-##     cannot read is inconclusive: cvtsudoers SILENTLY drops an unreadable
-##     includedir (rc 0, no warning; sudo as root would still load it), so
-##     trusting the exit-0 parse would be a false clean. /usr/bin/true is the
-##     directly-named command, so the ONLY reason it is not clean is the gap.
-incdir="${work}/abs-inc-dir"
-mkdir -p -- "${incdir}"
-printf '%s\n' 'user ALL=NOPASSWD: /usr/bin/true' > "${incdir}/drop"
-printf '%s\n' 'user ALL=NOPASSWD: /usr/bin/true' "@includedir ${incdir}" \
+## 17. an @include present on the LIVE root (--root /) is trusted ONLY when the
+##     audit runs as root (where cvtsudoers reads every include faithfully). As
+##     non-root an unreadable include is silently dropped, so presence forces
+##     inconclusive. A nonexistent target keeps both euid branches deterministic:
+##     root trusts (cvtsudoers skips the absent dir -> clean), non-root refuses.
+printf '%s\n' 'user ALL=NOPASSWD: /usr/bin/true' '@includedir /nonexistent/sudoers.d' \
   > "${work}/live-include"
-chmod 000 -- "${incdir}"
 run_audit "${work}/live-include"
-check "unreadable absolute @includedir on live root -> inconclusive (exit 2)" rc_is 2
-chmod 755 -- "${incdir}"
-## 17-canary: the same source with the include directive REMOVED audits clean,
-## proving the inconclusive verdict comes from the unreadable include, not the
-## directly-named command.
+if [ "$( id -u )" -eq 0 ]; then
+  check "root live audit trusts includes -> not inconclusive (exit 0)" rc_is 0
+else
+  check "non-root live audit with an include -> inconclusive (exit 2)" rc_is 2
+fi
+## 17-canary: without the include the source audits clean regardless of euid,
+## proving the inconclusive verdict above comes from the include presence.
 printf '%s\n' 'user ALL=NOPASSWD: /usr/bin/true' > "${work}/live-no-include"
 run_audit "${work}/live-no-include"
 check "canary: no include -> audited clean (exit 0)" rc_is 0
@@ -349,6 +348,42 @@ check "cross-rule spaced-path contamination -> B's dead grant found (exit 1)" rc
 check "B's real command /usr/bin/foo named" out_has 'missing: /usr/bin/foo'
 check "A's present spaced path not misreported missing" out_lacks '/usr/bin/foo bar'
 safe-rm --force -- "${root}/usr/bin/foo bar"
+
+## 19. two rules whose commands collapse to the SAME cvtsudoers JSON string but
+##     have DIFFERENT real boundaries (a spaced PATH vs a path+argument) cannot
+##     both be recovered from the one shared JSON key. Rather than pick one by
+##     text order (a dead-grant false clean in one order), the ambiguous command
+##     is INCONCLUSIVE -- and order-independently so.
+printf '%s\n' '#!/bin/sh' > "${root}/usr/bin/foo bar"
+chmod +x -- "${root}/usr/bin/foo bar"
+## /usr/bin/foo deliberately absent: the path+argument rule is a dead grant.
+printf '%s\n' \
+  'user ALL=NOPASSWD: /usr/bin/foo\ bar' \
+  'user ALL=NOPASSWD: /usr/bin/foo bar' > "${work}/ambig"
+run_audit --root "${root}" "${work}/ambig"
+check "collapsed-JSON ambiguous boundary -> inconclusive, not false clean (exit 2)" rc_is 2
+printf '%s\n' \
+  'user ALL=NOPASSWD: /usr/bin/foo bar' \
+  'user ALL=NOPASSWD: /usr/bin/foo\ bar' > "${work}/ambig-rev"
+run_audit --root "${root}" "${work}/ambig-rev"
+check "reversed rule order is likewise inconclusive (order-independent)" rc_is 2
+safe-rm --force -- "${root}/usr/bin/foo bar"
+
+## 20. a '/' earlier on the -f sudoers line (a CIDR host spec, a CWD=/CHROOT=
+##     option) pollutes the scraped command run, so a SPACED command after it is
+##     not a clean map hit. Its boundary is then unknown -- the audit reports it
+##     INCONCLUSIVE rather than guess a first token (which, if the guessed prefix
+##     exists, would be a dead-grant false clean).
+mkdir -p -- "${root}/opt/my"
+printf '%s\n' 'user 10.0.0.0/8 = NOPASSWD: /opt/my\ dir/tool' > "${work}/cidr"
+run_audit --root "${root}" "${work}/cidr"
+check "CIDR-polluted spaced command -> inconclusive, not false clean (exit 2)" rc_is 2
+## 20-canary: a NON-spaced command after the same CIDR host spec has an
+## unambiguous first-token boundary and is audited normally (a dead grant found).
+printf '%s\n' 'user 10.0.0.0/8 = NOPASSWD: /opt/no-such-cidr-cmd' > "${work}/cidr-plain"
+run_audit --root "${root}" "${work}/cidr-plain"
+check "non-spaced command after CIDR is audited -> missing (exit 1)" rc_is 1
+check "non-spaced CIDR command named" out_has '/opt/no-such-cidr-cmd'
 
 ## --- report ------------------------------------------------------------------
 printf '%s\n' "sudoers-command-audit-tests: ${pass} pass, ${fail} fail, 0 skip"
