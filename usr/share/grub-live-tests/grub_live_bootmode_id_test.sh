@@ -17,7 +17,9 @@
 ## The emit-check suite cannot assert this: both wrappers short-circuit at their
 ## 'pkg_installed grub-live' guard when grub-live is absent (the core dist-ai CI
 ## env), never reaching the export. This reads the REAL wrapper source and asserts
-## the assignment exists and precedes the generator exec -- environment-independent.
+## the assignment exists, is effectively EXPORTED (an explicit 'export' keyword or an
+## active 'set -o allexport' / 'set -a' before it -- else the exec'd engine child
+## cannot inherit it), and precedes the generator exec -- environment-independent.
 ##
 ## No root, no network, no grub-mkconfig.
 
@@ -64,14 +66,19 @@ for spec in "${specs[@]}"; do
    label="$(basename -- "${wrapper}")"
    checks=$(( checks + 1 ))
 
-   ## First line that assigns boot_mode_id='live', and first line that execs the
-   ## generator. grep -n emits '<line>:<text>'; take the leading line number only.
-   ## '|| true': a no-match grep exits 1, which under pipefail+inherit_errexit would
-   ## abort the script AT this substitution -- never reaching the FAIL branches below
-   ## (making them dead code and swallowing the WHICH-wrapper/WHY diagnostic). Empty
-   ## string instead flows to the '[ -z ]' checks, which report the failure properly.
-   assign_line="$(grep -n -- "^[[:space:]]*boot_mode_id='live'" "${wrapper}" | head -n 1 | cut -d: -f1 || true)"
+   ## First line assigning boot_mode_id='live' (with or without an 'export' keyword -- the
+   ## wrappers rely on an earlier 'set -o allexport'), and first line that execs the generator.
+   ## grep -n emits '<line>:<text>'; take the leading line number only.
+   ## '|| true': a no-match grep exits 1, which under pipefail+inherit_errexit would abort the
+   ## script AT this substitution -- never reaching the FAIL branches below (making them dead
+   ## code and swallowing the diagnostic). Empty flows to the '[ -z ]' checks, which report it.
+   assign_line="$(grep -n -E -- "^[[:space:]]*(export[[:space:]]+)?boot_mode_id='live'" "${wrapper}" | head -n 1 | cut -d: -f1 || true)"
    exec_line="$(grep -nF -- "${generator}" "${wrapper}" | head -n 1 | cut -d: -f1 || true)"
+   ## boot_mode_id reaches the CHILD engine (exec'd, not sourced) only if EXPORTED: either the
+   ## assignment carries 'export', or a 'set -o allexport' / 'set -a' is active before it (what
+   ## the wrappers use). A bare assignment with neither is a real bug the engine would not see.
+   export_kw_line="$(grep -n -E -- "^[[:space:]]*export[[:space:]]+boot_mode_id='live'" "${wrapper}" | head -n 1 | cut -d: -f1 || true)"
+   allexport_line="$(grep -n -E -- "^[[:space:]]*set[[:space:]]+(-o[[:space:]]+allexport|-a)([[:space:]]|\$)" "${wrapper}" | head -n 1 | cut -d: -f1 || true)"
 
    if [ -z "${assign_line}" ]; then
       printf '%s\n' "FAIL  ${label}: no boot_mode_id='live' assignment"
@@ -88,7 +95,13 @@ for spec in "${specs[@]}"; do
       fail=1
       continue
    fi
-   printf '%s\n' "PASS  ${label}: boot_mode_id='live' (line ${assign_line}) before generator exec (line ${exec_line})"
+   if [ -z "${export_kw_line}" ] \
+      && { [ -z "${allexport_line}" ] || [ "${allexport_line}" -ge "${assign_line}" ]; }; then
+      printf '%s\n' "FAIL  ${label}: boot_mode_id='live' (line ${assign_line}) not exported -- no 'export' keyword and no 'set -o allexport'/'set -a' before it; the engine child cannot inherit it"
+      fail=1
+      continue
+   fi
+   printf '%s\n' "PASS  ${label}: boot_mode_id='live' (line ${assign_line}) exported and before generator exec (line ${exec_line})"
 done
 
 printf '%s\n' "" "${checks} checks, ${fail} failed"

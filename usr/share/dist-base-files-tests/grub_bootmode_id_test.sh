@@ -121,6 +121,27 @@ render_ids() {
 fail=0
 checks=0
 
+## Every COMPLETE id must belong to exactly one mode. The per-mode PREFIX checks alone cannot
+## catch an alias where one mode's prefix is a prefix of another's (gnulinux-live- is a prefix
+## of gnulinux-live-sysmaint-), so a 'live' entry wrongly emitting a 'live-sysmaint'-shaped id
+## would still pass the 'live' prefix. record_mode_id fails the moment an id maps to a 2nd mode.
+declare -A id_owner
+distinct_ok=1
+recorded=0
+record_mode_id() {
+   local mode="$1" id="$2" prev
+   prev="${id_owner[${id}]:-}"
+   if [ -n "${prev}" ] && [ "${prev}" != "${mode}" ]; then
+      printf '%s\n' "FAIL  complete id '${id}' emitted under BOTH '${prev}' and '${mode}' -- modes alias"
+      distinct_ok=0
+      fail=1
+   fi
+   ## Count distinct ids via a counter, NOT '${#id_owner[@]}' -- an empty associative array
+   ## trips 'set -o nounset' on that expansion (bash), which would abort the summary below.
+   [ -n "${prev}" ] || recorded=$(( recorded + 1 ))
+   id_owner["${id}"]="${mode}"
+}
+
 ## 10_00_linux_dist emits one top-level menuentry: assert its --id prefix.
 assert_simple_prefix() {
    local mode="$1" want="$2" id
@@ -133,6 +154,7 @@ assert_simple_prefix() {
       printf '%s\n' "FAIL  simple boot_mode_id=${mode}: id '${id}' lacks prefix '${want}'"
       fail=1
    else
+      record_mode_id "${mode}" "${id}"
       printf '%s\n' "PASS  simple boot_mode_id=${mode}: id '${id}'"
    fi
 }
@@ -157,6 +179,7 @@ assert_advanced_prefix() {
          fail=1
          return
       fi
+      record_mode_id "${mode}" "${id}"
    done <<< "${ids}"
    printf '%s\n' "PASS  advanced boot_mode_id=${mode}: ${n} id(s), all '${want}*'"
 }
@@ -176,6 +199,19 @@ for spec in \
    assert_simple_prefix   "${spec%%:*}" "${spec#*:}"
    assert_advanced_prefix "${spec%%:*}" "${spec#*:}"
 done
+
+## Complete-id distinctness across every mode and both engines (the prefix-alias gap above).
+## Canaries RED alongside the prefix checks on the pre-fix mode-blind engines: every mode then
+## renders the same 'gnulinux-simple-<dev>' / 'gnulinux-advanced-<dev>', so ids collide here too.
+checks=$(( checks + 1 ))
+if [ "${recorded}" -eq 0 ]; then
+   printf '%s\n' "FAIL  complete-id distinctness: no ids recorded to compare (engines emitted none)"
+   fail=1
+elif [ "${distinct_ok}" -eq 1 ]; then
+   printf '%s\n' "PASS  complete-id distinctness: ${recorded} ids, none shared across modes"
+else
+   printf '%s\n' "FAIL  complete-id distinctness: an id is emitted under two modes"
+fi
 
 printf '%s\n' "" "${checks} checks, ${fail} failed"
 [ "${fail}" -eq 0 ]
