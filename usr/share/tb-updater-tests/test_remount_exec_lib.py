@@ -31,9 +31,18 @@ mkdir, chown) are stubbed as shell functions that record their arguments.
 import os
 import subprocess
 
+import pytest
+
 import tb_updater_testlib as T
 
-LIB = T.remount_exec_lib()
+try:
+    LIB = T.remount_exec_lib()
+except SystemExit:
+    ## Resolver exits 77 when the helper is absent (partial checkout / pre-install).
+    ## Catch it: an unhandled SystemExit during collection is a BaseException that
+    ## pytest reraises as an INTERNALERROR, aborting the WHOLE suite instead of
+    ## skipping just this module -- every sibling test guards the same way.
+    pytest.skip("tb-remount-exec.bsh not available", allow_module_level=True)
 
 
 def _run(body, env=None):
