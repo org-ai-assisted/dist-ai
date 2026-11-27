@@ -95,7 +95,7 @@ swap_active() {
 
 ## Run one filesystem's create+teardown cycle. $1 label, $2 mkfs command word.
 run_fs() {
-   local label="$1" mkfs_cmd="$2" img mnt sf rc
+   local label="$1" mkfs_cmd="$2" img mnt sf rc start_out stop_out
    img="$(mktemp)"
    images+=( "${img}" )
    ## do_start's free-disk gate requires the swap size PLUS a fixed 2 GiB
@@ -110,10 +110,13 @@ run_fs() {
    mounts+=( "${mnt}" )
    sf="${mnt}/swapfile"
 
-   ## do_start enables the swap for real.
+   ## do_start enables the swap for real. Capture the drive's combined output and
+   ## surface it only on failure, so a command-not-found (rc 127) or any abort
+   ## names its cause in the CI log instead of vanishing into /dev/null.
    rc=0
-   DRIVE_SWAPFILE="${sf}" DRIVE_SIZE_MB=64 DRIVE_DO_PRE_CHECK=false \
-      bash "${drive}" start >/dev/null 2>&1 || rc=$?
+   start_out="$(DRIVE_SWAPFILE="${sf}" DRIVE_SIZE_MB=64 DRIVE_DO_PRE_CHECK=false \
+      bash "${drive}" start 2>&1)" || rc=$?
+   [ "${rc}" = 0 ] || printf '%s\n' "--- (${label}) do_start rc=${rc}; drive output: ---" "${start_out}" "--- end ---"
    enabled_swaps+=( "${sf}" )
    check "(${label}) do_start exit 0"              "${rc}" "0"
    check "(${label}) swap is active (swapon --show)" "$(swap_active "${sf}" && printf '%s' y || printf '%s' n)" "y"
@@ -121,8 +124,9 @@ run_fs() {
 
    ## do_stop swapoff + removes it.
    rc=0
-   DRIVE_SWAPFILE="${sf}" DRIVE_DO_PRE_CHECK=false \
-      bash "${drive}" stop >/dev/null 2>&1 || rc=$?
+   stop_out="$(DRIVE_SWAPFILE="${sf}" DRIVE_DO_PRE_CHECK=false \
+      bash "${drive}" stop 2>&1)" || rc=$?
+   [ "${rc}" = 0 ] || printf '%s\n' "--- (${label}) do_stop rc=${rc}; drive output: ---" "${stop_out}" "--- end ---"
    check "(${label}) do_stop exit 0"               "${rc}" "0"
    check "(${label}) swap no longer active"        "$(swap_active "${sf}" && printf '%s' y || printf '%s' n)" "n"
    check "(${label}) swap file removed"            "$([ -e "${sf}" ] && printf '%s' y || printf '%s' n)" "n"
