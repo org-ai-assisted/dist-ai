@@ -101,14 +101,21 @@ class BindpBehaviorTest(unittest.TestCase):
     ## --- the reuse-option family gate (the reviewer regression) ---------------
 
     def test_af_unspec_wildcard_bind_gets_reuse_options(self):
-        ## Two AF_INET UDP sockets bound AF_UNSPEC to one wildcard port: both must
-        ## get SO_REUSEPORT or the second bind fails EADDRINUSE. bindp must gate on
-        ## the socket's real family (AF_INET), not the caller's sa_family.
-        out = self._probe_run("dual-unspec", REUSE_ADDR=1, REUSE_PORT=1)
+        ## An AF_INET socket bound with the caller passing sa_family AF_UNSPEC (a
+        ## valid IPv4 wildcard bind on Linux) must still get BOTH reuse options:
+        ## bindp must gate on the socket's real family (queried from the fd), not
+        ## the caller's sa_family. Assert each option INDEPENDENTLY via getsockopt
+        ## readback. A dual-bind success probe would accept a partial failure here:
+        ## on Linux SO_REUSEADDR alone lets two UDP wildcard binds coexist, so the
+        ## second bind succeeds even if bindp set only SO_REUSEADDR and skipped
+        ## SO_REUSEPORT (and vice versa) -- the readback catches a missing EITHER.
+        out = self._probe_run("bind-unspec", REUSE_ADDR=1, REUSE_PORT=1)
         self.assertEqual(
-            out.get("second_bind_rc"), "0",
-            msg=("second AF_UNSPEC wildcard bind rejected -- reuse options gated "
-                 f"on sa_family, not socket family. stderr: {out['_stderr']}"))
+            out["reuseaddr"], "1",
+            msg=f"SO_REUSEADDR not applied to AF_UNSPEC bind. stderr: {out['_stderr']}")
+        self.assertEqual(
+            out["reuseport"], "1",
+            msg=f"SO_REUSEPORT not applied to AF_UNSPEC bind. stderr: {out['_stderr']}")
 
     def test_reuseaddr_applied_for_inet(self):
         self.assertEqual(self._probe_run("bind-inet", REUSE_ADDR=1)["reuseaddr"], "1")

@@ -11,7 +11,7 @@
 
      - address / port rewrite from BIND_ADDR / BIND_PORT,
      - SO_REUSEADDR / SO_REUSEPORT application, gated to IP sockets,
-     - the AF_UNSPEC-wildcard regression (reuse options still applied),
+     - the AF_UNSPEC-wildcard regression (reuse options still applied, read back),
      - AF_UNIX binds left untouched,
      - connect() binding the source address.
 
@@ -19,12 +19,11 @@
      bind-inet          AF_INET UDP bind to INADDR_ANY:0 (sa_family AF_INET)
      bind-unspec        same, but the sockaddr's sa_family is AF_UNSPEC
      bind-unix <path>   AF_UNIX bind to <path>
-     dual-unspec        two AF_INET UDP sockets, both bound AF_UNSPEC to one port
      connect-src        TCP client connect to a local listener; report its source
 
-   Printed keys (per mode): bind_rc, addr, port, reuseaddr, reuseport,
-   second_bind_rc, src_addr. Exit 0 = ran to completion (read the keys); exit 2 =
-   setup failure (socket/listener), not an assertion.
+   Printed keys (per mode): bind_rc, addr, port, reuseaddr, reuseport, src_addr.
+   Exit 0 = ran to completion (read the keys); exit 2 = setup failure
+   (socket/listener), not an assertion.
 */
 #define _GNU_SOURCE
 
@@ -113,35 +112,6 @@ static int mode_bind_unix(const char *path) {
     return 0;
 }
 
-static int mode_dual_unspec(void) {
-    int s1 = socket(AF_INET, SOCK_DGRAM, 0);
-    int s2 = socket(AF_INET, SOCK_DGRAM, 0);
-    if (s1 < 0 || s2 < 0) {
-        fprintf(stderr, "socket: %s\n", strerror(errno));
-        return 2;
-    }
-    struct sockaddr_in first;
-    fill_in(&first, AF_UNSPEC, 0);
-    if (bind(s1, (struct sockaddr *)&first, sizeof(first)) != 0) {
-        fprintf(stderr, "first bind: %s\n", strerror(errno));
-        return 2;
-    }
-    struct sockaddr_in got;
-    socklen_t got_len = (socklen_t)sizeof(got);
-    if (getsockname(s1, (struct sockaddr *)&got, &got_len) != 0) {
-        fprintf(stderr, "getsockname: %s\n", strerror(errno));
-        return 2;
-    }
-    struct sockaddr_in second;
-    fill_in(&second, AF_UNSPEC, got.sin_port);
-    if (bind(s2, (struct sockaddr *)&second, sizeof(second)) != 0) {
-        printf("second_bind_rc=%d\n", errno);
-        return 0;
-    }
-    printf("second_bind_rc=0\n");
-    return 0;
-}
-
 static int mode_connect_src(void) {
     int srv = socket(AF_INET, SOCK_STREAM, 0);
     if (srv < 0) {
@@ -212,9 +182,6 @@ int main(int argc, char **argv) {
     }
     if (strcmp(mode, "bind-unix") == 0) {
         return mode_bind_unix(argc >= 3 ? argv[2] : NULL);
-    }
-    if (strcmp(mode, "dual-unspec") == 0) {
-        return mode_dual_unspec();
     }
     if (strcmp(mode, "connect-src") == 0) {
         return mode_connect_src();

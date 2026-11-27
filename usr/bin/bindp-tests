@@ -5,14 +5,22 @@
 
 ## AI-Assisted
 
-## Regression suite for bindp's setsockopt option gate. Builds the REAL
-## usr/src/bindp/bindp.c with its shipped Makefile and LD_PRELOADs it to drive
-## the family-gate test. The subject is resolved by the test from:
+## End-to-end regression suite for bindp. Builds the REAL usr/src/bindp/bindp.c
+## with its shipped Makefile and LD_PRELOADs it to drive bind()/connect() through
+## the probe (address/port rewrite, the SO_REUSEADDR/PORT family gate, AF_UNIX
+## skip, invalid-env rejection). The subject is resolved by the test from:
 ##   * BINDP_REPO=/path/to/bindp -> that checkout's usr/src/bindp/bindp.c, OR
-##   * unset -> '/' (bindp.c under /usr/src/bindp, i.e. a missing subject -> SKIP).
+##   * unset -> '/' (bindp.c under /usr/src/bindp, i.e. the installed copy).
 ##
-## Needs gcc + make (build-essential). Their absence is a FATAL environment bug,
-## not a skip.
+## Two dependency classes, deliberately different on absence:
+##   * gcc + make (build-essential) are REQUIRED build tools: their absence is a
+##     FATAL environment bug (the test errors), NEVER a skip.
+##   * bindp.c (the subject) is the OPTIONAL per-component target: absent, there
+##     is nothing to test and the suite SKIPs (like every other component suite,
+##     e.g. kloak-tests). This is NOT a silent green -- the orchestrator fails an
+##     UNAUTHORIZED skip under a --component filter, which is the only gating path
+##     (bindp CI always wires BINDP_REPO at the checkout, so the subject is
+##     present). A bare --core run without the subject reports SKIP, not PASS.
 ##
 ## Any extra arguments are forwarded to "python3 -m unittest".
 
@@ -34,8 +42,9 @@ fi
 
 ## Driven through run-unittest.py so a subject-absent run (the whole suite skips
 ## from setUpClass when BINDP_REPO lacks usr/src/bindp/bindp.c) surfaces as a
-## skip exit (77/78), not a bare `unittest discover` exit 0 the orchestrator
-## reads as a false-green PASS.
+## skip exit (77/78) the orchestrator accounts as SKIP -- and fails under a
+## --component filter -- not a bare `unittest discover` exit 0 it reads as a
+## false-green PASS.
 run_unittest="${script_dir}/../share/dist-ai-tests-common/run-unittest.py"
 [ -r "${run_unittest}" ] || run_unittest='/usr/share/dist-ai-tests-common/run-unittest.py'
 
