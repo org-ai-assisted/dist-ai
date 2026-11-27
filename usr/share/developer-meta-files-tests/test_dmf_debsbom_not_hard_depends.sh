@@ -62,9 +62,10 @@ if [ -z "${subject}" ]; then
   exit 77
 fi
 
-## Print a deb822 field's logical value, joining RFC822 continuation lines. Only
-## the binary 'Package:' stanza carries Depends/Recommends (the Source stanza has
-## Build-Depends, which '^Depends:' does not match).
+## Print a deb822 field's logical value across EVERY stanza, joining RFC822
+## continuation lines. Values ACCUMULATE (not overwrite), so a hard Depends in a
+## non-final binary 'Package:' stanza is still caught if the package ever grows a
+## second binary. The Source stanza has Build-Depends, which '^Depends:' skips.
 extract_field() {
   local field="$1"
   awk -v field="${field}" '
@@ -74,7 +75,7 @@ extract_field() {
         if ($0 ~ /^[ \t]/) { line = $0; sub(/^[ \t]+/, "", line); val = val " " line; next }
         infield = 0
       }
-      if ($0 ~ "^" field ":[ \t]*") { line = $0; sub("^" field ":[ \t]*", "", line); val = line; infield = 1 }
+      if ($0 ~ "^" field ":[ \t]*") { line = $0; sub("^" field ":[ \t]*", "", line); val = val " " line; infield = 1 }
     }
     END { print val }
   ' "${subject}"

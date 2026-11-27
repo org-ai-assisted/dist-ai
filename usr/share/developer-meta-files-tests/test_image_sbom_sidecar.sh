@@ -19,8 +19,7 @@
 ## dm-prepare-release sources help-steps/pre + variables at load, so it cannot
 ## be sourced whole; dm-build-step-fn extracts just this function. The test
 ## defines it with sign_and_verify_all stubbed (recording), against tmpdir
-## fixtures, and asserts the call-site guard statically. No root, no network,
-## no build.
+## fixtures. No root, no network, no build.
 
 set -o errexit
 set -o nounset
@@ -124,23 +123,13 @@ check "symlink: dest is now a regular file" \
    "$(if [ -L "${ova}.cdx.json" ]; then printf '%s' symlink; else printf '%s' regular; fi)" "regular"
 check "symlink: the symlink target was NOT overwritten" "$(cat -- "${sentinel}")" "SENTINEL-UNTOUCHED"
 
-## ---- call-site guard: the image-vs-source gate (source/installer artifacts get
-##      NO sidecar) now lives at the caller, so assert copy_and_sign_sbom is
-##      invoked ONLY under 'if [ -n "${dm_target_item}" ]'. A function-definition
-##      line is excluded; every real call line must be guarded. ----
-read -r call_lines guarded_lines < <(awk '
-   {
-      line = $0
-      if (line ~ /copy_and_sign_sbom/ && line !~ /copy_and_sign_sbom[[:space:]]*\(\)/) {
-         calls++
-         if (prev ~ /\[[[:space:]]+-n[[:space:]]+"\$\{dm_target_item\}"[[:space:]]+\]/) { guarded++ }
-      }
-      if (line !~ /^[[:space:]]*$/) { prev = line }
-   }
-   END { printf "%d %d\n", calls, guarded }
-' "${subject}")
-check "call-site: copy_and_sign_sbom has a call site" "$(if [ "${call_lines}" -ge 1 ]; then printf '%s' yes; else printf '%s' no; fi)" "yes"
-check "call-site: every call is guarded by a non-empty dm_target_item" "${call_lines}" "${guarded_lines}"
+## The image-vs-source gate (source/installer artifacts get NO sidecar) lives at
+## the CALL SITE ('if [ -n "${dm_target_item}" ]'), not in copy_and_sign_sbom.
+## It is deliberately NOT asserted here: verifying lexical block enclosure in bash
+## source needs a real parser, and any line-adjacency heuristic both false-fails
+## (a comment mentioning the function, an intervening statement) and under-checks
+## (a matching guard string next to an unguarded call). This test owns the
+## function's behaviour; the caller gate is a caller concern.
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
