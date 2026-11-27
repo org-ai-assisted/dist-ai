@@ -127,6 +127,20 @@ MOUNTPOINT="${root_adv}" "${helper}" persistent-sysmaint >/dev/null
 check "advanced entry before simple -> selects full simple id, not truncated" \
    "gnulinux-persistent-sysmaint-${dev}" "$(next_entry_of "${root_adv}")"
 
+## 1c. CANARY: GRUB accepts a DOUBLE-quoted menuentry --id as well as single. The whole-id
+## anchor must accept EITHER delimiter; a single-quote-only anchor misses a double-quoted id
+## and silently drops to the (here absent) title fallback -> fail-loud, no selection. RED on
+## a '-only anchor.
+root_dq="${work_dir}/double_quoted_id"
+mkdir --parents -- "${root_dq}/boot/grub"
+printf '%s\n' \
+   "menuentry \"Kicksecure GNU/Linux\" --class os \$menuentry_id_option \"gnulinux-persistent-sysmaint-${dev}\" {" \
+   "	true" \
+   "}" > "${root_dq}/boot/grub/grub.cfg"
+MOUNTPOINT="${root_dq}" "${helper}" persistent-sysmaint >/dev/null
+check "double-quoted --id selected (delimiter-agnostic)" \
+   "gnulinux-persistent-sysmaint-${dev}" "$(next_entry_of "${root_dq}")"
+
 ## 2. CANARY: an image with NEITHER a per-mode id NOR a per-mode menu title (shared
 ## gnulinux-simple-<dev> and only a generic 'Kicksecure GNU/Linux' title) -> the helper
 ## MUST fail loud, never select blindly.
