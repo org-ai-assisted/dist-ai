@@ -21,6 +21,7 @@ import importlib.machinery
 import importlib.util
 import os
 import subprocess
+import sys
 import types
 from pathlib import Path
 
@@ -130,6 +131,133 @@ def test_guestctl_parser_has_type_stdin():
     ## CWE-214: a secret is typed via stdin (type-stdin), never on argv.
     ns = GC._build_parser().parse_args(['v', 'type-stdin'])
     assert ns.cmd == 'type-stdin'
+
+
+def test_dmi_device_and_keys():
+    ## The pcbios-vs-efi device choice + key template live in exactly one place
+    ## (dm_vbox_dmi); both the backend and vbox-ctl-local import the SAME module.
+    dmi = GC.dm_vbox_dmi
+    assert dmi.dmi_device(True) == 'efi'
+    assert dmi.dmi_device(False) == 'pcbios'
+    assert dmi.dmi_keys('pcbios') == (
+        'VBoxInternal/Devices/pcbios/0/Config/DmiSystemVendor',
+        'VBoxInternal/Devices/pcbios/0/Config/DmiSystemSerial')
+    assert dmi.dmi_keys('efi') == (
+        'VBoxInternal/Devices/efi/0/Config/DmiSystemVendor',
+        'VBoxInternal/Devices/efi/0/Config/DmiSystemSerial')
+
+
+def test_backend_dmi_keys_delegate_to_shared_module():
+    ## Regression: the backend's _dmi_keys still maps every EFI variant to the efi
+    ## device and only 'bios' to pcbios, after delegating to dm_vbox_dmi.
+    assert M._dmi_keys('bios')[0].split('/')[2] == 'pcbios'
+    assert M._dmi_keys('efi')[0].split('/')[2] == 'efi'
+    assert M._dmi_keys('efi-secureboot')[0].split('/')[2] == 'efi'
+
+
+def test_guestctl_parser_accepts_poweroff():
+    ns = GC._build_parser().parse_args(['v', 'poweroff'])
+    assert ns.cmd == 'poweroff'
+
+
+def test_guestctl_parser_smbios_set_and_clear():
+    set_ns = GC._build_parser().parse_args(
+        ['v', 'smbios', 'boot-role=sysmaint systemd.unit=sysmaint-boot.target'])
+    assert set_ns.cmd == 'smbios'
+    assert set_ns.cmdline == 'boot-role=sysmaint systemd.unit=sysmaint-boot.target'
+    assert set_ns.clear is False
+    clr_ns = GC._build_parser().parse_args(['v', 'smbios', '--clear'])
+    assert (clr_ns.cmd, clr_ns.cmdline, clr_ns.clear) == ('smbios', None, True)
+
+
+def test_guestctl_smbios_requires_exactly_one_of_cmdline_or_clear():
+    ## Neither or both is a usage error (rc 2), caught BEFORE any vboxapi call, so
+    ## the misuse never reaches the machine (and this test needs no VM/bindings).
+    assert GC.main(['v', 'smbios']) == 2
+    assert GC.main(['v', 'smbios', 'x', '--clear']) == 2
+
+
+def test_guestctl_smbios_autodetects_device_from_firmware(monkeypatch):
+    ## _do_smbios must pick the override device from the LIVE firmware (never a
+    ## caller flag), so the pcbios-on-EFI power-on-fault can never be triggered.
+    ## Stub vboxapi so the firmware->device decision + setExtraData keys are
+    ## checked without a VM. Models the VBox 7.2 reality: per-VM setExtraData needs
+    ## a Write-locked session.machine (the findMachine object is immutable), so the
+    ## stub only records writes made through the locked mutable machine + saveSettings.
+    recorded = {}
+    events = []
+
+    class _FwSettings:
+        def __init__(self, ft):
+            self.firmwareType = ft
+
+    class _Mutable:
+        def setExtraData(self, key, val):
+            recorded[key] = val
+
+        def saveSettings(self):
+            events.append('saveSettings')
+
+    class _Session:
+        machine = None
+
+        def unlockMachine(self):
+            events.append('unlockMachine')
+
+    class _Machine:
+        def __init__(self, ft):
+            self.firmwareSettings = _FwSettings(ft)
+
+        def lockMachine(self, session, locktype):
+            assert locktype == 7  # LockType_Write
+            events.append('lockMachine')
+            session.machine = _Mutable()
+
+    class _Constants:
+        FirmwareType_BIOS = 1
+        LockType_Write = 7
+
+    class _Mgr:
+        constants = _Constants()
+
+        def __init__(self, ft):
+            self._ft = ft
+            self._session = _Session()
+
+        def getVirtualBox(self):
+            outer = self
+
+            class _Vbox:
+                def findMachine(self, _name):
+                    return _Machine(outer._ft)
+            return _Vbox()
+
+        def getSessionObject(self, _vbox):
+            return self._session
+
+    class _FakeVboxapi:
+        def __init__(self, ft):
+            self._ft = ft
+
+        def VirtualBoxManager(self, _a, _b):
+            return _Mgr(self._ft)
+
+    ## BIOS (==1) -> pcbios device; any other value (EFI) -> efi device.
+    for ft, device in ((1, 'pcbios'), (2, 'efi')):
+        recorded.clear()
+        events.clear()
+        monkeypatch.setitem(sys.modules, 'vboxapi', _FakeVboxapi(ft))
+        GC._do_smbios('v', 'boot-role=sysmaint', False)
+        vkey, skey = GC.dm_vbox_dmi.dmi_keys(device)
+        assert recorded[vkey] == 'QEMU'
+        assert recorded[skey] == 'dm-cmdline=boot-role=sysmaint'
+        ## Write lock taken, settings saved, and ALWAYS unlocked.
+        assert events == ['lockMachine', 'saveSettings', 'unlockMachine']
+    ## --clear deletes both keys (empty value).
+    recorded.clear()
+    monkeypatch.setitem(sys.modules, 'vboxapi', _FakeVboxapi(1))
+    GC._do_smbios('v', None, True)
+    assert set(recorded.values()) == {''}
 
 
 def test_guestctl_click_dwells_between_move_and_press():

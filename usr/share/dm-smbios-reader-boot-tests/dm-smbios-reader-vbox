@@ -47,6 +47,12 @@ import sys
 
 from PIL import Image, ImageChops, ImageStat
 
+## Sibling module (same directory): anchor sys.path to the REAL script dir so the
+## import resolves however this is invoked (bare on PATH, via a symlink, or by full
+## path). Single home of the DMI override device choice (pcbios vs efi) + key template.
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import dm_vbox_dmi
+
 PASS_RC = 0
 FAIL_RC = 5
 SETUP_RC = 2
@@ -237,27 +243,12 @@ def build_uart_server_argv(vmname, sock, vboxmanage=VBOXMANAGE):
             '--uart1', '0x3f8', '4', '--uartmode1', 'server', sock]
 
 
-## DMI (SMBIOS) overrides via the pcbios extradata keys. The in-image GRUB reader
-## appends the Type-1 system serial's 'dm-cmdline=' remainder to the kernel line,
-## but ONLY when the Type-1 manufacturer reads 'QEMU' -- so a VBox guest must
-## advertise vendor=QEMU for the reader to fire (same cmdline-injection chain the
-## qemu backend uses; dm-smbios-reader-qemu --emit-cmdline is the shared payload).
-##
-## The DMI override DEVICE differs by firmware: the BIOS path builds its SMBIOS via
-## the 'pcbios' device, the EFI path via the 'efi' device. This is NOT cosmetic --
-## setting pcbios keys on an EFI VM force-instantiates the pcbios device, whose init
-## then FAILS querying BootDevice0 (VERR_CFGM_VALUE_NOT_FOUND), so power-on dies
-## before DMI ever reaches the guest.
-## VERIFIED on VBox 7.2 (server integration): efi-device keys power an EFI/efi-secureboot
-## VM on cleanly; pcbios keys refuse it. A wrong/no-op device path surfaces as the
-## dm-smbios-reader-image-test 0-byte-serial-log FAIL (reader never fired).
-_DMI_DEVICE = {'bios': 'pcbios', 'efi': 'efi', 'efi-secureboot': 'efi'}
-
-
+## DMI (SMBIOS) override device choice + keys live in dm_vbox_dmi (the single home
+## of the pcbios-vs-efi power-on-fault trap). Here the firmware is a NAME; any EFI
+## variant maps to the efi device.
 def _dmi_keys(firmware):
     """(vendor_key, serial_key) for the DMI override device of FIRMWARE."""
-    base = 'VBoxInternal/Devices/%s/0/Config/' % _DMI_DEVICE[firmware]
-    return base + 'DmiSystemVendor', base + 'DmiSystemSerial'
+    return dm_vbox_dmi.dmi_keys(dm_vbox_dmi.dmi_device(firmware != 'bios'))
 
 
 def build_dmi_argv(vmname, vendor, serial, firmware='bios', vboxmanage=VBOXMANAGE):

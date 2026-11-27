@@ -9,13 +9,29 @@ the CLI lacks. Needs the VM defined with --mouse usbtablet + a USB controller
 (build_install_vm_plan does this) so putMouseEventAbsolute works pre-Guest-Additions.
 
 Usage: vbox-ctl-local <vm> <res | shot PATH | click X Y [button] | move X Y
-                             | type TEXT | key HEXSCANCODE...>
+                             | type TEXT | key HEXSCANCODE... | chord KEY...
+                             | poweroff | smbios CMDLINE | smbios --clear>
 button bitmask: 1=left 2=right 4=middle (0 = release).
+
+Besides the console I/O above it also carries two non-console MACHINE ops, so a
+caller can drive a guest end to end from one tool:
+  poweroff          -- power the RUNNING VM off (console.powerDown; like controlvm poweroff).
+  smbios CMDLINE    -- set the DMI (Type-1 serial) cmdline the in-image GRUB reader
+                       injects at NEXT boot, e.g. "boot-role=sysmaint systemd.unit=
+                       sysmaint-boot.target". The override DEVICE (pcbios vs efi) is
+                       autodetected from the VM firmware, so it can never be set wrong.
+  smbios --clear    -- remove that override (restore stock DMI for a normal boot).
 """
 import math
 import os
 import sys
 import time
+
+## Sibling module (same directory): anchor sys.path to the REAL script dir so the
+## import resolves however this is invoked (bare on PATH, symlink, or full path).
+## Single home of the DMI override device choice (pcbios vs efi) + key template.
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import dm_vbox_dmi
 
 ## vboxapi is imported lazily inside _console so the pure scancode helper stays
 ## importable (and unit-testable) on a host without the VirtualBox bindings.
@@ -192,11 +208,67 @@ def _build_parser():
                            help='press named keys together then release '
                                 '(e.g. "chord ctrl alt f2" to switch virtual terminal)')
     chord.add_argument('keys', nargs='+', metavar='KEY')
+    sub.add_parser('poweroff', help='power off the running VM (hard, like controlvm poweroff)')
+    smbios = sub.add_parser(
+        'smbios',
+        help='set (or --clear) the DMI cmdline injected at next boot; '
+             'the override device is autodetected from the VM firmware')
+    smbios.add_argument('cmdline', nargs='?',
+                        help='kernel cmdline to inject '
+                             '(e.g. "boot-role=sysmaint systemd.unit=sysmaint-boot.target")')
+    smbios.add_argument('--clear', action='store_true',
+                        help='remove the DMI override instead of setting one')
     return parser
+
+
+def _do_smbios(name, cmdline, clear):
+    """Set or clear the DMI (Type-1 serial) cmdline-injection override for NAME's
+    NEXT boot. An empty value deletes the key, restoring stock DMI. The override
+    device (pcbios vs efi) is autodetected from the VM firmware so it can never be
+    set wrong (the pcbios-on-EFI power-on-fault trap in dm_vbox_dmi).
+
+    Per-machine setExtraData needs a Write-locked session on VBox 7.2 (the
+    findMachine object is immutable: 0x80bb0002), and a Write lock needs the VM
+    powered off -- which is correct, since DMI is read only at boot. The firmware is
+    read first off the read-only object (allowed), then the write lock is taken."""
+    import vboxapi
+    mgr = vboxapi.VirtualBoxManager(None, None)
+    vbox = mgr.getVirtualBox()
+    machine = vbox.findMachine(name)
+    ## VBox 7.2 moved firmwareType under firmwareSettings.
+    is_efi = (machine.firmwareSettings.firmwareType
+              != mgr.constants.FirmwareType_BIOS)
+    device = dm_vbox_dmi.dmi_device(is_efi)
+    vendor_key, serial_key = dm_vbox_dmi.dmi_keys(device)
+    session = mgr.getSessionObject(vbox)
+    machine.lockMachine(session, mgr.constants.LockType_Write)
+    try:
+        mutable = session.machine
+        if clear:
+            mutable.setExtraData(vendor_key, '')
+            mutable.setExtraData(serial_key, '')
+        else:
+            mutable.setExtraData(vendor_key, dm_vbox_dmi.DMI_VENDOR)
+            mutable.setExtraData(serial_key, dm_vbox_dmi.DM_CMDLINE_PREFIX + cmdline)
+        mutable.saveSettings()
+    finally:
+        session.unlockMachine()
+    if clear:
+        print('smbios: cleared DMI override (%s device)' % (device,))
+    else:
+        print('smbios: set %s DMI cmdline: %s' % (device, cmdline))
 
 
 def main(argv=None):
     args = _build_parser().parse_args(argv)
+    if args.cmd == 'smbios':
+        ## No-lock machine op (the VM is normally powered off for this) -- must NOT
+        ## open a console. Exactly one of CMDLINE / --clear.
+        if (args.cmdline is None) == (not args.clear):
+            print('smbios: give exactly one of CMDLINE or --clear', file=sys.stderr)
+            return 2
+        _do_smbios(args.vm, args.cmdline, args.clear)
+        return 0
     mgr, session, console = _console(args.vm)
     try:
         disp = console.display
@@ -241,9 +313,22 @@ def main(argv=None):
         elif args.cmd == 'chord':
             send_scancodes(console.keyboard, chord_scancodes(args.keys))
             print('chord %s' % (' '.join(args.keys),))
+        elif args.cmd == 'poweroff':
+            ## Shared lock is sufficient (and required -- a Write lock fails against
+            ## a running VM). powerDown returns an IProgress; wait, then check it.
+            progress = console.powerDown()
+            progress.waitForCompletion(-1)
+            if progress.resultCode != 0:
+                print('poweroff: powerDown failed (resultCode=%d)'
+                      % (progress.resultCode,), file=sys.stderr)
+                return 5
+            print('poweroff: ok')
         return 0
     finally:
-        session.unlockMachine()
+        ## powerDown auto-unlocks the session, so unlock only if still locked -- the
+        ## poweroff path must not raise on an already-unlocked session.
+        if session.state == mgr.constants.SessionState_Locked:
+            session.unlockMachine()
 
 
 if __name__ == '__main__':
