@@ -112,7 +112,7 @@ run_fs() {
 
    ## do_start enables the swap for real.
    rc=0
-   DRIVE_SWAPFILE="${sf}" DRIVE_SIZE_MB=64 DRIVE_DO_PRE_CHECK=no \
+   DRIVE_SWAPFILE="${sf}" DRIVE_SIZE_MB=64 DRIVE_DO_PRE_CHECK=false \
       bash "${drive}" start >/dev/null 2>&1 || rc=$?
    enabled_swaps+=( "${sf}" )
    check "(${label}) do_start exit 0"              "${rc}" "0"
@@ -121,7 +121,7 @@ run_fs() {
 
    ## do_stop swapoff + removes it.
    rc=0
-   DRIVE_SWAPFILE="${sf}" DRIVE_DO_PRE_CHECK=no \
+   DRIVE_SWAPFILE="${sf}" DRIVE_DO_PRE_CHECK=false \
       bash "${drive}" stop >/dev/null 2>&1 || rc=$?
    check "(${label}) do_stop exit 0"               "${rc}" "0"
    check "(${label}) swap no longer active"        "$(swap_active "${sf}" && printf '%s' y || printf '%s' n)" "n"

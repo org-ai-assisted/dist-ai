@@ -29,12 +29,12 @@ export LC_ALL=C
 source "${SUBJECT}"
 set_defaults
 SWAPFILE="${DRIVE_SWAPFILE}"
-SWAP_FILE_SIZE_CUSTOM_MB="${DRIVE_SIZE_MB:-1024}"
-DO_PRE_CHECK="${DRIVE_DO_PRE_CHECK:-no}"
-HIBERNATION='no'
+SWAPFILE_SIZE_CUSTOM_MB="${DRIVE_SIZE_MB:-1024}"
+DO_PRE_CHECK="${DRIVE_DO_PRE_CHECK:-false}"
+HIBERNATION='false'
 ## Overridable so a case can force log()'s 'printf | systemd-cat' branch
-## (VERBOSE=no) to exercise the logger-abort path; default quiet-for-the-test.
-VERBOSE="${DRIVE_VERBOSE:-yes}"
+## (VERBOSE=false) to exercise the logger-abort path; default quiet-for-the-test.
+VERBOSE="${DRIVE_VERBOSE:-true}"
 ## Overridable so a case can drive an invalid UUID through the pre-do_stop
 ## validation without editing the config files.
 if [ -v DRIVE_UUID ]; then UUID="${DRIVE_UUID}"; fi
