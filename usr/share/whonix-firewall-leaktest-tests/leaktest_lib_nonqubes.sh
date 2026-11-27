@@ -49,7 +49,7 @@ LEAKTEST_GW_SEND_ERR=''
 ## model); 192.168.x and clearnet route via the up next hop EXT_UP_IP4 / EXT_UP_IP6.
 leaktest_setup_gw_origin() {
    local ruleset="$1" up_mac
-   leaktest_setup "${ruleset}"
+   leaktest_setup "${ruleset}" || return 1
    up_mac="$(ip netns exec up ip link show eth0 | awk '/link\/ether/ { print $2 }')"
    ip netns exec gw ip neigh replace '10.0.2.3' lladdr "${up_mac}" nud permanent dev eth0
    ip netns exec gw ip neigh replace "${EXT_UP_IP4}" lladdr "${up_mac}" nud permanent dev eth0
@@ -125,7 +125,7 @@ leaktest_output_permissive_ruleset() {
 ## external IP without racing ARP/ND.
 leaktest_setup_ext_input() {
    local ruleset="$1" gw_ext_mac
-   leaktest_setup "${ruleset}" nolistener
+   leaktest_setup "${ruleset}" nolistener || return 1
    gw_ext_mac="$(ip netns exec gw ip link show eth0 | awk '/link\/ether/ { print $2 }')"
    ip netns exec up ip neigh replace "${EXT_GW_IP4}" lladdr "${gw_ext_mac}" nud permanent dev eth0
    ip netns exec up ip -6 neigh replace "${EXT_GW_IP6}" lladdr "${gw_ext_mac}" nud permanent dev eth0

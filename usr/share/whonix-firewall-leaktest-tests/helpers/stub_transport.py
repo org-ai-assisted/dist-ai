@@ -111,6 +111,9 @@ def main() -> None:
         try:
             barrier.wait()
         except threading.BrokenBarrierError:
+            ## Another bind thread died, breaking the barrier. main() also wakes on the
+            ## broken barrier and returns (process exits, ready file never written), so this
+            ## thread has nothing left to do -- just stop.
             pass
 
     for target, family, addr in specs:

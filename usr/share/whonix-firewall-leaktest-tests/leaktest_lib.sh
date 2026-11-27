@@ -401,7 +401,7 @@ leaktest_setup() {
 ## clearnet source arriving on tun0 is eth0 (!= tun0) and the uRPF drop fires.
 leaktest_setup_int_tif() {
    local ruleset="$1"
-   leaktest_setup "${ruleset}"
+   leaktest_setup "${ruleset}" || return 1
 
    ip link add ws_tun type veth peer name gw_tun
    ip link set ws_tun netns ws
@@ -638,7 +638,10 @@ leaktest_probe_case() {
    local capture_file permissive rc=0
    capture_file="$(mktemp)"
 
-   leaktest_setup "${ruleset_file}"
+   ## A setup failure (unready listener / nft load) means the topology is invalid, so the
+   ## probe result is meaningless -- fail the case instead of discarding it (this function
+   ## runs with errexit suppressed, so leaktest_setup's return must be checked explicitly).
+   leaktest_setup "${ruleset_file}" || return 1
    leaktest_fire_forward_probe "${proto}" "${src}" "${dst}" "${capture_file}" "$@"
    leaktest_assert_blocked "${label}" "${LEAKTEST_EGRESS_COUNT}" "${LEAKTEST_CAPTURE_LIVE}" || rc=1
    if leaktest_positive_control; then
@@ -649,7 +652,7 @@ leaktest_probe_case() {
 
    permissive="$(mktemp --suffix=.nft)"
    leaktest_permissive_ruleset "${ruleset_file}" "${permissive}"
-   leaktest_setup "${permissive}"
+   leaktest_setup "${permissive}" || return 1
    leaktest_fire_forward_probe "${proto}" "${src}" "${dst}" "${capture_file}" "$@"
    leaktest_assert_leaked "${label} (permissive forward)" "${LEAKTEST_EGRESS_COUNT}" "${LEAKTEST_CAPTURE_LIVE}" || rc=1
 
@@ -716,12 +719,12 @@ leaktest_fail_closed_case() {
       set -- ${probe}
       proto="$1"; src="$2"; dst="$3"; shift 3
 
-      leaktest_setup "${ruleset_file}" nolistener
+      leaktest_setup "${ruleset_file}" nolistener || return 1
       leaktest_fire_forward_probe "${proto}" "${src}" "${dst}" "${capture_file}" "$@"
       leaktest_assert_blocked "fail-closed ${proto} (Tor down -> dropped)" \
          "${LEAKTEST_EGRESS_COUNT}" "${LEAKTEST_CAPTURE_LIVE}" || rc=1
 
-      leaktest_setup "${empty}" nolistener
+      leaktest_setup "${empty}" nolistener || return 1
       leaktest_fire_forward_probe "${proto}" "${src}" "${dst}" "${capture_file}" "$@"
       leaktest_assert_leaked "fail-closed ${proto} (no firewall)" \
          "${LEAKTEST_EGRESS_COUNT}" "${LEAKTEST_CAPTURE_LIVE}" || rc=1
