@@ -41,16 +41,31 @@ export LC_ALL=C
 ## over the whole dir would import every module at collection time and exit 2). A
 ## userns test imports only stdlib+pytest, so a real one is never hidden here.
 discover_userns_test_files() {
-  local tests_dir="$1" test_file collected
+  local tests_dir="$1" test_file collected rc
   local -a found=()
   while IFS= read -r -d '' test_file; do
+    rc=0
     collected="$(DIST_AI_USERNS_LANE=1 python3 -m pytest -m userns --collect-only -q \
-      --import-mode=importlib "${test_file}" 2>/dev/null)" || true
-    ## A collected node id is '<file>::<test>'; a file that errored on import or
-    ## carries no userns test prints no such line.
+      --import-mode=importlib "${test_file}" 2>/dev/null)" || rc="$?"
     case "${collected}" in
       *'::'*)
+        ## A collected node id '<file>::<test>' -- an importable file that carries
+        ## a userns test (pytest resolved the marker, alias and all).
         found+=( "${test_file}" )
+        ;;
+      *)
+        ## No userns node. pytest rc 5 = a clean "no userns test here" -> omit. But
+        ## a collection ERROR (import raised) tells us nothing about the marker, so
+        ## we must NOT treat it as "no userns test": a file that TEXTUALLY carries
+        ## the marker yet could not be collected is a BROKEN userns test -- include
+        ## it so the real run fails LOUD, never a silent passing no-op (the inverse
+        ## false-green of the alias case). Residual: a marker reached only via
+        ## getattr / an imported alias in a file that ALSO fails to import is not
+        ## textually detectable and stays omitted.
+        if [ "${rc}" -ne 0 ] && [ "${rc}" -ne 5 ] \
+          && grep --quiet --fixed-strings 'mark.userns' -- "${test_file}"; then
+          found+=( "${test_file}" )
+        fi
         ;;
     esac
   done < <(find "${tests_dir}" -type f -name '*.py' -print0 | sort --zero-terminated)

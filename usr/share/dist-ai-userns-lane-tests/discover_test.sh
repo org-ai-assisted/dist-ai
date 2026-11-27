@@ -12,9 +12,13 @@
 ## SILENTLY no-op'd (a false green, the opposite of the lane's promise). It also
 ## must NOT import a component's unrelated tests, whose own helper libs are absent
 ## on the bare runner (that is the collection-error regression the per-file
-## discovery fixes). This drives the REAL discover_userns_test_files against a
-## fixture dir and asserts: an indirect marker IS found, an import-erroring sibling
-## is tolerated (not found, no crash), a plain test is not found.
+## discovery fixes). The INVERSE false-green also matters: a file that DOES carry
+## the marker but RAISES on import collects no node, so pure collect-only discovery
+## would omit it and a broken userns test would pass as a no-op -- it must be
+## SELECTED so the real run fails loud. This drives the REAL
+## discover_userns_test_files against a fixture dir and asserts: an indirect marker
+## IS found, an unrelated import-erroring sibling is tolerated (not found, no
+## crash), a marker-carrying import-erroring file IS found, a plain test is not.
 
 set -o errexit
 set -o nounset
@@ -73,18 +77,29 @@ printf '%s\n' \
   'pytestmark = pytest.mark.userns' \
   'def test_literal(): assert True' \
   > "${fixdir}/test_literal.py"
+## (5) Marker-carrying file that RAISES on import -- a BROKEN userns test. Must be
+## SELECTED so the real run fails loud, never a silent no-op (inverse false-green).
+printf '%s\n' \
+  'import pytest' \
+  'pytestmark = pytest.mark.userns' \
+  'raise RuntimeError("boom at import")' \
+  'def test_broken(): assert True' \
+  > "${fixdir}/test_broken.py"
 
-## Canary: the OLD grep approach finds ONLY the literal file, proving the indirect
-## case below is a real regression that fails on the pre-fix code.
+## Canary: the OLD grep approach misses the INDIRECT (alias) marker -- it matches
+## only the files with the literal substring (test_literal + the broken one), so
+## the indirect case below is a real regression that fails on the pre-fix code.
 grep_hits="$(grep -rlF --include='*.py' 'pytest.mark.userns' -- "${fixdir}" | sed "s|${fixdir}/||" | sort | tr '\n' ' ')"
-if [ "${grep_hits}" != "test_literal.py " ]; then
-  printf '%s\n' "FATAL(canary): expected grep to match only test_literal.py, got '${grep_hits}'." >&2
-  exit 1
-fi
+case " ${grep_hits} " in
+  *" test_indirect.py "*)
+    printf '%s\n' "FATAL(canary): grep unexpectedly matched the alias file; got '${grep_hits}'." >&2
+    exit 1
+    ;;
+esac
 
 mapfile -t found < <(discover_userns_test_files "${fixdir}" | sed "s|${fixdir}/||" | sort)
 got="${found[*]:-}"
-want="test_indirect.py test_literal.py"
+want="test_broken.py test_indirect.py test_literal.py"
 
 pass=0
 fail=0
@@ -99,11 +114,13 @@ check() {
   fi
 }
 
-check "discover selects indirect + literal userns tests" "${got}" "${want}"
+check "discover selects broken + indirect + literal userns tests" "${got}" "${want}"
 case " ${got} " in *" test_indirect.py "*) r=y ;; *) r=n ;; esac
 check "indirect-marker userns test IS discovered (grep would miss it)" "${r}" "y"
+case " ${got} " in *" test_broken.py "*) r=y ;; *) r=n ;; esac
+check "marker file that errors on import IS selected (fails loud, not no-op)" "${r}" "y"
 case " ${got} " in *" test_importerror.py "*) r=y ;; *) r=n ;; esac
-check "import-erroring sibling is tolerated, not selected" "${r}" "n"
+check "unrelated import-erroring sibling is tolerated, not selected" "${r}" "n"
 case " ${got} " in *" test_plain.py "*) r=y ;; *) r=n ;; esac
 check "plain unmarked test is not selected" "${r}" "n"
 
