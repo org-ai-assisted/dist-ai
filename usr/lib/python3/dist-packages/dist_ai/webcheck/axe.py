@@ -282,10 +282,12 @@ _HARD_TIMEOUT_DEFAULT = 120       # whole-page wall-clock budget, seconds
 
 
 async def _axe_page(browser, url: str, axe_src: str, settle_ms: int,
-                    viewport: Optional[dict] = None) -> dict:
+                    viewport: Optional[dict] = None, result_holder: Optional[dict] = None) -> dict:
     """Load one page at `viewport` (default desktop), inject axe-core, run it, return its
     violations. Own close is time-boxed so a wedged page cannot hang here -- the caller ALSO wraps
-    this in a hard wall-clock timeout.
+    this in a hard wall-clock timeout. The result is recorded into `result_holder` (when given)
+    BEFORE the teardown close, so the caller can SALVAGE a completed audit whose close overran the
+    budget instead of discarding it as a wedge.
 
     axe-core is injected by EVALUATING its source (page.evaluate), NOT add_script_tag: the family
     sites ship a strict `script-src 'self'` CSP (exactly what the console lane guards), which
@@ -295,6 +297,14 @@ async def _axe_page(browser, url: str, axe_src: str, settle_ms: int,
     allowed = urlparse(url).netloc
     nav: Dict[str, Any] = {"count": 0, "redirect": None}
     page = await browser.new_page(viewport=viewport or {"width": 1280, "height": 720})
+
+    def _done(result: dict) -> dict:
+        # Record a COMPLETED audit result before the finally's page.close(). The caller times the
+        # WHOLE coroutine (close included), so if the budget fires during teardown it can salvage
+        # this instead of discarding a finished audit as a wedge and retrying it away.
+        if result_holder is not None:
+            result_holder["result"] = result
+        return result
 
     async def _hermetic(route):
         # A redirect stub (meta-refresh / JS) issues a SECOND main-frame navigation after the page
@@ -327,24 +337,24 @@ async def _axe_page(browser, url: str, axe_src: str, settle_ms: int,
             # A blocked redirect navigation can surface as a main-frame navigation error -- that is
             # the redirect-stub case, not a wedge. Re-raise anything else (a real load failure).
             if nav["redirect"]:
-                return {"redirect": nav["redirect"]}
+                return _done({"redirect": nav["redirect"]})
             raise
         if nav["redirect"]:
-            return {"redirect": nav["redirect"]}
+            return _done({"redirect": nav["redirect"]})
         # Playwright does NOT raise on a 404/500; without this a served error page reads as
         # auditable and a missing/broken page is silently 'clean'.
         status = resp.status if resp is not None else 0
         if status < 200 or status >= 400:
-            return {"status": status}
+            return _done({"status": status})
         await page.evaluate(_FORCE_RENDER_JS)
         await page.wait_for_timeout(settle_ms)
         # A delayed meta-refresh (content="N") can fire DURING settle: _hermetic aborts + records it,
         # so re-check here -- else axe would run on the stub and report its a11y as a real page.
         if nav["redirect"]:
-            return {"redirect": nav["redirect"]}
+            return _done({"redirect": nav["redirect"]})
         await page.evaluate(axe_src)
         violations = await page.evaluate(_AXE_RUN_JS)
-        return {"status": status, "violations": violations}
+        return _done({"status": status, "violations": violations})
     finally:
         try:
             await asyncio.wait_for(page.close(), timeout=5)
@@ -362,7 +372,9 @@ async def check(base: str, paths: List[str], axe_source: str, settle_ms: int = 1
     check_roots' retries=0 rationale in the sibling console lane). A WEDGE (wall-clock timeout) IS
     retried once on a fresh browser -- it is a TIMING fault under concurrent-lane contention, not a
     content one, so the determinism rationale does not apply; a truly un-auditable page wedges on
-    both attempts and is still reported (see _WEDGE_ATTEMPTS)."""
+    both attempts and is still reported (see _WEDGE_ATTEMPTS). A completed audit whose teardown
+    overran the budget is SALVAGED, not retried; a NON-timeout audit error (navigation / evaluation)
+    is recorded immediately, never retried (a retry could mask it)."""
     from playwright.async_api import async_playwright
 
     keys: Set[Key] = set()
@@ -378,34 +390,61 @@ async def check(base: str, paths: List[str], axe_source: str, settle_ms: int = 1
             # the caller, which SKIP(77)s only if nothing has been audited yet; a launch failure
             # after an earlier docroot already ran is a mid-run fault, not a silent SKIP.
             raise _EngineUnavailable(str(exc)) from exc
+
+        async def _relaunch():
+            # Discard the (possibly stuck) current browser best-effort and return a fresh one, so a
+            # wedge/error cannot cascade to later pages and any retry runs on a healthy browser.
+            try:
+                await asyncio.wait_for(browser.close(), timeout=5)
+            except Exception:
+                # A close that also errors or hangs does not change recovery. Nothing to do.
+                pass
+            return await p.chromium.launch()
+
         for path in paths:
             url = base.rstrip("/") + "/" + path.lstrip("/")
             for vp_name, vp in _VIEWPORTS:
                 res = None
-                # Retry a WEDGE (wall-clock timeout) once on a fresh browser -- see _WEDGE_ATTEMPTS.
+                audit_error = False
+                # Retry ONLY a WEDGE -- a wall-clock timeout (asyncio.TimeoutError from wait_for),
+                # the TIMING fault under concurrent-lane contention -- once on a fresh browser (see
+                # _WEDGE_ATTEMPTS). A NON-timeout audit failure (navigation / axe-evaluation error)
+                # is NOT a timing flake and is NOT retried: a retry could let a transient error pass
+                # and MASK a real failure, so record it immediately (pre-retry behaviour for these).
                 for attempt in range(_WEDGE_ATTEMPTS):
+                    holder: Dict[str, Any] = {}
                     try:
                         res = await asyncio.wait_for(
-                            _axe_page(browser, url, axe_src, settle_ms, vp), timeout=hard_timeout)
+                            _axe_page(browser, url, axe_src, settle_ms, vp, holder),
+                            timeout=hard_timeout)
                         break
-                    except Exception:
-                        # This page wedged (timeout, navigation or evaluation error) -> discard the
-                        # browser and relaunch a clean one, so the wedge cannot cascade to later
-                        # pages AND any remaining retry runs on a healthy browser.
-                        try:
-                            await asyncio.wait_for(browser.close(), timeout=5)
-                        except Exception:
-                            # A close that also errors or hangs does not change recovery. Nothing to do.
-                            pass
-                        browser = await p.chromium.launch()
+                    except asyncio.TimeoutError:
+                        # If the audit already COMPLETED and we only overran in teardown (page.close),
+                        # SALVAGE that result -- never discard a finished audit (incl. its real
+                        # violations) as a wedge. Relaunch either way (the page may be stuck).
+                        salvaged = holder.get("result")
+                        browser = await _relaunch()
+                        if salvaged is not None:
+                            res = salvaged
+                            break
                         if attempt + 1 < _WEDGE_ATTEMPTS:
                             print("RETRY     %s [%s] (wedged; retrying once on a fresh browser)"
                                   % (path, vp_name), flush=True)
+                    except Exception:
+                        # A non-timeout audit failure (navigation / axe-evaluation error). Relaunch to
+                        # avoid cascade and record it as a problem now -- do NOT retry (would mask it).
+                        browser = await _relaunch()
+                        audit_error = True
+                        break
                 if res is None:
-                    # Wedged on EVERY attempt -> a genuinely un-auditable page, not a transient
-                    # contention spike. A hard problem the caller fails on.
-                    print("TIMEOUT   %s [%s]" % (path, vp_name), flush=True)
-                    problems.append("wedged: %s [%s]" % (path, vp_name))
+                    if audit_error:
+                        print("ERROR     %s [%s]" % (path, vp_name), flush=True)
+                        problems.append("audit error: %s [%s]" % (path, vp_name))
+                    else:
+                        # Wedged on EVERY attempt -> a genuinely un-auditable page, not a transient
+                        # contention spike. A hard problem the caller fails on.
+                        print("TIMEOUT   %s [%s]" % (path, vp_name), flush=True)
+                        problems.append("wedged: %s [%s]" % (path, vp_name))
                     continue
                 if res.get("redirect"):
                     # A redirect stub (meta-refresh off-mount); not an auditable content page. Its

@@ -509,19 +509,33 @@ def run() -> int:
 
     _WBASE = "http://127.0.0.1:8000"
 
-    def _run_check_with_wedges(paths, wedge_counts, hard_timeout=1):
-        # wedge_counts: {(path, viewport_width): N} -- _axe_page raises TimeoutError its first N calls
-        # for that (page, viewport), then audits clean. N >= _WEDGE_ATTEMPTS models a REAL wedge.
+    def _run_check_with_wedges(paths, wedge_counts, hard_timeout=1,
+                               error_counts=None, salvage=None):
+        # wedge_counts: {(path, width): N} -- raise TimeoutError (a WEDGE) the first N calls for that
+        #   (page, viewport), then audit clean. N >= _WEDGE_ATTEMPTS models a REAL (double) wedge.
+        # error_counts: {(path, width): N} -- raise RuntimeError (a NON-timeout audit error) first N.
+        # salvage:      {(path, width): violations} -- on the first call RECORD the result into the
+        #   holder (a COMPLETED audit) then raise TimeoutError (teardown overran the budget).
+        error_counts = error_counts or {}
+        salvage = salvage or {}
         counter = {"launches": 0}
         seen: dict = {}
 
-        async def _fake_axe_page(_browser, url, _axe_src, _settle_ms, viewport=None):
+        async def _fake_axe_page(_browser, url, _axe_src, _settle_ms, viewport=None,
+                                 result_holder=None):
             path = url[len(_WBASE):] or "/"
             if not path.startswith("/"):
                 path = "/" + path
             key = (path, (viewport or {}).get("width"))
             seen[key] = seen.get(key, 0) + 1
-            if seen[key] <= wedge_counts.get(key, 0):
+            n = seen[key]
+            if n == 1 and key in salvage:
+                if result_holder is not None:
+                    result_holder["result"] = {"status": 200, "violations": salvage[key]}
+                raise _asyncio.TimeoutError()
+            if n <= error_counts.get(key, 0):
+                raise RuntimeError("simulated axe-evaluation error")
+            if n <= wedge_counts.get(key, 0):
                 raise _asyncio.TimeoutError()
             return {"status": 200, "violations": []}
 
@@ -560,6 +574,22 @@ def run() -> int:
     _k2, _p2, _l2 = _run_check_with_wedges(["/"], {("/", 1280): 99})
     ck(_p2 == ["wedged: / [desktop]"],
        "wedge RETRY: a page wedging on every attempt is STILL reported (retry does not mask it): %r" % _p2)
+    # grok finding (2026-11-27): the retry must fire ONLY on a WEDGE (wall-clock timeout), never on a
+    # NON-timeout audit error (navigation / axe-evaluation failure). Retrying such an error and
+    # taking a clean second attempt would MASK a real failure, so it must STILL be recorded (reds the
+    # broad-`except Exception` retry that absorbed it).
+    _ke, _pe, _le = _run_check_with_wedges(["/"], {}, error_counts={("/", 1280): 1})
+    ck(_pe == ["audit error: / [desktop]"],
+       "a NON-timeout audit error is recorded as a problem, not retried away: %r" % _pe)
+    # grok finding (2026-11-27): hard_timeout wraps the WHOLE _axe_page, including the finally that
+    # closes the page. A COMPLETED audit (violations already computed) whose teardown overran the
+    # budget must be SALVAGED via the result holder -- NOT discarded as a wedge and retried away to an
+    # empty second attempt (which would mask a real violation).
+    _viol = [{"id": "color-contrast", "nodes": [{"target": ["a.bad"]}]}]
+    _ks, _ps, _ls = _run_check_with_wedges(["/"], {}, salvage={("/", 1280): _viol})
+    ck(("/", "color-contrast", "a.bad") in _ks and _ps == [],
+       "a completed audit whose teardown overran the budget is salvaged, its violation kept: "
+       "keys=%r problems=%r" % (sorted(_ks), _ps))
 
     # per-page TIMEOUT budget (operator decision 2026-11-27: "retry AND suitable timeout"). The
     # whole-page wall-clock budget must sit ABOVE the networkidle nav ceiling, or a slow nav eats the
