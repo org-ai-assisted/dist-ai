@@ -12,10 +12,11 @@
 ## group/world-writable. The "setup done" markers there are written by root
 ## via privleap; a group/world-writable directory would let any local user
 ## plant a .done/.skip and skip the wizard. Fails if the declared mode grants
-## group or other write, OR if the mode/owner is left unspecified ('-'):
-## systemd only applies a default on creation and preserves an existing dir's
-## mode/owner, so an explicit safe mode and explicit root owner are required to
-## enforce the property idempotently.
+## group or other write, OR if the mode is left unspecified ('-') or
+## only-on-create (':' prefix), OR if the owner is left unspecified ('-'):
+## systemd applies those only when creating the dir and preserves an existing
+## dir's mode/owner, so an explicit safe mode and explicit root owner are
+## required to enforce the property idempotently.
 ##
 ## Subject: the shipped tmpfiles conf. Set SETUP_DIST_REPO to a checkout, else
 ## the installed package. No root, no network.
@@ -45,19 +46,29 @@ if [ ! -r "${conf}" ]; then
 fi
 
 ## True (rc 0) if a tmpfiles mode does NOT enforce safe, root-only-writable
-## perms on this dir: an unspecified '-', an unparseable mode, or an explicit
-## octal granting group/other write. A security-sensitive dir needs an EXPLICIT
-## safe octal: with '-' systemd leaves mode_set false and sets the mode only on
-## CREATION, preserving an existing dir's perms, so a pre-set 0777 is never
-## corrected. Only an explicit non-group/other-write octal enforces idempotently.
+## perms on this dir: an unspecified '-', an only-on-create ':' prefix, an
+## unparseable mode, or an explicit octal granting group/other write. A
+## security-sensitive dir needs a mode that systemd re-applies to an EXISTING
+## dir, so a pre-set 0777 is corrected:
+##   -  '-' leaves mode_set false; systemd sets the mode only on CREATION and
+##      preserves an existing dir's perms.
+##   -  a ':' prefix (only-on-create) is the documented spelling of the same
+##      hole: ':0755' creates with 0755 but leaves an existing dir untouched
+##      (verified: systemd-tmpfiles leaves a pre-set 0777 as 0777).
+##   -  a '~' prefix (mask) is safe: it ANDs the configured mode with the
+##      existing bits, so it can only REMOVE group/other write, never add it.
+## Only a plain or '~'-masked non-group/other-write octal enforces idempotently.
 mode_not_safe_enforced() {
    local mode="$1"
-   if [ "${mode}" = "-" ]; then
-      ## Unspecified: not enforced on an existing dir -- require explicit octal.
-      return 0
-   fi
-   ## Strip a leading tmpfiles mode modifier ('~' mask, ':' only-on-create).
-   mode="${mode#[~:]}"
+   ## '-' (unspecified) and any ':' (only-on-create, possibly combined with
+   ## '~') are not re-applied to an existing dir -- reject before normalizing.
+   case "${mode}" in
+      - | *:*)
+         return 0
+         ;;
+   esac
+   ## Strip a leading '~' mask modifier; the masked octal is classified below.
+   mode="${mode#\~}"
    if [[ ! "${mode}" =~ ^[0-7]{3,4}$ ]]; then
       ## Unparseable mode: flag rather than wave it through.
       return 0
@@ -89,15 +100,17 @@ owner_not_root_enforced() {
 
 ## Self-canary: neither checker may green a bad conf, so prove each flags the
 ## unsafe cases and passes the safe ones before trusting it on the real conf.
-for safe_mode in 0755 0700; do
+## '~0755' (mask) still enforces -- it can only clear group/other write.
+for safe_mode in 0755 0700 '~0755'; do
    if mode_not_safe_enforced "${safe_mode}"; then
       printf '%s\n' "FAIL: checker flagged safe mode ${safe_mode}" >&2
       exit 1
    fi
 done
-## '-' is unenforced on an existing dir (systemd preserves perms), so it must be
-## flagged as unsafe, not waved through as a safe default.
-for bad_mode in 0775 0757 0777 0070 -; do
+## '-' (unspecified) and a ':' only-on-create prefix are not re-applied to an
+## existing dir, so both must be flagged -- not waved through as a safe default.
+## '~0757' masks but still permits other-write, so it is unsafe too.
+for bad_mode in 0775 0757 0777 0070 - ':0755' '~0757'; do
    if ! mode_not_safe_enforced "${bad_mode}"; then
       printf '%s\n' "FAIL: checker missed unenforced/writable mode ${bad_mode}" >&2
       exit 1
