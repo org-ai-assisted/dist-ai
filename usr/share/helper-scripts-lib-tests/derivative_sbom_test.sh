@@ -407,6 +407,42 @@ printf '%s' "${wire_base}" | "${merge_tool}" "${wire_frag}" > "${wire_out}"
 check "merge-tool: fragment ref wired into root dependsOn" \
    "$(jq -r 'any(.dependencies[]?; .ref=="root-ref" and ((.dependsOn // [])|index("tb@1") != null))' "${wire_out}")" "true"
 
+## A fragment component WITHOUT a bom-ref cannot be referenced in a CycloneDX
+## dependency graph: it is merged into components[] but left OUT of the root
+## dependsOn (dependencies[] may be partial), never given a fabricated ref.
+nobref_frag="${test_dir}/nobref-fragments.d"
+mkdir --parents -- "${nobref_frag}"
+cat > "${nobref_frag}/x.cdx.json" <<'EOF'
+{"type":"library","name":"libfoo","purl":"pkg:generic/libfoo@1"}
+EOF
+nobref_out="${test_dir}/nobref.cdx.json"
+printf '%s' "${wire_base}" | "${merge_tool}" "${nobref_frag}" > "${nobref_out}"
+check "merge-tool: bom-ref-less fragment stays in components[]" \
+   "$(purl_count "${nobref_out}" 'pkg:generic/libfoo@1')" "1"
+check "merge-tool: bom-ref-less fragment not wired into root dependsOn" \
+   "$(jq -r '[(.dependencies // [])[]|select(.ref=="root-ref")|(.dependsOn // [])[]]|length' "${nobref_out}")" "0"
+
+## A metadata-less base has no root component to anchor the graph: wiring is a
+## no-op and NO 'dependencies' array is fabricated (the component still merges).
+nometa_base='{"bomFormat":"CycloneDX","components":[]}'
+nometa_out="${test_dir}/nometa.cdx.json"
+printf '%s' "${nometa_base}" | "${merge_tool}" "${wire_frag}" > "${nometa_out}"
+check "merge-tool: metadata-less base gets no fabricated dependencies" \
+   "$(jq -r 'has("dependencies")' "${nometa_out}")" "false"
+check "merge-tool: metadata-less base still merges the component" \
+   "$(purl_count "${nometa_out}" 'pkg:generic/tb@1')" "1"
+
+## A document fragment carrying its OWN dependencies[] graph is refused (fail
+## closed), never silently dropped: merging an integrated dependency graph is
+## out of scope, so the data must not be discarded in silence.
+intdeps_frag="${test_dir}/intdeps-fragments.d"
+mkdir --parents -- "${intdeps_frag}"
+cat > "${intdeps_frag}/d.cdx.json" <<'EOF'
+{"bomFormat":"CycloneDX","components":[{"type":"application","name":"X","bom-ref":"x@1"}],"dependencies":[{"ref":"x@1","dependsOn":[]}]}
+EOF
+check "merge-tool: fragment carrying its own dependencies[] fails closed" \
+   "$(merge_rc "${wire_base}" "${intdeps_frag}")" "1"
+
 ## bom-ref uniqueness is enforced against NESTED components on both sides: a
 ## fragment's nested child colliding with a base top-level ref, and a base's
 ## nested child colliding with a fragment's top-level ref, both fail closed.
