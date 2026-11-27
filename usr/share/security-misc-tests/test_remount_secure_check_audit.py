@@ -167,6 +167,23 @@ class RemountSecureCheckAuditTest(unittest.TestCase):
         self.assertIn("nodev", sys_line)
         self.assertIn("noexec", sys_line)
 
+    def test_proc_mountpoint_is_dispatched(self) -> None:
+        ## Regression: _proc must be wired into main()'s dispatch. /proc is unhardened by
+        ## default (rw,relatime), is NOT covered by any other function, and the breaking
+        ## hidepid story is separate -- so a defined-but-uncalled _proc silently leaves
+        ## procfs without nosuid,nodev,noexec. NONCOMPLIANT -> /proc must appear as a
+        ## deviation missing all three; if _proc is undispatched this fails.
+        result = self._run_check([NONCOMPLIANT])
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        proc_line = next((ln for ln in self._deviation_lines(result.stdout)
+                          if "'/proc'" in ln), "")
+        self.assertTrue(
+            proc_line, "/proc must be audited (is _proc dispatched?):\n%s" % result.stdout)
+        self.assertIn("missing", proc_line)
+        self.assertIn("nosuid", proc_line)
+        self.assertIn("nodev", proc_line)
+        self.assertIn("noexec", proc_line)
+
     def test_partial_compliance_flags_deviation(self) -> None:
         ## Some intended options present, some missing: the matcher must require
         ## ALL (AND), not any (OR).
