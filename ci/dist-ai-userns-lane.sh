@@ -57,6 +57,18 @@ if [ ! -d "${tests_dir}" ]; then
   exit 0
 fi
 
+## Collect ONLY the files that declare the userns marker. 'pytest -m userns'
+## over the whole suite dir still IMPORTS every test module (collection runs
+## before marker filtering), and a component's unrelated tests import helper
+## libs the bare runner does not provide -> collection errors (exit 2) for a
+## component that has no userns test at all. Selecting the marked files keeps a
+## no-userns component a clean no-op.
+mapfile -t userns_files < <(grep -rlF --include='*.py' 'pytest.mark.userns' -- "${tests_dir}" 2>/dev/null || true)
+if [ "${#userns_files[@]}" -eq 0 ]; then
+  printf '%s\n' "no userns-marked tests for '${component}'; userns lane is a no-op."
+  exit 0
+fi
+
 sudo apt-get update --quiet
 ## safe-rm: dist-ai suites clean up with it (R-120); it ships as a Debian package,
 ## matching the container lane's apt_packages_base, not the host private-ai-config.
@@ -64,13 +76,13 @@ sudo apt-get install --yes --no-install-recommends python3-pytest util-linux saf
 
 ## DIST_AI_USERNS_LANE=1: the userns tests FAIL (never skip) if userns is still
 ## unavailable -- this lane promised it, so a regressed sysctl step is loud.
-## pytest rc 5 = no userns-marked tests collected -> a legitimate no-op (this
-## component has a suite but no userns-marked test).
+## pytest rc 5 = nothing collected -> belt-and-suspenders no-op (the marked files
+## were pre-selected above, so this only trips if a marker was stripped mid-file).
 rc=0
 DIST_AI_USERNS_LANE=1 python3 -m pytest -m userns --import-mode=importlib -q \
-  "${tests_dir}" || rc="$?"
+  "${userns_files[@]}" || rc="$?"
 if [ "${rc}" = "5" ]; then
-  printf '%s\n' "no userns-marked tests for '${component}'; userns lane is a no-op."
+  printf '%s\n' "no userns-marked tests collected for '${component}'; userns lane is a no-op."
   exit 0
 fi
 exit "${rc}"
