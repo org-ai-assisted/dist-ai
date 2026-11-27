@@ -118,6 +118,17 @@ EOF
 
 printf '%s\n' 'this is not valid sudoers @@@' > "${work}/broken"
 
+## a sysroot for the default-mode (no-double-report) check: a main sudoers with
+## no includedir plus an unrelated drop-in.
+sysroot="${work}/sysroot"
+mkdir -p -- "${sysroot}/etc/sudoers.d" "${sysroot}/usr/bin"
+cat > "${sysroot}/etc/sudoers" <<'EOF'
+user ALL=NOPASSWD: /usr/bin/gone-main
+EOF
+cat > "${sysroot}/etc/sudoers.d/extra" <<'EOF'
+user ALL=NOPASSWD: /usr/bin/gone-dropin
+EOF
+
 ## --- assertions --------------------------------------------------------------
 
 ## 1. clean fixture: args stripped, ALL and sudoedit skipped -> exit 0, no output.
@@ -170,6 +181,17 @@ run_audit --root "${root}" --find "${tree}"
 check "--find detects a dangling command in a loadable drop-in (exit 1)" rc_is 1
 check "--find audits the loadable drop-in" out_has 'etc/sudoers.d/live:'
 check "--find ignores a '.'-containing drop-in name" out_lacks 'live.disabled'
+
+## 8. default mode (no positional, no --find) audits only <root>/etc/sudoers.
+##    On a real system cvtsudoers follows its @includedir, so the drop-ins are
+##    covered in that one parse; feeding the directory a second time would
+##    double-report every finding. This fixture's main file has no includedir,
+##    so the drop-in's command must be ABSENT from the result -- the regression
+##    guard for the double-report bug.
+run_audit --root "${sysroot}"
+check "default mode detects the main sudoers finding (exit 1)" rc_is 1
+check "default mode flags the main-file command" out_has '/usr/bin/gone-main'
+check "default mode does not separately feed /etc/sudoers.d" out_lacks '/usr/bin/gone-dropin'
 
 ## --- report ------------------------------------------------------------------
 printf '%s\n' "sudoers-command-audit-tests: ${pass} pass, ${fail} fail, 0 skip"

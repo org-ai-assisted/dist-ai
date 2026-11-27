@@ -180,7 +180,8 @@ def main(argv):
         "paths",
         nargs="*",
         help="sudoers file(s) and/or directory(ies) to audit; default: the "
-        "running system (/etc/sudoers and /etc/sudoers.d).",
+        "running system's /etc/sudoers (its @includedir pulls in "
+        "/etc/sudoers.d in the same parse).",
     )
     parser.add_argument(
         "--root",
@@ -215,13 +216,16 @@ def main(argv):
     elif args.paths:
         sources = expand_inputs(args.paths)
     else:
-        sources = []
+        ## Live-system default: the main sudoers file only. cvtsudoers follows
+        ## its @includedir exactly as sudo loads policy, so the /etc/sudoers.d
+        ## drop-ins are covered in the SAME parse; feeding them again would
+        ## double-report every finding. Their rules are attributed to the main
+        ## file here -- to pin a finding to a specific drop-in, name the
+        ## directory (sudoers-command-audit /etc/sudoers.d). Note: cvtsudoers
+        ## resolves @includedir against absolute paths, ignoring --root, so an
+        ## offline image is audited with --find, not this default.
         default_main = os.path.join(root, "etc/sudoers")
-        if os.path.isfile(default_main):
-            sources.append(default_main)
-        default_dir = os.path.join(root, "etc/sudoers.d")
-        if os.path.isdir(default_dir):
-            sources.extend(expand_inputs([default_dir]))
+        sources = [default_main] if os.path.isfile(default_main) else []
 
     if not sources:
         sys.stderr.write("sudoers-command-audit: no sudoers sources found.\n")
