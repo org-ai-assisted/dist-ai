@@ -53,11 +53,16 @@ def _free_tcp_port():
 class BindpBehaviorTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls._tmp = tempfile.mkdtemp(prefix="bindp-tests.")
         src_dir = _bindp_src_dir()
         if not src_dir:
             raise unittest.SkipTest(
                 "bindp.c not found (set BINDP_REPO to the bindp checkout)")
+        ## Create the work dir only AFTER the skip check and register cleanup
+        ## immediately: unittest does not call tearDownClass when setUpClass
+        ## raises (SkipTest, or a build failure below), so a tearDownClass rmtree
+        ## would leak the dir on both paths. addClassCleanup runs regardless.
+        cls._tmp = tempfile.mkdtemp(prefix="bindp-tests.")
+        cls.addClassCleanup(shutil.rmtree, cls._tmp, ignore_errors=True)
         ## gcc / make are required build tools, not optional: a missing one is an
         ## environment bug that must fail loud, so do not guard them with a skip.
         cls._lib = os.path.join(cls._tmp, "libindp.so")
@@ -70,10 +75,6 @@ class BindpBehaviorTest(unittest.TestCase):
         subprocess.run(
             ["gcc", "-O2", "-Wall", PROBE_SRC, "-o", cls._probe],
             check=True, capture_output=True, text=True)
-
-    @classmethod
-    def tearDownClass(cls):
-        shutil.rmtree(cls._tmp, ignore_errors=True)
 
     def _probe_run(self, mode, *args, **env_overrides):
         env = dict(os.environ)
