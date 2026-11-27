@@ -83,6 +83,13 @@ def dispvm_script() -> str:
                     "/usr/libexec/tb-updater/dispvm", "dispvm")
 
 
+def remount_exec_lib() -> str:
+    """Absolute path of the shared exec-remount helper library under test."""
+    return _resolve("usr/libexec/tb-updater/tb-remount-exec.bsh",
+                    "/usr/libexec/tb-updater/tb-remount-exec.bsh",
+                    "tb-remount-exec.bsh")
+
+
 def read(path: str) -> str:
     with open(path, encoding="utf-8", errors="replace") as handle:
         return handle.read()

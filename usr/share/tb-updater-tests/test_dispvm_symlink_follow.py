@@ -726,40 +726,53 @@ def test_home_binds_nocanonicalize_and_symlink_reject():
     option) onto /home/<user>/.tb and .cache/tb (bare dir paths). It makes mount
     refuse a BARE dir-symlink target at the mount layer (a trailing slash/dot or
     file symlink is outside this envelope); it does NOT guard the bind source. So
-    their safety rests PRIMARILY on (a) the '[ -L ] ... exit 1' reject loop that
-    runs BEFORE the binds and refuses any symlink form at any bind source or
-    target, and (b) the service running only at early boot (asserted by the
-    run-once and --no-start tests); the no-canonicalize directive is a mount-layer
-    backstop for the bare-target race. This asserts that structural model: each home bind carries
-    a no-canonicalize directive and the symlink reject precedes every one of
-    them. The behavioral refusal is driven by test_planted_symlink_is_refused /
+    their safety rests PRIMARILY on (a) the 'tb_remount_exec_refuse_symlinks' call
+    (shared helper, '[ -L ] ... return 1') that runs BEFORE the binds and refuses
+    any symlink form at any bind source or target, and (b) the service running only
+    at early boot (asserted by the run-once and --no-start tests); the
+    no-canonicalize directive is a mount-layer backstop for the bare-target race.
+    This asserts that structural model: each home bind carries a no-canonicalize
+    directive and the symlink reject precedes every one of them. The behavioral
+    refusal is driven by test_planted_symlink_is_refused /
     test_planted_symlink_in_cache_source_is_refused (stubbed mount) and proven
     against REAL mount by test_dispvm_mount_bind_symlink_refusal."""
     with open(DISPVM, encoding="utf-8") as handle:
         text = handle.read()
     lines = text.splitlines()
 
-    ## Locate the reject's 'if [ -L "${tb_mount_point}" ]; then' OPENER -- anchored
-    ## to the real if-statement line, so a bare match in a comment cannot stand in
-    ## for it. Removing the guard is the regression this guards against.
+    ## The symlink reject moved into the shared helper tb-remount-exec.bsh; dispvm
+    ## must CALL 'tb_remount_exec_refuse_symlinks' before any bind. Removing the
+    ## call is the regression this guards against.
     reject_idx = None
     for i, line in enumerate(lines):
-        if re.match(r'\s*if \[ -L "\$\{tb_mount_point\}" \]; then\s*$', line):
+        if re.search(r'\btb_remount_exec_refuse_symlinks\b', line):
             reject_idx = i
             break
     assert reject_idx is not None, (
-        f'dispvm must guard the mount points with an '
-        f'\'if [ -L "${{tb_mount_point}}" ]; then\' reject before binding: {DISPVM}'
+        f'dispvm must guard the mount points by calling '
+        f'tb_remount_exec_refuse_symlinks before binding: {DISPVM}'
     )
-    ## The guard body (up to its closing 'fi') must exit nonzero on a planted
-    ## symlink -- bounded to the block so an 'exit' elsewhere cannot satisfy it.
-    guard_body = []
-    for line in lines[reject_idx + 1:]:
-        if re.match(r'\s*fi\b', line):
+    ## The call must be FATAL on refusal (|| exit nonzero), independent of errexit;
+    ## scan the call and its line continuations.
+    call_block = []
+    for line in lines[reject_idx:]:
+        call_block.append(line)
+        if not line.rstrip().endswith("\\"):
             break
-        guard_body.append(line)
-    assert any(re.match(r'\s*exit [1-9][0-9]*\b', b) for b in guard_body), (
-        f"the symlink reject must 'exit' nonzero on a planted symlink: {DISPVM}"
+    assert any(re.search(r'\|\|\s*exit [1-9][0-9]*\b', b) for b in call_block), (
+        f"the tb_remount_exec_refuse_symlinks call must be fatal on refusal "
+        f"(|| exit nonzero): {DISPVM}"
+    )
+    ## The guard body itself lives in the shared helper: reject a '[ -L ]' symlink
+    ## target and return nonzero.
+    lib_path = os.path.join(os.path.dirname(DISPVM), "tb-remount-exec.bsh")
+    with open(lib_path, encoding="utf-8") as lib_handle:
+        lib_text = lib_handle.read()
+    assert re.search(r'if \[ -L "\$\{target\}" \]; then', lib_text), (
+        f"tb-remount-exec.bsh must reject a symlink target with '[ -L ]': {lib_path}"
+    )
+    assert re.search(r'\breturn 1\b', lib_text), (
+        f"tb-remount-exec.bsh symlink reject must return nonzero: {lib_path}"
     )
 
     ## Each persistent-cache bind is a 'mount ... --bind' onto the home mount

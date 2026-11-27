@@ -20,7 +20,8 @@ tb_reenable_anon_ws_dns_conf; the dpkg DPKG_MAINTSCRIPT_* env; the positional
 These tests RUN the real shipped postinst end to end under its own strict block
 (not a copy, not a grep): the real helper-scripts are required (skip if absent),
 and only the root / network externals it shells out to are stubbed on PATH
-(adduser, mkdir, ischroot, update-torbrowser, update-mullvadbrowser) -- the
+(adduser, mkdir, ischroot, update-torbrowser, update-mullvadbrowser,
+pam-auth-update) -- the
 category dist-ai permits stubbing. If a guard is dropped, the run aborts with an
 unbound-variable error and the test fails.
 """
@@ -87,6 +88,7 @@ STUBS = {
     "ischroot": '#!/bin/bash\n[ "${TEST_IN_CHROOT:-0}" = "1" ] && exit 0\nexit 1\n',
     "update-torbrowser": '#!/bin/bash\nexit "${TEST_UPDATE_RC:-0}"\n',
     "update-mullvadbrowser": '#!/bin/bash\nexit "${TEST_UPDATE_RC:-0}"\n',
+    "pam-auth-update": "#!/bin/bash\nexit 0\n",
 }
 
 
