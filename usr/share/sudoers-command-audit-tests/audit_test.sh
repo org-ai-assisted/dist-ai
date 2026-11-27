@@ -276,17 +276,19 @@ printf '%s\n' 'user ALL=NOPASSWD: /usr/bin/present' > "${work}/no-include"
 run_audit --root "${root}" "${work}/no-include"
 check "no include -> audited, not inconclusive (exit 0)" rc_is 0
 
-## 14. a wildcard command path is resolved as a glob confined to --root: a
-##     pattern with a matching command is clean; with none it is missing.
+## 14. a wildcard command path is reported INCONCLUSIVE: matching sudo's
+##     glob(3)/fnmatch semantics AND confining the match to --root is beyond this
+##     audit, so it refuses rather than risk a false clean (an unconfined glob
+##     escaping --root to a host binary) or a false missing. A present match no
+##     longer reads as clean (exit 0) -- the glob-escape false-clean.
 printf '%s\n' '#!/bin/sh' > "${root}/usr/bin/globbed-tool"
 chmod +x -- "${root}/usr/bin/globbed-tool"
 printf '%s\n' 'user ALL=NOPASSWD: /usr/bin/globbed-*' > "${work}/wildcard"
 run_audit --root "${root}" "${work}/wildcard"
-check "wildcard command path with a match is clean (exit 0)" rc_is 0
+check "wildcard command path with a match is inconclusive, not clean (exit 2)" rc_is 2
 safe-rm --force -- "${root}/usr/bin/globbed-tool"
 run_audit --root "${root}" "${work}/wildcard"
-check "wildcard command path with no match is missing (exit 1)" rc_is 1
-check "unmatched wildcard pattern named in output" out_has '/usr/bin/globbed-*'
+check "wildcard command path with no match is still inconclusive (exit 2)" rc_is 2
 
 ## 15. two distinct spaced command paths sharing a first token are each named in
 ##     full, not collapsed to that token and deduplicated to one finding.
@@ -297,6 +299,39 @@ run_audit --root "${root}" "${work}/spaced-pair"
 check "both spaced commands missing (exit 1)" rc_is 1
 check "first spaced command named in full" out_has '/opt/My App/tool'
 check "second spaced command named in full" out_has '/opt/My Other/tool'
+
+## 16. a RELATIVE @include is resolved faithfully by cvtsudoers from the source
+##     file's own directory (not the host namespace), so it is NOT a coverage
+##     gap: the including file's own commands are still audited and a missing one
+##     is reported, never masked as inconclusive.
+mkdir -p -- "${work}/relinc"
+printf '%s\n' 'user ALL=NOPASSWD: /usr/bin/present' > "${work}/relinc/extra"
+printf '%s\n' 'user ALL=NOPASSWD: /no/such/relbin' '@include extra' \
+  > "${work}/relinc/policy"
+run_audit --root "${root}" "${work}/relinc/policy"
+check "relative @include not inconclusive; own missing cmd found (exit 1)" rc_is 1
+check "missing command in a relative-include file named" out_has '/no/such/relbin'
+
+## 17. an ABSOLUTE @includedir on the live root (--root /) that this process
+##     cannot read is inconclusive: cvtsudoers SILENTLY drops an unreadable
+##     includedir (rc 0, no warning; sudo as root would still load it), so
+##     trusting the exit-0 parse would be a false clean. /usr/bin/true is the
+##     directly-named command, so the ONLY reason it is not clean is the gap.
+incdir="${work}/abs-inc-dir"
+mkdir -p -- "${incdir}"
+printf '%s\n' 'user ALL=NOPASSWD: /usr/bin/true' > "${incdir}/drop"
+printf '%s\n' 'user ALL=NOPASSWD: /usr/bin/true' "@includedir ${incdir}" \
+  > "${work}/live-include"
+chmod 000 -- "${incdir}"
+run_audit "${work}/live-include"
+check "unreadable absolute @includedir on live root -> inconclusive (exit 2)" rc_is 2
+chmod 755 -- "${incdir}"
+## 17-canary: the same source with the include directive REMOVED audits clean,
+## proving the inconclusive verdict comes from the unreadable include, not the
+## directly-named command.
+printf '%s\n' 'user ALL=NOPASSWD: /usr/bin/true' > "${work}/live-no-include"
+run_audit "${work}/live-no-include"
+check "canary: no include -> audited clean (exit 0)" rc_is 0
 
 ## --- report ------------------------------------------------------------------
 printf '%s\n' "sudoers-command-audit-tests: ${pass} pass, ${fail} fail, 0 skip"

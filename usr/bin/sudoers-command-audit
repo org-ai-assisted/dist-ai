@@ -40,7 +40,6 @@ Exit codes:
 """
 
 import argparse
-import fnmatch
 import json
 import os
 import re
@@ -49,9 +48,13 @@ import sys
 
 CVTSUDOERS = "/usr/bin/cvtsudoers"
 
-## A sudoers @include / @includedir (or the older #include form) whose target is
-## resolved by cvtsudoers against ABSOLUTE host paths, ignoring --root.
-INCLUDE_RE = re.compile(r"^[ \t]*[@#]include(?:dir)?\b", re.MULTILINE)
+## A sudoers @include / @includedir (or the older #include form) and its target.
+## cvtsudoers resolves an ABSOLUTE target against the host filesystem, ignoring
+## --root, and SILENTLY drops a target it cannot read -- both make the parse
+## unfaithful. A RELATIVE target is resolved from the source file's own
+## directory, which cvtsudoers reads faithfully.
+INCLUDE_RE = re.compile(
+    r"^[ \t]*[@#]include(dir)?[ \t]+(\"[^\"]*\"|\S+)", re.MULTILINE)
 
 ## An absolute command token in cvtsudoers' -f sudoers output: a run beginning
 ## with '/' in which a space may be backslash-escaped (the only way a command
@@ -176,28 +179,45 @@ def command_path(command_string, spaced_paths):
     return None
 
 
-def source_has_include(path):
-    """True if the raw source carries an @include/@includedir (or #include)
-    directive. cvtsudoers resolves such a target against absolute HOST paths,
-    ignoring --root, so under a non-default root the parse is not faithful to
-    the image and the result must be inconclusive rather than clean."""
+def include_coverage_gap(path, root_real):
+    """Reason string if a source's @include/@includedir cannot be faithfully
+    resolved for this audit, else None. Two unfaithful cases, both of which
+    cvtsudoers reports as a clean exit-0 parse with the included commands simply
+    absent -- so the audit must refuse to call the source clean:
+      - an ABSOLUTE target under a non-default --root: cvtsudoers opens it in the
+        HOST namespace, not the image.
+      - an ABSOLUTE target this process cannot read: cvtsudoers SILENTLY drops
+        it (sudo running as root would still load it).
+    A RELATIVE target is resolved from the source file's own directory, which
+    cvtsudoers reads faithfully, so it is not a gap."""
     try:
         with open(path, encoding="utf-8", errors="replace") as handle:
-            return INCLUDE_RE.search(handle.read()) is not None
+            text = handle.read()
     except OSError:
-        ## Unreadable here means cvtsudoers will fail too; that surfaces as a
-        ## parse error (inconclusive) on the cvtsudoers pass.
-        return False
+        ## Unreadable here means cvtsudoers failed too; that surfaces as a parse
+        ## error (inconclusive) on the cvtsudoers pass.
+        return None
+    for match in INCLUDE_RE.finditer(text):
+        is_dir = bool(match.group(1))
+        target = match.group(2).strip('"')
+        if not target.startswith("/"):
+            continue
+        if root_real != os.sep:
+            return "@include %s resolved in the host namespace under --root" % target
+        need = os.R_OK | (os.X_OK if is_dir else 0)
+        if not os.access(target, need):
+            return "@include %s unreadable; cvtsudoers would silently skip it" % target
+    return None
 
 
-def parse_source(cvt, path, baseline):
+def parse_source(cvt, path, root_real, baseline):
     """Run cvtsudoers on one source file. Return
-    (commands, spaced_paths, has_include, warnings, error) where commands is a
+    (commands, spaced_paths, include_gap, warnings, error) where commands is a
     list of (command_string, negated) for entries naming an absolute command,
-    spaced_paths is the set recovered by extract_spaced_paths, has_include flags
-    an absolute include directive in the raw source, and error is a string on a
-    hard parse failure (else None). `baseline` is the environment-advisory
-    stderr (probe_baseline) subtracted so only source-specific messages count."""
+    spaced_paths is the set recovered by extract_spaced_paths, include_gap is the
+    include_coverage_gap reason (or None), and error is a string on a hard parse
+    failure (else None). `baseline` is the environment-advisory stderr
+    (probe_baseline) subtracted so only source-specific messages count."""
     abs_path = os.path.abspath(path)
     ## abspath so a filename beginning with '-' is never read as an option.
     proc = subprocess.run(
@@ -210,18 +230,18 @@ def parse_source(cvt, path, baseline):
     stderr_lines = [line for line in proc.stderr.strip().splitlines()
                     if line and line not in baseline]
     if proc.returncode != 0:
-        return [], set(), False, [], (
+        return [], set(), None, [], (
             stderr_lines[0] if stderr_lines
             else "cvtsudoers exited %d" % proc.returncode)
     ## cvtsudoers can warn (e.g. skipping a mis-owned includedir) and still exit
     ## 0; such a warning means reduced coverage, so surface it rather than let a
     ## partial parse read as clean.
     warnings = stderr_lines
-    has_include = source_has_include(abs_path)
+    include_gap = include_coverage_gap(abs_path, root_real)
     try:
         data = json.loads(proc.stdout or "{}")
     except json.JSONDecodeError as exc:
-        return [], set(), has_include, warnings, (
+        return [], set(), include_gap, warnings, (
             "cvtsudoers emitted unparseable JSON: %s" % exc)
 
     ## Second pass in sudoers format to recover command/argument boundaries the
@@ -256,7 +276,7 @@ def parse_source(cvt, path, baseline):
     for members in (data.get("Command_Aliases") or {}).values():
         collect(members)
 
-    return commands, spaced_paths, has_include, warnings, None
+    return commands, spaced_paths, include_gap, warnings, None
 
 
 def resolve_within_root(root_real, abs_path):
@@ -292,59 +312,24 @@ def resolve_within_root(root_real, abs_path):
     return resolved if os.path.exists(resolved) else None
 
 
-def glob_within_root(root_real, abs_path):
-    """Resolve a glob command path confined to root_real and return the list of
-    existing host-side matches. Sudoers permits wildcards (* ? [..]) in a
-    command path; a dead grant is one with NO match, so a literal lookup would
-    falsely flag a pattern that does match an installed command. Metacharacter
-    components are matched with fnmatch against the directory contents at that
-    level; plain components join literally."""
-    comps = [comp for comp in abs_path.split("/") if comp and comp != "."]
-    matches = []
-
-    def walk(base, index):
-        if index == len(comps):
-            if os.path.exists(base):
-                matches.append(base)
-            return
-        comp = comps[index]
-        if any(meta in comp for meta in GLOB_META):
-            try:
-                names = os.listdir(base)
-            except OSError:
-                return
-            for name in names:
-                if fnmatch.fnmatch(name, comp):
-                    walk(os.path.join(base, name), index + 1)
-        else:
-            candidate = os.path.join(base, comp)
-            if os.path.lexists(candidate):
-                walk(candidate, index + 1)
-
-    walk(root_real, 0)
-    return matches
-
-
 def classify(root_real, command_string, spaced_paths, require_executable):
     """Verdict for one cvtsudoers command string plus the command path it was
-    judged against: ('missing'|'not-executable', path) or (None, path) when
-    present, or (None, None) when the entry is not a stat-able path. The command
-    path is the recovered boundary (not any existing prefix); a wildcard path is
-    resolved as a root-confined glob."""
+    judged against: ('missing'|'not-executable'|'inconclusive', path), (None,
+    path) when present, or (None, None) when the entry is not a stat-able path.
+    The command path is the recovered boundary (not any existing prefix). A
+    wildcard path is reported INCONCLUSIVE: matching sudo's glob(3)+fnmatch
+    semantics AND confining the match to --root is more than this audit can do
+    reliably, so it refuses rather than risk a false clean (an unconfined glob
+    escaping --root) or a false missing."""
     path = command_path(command_string, spaced_paths)
     if path is None:
         return None, None
     if any(meta in path for meta in GLOB_META):
-        resolved = glob_within_root(root_real, path)
-        if not resolved:
-            return "missing", path
-        executable = any(os.access(match, os.X_OK) for match in resolved)
-    else:
-        match = resolve_within_root(root_real, path)
-        if match is None:
-            return "missing", path
-        executable = os.access(match, os.X_OK)
-    if require_executable and not executable:
+        return "inconclusive", path
+    match = resolve_within_root(root_real, path)
+    if match is None:
+        return "missing", path
+    if require_executable and not os.access(match, os.X_OK):
         return "not-executable", path
     return None, path
 
@@ -395,7 +380,7 @@ def main(argv):
 
     if args.find:
         trees = args.paths if args.paths else [root]
-        walk_errors = []
+        walk_errors: "list[OSError]" = []
         sources = list(discover(trees, walk_errors))
         for walk_error in walk_errors:
             sys.stderr.write("sudoers-command-audit: WARNING: search tree not "
@@ -419,12 +404,10 @@ def main(argv):
         sys.stderr.write("sudoers-command-audit: no sudoers sources found.\n")
         return 2
 
-    offline = root_real != os.sep
-
     findings = 0
     for source in sources:
-        commands, spaced_paths, has_include, warnings, error = parse_source(
-            cvt, source, baseline)
+        commands, spaced_paths, include_gap, warnings, error = parse_source(
+            cvt, source, root_real, baseline)
         for warning in warnings:
             sys.stderr.write("%s: WARNING: %s\n" % (source, warning))
             inconclusive = True
@@ -432,13 +415,12 @@ def main(argv):
             sys.stderr.write("%s: ERROR: %s\n" % (source, error))
             inconclusive = True
             continue
-        if offline and has_include:
-            ## cvtsudoers resolved the @include against the HOST, not --root, so
-            ## this source's parse is not faithful to the image: skip its
-            ## findings rather than emit host-derived verdicts, and refuse clean.
-            sys.stderr.write("%s: WARNING: @include resolved in the host "
-                             "namespace under --root %s; cannot audit "
-                             "faithfully.\n" % (source, root))
+        if include_gap is not None:
+            ## cvtsudoers could not faithfully resolve an include (host-namespace
+            ## or silently-skipped): drop this source's findings rather than emit
+            ## an incomplete verdict, and refuse clean.
+            sys.stderr.write("%s: WARNING: %s; cannot audit faithfully.\n"
+                             % (source, include_gap))
             inconclusive = True
             continue
         reported = set()
@@ -446,6 +428,12 @@ def main(argv):
             verdict, abs_path = classify(
                 root_real, command_string, spaced_paths, args.require_executable)
             if verdict is None:
+                continue
+            if verdict == "inconclusive":
+                ## A wildcard command path this audit cannot resolve safely.
+                sys.stderr.write("%s: WARNING: wildcard command path %s not "
+                                 "verifiable.\n" % (source, abs_path))
+                inconclusive = True
                 continue
             key = (abs_path, negated, verdict)
             if key in reported:

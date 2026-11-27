@@ -27,14 +27,16 @@ import re
 
 import tb_updater_testlib as T
 
-## The ns guard: if [ "$(readlink .../self/ns/mnt)" = "$(readlink .../1/ns/mnt)" ]
-## then <body> fi. The body is non-greedy up to the first 'fi'.
-_GUARD_RE = re.compile(
+## The ns guard OPENER: if [ "$(readlink .../self/ns/mnt)" =
+## "$(readlink .../1/ns/mnt)" ]; then. The matching 'fi' is found by if/fi depth
+## counting (not a non-greedy '.*?fi'), so a nested conditional in the guard
+## body cannot close the block early and let a remount still inside the
+## equal-namespace branch read as after the guard.
+_GUARD_OPEN_RE = re.compile(
     r"if\s*\[\s*\"\$\(\s*readlink[^\n]*/proc/self/ns/mnt[^\n]*\)\"\s*=\s*"
     r"\"\$\(\s*readlink[^\n]*/proc/1/ns/mnt[^\n]*\)\"\s*\][^\n]*;\s*then"
-    r"(?P<body>.*?)\bfi\b",
-    re.DOTALL,
 )
+_IF_FI_RE = re.compile(r"\b(if|fi)\b")
 _APPLY_RE = re.compile(r"\btb_remount_exec_apply\b")
 _PROP_RE = re.compile(r"mount\s+--make-r?(?:slave|private)\b")
 
@@ -57,20 +59,41 @@ def _hook_code() -> str:
     return _strip_comments(T.read(T.home_remount_hook()))
 
 
+def _guard_block(code: str):
+    """(body_start, block_end) of the ns guard: the index just after its
+    'if ... ; then' opener and the index just past its MATCHING 'fi', located by
+    if/fi depth counting. None if there is no guard."""
+    opener = _GUARD_OPEN_RE.search(code)
+    if opener is None:
+        return None
+    depth = 1
+    for token in _IF_FI_RE.finditer(code, opener.end()):
+        if token.group(1) == "fi":
+            depth -= 1
+            if depth == 0:
+                return opener.end(), token.end()
+        else:
+            depth += 1
+    return None
+
+
 def _guard_then_remount_ok(code: str) -> bool:
     """True iff a COMPLETE ns guard ('if ... exit 0 ... fi') closes BEFORE the
-    propagation hardening and the first remount. Keyed on the guard's end (its
-    'fi'), not the first namespace reference, so a remount placed INSIDE the
-    equal-namespace branch -- which runs in init's namespace -- is rejected. A
-    pure predicate so it can be canaried against crafted hooks."""
-    guard = _GUARD_RE.search(code)
-    if guard is None or not re.search(r"\bexit\s+0\b", guard.group("body")):
+    propagation hardening and the first remount. Keyed on the guard's matching
+    'fi' (depth-counted), so a remount placed INSIDE the equal-namespace branch
+    -- which runs in init's namespace -- is rejected even behind a nested
+    conditional. A pure predicate so it can be canaried against crafted hooks."""
+    block = _guard_block(code)
+    if block is None:
+        return False
+    body_start, block_end = block
+    if not re.search(r"\bexit\s+0\b", code[body_start:block_end]):
         return False
     apply_at = _APPLY_RE.search(code)
     prop = _PROP_RE.search(code)
     if apply_at is None or prop is None:
         return False
-    return guard.end() <= prop.start() < apply_at.start()
+    return block_end <= prop.start() < apply_at.start()
 
 
 def test_ns_guard_compares_self_to_init_and_exits():
@@ -78,22 +101,24 @@ def test_ns_guard_compares_self_to_init_and_exits():
     code = _hook_code()
     assert re.search(r"readlink\b[^\n]*/proc/self/ns/mnt", code), code
     assert re.search(r"readlink\b[^\n]*/proc/1/ns/mnt", code), code
-    guard = _GUARD_RE.search(code)
-    assert guard is not None, "ns guard 'if ... fi' not found in hook code"
-    assert re.search(r"\bexit\s+0\b", guard.group("body")), guard.group("body")
+    block = _guard_block(code)
+    assert block is not None, "ns guard 'if ... fi' not found in hook code"
+    body_start, block_end = block
+    assert re.search(r"\bexit\s+0\b", code[body_start:block_end]), code
 
 
 def test_ns_guard_precedes_the_remount():
     ## The complete guard must CLOSE before the remount: its 'exit 0' skip arm
-    ## and 'fi' precede the first tb_remount_exec_apply. Checking only that the
-    ## first ns reference precedes the remount would pass a hook that remounts
-    ## inside the equal-namespace branch (a system-wide remount in init's ns).
+    ## and matching 'fi' precede the first tb_remount_exec_apply. Checking only
+    ## that the first ns reference precedes the remount would pass a hook that
+    ## remounts inside the equal-namespace branch (a system-wide remount in
+    ## init's ns).
     code = _hook_code()
-    guard = _GUARD_RE.search(code)
-    assert guard is not None, "ns guard 'if ... fi' not found in hook code"
+    block = _guard_block(code)
+    assert block is not None, "ns guard 'if ... fi' not found in hook code"
     apply_at = _APPLY_RE.search(code)
     assert apply_at is not None, "hook never calls tb_remount_exec_apply"
-    assert apply_at.start() > guard.end(), (
+    assert apply_at.start() > block[1], (
         "remount must come after the ns guard closes (its 'fi'), not inside "
         "the equal-namespace branch"
     )
@@ -106,13 +131,13 @@ def test_propagation_hardened_between_guard_and_remount():
     ## propagates back to init. It must sit AFTER the guard closes and BEFORE the
     ## remount.
     code = _hook_code()
-    guard = _GUARD_RE.search(code)
-    assert guard is not None, "ns guard 'if ... fi' not found in hook code"
+    block = _guard_block(code)
+    assert block is not None, "ns guard 'if ... fi' not found in hook code"
     prop = _PROP_RE.search(code)
     assert prop is not None, "no propagation hardening (make-rslave/make-private)"
     apply_at = _APPLY_RE.search(code)
     assert apply_at is not None, "hook never calls tb_remount_exec_apply"
-    assert guard.end() <= prop.start() < apply_at.start(), (
+    assert block[1] <= prop.start() < apply_at.start(), (
         "propagation hardening must sit after the ns guard closes and before "
         "the remount"
     )
@@ -129,6 +154,25 @@ def test_ordering_predicate_rejects_remount_in_equal_ns_branch():
         '    mount --make-rslave /\n'
         '    tb_remount_exec_apply /home/user\n'
         '    exit 0\n'
+        'fi\n'
+    )
+    assert not _guard_then_remount_ok(bad)
+
+
+def test_ordering_predicate_rejects_remount_after_nested_fi_in_branch():
+    ## Canary: a nested conditional inside the equal-namespace branch must not
+    ## close the guard early. Here 'exit 0' sits in an inner 'if false; then ...
+    ## fi' and the remount is still inside the outer branch -- a non-greedy
+    ## match to the FIRST 'fi' accepted it; the depth-counted block end rejects.
+    bad = _strip_comments(
+        '#!/bin/bash\n'
+        'if [ "$(readlink -f /proc/self/ns/mnt)" = '
+        '"$(readlink -f /proc/1/ns/mnt)" ]; then\n'
+        '    if false; then\n'
+        '        exit 0\n'
+        '    fi\n'
+        '    mount --make-rslave /\n'
+        '    tb_remount_exec_apply /home/user\n'
         'fi\n'
     )
     assert not _guard_then_remount_ok(bad)
