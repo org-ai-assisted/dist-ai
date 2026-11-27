@@ -56,11 +56,15 @@ CVTSUDOERS = "/usr/bin/cvtsudoers"
 INCLUDE_RE = re.compile(
     r"^[ \t]*[@#]include(dir)?[ \t]+(\"[^\"]*\"|\S+)", re.MULTILINE)
 
-## An absolute command token in cvtsudoers' -f sudoers output: a run beginning
-## with '/' in which a space may be backslash-escaped (the only way a command
-## PATH carries a literal space). Arguments are de-escaped by cvtsudoers, so an
-## escaped space survives only on the command path -- exactly what we recover.
-SUDOERS_TOKEN_RE = re.compile(r"/(?:\\.|[^\s,])*")
+## A full command token in cvtsudoers' -f sudoers output: a run beginning with
+## '/' spanning the command PATH and its arguments, up to the unescaped comma or
+## newline that ends one command. A literal space in the PATH is backslash-
+## escaped (the only way a command path carries one); the boundary between path
+## and arguments is the first UNescaped space. De-escaped and trimmed, the run
+## equals the JSON command string for the SAME rule -- so it recovers that rule's
+## boundary per-rule, without pooling one rule's spaced path across others.
+SUDOERS_TOKEN_RE = re.compile(r"/(?:\\.|[^\s])*")
+SUDOERS_COMMAND_RE = re.compile(r"/(?:\\.|[^,\n])*")
 
 ## Glob metacharacters sudoers honours in a command path.
 GLOB_META = "*?["
@@ -144,35 +148,39 @@ def expand_inputs(paths):
     return files
 
 
-def extract_spaced_paths(sudoers_text):
-    """Set of command paths that contain a literal (backslash-escaped) space,
-    recovered from cvtsudoers' -f sudoers output. cvtsudoers' JSON collapses the
+def _unescape(token):
+    """De-escape a cvtsudoers -f sudoers token to its real on-disk form."""
+    return re.sub(r"\\(.)", r"\1", token)
+
+
+def extract_command_map(sudoers_text):
+    """Map each rule's full de-escaped command string (path + arguments, the
+    exact form cvtsudoers' JSON emits) to that rule's command PATH, recovered
+    from cvtsudoers' -f sudoers output. cvtsudoers' JSON collapses the
     command/argument boundary (an escaped-space path and a path+arguments both
     serialise to one space-joined string), but the -f sudoers round-trip keeps
-    the escape on the command PATH while de-escaping arguments -- so an escaped
-    space survives only where it is part of the path. Each is unescaped to its
-    real on-disk form."""
-    paths = set()
-    for token in SUDOERS_TOKEN_RE.findall(sudoers_text):
-        if "\\ " in token:
-            paths.add(re.sub(r"\\(.)", r"\1", token))
-    return paths
+    the escape on the command PATH while de-escaping arguments -- so the first
+    UNescaped space in a -f sudoers command run is the real boundary. Keying on
+    the FULL de-escaped run (== the JSON string) recovers each rule's boundary
+    per-rule, so one rule's escaped-space path is never applied to another rule's
+    command string (the file-global prefix match cross-contaminated them)."""
+    mapping = {}
+    for run in SUDOERS_COMMAND_RE.findall(sudoers_text):
+        full = _unescape(run.rstrip())
+        path_token = SUDOERS_TOKEN_RE.match(run).group(0)
+        mapping.setdefault(full, _unescape(path_token))
+    return mapping
 
 
-def command_path(command_string, spaced_paths):
+def command_path(command_string, command_map):
     """Return the absolute command path from a cvtsudoers JSON command string,
     or None when the entry is not a stat-able path (ALL, sudoedit, list, a bare
-    word, or a relative command). The path is the longest known escaped-space
-    path that is a token-boundary prefix of the string; otherwise it is the
-    first whitespace-separated token (arguments stripped). This recovers the
-    real boundary instead of accepting any existing prefix as the command."""
-    best = None
-    for candidate in spaced_paths:
-        if command_string == candidate or command_string.startswith(candidate + " "):
-            if best is None or len(candidate) > len(best):
-                best = candidate
-    if best is not None:
-        return best
+    word, or a relative command). The path is the per-rule boundary recovered
+    from the -f sudoers pass (command_map) when the full string is known; else
+    the first whitespace-separated token (arguments stripped)."""
+    recovered = command_map.get(command_string)
+    if recovered is not None:
+        return recovered if recovered.startswith("/") else None
     token = command_string.split(" ", 1)[0]
     if token.startswith("/"):
         return token
@@ -212,12 +220,13 @@ def include_coverage_gap(path, root_real):
 
 def parse_source(cvt, path, root_real, baseline):
     """Run cvtsudoers on one source file. Return
-    (commands, spaced_paths, include_gap, warnings, error) where commands is a
+    (commands, command_map, include_gap, warnings, error) where commands is a
     list of (command_string, negated) for entries naming an absolute command,
-    spaced_paths is the set recovered by extract_spaced_paths, include_gap is the
-    include_coverage_gap reason (or None), and error is a string on a hard parse
-    failure (else None). `baseline` is the environment-advisory stderr
-    (probe_baseline) subtracted so only source-specific messages count."""
+    command_map is the per-rule boundary map from extract_command_map,
+    include_gap is the include_coverage_gap reason (or None), and error is a
+    string on a hard parse failure (else None). `baseline` is the
+    environment-advisory stderr (probe_baseline) subtracted so only
+    source-specific messages count."""
     abs_path = os.path.abspath(path)
     ## abspath so a filename beginning with '-' is never read as an option.
     proc = subprocess.run(
@@ -230,7 +239,7 @@ def parse_source(cvt, path, root_real, baseline):
     stderr_lines = [line for line in proc.stderr.strip().splitlines()
                     if line and line not in baseline]
     if proc.returncode != 0:
-        return [], set(), None, [], (
+        return [], {}, None, [], (
             stderr_lines[0] if stderr_lines
             else "cvtsudoers exited %d" % proc.returncode)
     ## cvtsudoers can warn (e.g. skipping a mis-owned includedir) and still exit
@@ -241,7 +250,7 @@ def parse_source(cvt, path, root_real, baseline):
     try:
         data = json.loads(proc.stdout or "{}")
     except json.JSONDecodeError as exc:
-        return [], set(), include_gap, warnings, (
+        return [], {}, include_gap, warnings, (
             "cvtsudoers emitted unparseable JSON: %s" % exc)
 
     ## Second pass in sudoers format to recover command/argument boundaries the
@@ -255,8 +264,8 @@ def parse_source(cvt, path, root_real, baseline):
         encoding="utf-8",
         check=False,
     )
-    spaced_paths = (extract_spaced_paths(round_trip.stdout)
-                    if round_trip.returncode == 0 else set())
+    command_map = (extract_command_map(round_trip.stdout)
+                   if round_trip.returncode == 0 else {})
 
     commands = []
 
@@ -267,7 +276,7 @@ def parse_source(cvt, path, root_real, baseline):
                 ## this file (normal for a drop-in); its members are checked
                 ## wherever the alias is defined. Nothing to stat here.
                 continue
-            if command_path(entry["command"], spaced_paths) is not None:
+            if command_path(entry["command"], command_map) is not None:
                 commands.append((entry["command"], bool(entry.get("negated"))))
 
     for spec in data.get("User_Specs", []):
@@ -276,7 +285,7 @@ def parse_source(cvt, path, root_real, baseline):
     for members in (data.get("Command_Aliases") or {}).values():
         collect(members)
 
-    return commands, spaced_paths, include_gap, warnings, None
+    return commands, command_map, include_gap, warnings, None
 
 
 def resolve_within_root(root_real, abs_path):
@@ -312,7 +321,7 @@ def resolve_within_root(root_real, abs_path):
     return resolved if os.path.exists(resolved) else None
 
 
-def classify(root_real, command_string, spaced_paths, require_executable):
+def classify(root_real, command_string, command_map, require_executable):
     """Verdict for one cvtsudoers command string plus the command path it was
     judged against: ('missing'|'not-executable'|'inconclusive', path), (None,
     path) when present, or (None, None) when the entry is not a stat-able path.
@@ -321,7 +330,7 @@ def classify(root_real, command_string, spaced_paths, require_executable):
     semantics AND confining the match to --root is more than this audit can do
     reliably, so it refuses rather than risk a false clean (an unconfined glob
     escaping --root) or a false missing."""
-    path = command_path(command_string, spaced_paths)
+    path = command_path(command_string, command_map)
     if path is None:
         return None, None
     if any(meta in path for meta in GLOB_META):
@@ -406,7 +415,7 @@ def main(argv):
 
     findings = 0
     for source in sources:
-        commands, spaced_paths, include_gap, warnings, error = parse_source(
+        commands, command_map, include_gap, warnings, error = parse_source(
             cvt, source, root_real, baseline)
         for warning in warnings:
             sys.stderr.write("%s: WARNING: %s\n" % (source, warning))
@@ -426,7 +435,7 @@ def main(argv):
         reported = set()
         for command_string, negated in commands:
             verdict, abs_path = classify(
-                root_real, command_string, spaced_paths, args.require_executable)
+                root_real, command_string, command_map, args.require_executable)
             if verdict is None:
                 continue
             if verdict == "inconclusive":

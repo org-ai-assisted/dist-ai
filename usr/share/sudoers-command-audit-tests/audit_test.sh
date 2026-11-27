@@ -333,6 +333,23 @@ printf '%s\n' 'user ALL=NOPASSWD: /usr/bin/true' > "${work}/live-no-include"
 run_audit "${work}/live-no-include"
 check "canary: no include -> audited clean (exit 0)" rc_is 0
 
+## 18. boundary recovery is PER-RULE: one rule's escaped-space path must never be
+##     applied to another rule's command string. Rule A's spaced path
+##     '/usr/bin/foo bar' is PRESENT; rule B grants '/usr/bin/foo' with arguments
+##     and '/usr/bin/foo' is ABSENT. The old file-global prefix match reported B
+##     clean by borrowing A's present spaced path (a dead-grant false clean); the
+##     per-rule map checks B's real '/usr/bin/foo' and reports it missing.
+printf '%s\n' '#!/bin/sh' > "${root}/usr/bin/foo bar"
+chmod +x -- "${root}/usr/bin/foo bar"
+printf '%s\n' \
+  'user ALL=NOPASSWD: /usr/bin/foo\ bar' \
+  'user ALL=NOPASSWD: /usr/bin/foo bar baz' > "${work}/per-rule"
+run_audit --root "${root}" "${work}/per-rule"
+check "cross-rule spaced-path contamination -> B's dead grant found (exit 1)" rc_is 1
+check "B's real command /usr/bin/foo named" out_has 'missing: /usr/bin/foo'
+check "A's present spaced path not misreported missing" out_lacks '/usr/bin/foo bar'
+safe-rm --force -- "${root}/usr/bin/foo bar"
+
 ## --- report ------------------------------------------------------------------
 printf '%s\n' "sudoers-command-audit-tests: ${pass} pass, ${fail} fail, 0 skip"
 [ "${fail}" -eq 0 ]
