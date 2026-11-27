@@ -360,17 +360,22 @@ async def _open_and_audit(browser, url: str, axe_src: str, settle_ms: int,
 
 async def _axe_page(browser, url: str, axe_src: str, settle_ms: int,
                     viewport: Optional[dict] = None) -> dict:
-    """Audit one page and close it (time-boxed). A thin convenience wrapper for direct callers/tests;
-    the deploy lane audits through check(), which time-boxes _open_and_audit and closes the page
-    SEPARATELY, outside the wall-clock budget."""
-    page, result = await _open_and_audit(browser, url, axe_src, settle_ms, viewport)
+    """Audit one page and close it, exception-safe. A thin convenience wrapper for direct
+    callers/tests; it OWNS the page and closes it in a `finally` whether the audit returns OR raises,
+    so a caller that keeps the browser never leaks the opened page. It does NOT route through
+    _open_and_audit: the deploy lane audits through check(), which time-boxes _open_and_audit and does
+    browser-level cleanup on a fault (a close inside that wall-clock budget is the teardown-timing
+    hazard check() deliberately keeps OUTSIDE the budget), so the two have different cleanup owners."""
+    page = await browser.new_page(viewport=viewport or {"width": 1280, "height": 720})
     try:
-        await asyncio.wait_for(page.close(), timeout=5)
-    except Exception:
-        # Best-effort teardown: a page that already crashed/closed (or hangs on close) must not
-        # mask the audit result. Nothing to recover.
-        pass
-    return result
+        return await _audit_page(page, url, axe_src, settle_ms)
+    finally:
+        try:
+            await asyncio.wait_for(page.close(), timeout=5)
+        except Exception:
+            # Best-effort teardown: a page that already crashed/closed (or hangs on close) must not
+            # mask the audit result or the in-flight exception. Nothing to recover.
+            pass
 
 
 async def check(base: str, paths: List[str], axe_source: str, settle_ms: int = 1000,

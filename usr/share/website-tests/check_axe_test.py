@@ -475,6 +475,36 @@ def run() -> int:
     ck(390 in _widths and any(w >= 1000 for w in _widths),
        "_VIEWPORTS audits both a mobile (390) and a desktop width: %r" % _widths)
 
+    # _axe_page is exception-safe (CodeRabbit finding 2026-11-27): it owns the page and closes it in a
+    # `finally` even when the audit RAISES -- a direct caller that catches the error and keeps the
+    # browser must not leak the opened page. (check()'s own path does browser-level cleanup instead and
+    # keeps page.close OUTSIDE its budget, so _axe_page must NOT route through _open_and_audit.)
+    _closed = {"n": 0}
+
+    class _FakePageErr:
+        def __init__(self):
+            self.main_frame = object()
+
+        async def route(self, _pattern, _handler):
+            pass
+
+        async def goto(self, _url, **_k):
+            raise RuntimeError("navigation failed")   # a real load failure (no redirect) -> re-raised
+
+        async def close(self):
+            _closed["n"] += 1
+
+    class _FakeBrowserErr:
+        async def new_page(self, viewport=None):
+            return _FakePageErr()
+
+    try:
+        _asyncio.run(ax._axe_page(_FakeBrowserErr(), _local, "axe=1", 0))
+        ck(False, "_axe_page propagates a raising audit (did not swallow the error)")
+    except RuntimeError:
+        ck(_closed["n"] == 1,
+           "_axe_page closes the page even when the audit RAISES (no leak): closed=%d" % _closed["n"])
+
     # WEDGE RETRY + teardown isolation + mid-run engine resilience (operator decision 2026-11-27,
     # dev1877 task #87; codex/grok/reviewdrain review fixes). The single hard wall-clock budget times
     # page creation AND the audit together (_open_and_audit); page.close() runs OUTSIDE it. So an
