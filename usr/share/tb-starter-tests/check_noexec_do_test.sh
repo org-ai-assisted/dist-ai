@@ -11,13 +11,16 @@
 ## RETURN POLARITY matches both callers (remount_exec, check_noexec): success (0)
 ## means "executable, no remount needed", failure (1) means "noexec, remount".
 ##
-## REGRESSION this guards: the old code ran 'mount | grep ~/.tb' and then grepped
-## the PATH STRING (not the mount line) for "noexec". A fresh ~/.tb under a noexec
-## /home is NOT its own mount line, so 'mount | grep' saw nothing and the function
-## wrongly reported executable -- TB then launched against a noexec home (the
-## non-Qubes breakage). The fix uses 'findmnt --target', which resolves the
-## COVERING mount, and matches the OPTIONS token-wise. A naive variable swap
-## INVERTS the polarity, so this pins the covering-mount + polarity behavior.
+## REGRESSION this guards: detecting an INHERITED noexec on a path that may not
+## exist yet. check_noexec_do must report noexec when ~/.tb sits under a noexec
+## mount (e.g. a noexec /home) even though ~/.tb is not its own mount line and
+## often does not exist when the check runs. It uses 'findmnt --target' to resolve
+## the COVERING mount and matches the OPTIONS token-wise -- but findmnt needs an
+## EXISTING path (it exits non-zero on a missing one, see the findmnt stub), so
+## the function must first resolve the nearest existing ANCESTOR. It also FAILS
+## SAFE: any uncertainty (findmnt failure, empty / non-absolute folder) returns 1
+## (noexec -> remount), never 0, which would launch TB on a noexec home. This
+## pins the ancestor-resolution, the fail-safe direction, and the polarity.
 ##
 ## Drives the REAL torbrowser (sourced; it is source-able via its was_executed
 ## guard) with a stub findmnt. A missing dependency is a HARD FAIL, never a skip.
@@ -32,7 +35,6 @@ export LC_ALL=C
 
 tool_dir="$(cd -- "$(dirname -- "$(readlink --canonicalize -- "$0")")" && pwd)"
 findmnt_stub="${tool_dir}/check_noexec_do_findmnt_stub.sh"
-mount_stub="${tool_dir}/check_noexec_do_mount_stub.sh"
 probe="${tool_dir}/torbrowser_source_probe.sh"
 
 [ -v TB_STARTER_REPO ] || TB_STARTER_REPO=""
@@ -67,7 +69,7 @@ if [ ! -r "${check_runtime}" ] || [ ! -r "${has_lib}" ]; then
   printf '%s\n' "set HELPER_SCRIPTS_REPO to a helper-scripts checkout, or install helper-scripts" >&2
   exit 1
 fi
-if [ ! -x "${findmnt_stub}" ] || [ ! -x "${mount_stub}" ] || [ ! -x "${probe}" ]; then
+if [ ! -x "${findmnt_stub}" ] || [ ! -x "${probe}" ]; then
   printf '%s\n' "FATAL: test support scripts missing under '${tool_dir}'" >&2
   exit 1
 fi
@@ -92,11 +94,10 @@ cleanup_handler() {
 }
 trap cleanup_handler EXIT
 
-## The stubs go on PATH under the real tool names findmnt / mount.
+## The stub goes on PATH under the real tool name findmnt.
 bindir="${test_dir}/bin"
 mkdir --parents -- "${bindir}"
 ln --symbolic -- "${findmnt_stub}" "${bindir}/findmnt"
-ln --symbolic -- "${mount_stub}" "${bindir}/mount"
 export PATH="${bindir}:${PATH}"
 
 pass=0
@@ -150,23 +151,24 @@ check_case() {
   fi
 }
 
-## mount stub output that does NOT contain the test ~/.tb path, so the OLD
-## 'mount | grep ~/.tb' code resolves to empty and returns 0 -- the exact value
-## that makes the inherited-noexec case below RED on the pre-fix code.
-export MOUNT_STUB_OUTPUT="sysfs /sys sysfs rw,nosuid,nodev,noexec,relatime 0 0
-/dev/sda1 /home ext4 rw,nosuid,nodev,noexec 0 0"
+## The ~/.tb test paths below do NOT exist, so the stub findmnt exits non-zero on
+## them directly; check_noexec_do must walk up to an existing ancestor (ending at
+## '/'), where the stub returns the scenario OPTIONS. This is THE canary: the
+## pre-fix code called findmnt on the missing ~/.tb, got a non-zero exit, and
+## fail-OPENED (returned 0) -- so the noexec cases return 1 here only once the
+## ancestor walk is in place.
 
-## Inherited noexec: ~/.tb is NOT its own mount, findmnt --target resolves the
-## covering (noexec) mount -> noexec detected -> return 1. THE canary case:
-## pre-fix code returned 0 here.
+## Inherited noexec: ~/.tb (nonexistent) sits under a noexec covering mount; the
+## ancestor walk resolves it and noexec is detected -> return 1.
 check_case "inherited noexec (covering mount)" \
   "/test-home/.tb" "rw,nosuid,nodev,noexec,relatime" "0" "1"
 
-## ~/.tb is its own noexec mount (the Qubes bind-mount shape) -> return 1.
+## The covering mount is its own noexec mount (the Qubes bind-mount shape) -> 1.
 check_case "own noexec mount" \
   "/test-home/.tb" "rw,noexec" "0" "1"
 
-## Covering mount WITHOUT noexec -> executable -> return 0.
+## Covering mount WITHOUT noexec -> executable -> return 0. (Also proves the walk
+## reached an EXISTING ancestor: a failed walk would fail safe to 1.)
 check_case "executable (no noexec in options)" \
   "/test-home/.tb" "rw,nosuid,nodev,relatime" "0" "0"
 
@@ -176,9 +178,20 @@ check_case "executable (no noexec in options)" \
 check_case "noexec in path, not in options" \
   "/noexec/.tb" "rw,nodev,relatime" "0" "0"
 
-## No covering mount resolved (findmnt non-zero) -> nothing to lift -> return 0.
-check_case "no covering mount resolved" \
-  "/test-home/.tb" "" "1" "0"
+## findmnt fails even on the resolved ancestor -> fail SAFE (assume noexec) -> 1,
+## never 0. Returning 0 here would launch TB on a possibly-noexec home.
+check_case "findmnt failure -> fail-safe noexec" \
+  "/test-home/.tb" "" "1" "1"
+
+## An empty tb_home_folder is a caller bug: real findmnt --target '' silently
+## judges '/', so guard it and fail safe -> return 1 (the stub is not reached).
+check_case "empty tb_home_folder -> fail-safe noexec" \
+  "" "rw,nosuid,nodev,relatime" "0" "1"
+
+## A non-absolute folder (incl. a leading '-' that findmnt would parse as a flag)
+## is a caller bug -> fail safe -> return 1.
+check_case "non-absolute tb_home_folder -> fail-safe noexec" \
+  "relative/.tb" "rw,nosuid,nodev,relatime" "0" "1"
 
 printf '%s\n' ""
 printf '%s\n' "$((pass + fail)) case(s), ${pass} passed, ${fail} failed"

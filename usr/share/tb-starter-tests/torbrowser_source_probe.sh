@@ -9,9 +9,10 @@
 ## strict-mode ON in the sourcing shell (a 'set -o' leak) and must NOT auto-run
 ## torbrowser (the was_executed guard). Run by check_noexec_do_test.sh, which
 ## asserts on this exit code. SUBJECT and HELPER_SCRIPTS_PATH come from the env.
-## Exit: 0 clean (no auto-run, no strict leak, check_noexec_do + main_function
-## defined); 1 strict-mode (errexit/nounset) leaked into the sourcing shell;
-## 3 a required function is undefined.
+## Exit: 0 clean (no auto-run, no strict leak, no ERR-trap leak, check_noexec_do +
+## main_function defined); 1 strict-mode (errexit/nounset) leaked into the sourcing
+## shell; 3 a required function is undefined; a leaked pre.bsh ERR trap exits via
+## its own handler (1) at the bare check_noexec_do call below.
 
 # shellcheck disable=SC1090,SC1091,SC2154
 source "${SUBJECT}"
@@ -33,5 +34,17 @@ case "$-" in
   exit 1
   ;;
 esac
+
+## ERR-trap leak check: a sourced consumer calling check_noexec_do DIRECTLY (not
+## in an 'if'/'||') must observe its non-zero return, not be killed by pre.bsh's
+## ERR handler leaking into this shell (pre.bsh must be sourced only when torbrowser
+## is EXECUTED). Drive a noexec verdict (-> return 1) as a BARE statement: if the
+## trap leaked, its handler exits here before the final 'exit 0'. findmnt is the
+## test's stub on PATH; '/' exists so the ancestor walk resolves immediately.
+export FINDMNT_STUB_OPTIONS="rw,noexec"
+export FINDMNT_STUB_RC="0"
+# shellcheck disable=SC2034
+tb_home_folder="/"
+check_noexec_do
 
 exit 0
