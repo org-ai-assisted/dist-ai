@@ -44,7 +44,8 @@ def _bindp_src_dir():
     return src_dir if os.path.isfile(os.path.join(src_dir, "bindp.c")) else ""
 
 
-def _free_tcp_port():
+def _free_udp_port():
+    ## The probe binds UDP sockets, so probe a free UDP port with a UDP socket.
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
         sock.bind(("127.0.0.1", 0))
         return sock.getsockname()[1]
@@ -135,13 +136,13 @@ class BindpBehaviorTest(unittest.TestCase):
         self.assertEqual(out["addr"], "127.0.0.1")
 
     def test_bind_port_rewrites_port(self):
-        port = _free_tcp_port()
+        port = _free_udp_port()
         out = self._probe_run("bind-inet", BIND_PORT=port)
         self.assertEqual(out.get("bind_rc"), "0", msg=out.get("_stderr"))
         self.assertEqual(out["port"], str(port))
 
     def test_bind_addr_and_port_together(self):
-        port = _free_tcp_port()
+        port = _free_udp_port()
         out = self._probe_run("bind-inet", BIND_ADDR="127.0.0.1", BIND_PORT=port)
         self.assertEqual(out.get("bind_rc"), "0", msg=out.get("_stderr"))
         self.assertEqual(out["addr"], "127.0.0.1")
@@ -168,9 +169,12 @@ class BindpBehaviorTest(unittest.TestCase):
 
     def test_invalid_bind_port_not_applied(self):
         ## An out-of-range BIND_PORT must be rejected (not rewritten), with a warning.
+        ## The warning is the definitive signal that bindp took the reject path (it
+        ## leaves sin_port 0, so the kernel assigns an ephemeral port). A value
+        ## compare would be vacuous: 99999 truncates to 34463 in a 16-bit port, so
+        ## even a buggy apply-anyway subject could never read back "99999".
         out = self._probe_run("bind-inet", BIND_PORT="99999")
         self.assertEqual(out.get("bind_rc"), "0", msg=out.get("_stderr"))
-        self.assertNotEqual(out["port"], "99999")
         self.assertIn("BIND_PORT", out["_stderr"])
 
     def test_invalid_reuse_flag_treated_as_off(self):
