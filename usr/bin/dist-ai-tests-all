@@ -116,6 +116,7 @@ core_suites=(
    dm-smbios-reader-boot-test-tests
    dm-upgrade-regression-tests
    dm-ci-job-watch-tests
+   dist-ai-userns-lane-tests
    dm-grub-smbios-tests
    dm-grub-theme-tests
    dm-iso-grub-menu-tests
@@ -1024,6 +1025,13 @@ wire() {
       dm-ci-job-watch)
          ## Self-contained: drives dm-ci-job-watch-state.py from this dist-ai
          ## checkout with crafted JSON on stdin; no external checkout to point at.
+         wire_env=()
+         wire_args=()
+         ;;
+      dist-ai-userns-lane)
+         ## Self-contained: sources dist-ai-userns-lane.sh from this dist-ai
+         ## checkout and drives discover_userns_test_files against fixtures it
+         ## builds itself; no external checkout to point at.
          wire_env=()
          wire_args=()
          ;;
