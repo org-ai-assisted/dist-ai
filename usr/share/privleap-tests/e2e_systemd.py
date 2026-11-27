@@ -285,12 +285,6 @@ def install_repo_dropin(repo: str, restorer: Restorer) -> None:
     sh(['systemctl', 'daemon-reload'])
 
 
-## systemd renders an unset SystemCallErrorNumber= as this sentinel (INT_MAX-1):
-## it means "no errno override" -- a denied syscall is SIGSYS-KILLED, not failed
-## soft. A real errno (EPERM -> 1) renders as its own number.
-SCMP_ERRNO_KILL_SENTINEL: str = '2147483646'
-
-
 def _checkout_unit_directive(repo: str, key: str) -> str:
     """Last effective value of a [Service] scalar directive in the CHECKOUT
     privleapd unit, normalized to systemd's rendered boolean form. Lets the W^X
@@ -317,72 +311,53 @@ def _checkout_unit_directive(repo: str, key: str) -> str:
 
 
 def run_wx_phase(user: str, results: Results) -> None:
-    """F: the unit's W^X hardening is declared correctly AND actually inherited
-    by a spawned action, failing SOFT (EPERM) rather than SIGSYS-killing it.
+    """F: no W^X hardening by design -- a W+X action runs, SUID preserved.
 
-    This is the only backend that can prove it: the filter is installed by the
-    systemd unit, so the subprocess backend (no unit) never sees it.
+    privleapd deliberately carries NO W^X seccomp/exec hardening: it must execute
+    arbitrary elevated applications, including ones that need W+X. This phase is
+    the runtime inverse of a hardened daemon and the guard that the filter is never
+    silently (re)introduced: a memfd_create (W+X) inside a spawned action must
+    SUCCEED, and NoNewPrivileges stays false so an escalated action can still exec
+    a SUID helper (the sudo-like role). Re-adding MemoryDenyWriteExecute /
+    SystemCallFilter=~memfd_create would SIGSYS-kill (exit 159) or EPERM this child
+    and break the design.
+
+    This is the only backend that can prove it: the unit's (absent) filter is a
+    systemd property, so the subprocess backend (no unit) never exercises it.
     """
 
-    print('== F: W^X hardening present, inherited by actions, EPERM soft-fail ==')
+    print('== F: no W^X hardening by design -- W+X actions run, SUID preserved ==')
 
     repo: str | None = os.environ.get('PRIVLEAP_REPO')
 
     def prop(name: str) -> str:
         ## Evaluate the unit UNDER TEST: the checkout unit's declared directive
         ## when PRIVLEAP_REPO drives a checkout, else the installed service's live
-        ## property. The runtime (seccomp-inherited action) checks below stay on the
-        ## live service -- they verify actual behavior, not a declaration.
+        ## property. The runtime (action) check below stays on the live service --
+        ## it verifies actual behavior, not a declaration.
         return _checkout_unit_directive(repo, name) if repo else svc_prop(name)
 
-    ## Static: the unit carries the hardening directives.
-    results.check('MemoryDenyWriteExecute enabled',
-                  prop('MemoryDenyWriteExecute') == 'yes')
-    results.check('SystemCallArchitectures=native',
-                  prop('SystemCallArchitectures') == 'native')
-    results.check('LockPersonality enabled',
-                  prop('LockPersonality') == 'yes')
-    results.check('NoExecPaths set', bool(prop('NoExecPaths')))
-
-    ## privleapd is a root service WITH CAP_SYS_ADMIN, so systemd installs the
-    ## seccomp filter via that capability -- no_new_privs is NOT forced on, and
-    ## NoNewPrivileges=false is HONORED (NoNewPrivs=0) by design: an escalated
-    ## action may still exec a SUID helper, matching the sudo-like role. Flipping
-    ## it to yes would silently break SUID/file-cap actions. (A user-scope service
-    ## would instead have NNP forced on.)
-    results.check('NoNewPrivileges=no (honored for this root+CAP_SYS_ADMIN '
+    ## NoNewPrivileges must stay false: HONORED on this root+CAP_SYS_ADMIN service
+    ## (NoNewPrivs=0), so an escalated action can still exec a SUID helper. '' when
+    ## the directive is absent (the by-design state); only an explicit 'yes' breaks
+    ## SUID/file-cap actions.
+    results.check('NoNewPrivileges not yes (honored for this root+CAP_SYS_ADMIN '
                   'service; yes would break SUID actions)',
-                  prop('NoNewPrivileges') == 'no')
+                  prop('NoNewPrivileges') != 'yes')
 
-    ## memfd_create must be denied via EPERM, not the default SIGSYS kill, so an
-    ## inherited action (or GUI child) fails soft instead of dying by signal.
-    scmp_errno: str = svc_prop('SystemCallErrorNumber')
-    results.check(
-        'memfd denial is a soft errno, not a SIGSYS kill '
-        '(SystemCallErrorNumber set)',
-        scmp_errno not in ('', SCMP_ERRNO_KILL_SENTINEL),
-    )
-
-    ## Runtime: the filter is genuinely inherited into the spawned action, and
-    ## it fails SOFT. Under the OLD unit (default action) memfd_create SIGSYS-
-    ## kills the python child -> bash reports 159. Under EPERM it raises a
-    ## catchable PermissionError -> exit 1. Both prove inheritance; only the
-    ## latter proves the soft-fail.
-    names, _out, err, code = e2e_lib.run_action_result(user, 'e2e-memfd')
-    err_text: str = err.decode('utf-8', errors='replace')
+    ## Runtime: a memfd_create (W+X) in a spawned action runs cleanly -- no
+    ## inherited seccomp filter blocks it. Under a hardened unit (default action)
+    ## memfd_create SIGSYS-kills the python child (bash reports 159); under EPERM it
+    ## raises a catchable PermissionError (exit 1). Either would fail this check.
+    names, _out, _err, code = e2e_lib.run_action_result(user, 'e2e-memfd')
     results.check('memfd action reported an exit code (not killed mid-protocol)',
                   'RESULT_EXITCODE' in names)
-    results.check('memfd_create denied inside the spawned action '
-                  '(filter inherited across fork+exec)',
-                  code is not None and code != 0)
-    results.check('memfd denied via EPERM soft-fail, NOT SIGSYS kill (exit != 159)',
-                  code != 159)
-    results.check('memfd denial surfaced as a catchable PermissionError',
-                  'PermissionError' in err_text
-                  or 'Operation not permitted' in err_text)
+    results.check('memfd_create (W+X) runs cleanly in a spawned action '
+                  '(no W^X filter inherited across fork+exec)',
+                  code == 0)
 
-    ## Canary: a python action that does NOT call memfd runs cleanly under the
-    ## very same hardened unit -- isolating the block to memfd, not python.
+    ## Canary: an ordinary python action also runs cleanly under the same unit --
+    ## isolating the result to the absence of a memfd block, not a broken runner.
     c_names, c_out, _cerr, c_code = e2e_lib.run_action_result(
         user, 'e2e-memfd-canary')
     results.check('non-memfd python action runs cleanly under the same unit '
