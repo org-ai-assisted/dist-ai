@@ -197,6 +197,7 @@ core_suites=(
    whonix-firewall-tests
 )
 fuzz_suites=(
+   bindp-tests-fuzz
    check-ref-commits-for-unicode-tests-fuzz
    private-ai-config-tests-fuzz
    git-meld-tests-fuzz
