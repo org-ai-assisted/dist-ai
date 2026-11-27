@@ -40,6 +40,7 @@ EXPECTED = [
     ("vuln-env-nonid", "home-recursive-write", "MEDIUM"),  ## env -- X-Y=1 chown (non-identifier name)
     ("vuln-env-expand", "home-recursive-write", "MEDIUM"), ## env -- "PATH=$PATH" chown (raw '=' test)
     ("vuln-env-dash", "home-recursive-write", "MEDIUM"),   ## env -- - PATH=.. chown (lone '-')
+    ("vuln-dashdash-mktemp", "root-write-user-path", "LOW"), ## mv -- dest: a write, but LOW (no follow)
     ("vuln-refusal-elsewhere", "home-recursive-write", "HIGH"),  ## refusal text outside root_check body
     ("vuln-mixed-body", "home-recursive-write", "HIGH"),         ## refusal text inside a real root_check
     ("vuln-text-cross-clause", "home-recursive-write", "HIGH"),  ## 'do not run ...' spanning clauses
@@ -145,6 +146,16 @@ def main(argv):
     checks.append((
         "waived symlink-follow removed from findings",
         not has(findings, "vuln-waived", "symlink-follow", ".bashrc")))
+    ## REGRESSION (dashdash + mktemp-redirect false symlink-follow): the '--'
+    ## terminator must not read as --dereference, and a mktemp-named redirect
+    ## target is unpredictable -- so NEITHER line of vuln-dashdash-mktemp is a
+    ## symlink-follow (both were HIGH false positives before the fix). The mv
+    ## write itself stays flagged at LOW (asserted via EXPECTED), so the fix did
+    ## not blind the scanner to the real write.
+    checks.append((
+        "'--' terminator + mktemp redirect are NOT symlink-follow",
+        not has(findings, "vuln-dashdash-mktemp", "symlink-follow")))
+
     checks.append((
         "continuation waiver (line above a '\\' split) suppresses the sink",
         has(suppressed, "vuln-waived", "home-recursive-write", ".config",

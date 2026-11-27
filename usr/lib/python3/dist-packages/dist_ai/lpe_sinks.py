@@ -762,6 +762,13 @@ def _redirect_findings(tree, source, tainted, tmp_safe, tmp_vars):
             word = redirect.get("Word")
             if not word:
                 continue
+            if bash_ast.word_param_names(word) & tmp_safe:
+                ## A mktemp-produced target has an unpredictable name, so it can
+                ## be neither a pre-planted nor a TOCTOU-swapped symlink (an
+                ## attacker cannot name the file to plant at it), even when the
+                ## mktemp template interpolates a tainted directory. Not a
+                ## write-LPE -- exempt from BOTH tmp-race and symlink-follow.
+                continue
             if _is_predictable_tmp(word, source, tmp_safe, tmp_vars):
                 yield _finding("tmp-race", "redirect", _line_of(word),
                                _word_raw(word, source), "literal", {},

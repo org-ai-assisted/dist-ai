@@ -602,6 +602,14 @@ def resolve_long(name, names):
     the options it distinguishes, so an abbreviation made ambiguous by an option
     OUTSIDE NAMES cannot be seen here -- but that is a malformed command getopt
     itself rejects, so it is out of scope."""
+    if not name:
+        ## The '--' end-of-options marker reaches here as an empty name (its '--'
+        ## and any '=value' stripped). '--' is the options TERMINATOR, never an
+        ## option nor an abbreviation of one; without this guard the empty string
+        ## is a prefix of EVERY candidate, so a SINGLE-member NAMES set resolves
+        ## falsely -- a '--' before a tainted operand then reads as e.g.
+        ## --dereference (a phantom symlink-follow) or a path option.
+        return None
     if name in names:
         return name
     matches = [candidate for candidate in names if candidate.startswith(name)]

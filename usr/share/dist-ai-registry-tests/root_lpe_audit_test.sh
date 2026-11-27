@@ -251,6 +251,26 @@ tu="$1"
 env -- - PATH=/usr/bin chown --recursive root:root "/home/${tu}/dash"
 EOF
 
+## VULN but LOW only: a '--' end-of-options marker must NOT resolve as an
+## empty-name abbreviation of a single-member long-option set (it once matched
+## SYMLINK_LONG's sole 'dereference' -> a phantom symlink-follow on EVERY
+## '--'-using sink with a tainted operand). AND a redirect to a mktemp-NAMED
+## target is unpredictable (an attacker cannot name the file to plant a symlink
+## at it), so it is not a symlink-follow even when the mktemp template
+## interpolates a tainted dir. Both lines are root-write-user-path at most --
+## NEVER symlink-follow. This is the real br_add_to_file (strings.bsh) shape.
+write 'packages/kicksecure/targetpkg/usr/libexec/targetpkg/vuln-dashdash-mktemp' <<'EOF'
+#!/bin/bash
+root_check() {
+   [ "$(id -u)" = "0" ] || exit 1
+}
+root_check
+tu="$1"
+br_tmp="$(mktemp -- "/home/${tu}/out.br.XXXXXX")"
+printf '%s\n' data >"${br_tmp}"
+mv --force --no-target-directory -- "${br_tmp}" "/home/${tu}/out_br"
+EOF
+
 ## SAFE: '--' only ends option parsing while getopt is still running; a NAME=VALUE
 ## operand already stopped it, so a LATER '--' is the command env tries to exec
 ## ('env: --: No such file'), and the chown never runs. The peeler must NOT treat
