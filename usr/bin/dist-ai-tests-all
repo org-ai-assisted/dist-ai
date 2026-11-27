@@ -587,7 +587,13 @@ wire() {
          fi
          ;;
       libvirt-dist)
-         wire_env=( "LIBVIRT_DIST_REPO=$( pkg_dir libvirt-dist )" )
+         ## boot_shared_mount_test.sh drives user-setup (host-side attach) AND
+         ## injects the vm-config-dist mount-shared under test (guest-side mount),
+         ## so this suite needs both package checkouts wired.
+         wire_env=(
+            "LIBVIRT_DIST_REPO=$( pkg_dir libvirt-dist )"
+            "VM_CONFIG_DIST_REPO=$( pkg_dir vm-config-dist )"
+         )
          ;;
       user-sysmaint-split)
          wire_env=( "USER_SYSMAINT_SPLIT_REPO=$( pkg_dir user-sysmaint-split )" )
