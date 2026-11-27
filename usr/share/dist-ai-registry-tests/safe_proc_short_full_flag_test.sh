@@ -35,9 +35,23 @@ for f in "${pgrep_bin}" "${pkill_bin}"; do
    [ -f "${f}" ] || { printf '%s\n' "FATAL: required dist-ai file not found: ${f}" >&2; exit 1; }
 done
 
+proc_lib="${repo}/usr/share/dist-ai-tests-common/proc-lib.bash"
+[ -r "${proc_lib}" ] || { printf '%s\n' "FATAL: required dist-ai file not found: ${proc_lib}" >&2; exit 1; }
+# shellcheck source=../dist-ai-tests-common/proc-lib.bash
+source "${proc_lib}"
+
 failures=0
 pass() { printf '%s\n' "PASS: $*"; }
 fail() { printf '%s\n' "FAIL: $*" >&2; failures=$(( failures + 1 )); }
+
+## Gate a marker-dependent assertion on the marker actually being visible to pgrep. On timeout,
+## fail LOUDLY as a fixture miss (distinct from a subject defect) instead of letting the probe run
+## against an un-ready marker and blaming safe-pgrep/safe-pkill.
+require_marker_ready() {
+   proc_wait_cmdline "$1" && return 0
+   printf '%s\n' "FAIL: setup inconclusive -- marker '$1' never became visible to pgrep within 30s (NOT a safe-pgrep/pkill defect)" >&2
+   exit 1
+}
 
 ## Throwaway marker process: exec 'sleep' with a UNIQUE argv[0] so a full-command-line match on
 ## the marker finds it and nothing else. It is a background CHILD of this shell -- a sibling of the
@@ -49,13 +63,9 @@ marker_pid=$!
 cleanup() { kill "${marker_pid}" 2>/dev/null || true; }
 trap cleanup EXIT
 
-## Wait until the marker process is visible via a full-cmdline match (bounded ~2s).
-for _ in $(seq 1 20); do
-   if pgrep --full -- "${marker}" >/dev/null 2>&1; then
-      break
-   fi
-   sleep 0.1
-done
+## Gate on the marker being visible via a full-cmdline match before probing it (load-robust;
+## an honest setup failure on timeout, never a false subject failure).
+require_marker_ready "${marker}"
 
 ## run <tool> <args...> -> captures rc into RUN_RC and stdout into RUN_OUT (stderr merged so an
 ## 'unknown option' from the pre-fix code shows up in the asserted text).

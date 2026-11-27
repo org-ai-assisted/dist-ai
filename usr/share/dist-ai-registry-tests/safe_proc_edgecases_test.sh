@@ -39,10 +39,24 @@ for f in "${pgrep_bin}" "${pkill_bin}"; do
    [ -f "${f}" ] || { printf '%s\n' "FATAL: required dist-ai file not found: ${f}" >&2; exit 1; }
 done
 
+proc_lib="${repo}/usr/share/dist-ai-tests-common/proc-lib.bash"
+[ -r "${proc_lib}" ] || { printf '%s\n' "FATAL: required dist-ai file not found: ${proc_lib}" >&2; exit 1; }
+# shellcheck source=../dist-ai-tests-common/proc-lib.bash
+source "${proc_lib}"
+
 failures=0
 passes=0
 pass() { printf '%s\n' "PASS: $*"; passes=$(( passes + 1 )); }
 fail() { printf '%s\n' "FAIL: $*" >&2; failures=$(( failures + 1 )); }
+
+## Gate a marker-dependent assertion on the marker actually being visible to pgrep. On timeout,
+## fail LOUDLY as a fixture miss (distinct from a subject defect) instead of letting the probe run
+## against an un-ready marker and blaming safe-pgrep/safe-pkill.
+require_marker_ready() {
+   proc_wait_cmdline "$1" && return 0
+   printf '%s\n' "FAIL: setup inconclusive -- marker '$1' never became visible to pgrep within 30s (NOT a safe-pgrep/pkill defect)" >&2
+   exit 1
+}
 
 RUN_RC=0
 RUN_OUT=''
@@ -95,10 +109,7 @@ cleanup() {
    done
 }
 trap cleanup EXIT
-for _ in $(seq 1 20); do
-   if pgrep --full -- "${marker}" >/dev/null 2>&1; then break; fi
-   sleep 0.1
-done
+require_marker_ready "${marker}"
 run "${pkill_bin}" --signal -9 --dry-run "${marker}"
 if [ "${RUN_RC}" -eq 0 ] && case "${RUN_OUT}" in *'would send 9 to'*"${marker_pid}"*) true ;; *) false ;; esac; then
    pass "safe-pkill --signal -9 is accepted (normalised to 9)"
@@ -171,10 +182,7 @@ fi
 nlmarker="NL-$$-${RANDOM}"
 bash -c 'exec -a "$1" sleep 300' _ "$(printf '%s' "${nlmarker}"$'\n'"INJECTED-SECOND-LINE")" &
 nl_pid=$!
-for _ in $(seq 1 20); do
-   if pgrep --full -- "${nlmarker}" >/dev/null 2>&1; then break; fi
-   sleep 0.1
-done
+require_marker_ready "${nlmarker}"
 line_count="$("${pgrep_bin}" -a "${nlmarker}" | wc -l)"
 if [ "${line_count}" -eq 1 ]; then
    pass "safe-pgrep -a renders one line per match despite a newline in argv"
@@ -186,8 +194,11 @@ fi
 c1marker="EXIT-$$-${RANDOM}"
 bash -c 'exec -a "$1" sleep 300' _ "${c1marker}" &
 c1_pid=$!
+require_marker_ready "${c1marker}"
 run "${pkill_bin}" "${c1marker}"
-if [ "${RUN_RC}" -eq 0 ] && ! kill -0 "${c1_pid}" 2>/dev/null; then
+## safe-pkill returns as soon as the signal is SENT; the marker's death is async, so wait
+## (bounded) for it rather than racing delivery under load (a bare immediate check flaked).
+if [ "${RUN_RC}" -eq 0 ] && proc_wait_dead "${c1_pid}"; then
    pass "safe-pkill exits 0 when it signalled the match (contract)"
 else
    fail "safe-pkill contract: expected exit 0 + killed (rc=${RUN_RC})"

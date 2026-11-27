@@ -47,3 +47,34 @@ proc_diag() {
    printf '%s\n' \
       "DIAG: ${1} pid ${2} SURVIVED: state=${state} ppid=${ppid} comm=${comm}" >&2
 }
+
+## proc_wait_cmdline PATTERN [TRIES] -- wait (bounded, default ~30s = TRIES x 0.1s) until a
+## process whose FULL command line matches PATTERN is visible to pgrep, i.e. a just-backgrounded
+## marker has actually exec'd and become schedulable. Returns 0 when visible, 1 on timeout.
+## PATTERN MUST be unique (not a generic name) so it cannot self-match the waiting shell. Gate a
+## marker-dependent assertion on this instead of a fixed settle: under load a bare sleep lets the
+## pgrep/pkill probe run before the marker is visible, and the subject is then blamed for an
+## un-ready fixture (a flake that reads as a safe-pgrep/pkill defect).
+proc_wait_cmdline() {
+   local pattern="$1" tries="${2:-300}" i
+   for (( i = 0; i < tries; i++ )); do
+      if pgrep --full -- "${pattern}" >/dev/null 2>&1; then
+         return 0
+      fi
+      sleep 0.1
+   done
+   return 1
+}
+
+## proc_wait_dead PID [TRIES] -- wait (bounded, default ~5s = TRIES x 0.05s) until PID is dead or
+## a zombie (proc_dead), then return 0; 1 on timeout. Use after SENDING a kill signal: delivery
+## is ASYNChronous, so an immediate proc_dead races it under load and reads a correctly-signalled
+## process as still alive. This waits for the signal to actually take effect.
+proc_wait_dead() {
+   local pid="$1" tries="${2:-100}" i
+   for (( i = 0; i < tries; i++ )); do
+      proc_dead "${pid}" && return 0
+      sleep 0.05
+   done
+   return 1
+}

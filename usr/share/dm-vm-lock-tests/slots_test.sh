@@ -58,10 +58,13 @@ bg_hold() {
    pids+=("$!")
 }
 
-## Wait (bounded ~10s) for a bg_hold readiness marker -- i.e. that holder actually holds its slot.
+## Wait (bounded ~30s) for a bg_hold readiness marker -- i.e. that holder actually holds its slot.
+## Generous so a backgrounded holder scheduled late under CPU load (dist-ai-flake-hunt --load)
+## still signals before the cap: a short bound let the gate time out and the slot assertion then
+## misreported an un-ready fixture as a dm-vm-lock capping bug.
 wait_for_ready() {
    local marker="$1" i
-   for (( i = 0; i < 200; i++ )); do
+   for (( i = 0; i < 600; i++ )); do
       [ -e "${marker}" ] && return 0
       sleep 0.05
    done
@@ -212,14 +215,21 @@ d9="$(new_lockdir)"; dirs+=("${d9}")
 DM_VM_LOCK_WORK_SLOTS=1 DM_VM_LOCK_KILL_AFTER=9 DM_VM_LOCK_DIR="${d9}" \
    "${TOOL}" acquire --class work --ttl 5 --wait 7 -- sh -c "touch '${d9}/cheld'; exec sleep 60" &
 pids+=("$!")
-for (( i = 0; i < 200; i++ )); do [ -e "${d9}/cheld" ] && break; sleep 0.05; done
-rec="$(cat -- "${d9}"/holder.work.* 2>/dev/null || true)"
-acq_iso="${rec#*acquired=}"; acq_iso="${acq_iso%% *}"
-dl="${rec#*ttl_deadline_epoch=}"; dl="${dl%% *}"
-acq_epoch="$(date -u -d "${acq_iso}" +%s 2>/dev/null || printf '%s' 0)"
-want=$(( 7 + 5 + 9 ))   ## --wait + --ttl + DM_VM_LOCK_KILL_AFTER
-got=$(( dl - acq_epoch ))
-if [ "${got}" -eq "${want}" ]; then r=0; else r=1; fi
-check "record deadline spans wait+ttl+kill_after so a live holder is never reaped (want ${want}s, got ${got}s)" "${r}"
+## Gate on the holder's command actually running (cheld touched) before reading its record: a bare
+## spin that fell through under load read an empty record, computed got=0, and misreported the
+## deadline as wrong (want 21s, got 0s) -- an un-ready fixture blamed on dm-vm-lock. On timeout,
+## record a DISTINCT setup failure instead of a false deadline verdict.
+if wait_for_ready "${d9}/cheld"; then
+   rec="$(cat -- "${d9}"/holder.work.* 2>/dev/null || true)"
+   acq_iso="${rec#*acquired=}"; acq_iso="${acq_iso%% *}"
+   dl="${rec#*ttl_deadline_epoch=}"; dl="${dl%% *}"
+   acq_epoch="$(date -u -d "${acq_iso}" +%s 2>/dev/null || printf '%s' 0)"
+   want=$(( 7 + 5 + 9 ))   ## --wait + --ttl + DM_VM_LOCK_KILL_AFTER
+   got=$(( dl - acq_epoch ))
+   if [ "${got}" -eq "${want}" ]; then r=0; else r=1; fi
+   check "record deadline spans wait+ttl+kill_after so a live holder is never reaped (want ${want}s, got ${got}s)" "${r}"
+else
+   check 'deadline-field setup: holder command never ran within 30s (inconclusive -- not a deadline bug)' 1
+fi
 
 vmlock_done
