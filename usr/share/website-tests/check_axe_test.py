@@ -475,31 +475,50 @@ def run() -> int:
     ck(390 in _widths and any(w >= 1000 for w in _widths),
        "_VIEWPORTS audits both a mobile (390) and a desktop width: %r" % _widths)
 
-    # WEDGE RETRY (operator decision 2026-11-27, dev1877 task #87): a wedge is a wall-clock TIMEOUT,
-    # which under the deploy's two concurrent per-site lanes (both driving chromium in the single
-    # sandbox qube) is CPU contention -- a TIMING fault, not a content one. check() must retry a
-    # wedged (page, viewport) ONCE on a fresh browser before recording a problem, so a transient
-    # spike does NOT false-FAIL a clean deploy; a page that wedges on EVERY attempt is STILL reported
-    # (the retry must never mask a real un-auditable page). Drive the real check() with _axe_page
-    # faked to raise (a wedge) a controlled number of times and a fake async_playwright that supplies
-    # browsers + counts launches (one initial + one relaunch per wedge).
+    # WEDGE RETRY + teardown isolation (operator decision 2026-11-27, dev1877 task #87; grok review
+    # fixes). The hard wall-clock budget is the SINGLE timeout authority and times ONLY the audit
+    # (_audit_page); page.close() runs OUTSIDE it. So an asyncio.TimeoutError is a genuine audit WEDGE
+    # (a timing fault under concurrent-lane contention) -> retried once on a fresh browser; any OTHER
+    # exception is a real navigation / axe-evaluation ERROR -> recorded now, never retried (a retry
+    # could MASK a real failure); a completed audit returns BEFORE its close, so a slow/failing
+    # teardown never discards it; and a relaunch FAILURE is a safe mid-run _EngineUnavailable, not a
+    # crash that loses collected keys. Drive the REAL check() with _audit_page faked per (page,
+    # viewport); the fake async_playwright supplies browsers (pages carry their viewport) and counts
+    # launches (one initial + one relaunch per wedge/error).
     _pw_mod = sys.modules.setdefault("playwright.async_api", _types.ModuleType("playwright.async_api"))
 
+    class _FakePage3:
+        def __init__(self, viewport, close_exc):
+            self.viewport = viewport
+            self._close_exc = close_exc
+
+        async def close(self):
+            if self._close_exc is not None:
+                raise self._close_exc
+
     class _FakeBrowser3:
+        def __init__(self, close_exc):
+            self._close_exc = close_exc
+
+        async def new_page(self, viewport=None):
+            return _FakePage3(viewport, self._close_exc)
+
         async def close(self):
             pass
 
     class _FakeChromium3:
-        def __init__(self, counter):
-            self._counter = counter
+        def __init__(self, state):
+            self._state = state
 
         async def launch(self):
-            self._counter["launches"] += 1
-            return _FakeBrowser3()
+            self._state["launches"] += 1
+            if self._state["launches"] == self._state.get("launch_fail_on"):
+                raise RuntimeError("chromium launch failed: too many open files")
+            return _FakeBrowser3(self._state.get("close_exc"))
 
     class _FakePW3:
-        def __init__(self, counter):
-            self.chromium = _FakeChromium3(counter)
+        def __init__(self, state):
+            self.chromium = _FakeChromium3(state)
 
         async def __aenter__(self):
             return self
@@ -509,40 +528,37 @@ def run() -> int:
 
     _WBASE = "http://127.0.0.1:8000"
 
-    def _run_check_with_wedges(paths, wedge_counts, hard_timeout=1,
-                               error_counts=None, salvage=None):
-        # wedge_counts: {(path, width): N} -- raise TimeoutError (a WEDGE) the first N calls for that
-        #   (page, viewport), then audit clean. N >= _WEDGE_ATTEMPTS models a REAL (double) wedge.
-        # error_counts: {(path, width): N} -- raise RuntimeError (a NON-timeout audit error) first N.
-        # salvage:      {(path, width): violations} -- on the first call RECORD the result into the
-        #   holder (a COMPLETED audit) then raise TimeoutError (teardown overran the budget).
+    def _run_check(paths, wedge_counts=None, hard_timeout=1, error_counts=None,
+                   violations=None, close_exc=None, launch_fail_on=None):
+        # wedge_counts:   {(path,width): N} -- raise TimeoutError (a WEDGE) the first N audit calls for
+        #   that (page, viewport), then audit clean. N >= _WEDGE_ATTEMPTS models a REAL double wedge.
+        # error_counts:   {(path,width): N} -- raise RuntimeError (a NON-timeout ERROR) the first N.
+        # violations:     {(path,width): [axe-violation,...]} -- the clean audit returns these.
+        # close_exc:      an exception page.close() raises (teardown failure), else None.
+        # launch_fail_on: the Nth chromium.launch() to fail (models a relaunch failure), else None.
+        wedge_counts = wedge_counts or {}
         error_counts = error_counts or {}
-        salvage = salvage or {}
-        counter = {"launches": 0}
+        violations = violations or {}
+        state = {"launches": 0, "close_exc": close_exc, "launch_fail_on": launch_fail_on}
         seen: dict = {}
 
-        async def _fake_axe_page(_browser, url, _axe_src, _settle_ms, viewport=None,
-                                 result_holder=None):
+        async def _fake_audit_page(page, url, _axe_src, _settle_ms):
             path = url[len(_WBASE):] or "/"
             if not path.startswith("/"):
                 path = "/" + path
-            key = (path, (viewport or {}).get("width"))
+            key = (path, (page.viewport or {}).get("width"))
             seen[key] = seen.get(key, 0) + 1
             n = seen[key]
-            if n == 1 and key in salvage:
-                if result_holder is not None:
-                    result_holder["result"] = {"status": 200, "violations": salvage[key]}
-                raise _asyncio.TimeoutError()
             if n <= error_counts.get(key, 0):
                 raise RuntimeError("simulated axe-evaluation error")
             if n <= wedge_counts.get(key, 0):
                 raise _asyncio.TimeoutError()
-            return {"status": 200, "violations": []}
+            return {"status": 200, "violations": violations.get(key, [])}
 
-        _orig_axe_page = ax._axe_page
+        _orig_audit = ax._audit_page
         _orig_apw = getattr(_pw_mod, "async_playwright", None)
-        _pw_mod.async_playwright = lambda: _FakePW3(counter)
-        ax._axe_page = _fake_axe_page
+        setattr(_pw_mod, "async_playwright", lambda: _FakePW3(state))
+        ax._audit_page = _fake_audit_page
         with tempfile.NamedTemporaryFile(suffix=".js", delete=False) as _js:
             _js.write(b"axe=1")
             _js_name = _js.name
@@ -550,60 +566,65 @@ def run() -> int:
             keys, problems = _asyncio.run(
                 ax.check(_WBASE, list(paths), _js_name, 0, hard_timeout))
         finally:
-            ax._axe_page = _orig_axe_page
+            ax._audit_page = _orig_audit
             if _orig_apw is None:
                 if hasattr(_pw_mod, "async_playwright"):
                     delattr(_pw_mod, "async_playwright")
             else:
-                _pw_mod.async_playwright = _orig_apw
+                setattr(_pw_mod, "async_playwright", _orig_apw)
             os.unlink(_js_name)
-        return keys, problems, counter["launches"]
+        return keys, problems, state["launches"]
 
-    # at least one retry is configured (reds the old retries=0 code, which has no _WEDGE_ATTEMPTS).
+    # at least one retry is configured.
     ck(getattr(ax, "_WEDGE_ATTEMPTS", 1) >= 2,
        "a wedge gets at least one retry (_WEDGE_ATTEMPTS >= 2): %r" % getattr(ax, "_WEDGE_ATTEMPTS", 1))
-    # a page that wedges ONCE then audits clean is NOT a problem -- the transient flake is absorbed
-    # (reds the old no-retry code, which recorded the first wedge as a problem immediately).
-    _k1, _p1, _l1 = _run_check_with_wedges(["/"], {("/", 1280): 1})
+    # a page that wedges ONCE then audits clean is NOT a problem -- the transient flake is absorbed.
+    _k1, _p1, _l1 = _run_check(["/"], {("/", 1280): 1})
     ck(_p1 == [],
        "wedge RETRY: a page that wedges once then audits clean is NOT a problem (flake absorbed): %r" % _p1)
     ck(_l1 == 2,
        "wedge RETRY: one wedge triggers exactly one relaunch (1 initial + 1 retry browser): %r" % _l1)
-    # masking-safety: a page that wedges on EVERY attempt is STILL reported (desktop wedges forever,
-    # mobile audits clean -> exactly the one desktop problem, never silently dropped by the retry).
-    _k2, _p2, _l2 = _run_check_with_wedges(["/"], {("/", 1280): 99})
+    # masking-safety: a page that wedges on EVERY attempt is STILL reported.
+    _k2, _p2, _l2 = _run_check(["/"], {("/", 1280): 99})
     ck(_p2 == ["wedged: / [desktop]"],
        "wedge RETRY: a page wedging on every attempt is STILL reported (retry does not mask it): %r" % _p2)
-    # grok finding (2026-11-27): the retry must fire ONLY on a WEDGE (wall-clock timeout), never on a
-    # NON-timeout audit error (navigation / axe-evaluation failure). Retrying such an error and
-    # taking a clean second attempt would MASK a real failure, so it must STILL be recorded (reds the
-    # broad-`except Exception` retry that absorbed it).
-    _ke, _pe, _le = _run_check_with_wedges(["/"], {}, error_counts={("/", 1280): 1})
+    # grok finding (2026-11-27): the retry fires ONLY on a WEDGE, never on a NON-timeout audit error
+    # (a retry taking a clean second attempt would MASK a real failure) -- it must STILL be recorded.
+    _ke, _pe, _le = _run_check(["/"], error_counts={("/", 1280): 1})
     ck(_pe == ["audit error: / [desktop]"],
        "a NON-timeout audit error is recorded as a problem, not retried away: %r" % _pe)
-    # grok finding (2026-11-27): hard_timeout wraps the WHOLE _axe_page, including the finally that
-    # closes the page. A COMPLETED audit (violations already computed) whose teardown overran the
-    # budget must be SALVAGED via the result holder -- NOT discarded as a wedge and retried away to an
-    # empty second attempt (which would mask a real violation).
+    # grok finding (2026-11-27): page.close() is timed SEPARATELY, outside the budget, and the audit
+    # returns before it -- so a completed audit whose teardown FAILS keeps its violation (never
+    # discarded as a wedge and retried away to empty). Guard the invariant that the TIMED audit itself
+    # never closes the page, plus the observable behaviour under a failing close.
+    ck(".close(" not in inspect.getsource(ax._audit_page),
+       "_audit_page never closes the page (close is outside the timed audit)")
     _viol = [{"id": "color-contrast", "nodes": [{"target": ["a.bad"]}]}]
-    _ks, _ps, _ls = _run_check_with_wedges(["/"], {}, salvage={("/", 1280): _viol})
+    _ks, _ps, _ls = _run_check(["/"], violations={("/", 1280): _viol},
+                               close_exc=RuntimeError("close failed"))
     ck(("/", "color-contrast", "a.bad") in _ks and _ps == [],
-       "a completed audit whose teardown overran the budget is salvaged, its violation kept: "
+       "a completed audit whose teardown FAILS keeps its violation (close outside the budget): "
        "keys=%r problems=%r" % (sorted(_ks), _ps))
+    # grok finding (2026-11-27): a relaunch (post-wedge) whose chromium.launch() FAILS is a safe
+    # mid-run _EngineUnavailable (the caller records a hard FAIL), NOT an uncaught crash that loses
+    # the keys collected so far. First desktop attempt wedges -> relaunch -> the 2nd launch fails.
+    try:
+        _run_check(["/"], {("/", 1280): 1}, launch_fail_on=2)
+        _raised = "none"
+    except ax._EngineUnavailable:
+        _raised = "engine"
+    except Exception as _exc:          # noqa: BLE001
+        _raised = type(_exc).__name__
+    ck(_raised == "engine",
+       "a relaunch launch-failure raises _EngineUnavailable (safe mid-run FAIL), not a crash: %r" % _raised)
 
-    # per-page TIMEOUT budget (operator decision 2026-11-27: "retry AND suitable timeout"). The
-    # whole-page wall-clock budget must sit ABOVE the networkidle nav ceiling, or a slow nav eats the
-    # entire budget and axe never runs -- the thin 55s-over-45s margin that let contention
-    # false-wedge. Guard the RELATION (not the magic numbers) and that the nav ceiling was not cut.
-    ck(ax._HARD_TIMEOUT_DEFAULT * 1000 > ax._NAV_TIMEOUT_MS,
-       "per-page wall-clock budget exceeds the nav ceiling: %rs vs %rms"
-       % (ax._HARD_TIMEOUT_DEFAULT, ax._NAV_TIMEOUT_MS))
-    ck(ax._NAV_TIMEOUT_MS >= 45000,
-       "nav ceiling not reduced below the original 45s: %rms" % ax._NAV_TIMEOUT_MS)
-    # the raised budget is the default every entry point audits with (not just check()).
-    import inspect as _inspect2
+    # per-page TIMEOUT budget (operator decision 2026-11-27: "retry AND suitable timeout"). A single
+    # wall-clock budget is the ONLY timeout authority (page.goto carries no own timeout), so it must
+    # be suitably large; and it is the default every entry point audits with.
+    ck(ax._HARD_TIMEOUT_DEFAULT >= 90,
+       "per-page wall-clock budget is suitably large (>= 90s): %rs" % ax._HARD_TIMEOUT_DEFAULT)
     for _fn in (ax.check, ax.check_roots, ax.write_roots):
-        ck(_inspect2.signature(_fn).parameters["hard_timeout"].default == ax._HARD_TIMEOUT_DEFAULT,
+        ck(inspect.signature(_fn).parameters["hard_timeout"].default == ax._HARD_TIMEOUT_DEFAULT,
            "%s defaults hard_timeout to _HARD_TIMEOUT_DEFAULT" % _fn.__name__)
 
     # identical-links-same-purpose (WCAG 2.4.9 AAA) is OFF by default in axe-core; the run options
