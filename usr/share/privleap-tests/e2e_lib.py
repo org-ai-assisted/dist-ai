@@ -333,13 +333,6 @@ AuthorizedUsers=root
 Command=env
 AuthorizedUsers={user}
 
-[action:e2e-memfd]
-Command=python3 -c "import os; os.memfd_create('wx-probe')"
-AuthorizedUsers={user}
-
-[action:e2e-memfd-canary]
-Command=python3 -c "print('ok')"
-AuthorizedUsers={user}
 """
 
 

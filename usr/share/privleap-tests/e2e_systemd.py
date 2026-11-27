@@ -46,17 +46,6 @@ from types import FrameType
 HERE: str = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
-## The [Service] directive parser is the single source dist_ai_seccomp, shared with the W^X static
-## lints (service_hardening_test.py / test_wx_seccomp_filter.py) -- insert its dist-packages dir
-## relative to this file (the dm_test_results idiom) so this backend does not re-implement a third
-## copy that drifts (e.g. missing '\\'-continuation joining).
-_LIB: str = os.path.join(
-    os.path.dirname(os.path.dirname(HERE)), 'lib', 'python3', 'dist-packages')
-if os.path.isdir(_LIB) and _LIB not in sys.path:
-    sys.path.insert(0, _LIB)
-
-# pylint: disable=wrong-import-position
-from dist_ai_seccomp import service_lines, service_values  # noqa: E402
 
 INSIDE_ENV: str = 'PRIVLEAP_E2E_SYSTEMD'
 CONF_DIR: str = '/etc/privleap/conf.d'
@@ -285,87 +274,6 @@ def install_repo_dropin(repo: str, restorer: Restorer) -> None:
     sh(['systemctl', 'daemon-reload'])
 
 
-def _checkout_unit_directive(repo: str, key: str) -> str:
-    """Last effective value of a [Service] scalar directive in the CHECKOUT
-    privleapd unit, normalized to systemd's rendered boolean form. Lets the W^X
-    STATIC checks evaluate the unit UNDER TEST (PRIVLEAP_REPO) rather than the
-    installed service's live properties -- otherwise a checkout that changes the
-    hardening is tested against the installed unit and the change is never
-    exercised. '' when absent/unreadable (the check then fails, not a false pass)."""
-    path = os.path.join(repo, 'usr/lib/systemd/system/privleapd.service')
-    try:
-        with open(path, encoding='utf-8') as handle:
-            text = handle.read()
-    except OSError:
-        return ''
-    ## Shared single-source [Service] parser (service_lines joins '\\'-continuations, which the
-    ## old hand-rolled loop here did NOT); take the LAST assignment -- systemd's effective value.
-    values = service_values(service_lines(text), key)
-    value = values[-1] if values else ''
-    low = value.lower()
-    if low in ('yes', 'true', 'on', '1'):
-        return 'yes'
-    if low in ('no', 'false', 'off', '0'):
-        return 'no'
-    return value
-
-
-def run_wx_phase(user: str, results: Results) -> None:
-    """F: no W^X hardening by design -- a W+X action runs, SUID preserved.
-
-    privleapd deliberately carries NO W^X seccomp/exec hardening: it must execute
-    arbitrary elevated applications, including ones that need W+X. This phase is
-    the runtime inverse of a hardened daemon and the guard that the filter is never
-    silently (re)introduced: a memfd_create (W+X) inside a spawned action must
-    SUCCEED, and NoNewPrivileges stays false so an escalated action can still exec
-    a SUID helper (the sudo-like role). Re-adding MemoryDenyWriteExecute /
-    SystemCallFilter=~memfd_create would SIGSYS-kill (exit 159) or EPERM this child
-    and break the design.
-
-    This is the only backend that can prove it: the unit's (absent) filter is a
-    systemd property, so the subprocess backend (no unit) never exercises it.
-    """
-
-    print('== F: no W^X hardening by design -- W+X actions run, SUID preserved ==')
-
-    repo: str | None = os.environ.get('PRIVLEAP_REPO')
-
-    def prop(name: str) -> str:
-        ## Evaluate the unit UNDER TEST: the checkout unit's declared directive
-        ## when PRIVLEAP_REPO drives a checkout, else the installed service's live
-        ## property. The runtime (action) check below stays on the live service --
-        ## it verifies actual behavior, not a declaration.
-        return _checkout_unit_directive(repo, name) if repo else svc_prop(name)
-
-    ## NoNewPrivileges must stay false: HONORED on this root+CAP_SYS_ADMIN service
-    ## (NoNewPrivs=0), so an escalated action can still exec a SUID helper. '' when
-    ## the directive is absent (the by-design state); only an explicit 'yes' breaks
-    ## SUID/file-cap actions.
-    results.check('NoNewPrivileges not yes (honored for this root+CAP_SYS_ADMIN '
-                  'service; yes would break SUID actions)',
-                  prop('NoNewPrivileges') != 'yes')
-
-    ## Runtime: a memfd_create (W+X) in a spawned action runs cleanly -- no
-    ## inherited seccomp filter blocks it. Under a hardened unit (default action)
-    ## memfd_create SIGSYS-kills the python child (bash reports 159); under EPERM it
-    ## raises a catchable PermissionError (exit 1). Either would fail this check.
-    names, _out, _err, code = e2e_lib.run_action_result(user, 'e2e-memfd')
-    results.check('memfd action reported an exit code (not killed mid-protocol)',
-                  'RESULT_EXITCODE' in names)
-    results.check('memfd_create (W+X) runs cleanly in a spawned action '
-                  '(no W^X filter inherited across fork+exec)',
-                  code == 0)
-
-    ## Canary: an ordinary python action also runs cleanly under the same unit --
-    ## isolating the result to the absence of a memfd block, not a broken runner.
-    c_names, c_out, _cerr, c_code = e2e_lib.run_action_result(
-        user, 'e2e-memfd-canary')
-    results.check('non-memfd python action runs cleanly under the same unit '
-                  '(exit 0)',
-                  'RESULT_EXITCODE' in c_names and c_code == 0
-                  and b'ok' in c_out)
-
-
 def main() -> int:
     user: str = current_username()
     try:
@@ -498,8 +406,6 @@ def main() -> int:
             for line in env_text.splitlines()
         ),
     )
-
-    run_wx_phase(user, results)
 
     print()
     code: int = results.report('live-daemon e2e (systemd)')

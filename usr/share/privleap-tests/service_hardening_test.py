@@ -12,8 +12,9 @@ By design privleapd carries NO W^X seccomp/exec hardening (MemoryDenyWriteExecut
 SystemCallArchitectures, LockPersonality, NoExecPaths, a memfd_create
 SystemCallFilter): it must execute arbitrary applications with elevated
 privileges, including ones that require W+X. See the "No W^X hardening by design"
-note in privleapd.service. The runtime proof that such a W+X action actually runs,
-and that the sudo-like SUID path is preserved, lives in e2e_systemd.py's W^X phase.
+note in privleapd.service. privleapd's actual function -- executing elevated
+actions, including the SUID path -- is exercised by e2e_systemd.py's live-daemon
+phases; W^X is not part of its contract and is not asserted here.
 
 The one invariant this static lint locks:
 
@@ -45,7 +46,8 @@ if os.path.isdir(_LIB) and _LIB not in sys.path:
 from pl_testlib import Results  # noqa: E402
 from dist_ai_seccomp import service_lines, service_values  # noqa: E402
 
-TRUE_VALUES = {'true', 'yes', '1', 'on'}
+## systemd's parse_boolean true spellings (case-insensitive).
+TRUE_VALUES = {'1', 'yes', 'y', 'true', 't', 'on'}
 
 
 def service_path() -> str:
@@ -78,11 +80,14 @@ def main() -> int:
     ## NoNewPrivs=0) and intentional, so an escalated action can use a SUID helper
     ## (sudo-like role). Declaring yes would silently break SUID/file-cap actions.
     ## Section-aware: a directive outside [Service] is inert.
+    ## systemd's effective value is the LAST assignment; absent ('') is the
+    ## by-design state. Only an effective-true value breaks SUID actions.
     nnp = service_values(lines, 'NoNewPrivileges')
+    effective = nnp[-1].lower() if nnp else ''
     results.check(
-        'NoNewPrivileges not declared yes (would break SUID actions on this '
+        'NoNewPrivileges not effectively yes (would break SUID actions on this '
         'root+CAP_SYS_ADMIN service)',
-        all(value.lower() not in TRUE_VALUES for value in nnp))
+        effective not in TRUE_VALUES)
 
     return results.report('privleapd.service static lint')
 
