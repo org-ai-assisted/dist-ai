@@ -271,6 +271,23 @@ printf '%s\n' data >"${br_tmp}"
 mv --force --no-target-directory -- "${br_tmp}" "/home/${tu}/out_br"
 EOF
 
+## VULN HIGH: a mktemp PREFIX followed by an INDEPENDENT tainted component. The
+## mktemp randomness covers only ${tmpdir}; the appended ${name} (=$1) is
+## attacker-controlled and can '../'-escape the temp dir into an arbitrary path
+## -> root arbitrary write. MUST report symlink-follow. Pins the regression
+## where a coarse "exempt the redirect if ANY mktemp var is present" check
+## silently PASSED this (a security-tool false-CLEAN). RED on the pre-fix tool.
+write 'packages/kicksecure/targetpkg/usr/libexec/targetpkg/vuln-mktemp-tainted-suffix' <<'EOF'
+#!/bin/bash
+root_check() {
+   [ "$(id -u)" = "0" ] || exit 1
+}
+root_check
+tmpdir="$(mktemp -d)"
+name="$1"
+printf '%s\n' data >"${tmpdir}/${name}.log"
+EOF
+
 ## SAFE: '--' only ends option parsing while getopt is still running; a NAME=VALUE
 ## operand already stopped it, so a LATER '--' is the command env tries to exec
 ## ('env: --: No such file'), and the chown never runs. The peeler must NOT treat

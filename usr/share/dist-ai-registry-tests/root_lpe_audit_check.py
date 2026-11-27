@@ -41,6 +41,7 @@ EXPECTED = [
     ("vuln-env-expand", "home-recursive-write", "MEDIUM"), ## env -- "PATH=$PATH" chown (raw '=' test)
     ("vuln-env-dash", "home-recursive-write", "MEDIUM"),   ## env -- - PATH=.. chown (lone '-')
     ("vuln-dashdash-mktemp", "root-write-user-path", "LOW"), ## mv -- dest: a write, but LOW (no follow)
+    ("vuln-mktemp-tainted-suffix", "symlink-follow", "HIGH"), ## mktemp dir + tainted ../-escape suffix
     ("vuln-refusal-elsewhere", "home-recursive-write", "HIGH"),  ## refusal text outside root_check body
     ("vuln-mixed-body", "home-recursive-write", "HIGH"),         ## refusal text inside a real root_check
     ("vuln-text-cross-clause", "home-recursive-write", "HIGH"),  ## 'do not run ...' spanning clauses
@@ -155,6 +156,16 @@ def main(argv):
     checks.append((
         "'--' terminator + mktemp redirect are NOT symlink-follow",
         not has(findings, "vuln-dashdash-mktemp", "symlink-follow")))
+
+    ## REGRESSION (mktemp over-exemption false-CLEAN): a mktemp PREFIX plus an
+    ## INDEPENDENT tainted component ("${tmpdir}/${arg}") is NOT covered by the
+    ## mktemp randomness -- the tainted component can '../'-escape the temp dir
+    ## into an arbitrary root write. The redirect MUST stay flagged; the coarse
+    ## "exempt if any mktemp var present" check silently passed it (RED on the
+    ## pre-fix tool). Guards the narrowed exemption against re-widening.
+    checks.append((
+        "mktemp prefix + tainted suffix IS symlink-follow (not exempted)",
+        has(findings, "vuln-mktemp-tainted-suffix", "symlink-follow")))
 
     checks.append((
         "continuation waiver (line above a '\\' split) suppresses the sink",

@@ -762,23 +762,31 @@ def _redirect_findings(tree, source, tainted, tmp_safe, tmp_vars):
             word = redirect.get("Word")
             if not word:
                 continue
-            if bash_ast.word_param_names(word) & tmp_safe:
-                ## A mktemp-produced target has an unpredictable name, so it can
-                ## be neither a pre-planted nor a TOCTOU-swapped symlink (an
-                ## attacker cannot name the file to plant at it), even when the
-                ## mktemp template interpolates a tainted directory. Not a
-                ## write-LPE -- exempt from BOTH tmp-race and symlink-follow.
-                continue
             if _is_predictable_tmp(word, source, tmp_safe, tmp_vars):
+                ## A bare mktemp var never reaches here: _is_predictable_tmp
+                ## returns False once names & tmp_safe, so a mktemp target gets
+                ## no tmp-race finding (its name is unpredictable).
                 yield _finding("tmp-race", "redirect", _line_of(word),
                                _word_raw(word, source), "literal", {},
                                "root writes (redirect) to a predictable temp path")
                 continue
             kind = taint_kind(word, source, tainted)
-            if kind is not None:
-                yield _finding("symlink-follow", "redirect", _line_of(word),
-                               _word_raw(word, source), kind, {},
-                               "root writes (redirect) into a user-controlled path")
+            if kind is None:
+                continue
+            if bash_ast.word_param_names(word) & tmp_safe \
+                    and not _independently_tainted(word, source, tainted, tmp_safe):
+                ## The mktemp var is the ENTIRE unpredictable target (optionally
+                ## plus a constant, non-tainted suffix): an attacker cannot name
+                ## the file to plant a symlink at it, even when the mktemp
+                ## template interpolated a tainted dir. Exempt. But a mktemp
+                ## PREFIX followed by an INDEPENDENT tainted component -- e.g.
+                ## "${tmpdir}/${arg}" -- is NOT covered by the randomness: it can
+                ## '../'-escape the temp dir into an attacker-chosen path, a real
+                ## root write-LPE. _independently_tainted keeps that finding.
+                continue
+            yield _finding("symlink-follow", "redirect", _line_of(word),
+                           _word_raw(word, source), kind, {},
+                           "root writes (redirect) into a user-controlled path")
 
 
 def _is_predictable_tmp(word, source, tmp_safe, tmp_vars):
@@ -788,6 +796,25 @@ def _is_predictable_tmp(word, source, tmp_safe, tmp_vars):
     if names & tmp_vars:
         return True
     return bool(TMP_LITERAL_RE.search(_word_raw(word, source)))
+
+
+def _independently_tainted(word, source, tainted, tmp_safe):
+    """True if WORD carries a taint source OTHER than a mktemp-safe var.
+
+    A mktemp var makes only its OWN segment unpredictable. A tainted component
+    appended independently (argv, HOME/USER, another tainted var, or a tainted
+    literal) is not covered by that randomness and can '../'-escape the temp
+    dir -- so a mktemp PREFIX plus such a component is still a write-LPE. Mirrors
+    taint_kind's taint sources, but over the names that are NOT mktemp vars.
+    """
+    names = bash_ast.word_param_names(word) - tmp_safe
+    if names & tainted:
+        return True
+    if any(ARGV_PARAM_RE.match(name) for name in names):
+        return True
+    if names & TRUST_BOUNDARY_PARAMS:
+        return True
+    return bool(TAINT_LITERAL_RE.search(_word_raw(word, source)))
 
 
 def _file_validates(tree):
