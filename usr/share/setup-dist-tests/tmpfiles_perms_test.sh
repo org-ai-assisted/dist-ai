@@ -44,6 +44,10 @@ fi
 ## True (rc 0) if an octal tmpfiles mode grants write to group or other.
 mode_grants_group_or_other_write() {
    local mode="$1"
+   if [ "${mode}" = "-" ]; then
+      ## '-' = systemd's default mode (0755 for a 'd' entry); root-write only.
+      return 1
+   fi
    ## Strip a leading tmpfiles mode modifier ('~' mask, ':' only-on-create).
    mode="${mode#[~:]}"
    if [[ ! "${mode}" =~ ^[0-7]{3,4}$ ]]; then
@@ -58,21 +62,55 @@ mode_grants_group_or_other_write() {
    return 1
 }
 
-## Self-canary: the checker must flag a world/group-writable mode and pass a
-## safe one, so a broken checker cannot green a bad conf.
-if mode_grants_group_or_other_write '0755'; then
-   printf '%s\n' "FAIL: checker flagged safe mode 0755" >&2
-   exit 1
-fi
+## True (rc 0) if a tmpfiles owner field names a non-root user. '-'/'0'/'root'
+## all resolve to root for a root-run 'd' entry.
+owner_is_nonroot() {
+   local owner="$1"
+   case "${owner}" in
+      root|0|-)
+         return 1
+         ;;
+      *)
+         return 0
+         ;;
+   esac
+}
+
+## Self-canary: neither checker may green a bad conf, so prove each flags the
+## unsafe cases and passes the safe ones before trusting it on the real conf.
+for safe_mode in 0755 0700 -; do
+   if mode_grants_group_or_other_write "${safe_mode}"; then
+      printf '%s\n' "FAIL: checker flagged safe mode ${safe_mode}" >&2
+      exit 1
+   fi
+done
 for bad_mode in 0775 0757 0777 0070; do
    if ! mode_grants_group_or_other_write "${bad_mode}"; then
       printf '%s\n' "FAIL: checker missed writable mode ${bad_mode}" >&2
       exit 1
    fi
 done
+for root_owner in root 0 -; do
+   if owner_is_nonroot "${root_owner}"; then
+      printf '%s\n' "FAIL: owner checker flagged root owner ${root_owner}" >&2
+      exit 1
+   fi
+done
+for bad_owner in user nobody 1000; do
+   if ! owner_is_nonroot "${bad_owner}"; then
+      printf '%s\n' "FAIL: owner checker missed non-root owner ${bad_owner}" >&2
+      exit 1
+   fi
+done
 
 ## The tmpfiles directory entry for the status-files dir. Types d/D/z/Z all
 ## carry a mode in field 3 and apply it to the directory.
+##
+## Scope: guards OUR shipped one-line conf against a realistic regression (a
+## widened mode or a non-root owner on the 'd' line). It is NOT a full systemd
+## tmpfiles parser: crafted multi-line evasion (a second glob z/Z, an a+ ACL
+## line, exotic types e/q/v, quoted fields) is out of scope -- our conf is a
+## single plain 'd' line and will stay one.
 line="$(grep --extended-regexp "^[dDzZ][[:space:]]+${status_files_dir}([[:space:]]|\$)" -- "${conf}" || true)"
 
 if [ -z "${line}" ]; then
@@ -82,12 +120,23 @@ fi
 
 # shellcheck disable=SC2086
 set -- ${line}
-mode="$3"
+## Field 3 is the mode, field 4 the owner; an omitted/`-` field means the
+## systemd default (mode 0755, owner root), both safe. ${n:--} also avoids a
+## set -u abort on a short line.
+mode="${3:--}"
+owner="${4:--}"
 
 if mode_grants_group_or_other_write "${mode}"; then
    printf '%s\n' "FAIL: ${conf} declares ${status_files_dir} mode ${mode} (group/world-writable)" >&2
    exit 1
 fi
 
-printf '%s\n' "PASS: ${status_files_dir} declared ${mode} (no group/other write)"
+## Root-owned is half the property: a non-root owner of a 0755 dir can still
+## plant .done/.skip.
+if owner_is_nonroot "${owner}"; then
+   printf '%s\n' "FAIL: ${conf} declares ${status_files_dir} owner ${owner} (not root)" >&2
+   exit 1
+fi
+
+printf '%s\n' "PASS: ${status_files_dir} declared mode ${mode} owner ${owner} (root-owned, no group/other write)"
 exit 0

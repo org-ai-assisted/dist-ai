@@ -69,6 +69,12 @@ def _modes_on_line(tokens):
     Returns the mode operands only -- flags, the target path, and a mkdir/
     install with no -m/--mode (default umask mode, not an explicit grant) yield
     nothing.
+
+    Scope: realistic GNU spellings a maintainer would actually write to
+    (re)create this dir -- long flags, and attached OR clustered short mode
+    options (-m0775, -pm0775, -pm 0775). Deliberately NOT a getopt emulator:
+    option abbreviations (--mod=0775) and chmod --reference are out of scope
+    (the house style mandates canonical long flags), as is adversarial shell.
     """
     command = tokens[0].split('/')[-1]
     modes = []
@@ -89,10 +95,17 @@ def _modes_on_line(tokens):
             elif token in ('-m', '--mode') and index + 1 < len(tokens):
                 modes.append(tokens[index + 1])
                 index += 1
-            elif token.startswith('-m') and not token.startswith('--') \
-                    and len(token) > 2:
-                ## Attached short form: -m0775, install -d -m2775.
-                modes.append(token[2:])
+            elif token.startswith('-') and not token.startswith('--') \
+                    and 'm' in token:
+                ## Attached or clustered short form: -m0775, -pm0775, -Dm2775,
+                ## or -pm with the mode in the next token. The mode follows the
+                ## 'm': attached here, else the next operand.
+                attached = token[token.index('m') + 1:]
+                if attached:
+                    modes.append(attached)
+                elif index + 1 < len(tokens):
+                    modes.append(tokens[index + 1])
+                    index += 1
             index += 1
     return modes
 
@@ -177,6 +190,13 @@ class ModeHelperTestCase(unittest.TestCase):
             (['install', '-d', '-m0775', '/d'], ['0775']),
             (['mkdir', '-m0777', '/d'], ['0777']),
             (['install', '-d', '-m2775', '/d'], ['2775']),
+            ## Bundled/clustered short options must not escape it either.
+            (['install', '-dm0775', '/d'], ['0775']),
+            (['install', '-dm', '0775', '/d'], ['0775']),
+            (['mkdir', '-pm0777', '/d'], ['0777']),
+            (['mkdir', '-pm', '2777', '/d'], ['2777']),
+            ## A cluster with no mode letter sets no explicit mode.
+            (['mkdir', '-pv', '/d'], []),
         ]
         for tokens, expected in cases:
             self.assertEqual(_modes_on_line(tokens), expected, tokens)
