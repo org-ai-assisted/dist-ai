@@ -192,9 +192,16 @@ def extract_command_map(sudoers_text):
     a rule whose run was polluted (a host spec / option '/' earlier on the line
     consumed its command): that rule produces no clean run for its full string,
     so the string is under-counted versus the JSON pass."""
+    ## cvtsudoers wraps a long rule across lines with a '\<newline>' continuation
+    ## (and indents the continuation). Join them first, so a wrapped command run
+    ## is one line and its de-escaped form matches the single-space JSON command
+    ## string -- without this, every rule long enough to wrap (most real rules
+    ## with arguments) fails to match and falls to inconclusive. An escaped space
+    ## in a PATH ('\ ') is a backslash-SPACE, not a continuation, and is kept.
+    joined = re.sub(r"\\\n[ \t]*", " ", sudoers_text)
     mapping: "dict[str, str]" = {}
     counts: "dict[str, int]" = {}
-    for run in SUDOERS_COMMAND_RE.findall(sudoers_text):
+    for run in SUDOERS_COMMAND_RE.findall(joined):
         full = _unescape(run.rstrip())
         match = SUDOERS_TOKEN_RE.match(run)
         path = _unescape(match.group(0)) if match else full

@@ -403,6 +403,22 @@ run_audit --root "${root}" "${work}/polluted-share"
 check "polluted rule sharing a sibling's JSON string -> inconclusive (exit 2)" rc_is 2
 safe-rm --force -- "${root}/usr/bin/foo"
 
+## 22. a rule long enough that cvtsudoers WRAPS its -f sudoers output across a
+##     '\<newline>' continuation must still recover its boundary. Without joining
+##     continuations the wrapped run never matches the single-space JSON command
+##     string, so an ordinary present command (the common path+arguments rule)
+##     falls to inconclusive -- which made the tool inconclusive on most real
+##     policies. The command path /usr/bin/longcmd is present, so the verdict is
+##     clean (exit 0), not inconclusive.
+printf '%s\n' '#!/bin/sh' > "${root}/usr/bin/longcmd"
+chmod +x -- "${root}/usr/bin/longcmd"
+printf '%s\n' \
+  'user ALL=NOPASSWD: /usr/bin/longcmd --option-one --option-two --option-three /some/long/path/argument/forcing/line/wrap' \
+  > "${work}/wrapped"
+run_audit --root "${root}" "${work}/wrapped"
+check "wrapped (line-continued) rule with present command -> clean (exit 0)" rc_is 0
+safe-rm --force -- "${root}/usr/bin/longcmd"
+
 ## --- report ------------------------------------------------------------------
 printf '%s\n' "sudoers-command-audit-tests: ${pass} pass, ${fail} fail, 0 skip"
 [ "${fail}" -eq 0 ]
