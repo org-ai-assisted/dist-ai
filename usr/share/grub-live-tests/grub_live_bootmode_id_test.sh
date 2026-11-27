@@ -66,8 +66,12 @@ for spec in "${specs[@]}"; do
 
    ## First line that assigns boot_mode_id='live', and first line that execs the
    ## generator. grep -n emits '<line>:<text>'; take the leading line number only.
-   assign_line="$(grep -n -- "^[[:space:]]*boot_mode_id='live'" "${wrapper}" | head -n 1 | cut -d: -f1)"
-   exec_line="$(grep -nF -- "${generator}" "${wrapper}" | head -n 1 | cut -d: -f1)"
+   ## '|| true': a no-match grep exits 1, which under pipefail+inherit_errexit would
+   ## abort the script AT this substitution -- never reaching the FAIL branches below
+   ## (making them dead code and swallowing the WHICH-wrapper/WHY diagnostic). Empty
+   ## string instead flows to the '[ -z ]' checks, which report the failure properly.
+   assign_line="$(grep -n -- "^[[:space:]]*boot_mode_id='live'" "${wrapper}" | head -n 1 | cut -d: -f1 || true)"
+   exec_line="$(grep -nF -- "${generator}" "${wrapper}" | head -n 1 | cut -d: -f1 || true)"
 
    if [ -z "${assign_line}" ]; then
       printf '%s\n' "FAIL  ${label}: no boot_mode_id='live' assignment"
