@@ -157,6 +157,15 @@ main() {
    ## The option is 'menuentry_id_option' / '--id', its value introduced by whitespace OR '='
    ## (GRUB accepts '--id=VALUE'); capture the mode-scoped id between MATCHED quotes (backref \3)
    ## and print only it (\4) -- no title collision, no comment capture, no truncation.
+   ##
+   ## SCOPE: this parses grub-mkconfig OUTPUT, whose boot-mode titles are FIXED Kicksecure
+   ## strings (Template:BootEntries) -- space-form id, no trailing comment, and no '{' or literal
+   ## '--id=' inside a title. It is deliberately NOT a general GRUB menuentry parser (robust
+   ## tokenization of arbitrary quoted GRUB syntax would need a real parser, not sed). On an
+   ## adversarially crafted title that embeds '{' or '--id=' the result is SAFE either way: no id
+   ## extracted -> the title fallback or the exit-1 error (fail-loud), or a next_entry GRUB cannot
+   ## resolve -> it boots GRUB_DEFAULT, so the boot test sees the wrong mode and FAILS. The one
+   ## thing that never happens is a silent wrong-mode PASS, so exotic-title hardening is out of scope.
    selector="$(grep --extended-regexp '^menuentry ' "${grub_cfg}" \
       | sed --quiet --regexp-extended \
          "s/^[^{]*(menuentry_id_option|--id)([[:space:]]+|=)(['\"])(gnulinux-${mode}-[0-9a-fA-F][0-9a-fA-F-]*)\\3.*/\\4/p" \
