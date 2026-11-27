@@ -90,6 +90,7 @@ core_suites=(
    anon-apt-sources-list-tests
    anon-gw-anonymizer-config-tests
    anon-ws-disable-stacked-tor-tests
+   bindp-tests
    desktop-config-dist-tests
    initializer-dist-tests
    legacy-dist-tests
@@ -718,6 +719,12 @@ wire() {
          if [ -n "${hs}" ]; then
             wire_env+=( "PYTHONPATH=${hs}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}" )
          fi
+         ;;
+      bindp)
+         ## The bindp suite builds the REAL usr/src/bindp/bindp.c with its
+         ## shipped Makefile and LD_PRELOADs it; BINDP_REPO points at the
+         ## checkout. No helper-scripts / python subject import.
+         wire_env=( "BINDP_REPO=$( pkg_dir bindp )" )
          ;;
       kloak)
          ## kloak suites compile/build the real src/kloak*.c (via kloak's
@@ -1355,6 +1362,9 @@ suite_component() {
          ;;
       onion-grater)
          printf '%s' 'onion-grater'
+         ;;
+      bindp)
+         printf '%s' 'bindp'
          ;;
       kloak)
          printf '%s' 'kloak'
