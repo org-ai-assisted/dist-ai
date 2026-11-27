@@ -80,6 +80,15 @@ mkdir -p -- "${linkdir}"
 ln -s -- "${subject}" "${linkdir}/dm-upgrade-from-local-repository"
 link="${linkdir}/dm-upgrade-from-local-repository"
 
+## The tool sources its library via '${MYDIR}/../libexec/...' and does NOT
+## canonicalize BASH_SOURCE, so from the symlink it looks beside the symlink, not
+## beside the real script. Stage the REAL library there (symlink, no copy) so the
+## tool reaches the resolver instead of dying at its 'source' line.
+lib_rel='usr/libexec/developer-meta-files/source-tree-lib.bsh'
+lib_src="$( cd -- "$( dirname -- "${subject}" )/../libexec/developer-meta-files" && pwd )/source-tree-lib.bsh"
+mkdir -p -- "${work}/a/b/install/usr/libexec/developer-meta-files"
+ln -s -- "${lib_src}" "${work}/a/b/install/${lib_rel}"
+
 ## Fixture checkout whose help-steps/pre only proves it was reached, then stops
 ## the tool before it sources variables / runs main (which need root + a raw).
 fixture="${work}/fixture-checkout"

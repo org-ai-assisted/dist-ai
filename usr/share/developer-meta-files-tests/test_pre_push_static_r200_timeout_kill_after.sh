@@ -93,6 +93,9 @@ fixture_prologue=(
    'shopt -s inherit_errexit'
    'shopt -s shift_verbose'
    'export LC_ALL=C'
+   ## These fixtures probe R-200 (timeout kill-after), not indentation; their
+   ## bodies use 3-space house indent, so waive the R-003 added-file indent rule.
+   '## style-ok: R-003 R-200 fixture; indentation out of scope'
    ''
 )
 

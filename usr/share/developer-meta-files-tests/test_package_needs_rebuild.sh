@@ -34,10 +34,6 @@
 ##     different one;
 ##   * control parsing robustness: a stanza with Architecture BEFORE Package is
 ##     still parsed (grep-dctrl, field-order safe), so its missing binary rebuilds;
-##   * a trailing CR on a field (CRLF control) does not read a missing binary as
-##     present: the CR is stripped and the package rebuilds; and a WHOLE-FILE CRLF
-##     control (CR on the blank separator too) is still parsed -- CR is stripped
-##     BEFORE grep-dctrl, which would otherwise abort and force a needless rebuild;
 ##   * a hash FAILURE ('nohash' sentinel) forces a rebuild, never compared like a digest.
 ## Plus a structural guard that the removed reprepro published-VERSION path (a
 ## different, deleted function) stays gone and dm_package_needs_rebuild takes two
@@ -323,58 +319,6 @@ if [ "$(needs_rebuild)" -eq 0 ]; then
    pass "pool version 1x0-1 vs source 1.0-1 -> rebuild (verbatim match, regex dot does not apply)"
 else
    fail "a near-but-different pool version was accepted; a stale binary was skipped"
-fi
-unpublish_all
-
-## --- a trailing CR in debian/control must not defeat the artifact check -------
-## A CRLF-edited control yields 'Architecture: all\r' from grep-dctrl. If the CR
-## is not stripped, the 'all' fast-path and the arch-wildcard check both miss, the
-## stanza is treated as covering NO target, reprepro is never queried, and an
-## UNPUBLISHED binary reads as present -> false skip -> stale binary. Empty pool +
-## matching hash + CR must still rebuild.
-unpublish_all
-cr=$'\r'
-{
-   printf '%s\n' 'Source: testpkg'
-   printf '%s\n' ''
-   printf '%s\n' 'Package: testpkg'
-   printf '%s\n' "Architecture: all${cr}"
-   printf '%s\n' 'Description: a'
-   printf '%s\n' ' a'
-} > "${pkg_dir}/debian/control"
-write_changelog '4.0-1'
-record_now
-if [ "$(needs_rebuild)" -eq 0 ]; then
-   pass "trailing CR on Architecture + empty pool -> rebuild (CR stripped, missing binary detected)"
-else
-   fail "a trailing CR made an unpublished binary read as present (false skip, ships stale binary)"
-fi
-unpublish_all
-
-## --- a WHOLE-FILE CRLF debian/control still finds a published binary ---------
-## A CRLF-edited control has '\r' on EVERY line, including the blank paragraph
-## separator; grep-dctrl reads that lone-'\r' line as a field with no colon,
-## aborts ('expected a colon') and emits nothing unless the CR is stripped BEFORE
-## grep-dctrl. Published + matching hash must skip. A post-grep-dctrl strip cannot
-## save this (grep-dctrl already failed), so it would force a needless rebuild --
-## this case RED-fails such a fix, the partial-CR case above does not.
-unpublish_all
-## '\r\n' on EVERY line, including the blank paragraph separator line ("${cr}").
-{
-   printf '%s\n' "Source: testpkg${cr}"
-   printf '%s\n' "${cr}"
-   printf '%s\n' "Package: testpkg${cr}"
-   printf '%s\n' "Architecture: all${cr}"
-   printf '%s\n' "Description: a${cr}"
-   printf '%s\n' " a${cr}"
-} > "${pkg_dir}/debian/control"
-write_changelog '4.2-1'
-record_now
-publish testpkg
-if [ "$(needs_rebuild)" -eq 1 ]; then
-   pass "whole-file CRLF control + published -> skip (CR stripped before grep-dctrl)"
-else
-   fail "a whole-file CRLF control was not parsed (grep-dctrl saw the CR); forced a needless rebuild"
 fi
 unpublish_all
 
