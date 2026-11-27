@@ -144,6 +144,29 @@ authdir2="${existing_parent}/authdir"
 check "authdir under existing parent at 0700" "$(mode_of "${authdir2}")"       "700"
 check "existing parent mode untouched (0750)" "$(mode_of "${existing_parent}")" "750"
 
+## --- (2b) symlink attack: a pre-planted symlink at authdir is REFUSED ---
+## /var/lib/tor is debian-tor-owned, so debian-tor can plant 'authdir' as a
+## symlink to a root-owned victim (e.g. /etc). Pre-fix, 'install -d -m 0700'
+## followed it and chmod'd the victim to 0700 (then main's chown handed it to
+## debian-tor -> root). The subject must refuse the symlink and leave the
+## victim's mode untouched. FAILS pre-fix: the probe succeeded (exit 0) and the
+## victim went 0750 -> 0700.
+victim_dir="${test_dir}/victim"
+install -d -m 0750 -- "${victim_dir}"
+attack_parent="${test_dir}/attack"
+install -d -m 0700 -- "${attack_parent}"
+attack_authdir="${attack_parent}/authdir"
+ln --symbolic -- "${victim_dir}" "${attack_authdir}"
+attack_rc=0
+( umask 0077; "${probe}" create "${attack_authdir}" ) >/dev/null 2>&1 || attack_rc=$?
+if [ "${attack_rc}" -ne 0 ]; then
+   attack_verdict=refused
+else
+   attack_verdict=followed
+fi
+check "symlink authdir refused (non-zero exit)" "${attack_verdict}"          "refused"
+check "symlink attack leaves victim mode 0750"  "$(mode_of "${victim_dir}")" "750"
+
 ## --- (3) source-ability: no auto-run, no strict-mode leak, fn defined ---
 ## The sentinel is reached ONLY if sourcing neither leaked strict-mode (which
 ## would abort the probe at its 'false') nor auto-ran a main that 'exit's. An
