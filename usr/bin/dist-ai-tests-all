@@ -1356,7 +1356,7 @@ suite_component() {
       dist-encrypted)
          printf '%s' 'dist-encrypted'
          ;;
-      clusterfuzzlite-lib|dist-ai-registry|sudoers-command-audit|github-api|image-optimize|iso-download|dm-release-test|dm-build-account|dm-calamares-install|dm-image-build|test-results-site|vbox-image-test|dm-vm-lock|dm-qubes-template-build|dm-firmware-identity|dm-ci-job-watch|dm-gitlink-upstream-check|dm-gitlink-bump|iso-boot|tirdad-isn-nat|webcheck-lint-tidy-honesty-test)
+      clusterfuzzlite-lib|dist-ai-registry|sudoers-command-audit|github-api|image-optimize|iso-download|dm-release-test|dm-build-account|dm-calamares-install|dm-image-build|test-results-site|vbox-image-test|dm-vm-lock|dm-qubes-template-build|dm-firmware-identity|dm-ci-job-watch|dist-ai-userns-lane|dm-gitlink-upstream-check|dm-gitlink-bump|iso-boot|tirdad-isn-nat|webcheck-lint-tidy-honesty-test)
          printf '%s' 'dist-ai'
          ;;
       anon-apt-sources-list)
