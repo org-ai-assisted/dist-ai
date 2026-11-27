@@ -42,8 +42,14 @@ unshare --map-root-user -- true
 ## The component under test is the calling repo; its dist-ai suites live in
 ## usr/share/<component>-tests next to this script's checkout (the standard
 ## dist-ai layout). Absent -> this component ships no dist-ai suite.
-: "${GITHUB_REPOSITORY:?must be set by the CI runner (owner/repo of the caller)}"
-component="${GITHUB_REPOSITORY##*/}"
+## Component = the calling repo. DIST_AI_USERNS_COMPONENT overrides it for local
+## runs and the pre-merge probe: GITHUB_REPOSITORY is a reserved CI variable a
+## 'env:' block cannot set, so without this hook the lane is untestable off-CI.
+component="${DIST_AI_USERNS_COMPONENT:-}"
+if [ -z "${component}" ]; then
+  : "${GITHUB_REPOSITORY:?set DIST_AI_USERNS_COMPONENT, or run under CI}"
+  component="${GITHUB_REPOSITORY##*/}"
+fi
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 tests_dir="${script_dir}/../usr/share/${component}-tests"
 if [ ! -d "${tests_dir}" ]; then
