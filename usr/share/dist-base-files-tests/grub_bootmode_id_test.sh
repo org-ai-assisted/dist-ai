@@ -5,17 +5,19 @@
 
 ## AI-Assisted
 
-## 10_00_linux_dist must scope the simple-entry GRUB --id by boot_mode_id, so
-## USER / SYSMAINT / REMOVE get DISTINCT ids. A shared id ('gnulinux-simple-<dev>'
-## for every mode, the pre-fix behaviour) makes id-based boot-mode selection
+## 10_00_linux_dist (simple entry) AND 10_50_linux_dist_advanced (advanced submenu
+## + per-kernel entries) must scope EVERY GRUB --id by boot_mode_id, so USER /
+## SYSMAINT / REMOVE / LIVE get DISTINCT ids across both engines. A shared id for
+## every mode (the pre-fix behaviour: 'gnulinux-simple-<dev>' simple,
+## 'gnulinux-advanced-<dev>' submenu) makes id-based boot-mode selection
 ## (grub-editenv next_entry / default by id) resolve to the FIRST matching entry
 ## only, so the installed system can never be driven into SYSMAINT by id.
 ##
-## This renders the REAL engine for each token and asserts the emitted id. The
+## This renders BOTH REAL engines for each token and asserts the emitted id(s). The
 ## emit-check suite proves the wrappers EXPORT the tokens (stubbed engine); this
-## proves the engine CONSUMES them into a distinct id -- the half a stubbed engine
-## cannot see. Canary: on the pre-fix engine every mode renders 'gnulinux-simple-*',
-## so the per-mode prefix assertions all fail RED.
+## proves the engines CONSUME them into distinct ids -- the half a stubbed engine
+## cannot see. Canary: on the pre-fix engines every mode renders 'gnulinux-simple-*'
+## / 'gnulinux-advanced-*', so the per-mode prefix assertions fail RED.
 ##
 ## Needs grub-mkconfig_lib (grub-common) + bwrap; absent -> SKIP 77 (the dist-ai
 ## contract for an unavailable runtime). No root, no network, no real device: a
@@ -36,16 +38,19 @@ source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/has.bsh
 
 if [ -n "${DIST_BASE_FILES_REPO}" ]; then
    engine="${DIST_BASE_FILES_REPO}/etc/grub.d/10_00_linux_dist"
+   engine_advanced="${DIST_BASE_FILES_REPO}/etc/grub.d/10_50_linux_dist_advanced"
 else
    engine='/etc/grub.d/10_00_linux_dist'
+   engine_advanced='/etc/grub.d/10_50_linux_dist_advanced'
 fi
 
 grub_lib='/usr/share/grub/grub-mkconfig_lib'
 
 missing=''
-[ -r "${engine}" ]    || missing="${missing} engine(${engine})"
-[ -r "${grub_lib}" ]  || missing="${missing} grub-mkconfig_lib"
-has bwrap             || missing="${missing} bwrap"
+[ -r "${engine}" ]          || missing="${missing} engine(${engine})"
+[ -r "${engine_advanced}" ] || missing="${missing} engine(${engine_advanced})"
+[ -r "${grub_lib}" ]        || missing="${missing} grub-mkconfig_lib"
+has bwrap                   || missing="${missing} bwrap"
 if [ -n "${missing}" ]; then
    printf '%s\n' "SKIP: missing runtime:${missing}" >&2
    ## style-ok: allow-skip: grub-common/bwrap are an unavailable runtime in the core dist-ai CI job
@@ -87,8 +92,11 @@ echo "${1:-/}"
 STUB
 chmod 0755 -- "${stub_dir}/grub-probe" "${stub_dir}/grub-mkrelpath"
 
-render_id() {
-   local mode="$1"
+## Render one engine under the stubbed grub environment for a boot_mode_id token
+## (UNSET = export nothing, exercising the ':-simple' fallback) and print every
+## emitted menuentry/submenu --id, one per line.
+render_ids() {
+   local engine_path="$1" mode="$2"
    local extra=()
    [ "${mode}" = 'UNSET' ] || extra=( "boot_mode_id=${mode}" )
    bwrap --dev-bind / / --bind "${fake_boot}" /boot \
@@ -102,8 +110,8 @@ render_id() {
       GRUB_DISABLE_SUBMENU=false GRUB_DISTRIBUTOR=Kicksecure \
       GRUB_CMDLINE_LINUX='' GRUB_CMDLINE_LINUX_DEFAULT='' \
       GRUB_GFXPAYLOAD_LINUX='' GRUB_TIMEOUT=5 \
-      "${engine}" 2>/dev/null \
-      | grep --only-matching --extended-regexp "gnulinux-[^' ]+" | head -n 1 \
+      "${engine_path}" 2>/dev/null \
+      | grep --only-matching --extended-regexp "gnulinux-[^' ]+" \
       || true
    ## '|| true': no id is a legitimate outcome (a mode the engine emits nothing for);
    ## under pipefail+inherit_errexit a no-match grep (exit 1) would otherwise abort the
@@ -112,30 +120,62 @@ render_id() {
 
 fail=0
 checks=0
-assert_prefix() {
+
+## 10_00_linux_dist emits one top-level menuentry: assert its --id prefix.
+assert_simple_prefix() {
    local mode="$1" want="$2" id
-   id="$(render_id "${mode}")"
+   id="$(render_ids "${engine}" "${mode}" | head -n 1)"
    checks=$(( checks + 1 ))
    if [ -z "${id}" ]; then
-      printf '%s\n' "FAIL  boot_mode_id=${mode}: engine emitted no id"
+      printf '%s\n' "FAIL  simple boot_mode_id=${mode}: engine emitted no id"
       fail=1
    elif [ "${id#"${want}"}" = "${id}" ]; then
-      printf '%s\n' "FAIL  boot_mode_id=${mode}: id '${id}' lacks prefix '${want}'"
+      printf '%s\n' "FAIL  simple boot_mode_id=${mode}: id '${id}' lacks prefix '${want}'"
       fail=1
    else
-      printf '%s\n' "PASS  boot_mode_id=${mode}: id '${id}'"
+      printf '%s\n' "PASS  simple boot_mode_id=${mode}: id '${id}'"
    fi
 }
 
-## The real production tokens (see the 10_0x / 10_20 wrappers). Unset falls back to
-## 'simple' = the grub-live USER entry. persistent-sysmaint vs live-sysmaint proves
-## the SYSMAINT id is distinct per persistence, so live and persistent SYSMAINT never
-## share an id.
-assert_prefix UNSET              'gnulinux-simple-'
-assert_prefix user               'gnulinux-user-'
-assert_prefix persistent-sysmaint 'gnulinux-persistent-sysmaint-'
-assert_prefix live-sysmaint      'gnulinux-live-sysmaint-'
-assert_prefix remove-sysmaint    'gnulinux-remove-sysmaint-'
+## 10_50_linux_dist_advanced emits a whole submenu: the 'Advanced options' submenu
+## --id plus each kernel's advanced entry. EVERY one must carry the per-mode prefix,
+## or two modes' advanced submenus (and their inner entries) collide -- the exact
+## pre-fix gap this guards, where the advanced engine hardcoded 'gnulinux-advanced-'.
+assert_advanced_prefix() {
+   local mode="$1" want="$2" ids id n=0
+   ids="$(render_ids "${engine_advanced}" "${mode}")"
+   checks=$(( checks + 1 ))
+   if [ -z "${ids}" ]; then
+      printf '%s\n' "FAIL  advanced boot_mode_id=${mode}: engine emitted no id"
+      fail=1
+      return
+   fi
+   while IFS= read -r id; do
+      n=$(( n + 1 ))
+      if [ "${id#"${want}"}" = "${id}" ]; then
+         printf '%s\n' "FAIL  advanced boot_mode_id=${mode}: id '${id}' lacks prefix '${want}'"
+         fail=1
+         return
+      fi
+   done <<< "${ids}"
+   printf '%s\n' "PASS  advanced boot_mode_id=${mode}: ${n} id(s), all '${want}*'"
+}
+
+## The real production tokens (see the 10_0x / 10_20 / 10_55 / 10_60 wrappers). UNSET
+## exercises the ':-simple' safety fallback -- no production wrapper leaves it unset.
+## persistent-sysmaint vs live-sysmaint proves the SYSMAINT id is distinct per
+## persistence, so live and persistent SYSMAINT never share an id. Each token is
+## asserted against BOTH engines, since a mode's simple + advanced entries coexist.
+for spec in \
+   'UNSET:gnulinux-simple-' \
+   'user:gnulinux-user-' \
+   'live:gnulinux-live-' \
+   'persistent-sysmaint:gnulinux-persistent-sysmaint-' \
+   'live-sysmaint:gnulinux-live-sysmaint-' \
+   'remove-sysmaint:gnulinux-remove-sysmaint-'; do
+   assert_simple_prefix   "${spec%%:*}" "${spec#*:}"
+   assert_advanced_prefix "${spec%%:*}" "${spec#*:}"
+done
 
 printf '%s\n' "" "${checks} checks, ${fail} failed"
 [ "${fail}" -eq 0 ]

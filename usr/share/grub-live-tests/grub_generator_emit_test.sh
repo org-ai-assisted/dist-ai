@@ -48,6 +48,11 @@ fail=0
 skipped=0
 checked=0
 
+## 10_20_linux_live / 10_60_linux_live_advanced short-circuit at their
+## 'pkg_installed grub-live' guard when grub-live is absent (the core dist-ai CI
+## env), emitting only the guard diagnostic -- so the boot_mode_id=live token they
+## export cannot be asserted at runtime here. grub_live_bootmode_id_test.sh guards
+## that token statically instead.
 for generator in 10_20_linux_live 10_60_linux_live_advanced 45_debugging; do
    rc=0
    "${checker}" "${grub_d}/${generator}" "${generator}" || rc=$?

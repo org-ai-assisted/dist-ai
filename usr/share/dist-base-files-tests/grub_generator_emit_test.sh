@@ -48,10 +48,10 @@ fail=0
 skipped=0
 checked=0
 
-## 10_05_linux_main must also export boot_mode_id=user so 10_00_linux_dist scopes
-## the USER menuentry's --id distinctly (shared ids make id-based boot-mode
-## selection hit the first entry only). The advanced wrapper carries no such token.
-for spec in '10_05_linux_main:boot_mode_id=user' '10_55_linux_main_advanced:'; do
+## Both USER wrappers export boot_mode_id=user so 10_00_linux_dist (simple) and
+## 10_50_linux_dist_advanced (advanced submenu) scope the USER --id distinctly --
+## shared ids across boot modes make id-based selection hit the first entry only.
+for spec in '10_05_linux_main:boot_mode_id=user' '10_55_linux_main_advanced:boot_mode_id=user'; do
    generator="${spec%%:*}"
    must_contain="${spec#*:}"
    rc=0

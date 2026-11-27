@@ -47,9 +47,13 @@ if [ -n "${USER_SYSMAINT_SPLIT_REPO}" ]; then
    conf_dir="${USER_SYSMAINT_SPLIT_REPO}/usr/share/user-sysmaint-split/conf"
    sysmaint_gen="${conf_dir}/grub.d_10_10_linux_sysmaint"
    remove_gen="${conf_dir}/grub.d_10_30_linux_remove_sysmaint"
+   sysmaint_adv_gen="${conf_dir}/grub.d_10_55_linux_sysmaint_advanced"
+   remove_adv_gen="${conf_dir}/grub.d_10_65_linux_remove_sysmaint_advanced"
 else
    sysmaint_gen='/etc/grub.d/10_10_linux_sysmaint'
    remove_gen='/etc/grub.d/10_30_linux_remove_sysmaint'
+   sysmaint_adv_gen='/etc/grub.d/10_55_linux_sysmaint_advanced'
+   remove_adv_gen='/etc/grub.d/10_65_linux_remove_sysmaint_advanced'
 fi
 
 fail=0
@@ -77,6 +81,13 @@ check_one() {
 check_one "${sysmaint_gen}" 'boot_mode_id=persistent-sysmaint'
 check_one "${sysmaint_gen}" 'boot_mode_id=live-sysmaint' 'persistence_type=LIVE'
 check_one "${remove_gen}"   'boot_mode_id=remove-sysmaint'
+
+## Advanced wrappers scope 10_50_linux_dist_advanced's submenu + per-version --ids
+## by the SAME per-mode token as their non-advanced siblings, so a mode's advanced
+## submenu never collides with another mode's. Same persistence split for SYSMAINT.
+check_one "${sysmaint_adv_gen}" 'boot_mode_id=persistent-sysmaint'
+check_one "${sysmaint_adv_gen}" 'boot_mode_id=live-sysmaint' 'persistence_type=LIVE'
+check_one "${remove_adv_gen}"   'boot_mode_id=remove-sysmaint'
 
 ## All-skipped is not a pass: the subject was never resolved. (A real failure
 ## already set fail=1 and must report as a failure, not this diagnostic.)
