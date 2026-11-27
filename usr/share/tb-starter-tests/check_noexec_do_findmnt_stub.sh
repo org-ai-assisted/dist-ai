@@ -42,4 +42,10 @@ if [ -z "${target}" ] || [ ! -e "${target}" ]; then
   exit 1
 fi
 
+## Record the resolved --target (when asked) so a test can assert check_noexec_do
+## queried tb_home_folder's own ancestor, not a hardcoded path.
+if [ -n "${FINDMNT_STUB_TARGET_FILE:-}" ]; then
+  printf '%s\n' "${target}" >> "${FINDMNT_STUB_TARGET_FILE}"
+fi
+
 printf '%s\n' "${FINDMNT_STUB_OPTIONS:-}"

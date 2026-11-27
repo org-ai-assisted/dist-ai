@@ -105,14 +105,31 @@ fail=0
 
 ## (1) Source-ability: sourcing torbrowser must not auto-run, must not leak
 ## strict-mode, and must define check_noexec_do + main (run in a child shell).
+## Require BOTH exit 0 AND the 'PROBE-COMPLETE' sentinel: a subject that exits
+## while being sourced (auto-run footer, stray top-level 'exit') would otherwise
+## pass vacuously. A 'timeout' bounds an auto-running subject that never returns
+## (a pre-sourceable regression would launch the real browser), so the supposedly
+## network-free test cannot hang or perform real activity.
 probe_rc=0
-"${probe}" >/dev/null 2>&1 || probe_rc=$?
-if [ "${probe_rc}" -eq 0 ]; then
+probe_out="$(timeout --kill-after=5 10 "${probe}" 2>/dev/null)" || probe_rc=$?
+case "${probe_out}" in
+*PROBE-COMPLETE*)
+  probe_complete=1
+  ;;
+*)
+  probe_complete=0
+  ;;
+esac
+if [ "${probe_rc}" -eq 0 ] && [ "${probe_complete}" -eq 1 ]; then
   pass=$((pass + 1))
   printf '%s\n' "PASS: source-able (no auto-run, no strict leak, functions defined)"
 else
-  fail=$((fail + 1))
-  printf '%s\n' "FAIL: source probe exit ${probe_rc} (0 expected)"
+  ## FATAL: a subject that is not source-able must not reach the behavioral
+  ## 'source "${subject}"' below -- if that source auto-ran or exited, it would
+  ## terminate THIS shell before the summary and report a vacuous exit 0.
+  printf '%s\n' "FAIL: source probe exit ${probe_rc}, sentinel seen=${probe_complete} (expect exit 0 + sentinel)"
+  printf '%s\n' "1 case(s), 0 passed, 1 failed"
+  exit 1
 fi
 
 ## (2) Behavior: source the REAL torbrowser and drive check_noexec_do.
@@ -192,6 +209,31 @@ check_case "empty tb_home_folder -> fail-safe noexec" \
 ## is a caller bug -> fail safe -> return 1.
 check_case "non-absolute tb_home_folder -> fail-safe noexec" \
   "relative/.tb" "rw,nosuid,nodev,relatime" "0" "1"
+
+## The query must target tb_home_folder's OWN covering mount, not a hardcoded
+## path. Use a REAL existing ancestor (a nonexistent leaf under it) and record
+## the --target the stub resolved on: a subject that hardcoded '/' would record
+## '/', not this directory. The option-only cases above cannot catch that -- the
+## stub returns the same options for any existing target.
+real_ancestor="${test_dir}/realhome"
+mkdir --parents -- "${real_ancestor}"
+target_log="${test_dir}/findmnt-targets"
+true > "${target_log}"
+export FINDMNT_STUB_TARGET_FILE="${target_log}"
+# shellcheck disable=SC2034  # read by the sourced check_noexec_do.
+tb_home_folder="${real_ancestor}/.tb"
+export FINDMNT_STUB_OPTIONS="rw,noexec"
+export FINDMNT_STUB_RC="0"
+target_rc="$(run_check_noexec_do)"
+recorded_target="$(cat -- "${target_log}")"
+unset FINDMNT_STUB_TARGET_FILE
+if [ "${target_rc}" = "1" ] && [ "${recorded_target}" = "${real_ancestor}" ]; then
+  pass=$((pass + 1))
+  printf '%s\n' "PASS: queries tb_home_folder ancestor (${real_ancestor})"
+else
+  fail=$((fail + 1))
+  printf '%s\n' "FAIL: ancestor query (expected target '${real_ancestor}' rc 1, got target '${recorded_target}' rc ${target_rc})"
+fi
 
 printf '%s\n' ""
 printf '%s\n' "$((pass + fail)) case(s), ${pass} passed, ${fail} failed"
