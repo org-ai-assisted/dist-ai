@@ -32,8 +32,8 @@
 ## here.
 ##
 ## core.symlinks: a hardened host (security-misc) may set core.symlinks=false, under which the
-## upstream 'qb' entry point checks out as a dead text file. We invoke qubesbuilder-cli directly,
-## so the build does not depend on that symlink.
+## upstream 'qb' entry point checks out as a dead text file. clone_or_update restores it, so the
+## build invokes './qb' -- the same entry point as the wiki build documentation.
 ##
 ## Stages default to 'fetch prep build', producing the template .noarch.rpm but NOT signing or
 ## publishing it (those need the Qubes templates-community signing key).
@@ -169,6 +169,9 @@ clone_or_update() {
   else
     git clone --branch "${branch}" -- "${repo_url}" "${dir}"
   fi
+  ## Restore the 'qb' entry-point symlink: a core.symlinks=false clone/reset flattens it to a dead
+  ## text file. Recreating it lets the build invoke './qb', matching the wiki documentation.
+  ln --symbolic --force -- qubesbuilder-cli "${dir}/qb"
   ## No submodule init: the fetch/prep/build stages need only in-tree plugins. The sole
   ## submodule (publish/mirrors, publish-only) uses a relative URL that resolves against the
   ## fork's org, where the sibling repo was never forked -- and we never publish.
@@ -218,10 +221,10 @@ write_builder_conf() {
 }
 
 build() {
-  ## 'qb' is a symlink to qubesbuilder-cli; call the real entry point so a core.symlinks=false
-  ## host is unaffected. Unquoted ${stages} intentionally splits into separate stage words.
+  ## clone_or_update restored the 'qb' symlink (to qubesbuilder-cli), so './qb' works even on a
+  ## core.symlinks=false host. Unquoted ${stages} intentionally splits into separate stage words.
   # shellcheck disable=SC2086
-  (cd -- "${dir}" && ./qubesbuilder-cli -t "${flavor}" template ${stages})
+  (cd -- "${dir}" && ./qb -t "${flavor}" template ${stages})
 }
 
 report() {
