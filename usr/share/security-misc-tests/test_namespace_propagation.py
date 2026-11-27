@@ -88,6 +88,8 @@ def _userns_env_diag() -> str:
                 if line.startswith(("CapEff", "CapBnd")):
                     bits.append(line.strip().replace("\t", " "))
     except OSError:
+        ## The caps line is diagnostic sugar; if /proc/self/status is unreadable,
+        ## report the rest of the diagnosis rather than masking the userns failure.
         pass
     return " | ".join(bits)
 
