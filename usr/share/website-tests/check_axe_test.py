@@ -475,6 +475,92 @@ def run() -> int:
     ck(390 in _widths and any(w >= 1000 for w in _widths),
        "_VIEWPORTS audits both a mobile (390) and a desktop width: %r" % _widths)
 
+    # WEDGE RETRY (operator decision 2026-11-27, dev1877 task #87): a wedge is a wall-clock TIMEOUT,
+    # which under the deploy's two concurrent per-site lanes (both driving chromium in the single
+    # sandbox qube) is CPU contention -- a TIMING fault, not a content one. check() must retry a
+    # wedged (page, viewport) ONCE on a fresh browser before recording a problem, so a transient
+    # spike does NOT false-FAIL a clean deploy; a page that wedges on EVERY attempt is STILL reported
+    # (the retry must never mask a real un-auditable page). Drive the real check() with _axe_page
+    # faked to raise (a wedge) a controlled number of times and a fake async_playwright that supplies
+    # browsers + counts launches (one initial + one relaunch per wedge).
+    _pw_mod = sys.modules.setdefault("playwright.async_api", _types.ModuleType("playwright.async_api"))
+
+    class _FakeBrowser3:
+        async def close(self):
+            pass
+
+    class _FakeChromium3:
+        def __init__(self, counter):
+            self._counter = counter
+
+        async def launch(self):
+            self._counter["launches"] += 1
+            return _FakeBrowser3()
+
+    class _FakePW3:
+        def __init__(self, counter):
+            self.chromium = _FakeChromium3(counter)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_a):
+            return False
+
+    _WBASE = "http://127.0.0.1:8000"
+
+    def _run_check_with_wedges(paths, wedge_counts, hard_timeout=1):
+        # wedge_counts: {(path, viewport_width): N} -- _axe_page raises TimeoutError its first N calls
+        # for that (page, viewport), then audits clean. N >= _WEDGE_ATTEMPTS models a REAL wedge.
+        counter = {"launches": 0}
+        seen: dict = {}
+
+        async def _fake_axe_page(_browser, url, _axe_src, _settle_ms, viewport=None):
+            path = url[len(_WBASE):] or "/"
+            if not path.startswith("/"):
+                path = "/" + path
+            key = (path, (viewport or {}).get("width"))
+            seen[key] = seen.get(key, 0) + 1
+            if seen[key] <= wedge_counts.get(key, 0):
+                raise _asyncio.TimeoutError()
+            return {"status": 200, "violations": []}
+
+        _orig_axe_page = ax._axe_page
+        _orig_apw = getattr(_pw_mod, "async_playwright", None)
+        _pw_mod.async_playwright = lambda: _FakePW3(counter)
+        ax._axe_page = _fake_axe_page
+        with tempfile.NamedTemporaryFile(suffix=".js", delete=False) as _js:
+            _js.write(b"axe=1")
+            _js_name = _js.name
+        try:
+            keys, problems = _asyncio.run(
+                ax.check(_WBASE, list(paths), _js_name, 0, hard_timeout))
+        finally:
+            ax._axe_page = _orig_axe_page
+            if _orig_apw is None:
+                if hasattr(_pw_mod, "async_playwright"):
+                    delattr(_pw_mod, "async_playwright")
+            else:
+                _pw_mod.async_playwright = _orig_apw
+            os.unlink(_js_name)
+        return keys, problems, counter["launches"]
+
+    # at least one retry is configured (reds the old retries=0 code, which has no _WEDGE_ATTEMPTS).
+    ck(getattr(ax, "_WEDGE_ATTEMPTS", 1) >= 2,
+       "a wedge gets at least one retry (_WEDGE_ATTEMPTS >= 2): %r" % getattr(ax, "_WEDGE_ATTEMPTS", 1))
+    # a page that wedges ONCE then audits clean is NOT a problem -- the transient flake is absorbed
+    # (reds the old no-retry code, which recorded the first wedge as a problem immediately).
+    _k1, _p1, _l1 = _run_check_with_wedges(["/"], {("/", 1280): 1})
+    ck(_p1 == [],
+       "wedge RETRY: a page that wedges once then audits clean is NOT a problem (flake absorbed): %r" % _p1)
+    ck(_l1 == 2,
+       "wedge RETRY: one wedge triggers exactly one relaunch (1 initial + 1 retry browser): %r" % _l1)
+    # masking-safety: a page that wedges on EVERY attempt is STILL reported (desktop wedges forever,
+    # mobile audits clean -> exactly the one desktop problem, never silently dropped by the retry).
+    _k2, _p2, _l2 = _run_check_with_wedges(["/"], {("/", 1280): 99})
+    ck(_p2 == ["wedged: / [desktop]"],
+       "wedge RETRY: a page wedging on every attempt is STILL reported (retry does not mask it): %r" % _p2)
+
     # identical-links-same-purpose (WCAG 2.4.9 AAA) is OFF by default in axe-core; the run options
     # must keep it explicitly enabled, or the gate silently stops catching two same-name links that
     # point at different destinations. Guard the explicit enable against an accidental revert.

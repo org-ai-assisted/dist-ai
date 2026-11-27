@@ -260,6 +260,17 @@ _VIEWPORTS = (("desktop", {"width": 1280, "height": 720}),
               ("mobile", {"width": 390, "height": 844}))
 
 
+# A wedge is a wall-clock TIMEOUT (a per-page audit exceeding hard_timeout). Under the deploy's two
+# concurrent per-site lanes, both drive chromium in the SINGLE sandbox qube at once, so a heavy
+# desktop audit can spike past the budget from CPU CONTENTION -- a timing fault, NOT a content one.
+# So retry a wedged (page, viewport) ONCE on a fresh browser before recording a problem: a transient
+# spike passes on the retry, while a genuinely un-auditable page (real hang / infinite loop) wedges
+# on BOTH attempts and is STILL reported -- the retry cannot mask a real defect. Content VIOLATIONS
+# are still never retried; the deterministic-localhost-mount rationale holds for THEM, not for timing
+# under contention. 2 == the initial attempt + one retry.
+_WEDGE_ATTEMPTS = 2
+
+
 async def _axe_page(browser, url: str, axe_src: str, settle_ms: int,
                     viewport: Optional[dict] = None) -> dict:
     """Load one page at `viewport` (default desktop), inject axe-core, run it, return its
@@ -337,8 +348,11 @@ async def check(base: str, paths: List[str], axe_source: str, settle_ms: int = 1
                 hard_timeout: int = 55) -> Tuple[Set[Key], List[str]]:
     """Audit every page served at `base`, returning (fresh_keys, problems). A problem (a wedged
     page, a bad HTTP status) is a hard fault the caller fails on -- an unauditable page is never a
-    silent clean. No retries: a localhost mount is deterministic (mirrors check_roots' retries=0
-    rationale in the sibling console lane)."""
+    silent clean. A content VIOLATION is never retried: a localhost mount is deterministic (mirrors
+    check_roots' retries=0 rationale in the sibling console lane). A WEDGE (wall-clock timeout) IS
+    retried once on a fresh browser -- it is a TIMING fault under concurrent-lane contention, not a
+    content one, so the determinism rationale does not apply; a truly un-auditable page wedges on
+    both attempts and is still reported (see _WEDGE_ATTEMPTS)."""
     from playwright.async_api import async_playwright
 
     keys: Set[Key] = set()
@@ -357,19 +371,29 @@ async def check(base: str, paths: List[str], axe_source: str, settle_ms: int = 1
         for path in paths:
             url = base.rstrip("/") + "/" + path.lstrip("/")
             for vp_name, vp in _VIEWPORTS:
-                try:
-                    res = await asyncio.wait_for(
-                        _axe_page(browser, url, axe_src, settle_ms, vp), timeout=hard_timeout)
-                except Exception:
-                    # This page wedged -> recreate the browser so the wedge does not cascade.
+                res = None
+                # Retry a WEDGE (wall-clock timeout) once on a fresh browser -- see _WEDGE_ATTEMPTS.
+                for attempt in range(_WEDGE_ATTEMPTS):
                     try:
-                        await asyncio.wait_for(browser.close(), timeout=5)
+                        res = await asyncio.wait_for(
+                            _axe_page(browser, url, axe_src, settle_ms, vp), timeout=hard_timeout)
+                        break
                     except Exception:
-                        # This page's audit failed (timeout, navigation or evaluation error); a
-                        # close that also errors or hangs does not change recovery. Discard this
-                        # browser and relaunch a clean one below so it cannot cascade to later pages.
-                        pass
-                    browser = await p.chromium.launch()
+                        # This page wedged (timeout, navigation or evaluation error) -> discard the
+                        # browser and relaunch a clean one, so the wedge cannot cascade to later
+                        # pages AND any remaining retry runs on a healthy browser.
+                        try:
+                            await asyncio.wait_for(browser.close(), timeout=5)
+                        except Exception:
+                            # A close that also errors or hangs does not change recovery. Nothing to do.
+                            pass
+                        browser = await p.chromium.launch()
+                        if attempt + 1 < _WEDGE_ATTEMPTS:
+                            print("RETRY     %s [%s] (wedged; retrying once on a fresh browser)"
+                                  % (path, vp_name), flush=True)
+                if res is None:
+                    # Wedged on EVERY attempt -> a genuinely un-auditable page, not a transient
+                    # contention spike. A hard problem the caller fails on.
                     print("TIMEOUT   %s [%s]" % (path, vp_name), flush=True)
                     problems.append("wedged: %s [%s]" % (path, vp_name))
                     continue
