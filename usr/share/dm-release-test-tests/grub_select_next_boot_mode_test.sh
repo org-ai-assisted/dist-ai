@@ -113,6 +113,20 @@ MOUNTPOINT="${root1}" "${helper}" live-sysmaint >/dev/null
 check "selects live-sysmaint distinctly" \
    "gnulinux-live-sysmaint-${dev}" "$(next_entry_of "${root1}")"
 
+## 1b. CANARY: the per-mode --id patch scopes the ADVANCED entries too, and
+## GRUB_DISABLE_SUBMENU makes them top-level, so grub.cfg can carry a mode-prefixed advanced
+## id 'gnulinux-<mode>-<version>-advanced-<dev>' as a top-level menuentry -- placed BEFORE the
+## simple entry here. The selector MUST match the WHOLE id and pick the full simple id, never
+## truncate the advanced one to 'gnulinux-<mode>-<N>'. On the pre-fix prefix regex, head -n 1
+## takes the truncated advanced match -> RED.
+root_adv="${work_dir}/submenu_disabled"
+make_root "${root_adv}" \
+   "gnulinux-persistent-sysmaint-6.1.0-amd64-advanced-${dev}" \
+   "gnulinux-persistent-sysmaint-${dev}"
+MOUNTPOINT="${root_adv}" "${helper}" persistent-sysmaint >/dev/null
+check "advanced entry before simple -> selects full simple id, not truncated" \
+   "gnulinux-persistent-sysmaint-${dev}" "$(next_entry_of "${root_adv}")"
+
 ## 2. CANARY: an image with NEITHER a per-mode id NOR a per-mode menu title (shared
 ## gnulinux-simple-<dev> and only a generic 'Kicksecure GNU/Linux' title) -> the helper
 ## MUST fail loud, never select blindly.

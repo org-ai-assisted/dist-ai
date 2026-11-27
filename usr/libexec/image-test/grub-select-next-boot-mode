@@ -138,16 +138,23 @@ main() {
    ## matches a menuentry by --id OR by exact title.
    ##
    ## 1. The per-mode --id (dist-base-files per-mode --id patch), taken ONLY from a top-level
-   ##    menuentry line (so an earlier textual reference cannot be mistaken for the id). The
-   ##    advanced submenus are indented and keep the stock gnulinux-advanced-<dev> scheme, so
-   ##    this cannot match one. Anchor the id tail to the device-id charset (hex + hyphens):
-   ##    MODE is a COMPLETE id field, never a prefix -- a real mode is followed by the hex
-   ##    device-id (matches), an invalid prefix like 'persistent' is followed by 'sysmaint'
-   ##    (non-hex -> no match -> drops to the title fallback, which also rejects it).
+   ##    menuentry line (so an earlier textual reference cannot be mistaken for the id), and
+   ##    required to be the WHOLE id value: the device-id charset (hex + hyphens) ending at the
+   ##    closing quote. The advanced entries now ALSO carry the mode prefix (the per-mode --id
+   ##    patch scopes the advanced submenu + entries too) and become top-level (un-indented)
+   ##    under GRUB_DISABLE_SUBMENU, so indentation alone no longer excludes them -- the quote
+   ##    anchor does: an advanced id is 'gnulinux-<mode>-<version>-advanced-<dev>', whose first
+   ##    post-mode char is the kernel version ('.' / non-hex) before any quote, so it never
+   ##    matches. A real mode's simple id 'gnulinux-<mode>-<hex-dev>' matches; an invalid prefix
+   ##    like 'persistent' is followed by 'sysmaint' (non-hex), no match -> both drop to the
+   ##    title fallback, which rejects them too.
    local selector=''
+   ## Trailing quote anchors the match to the COMPLETE id, then is stripped. Without it,
+   ## grep --only-matching would truncate a mode-prefixed advanced id to 'gnulinux-<mode>-<N>'.
    selector="$(grep --extended-regexp '^menuentry ' "${grub_cfg}" \
-      | grep --only-matching --extended-regexp "gnulinux-${mode}-[0-9a-fA-F][0-9a-fA-F-]*" \
+      | grep --only-matching --extended-regexp "gnulinux-${mode}-[0-9a-fA-F][0-9a-fA-F-]*'" \
       | head -n 1)" || true
+   selector="${selector%\'}"
    if [ -z "${selector}" ]; then
       ## 2. Fallback: select by the menuentry TITLE. Part A changed the --id, never the title,
       ##    so the per-mode title is unique on every image, including a pre-patch one that
