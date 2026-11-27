@@ -115,8 +115,12 @@ def command_path(command_string):
 
 def parse_source(cvt, path):
     """Run cvtsudoers on one source file. Return (commands, warnings, error)
-    where commands is a list of (abs_path, negated) and error is a string on a
-    hard parse failure (else None)."""
+    where commands is a list of (command_string, negated) for entries naming an
+    absolute command, and error is a string on a hard parse failure (else
+    None). The full command string is kept, not just the first token, because
+    cvtsudoers joins an escaped-space command path to its arguments with a
+    space and does not mark the boundary -- the existence check tries
+    progressive prefixes to recover a spaced path."""
     ## abspath so a filename beginning with '-' is never read as an option.
     proc = subprocess.run(
         [cvt, "-f", "json", "-i", "sudoers", os.path.abspath(path)],
@@ -146,9 +150,8 @@ def parse_source(cvt, path):
                 ## this file (normal for a drop-in); its members are checked
                 ## wherever the alias is defined. Nothing to stat here.
                 continue
-            abs_path = command_path(entry["command"])
-            if abs_path is not None:
-                commands.append((abs_path, bool(entry.get("negated"))))
+            if command_path(entry["command"]) is not None:
+                commands.append((entry["command"], bool(entry.get("negated"))))
 
     for spec in data.get("User_Specs", []):
         for cmnd_spec in spec.get("Cmnd_Specs", []):
@@ -159,14 +162,59 @@ def parse_source(cvt, path):
     return commands, warnings, None
 
 
-def missing(root, abs_path, require_executable):
-    """True if the command is absent (or, with require_executable, present but
-    not executable) under root. Symlinks are followed; a broken symlink counts
-    as absent."""
-    target = os.path.join(root, abs_path.lstrip("/"))
-    if not os.path.exists(target):
+def resolve_within_root(root_real, abs_path):
+    """Resolve abs_path confined to root_real and return the resolved host-side
+    path if it names an existing entry, else None. Symlinks are followed with
+    their target re-anchored to root (an ABSOLUTE link target is relative to
+    root, not the process's real /), so an offline image audit (--root) cannot
+    escape to the host filesystem -- the bug that let a dangling grant read as
+    present. Bounded against symlink loops."""
+    resolved = root_real
+    pending = [comp for comp in abs_path.split("/") if comp and comp != "."]
+    budget = 40
+    while pending:
+        comp = pending.pop(0)
+        if comp == "..":
+            if resolved != root_real:
+                resolved = os.path.dirname(resolved)
+            continue
+        candidate = os.path.join(resolved, comp)
+        if not os.path.lexists(candidate):
+            return None
+        if os.path.islink(candidate):
+            budget -= 1
+            if budget < 0:
+                return None
+            link = os.readlink(candidate)
+            if os.path.isabs(link):
+                resolved = root_real
+            parts = [part for part in link.split("/") if part and part != "."]
+            pending = parts + pending
+        else:
+            resolved = candidate
+    return resolved if os.path.exists(resolved) else None
+
+
+def classify(root_real, command_string, require_executable):
+    """Verdict for one cvtsudoers command string: 'missing', 'not-executable',
+    or None when present. Tries progressive space-joined prefixes so a command
+    PATH that legitimately contains a space -- indistinguishable in cvtsudoers'
+    JSON from the path/arguments boundary -- is matched when it exists."""
+    tokens = command_string.split(" ")
+    found = None
+    executable = False
+    for count in range(1, len(tokens) + 1):
+        candidate = " ".join(tokens[:count])
+        if not candidate.startswith("/"):
+            continue
+        resolved = resolve_within_root(root_real, candidate)
+        if resolved is not None:
+            found = resolved
+            if os.access(resolved, os.X_OK):
+                executable = True
+    if found is None:
         return "missing"
-    if require_executable and not os.access(target, os.X_OK):
+    if require_executable and not executable:
         return "not-executable"
     return None
 
@@ -209,6 +257,7 @@ def main(argv):
         return 2
 
     root = args.root
+    root_real = os.path.realpath(root)
 
     if args.find:
         trees = args.paths if args.paths else [root]
@@ -243,10 +292,11 @@ def main(argv):
             inconclusive = True
             continue
         reported = set()
-        for abs_path, negated in commands:
-            verdict = missing(root, abs_path, args.require_executable)
+        for command_string, negated in commands:
+            verdict = classify(root_real, command_string, args.require_executable)
             if verdict is None:
                 continue
+            abs_path = command_path(command_string)
             key = (abs_path, negated, verdict)
             if key in reported:
                 continue

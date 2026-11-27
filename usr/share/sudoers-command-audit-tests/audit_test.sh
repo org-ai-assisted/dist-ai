@@ -193,6 +193,35 @@ check "default mode detects the main sudoers finding (exit 1)" rc_is 1
 check "default mode flags the main-file command" out_has '/usr/bin/gone-main'
 check "default mode does not separately feed /etc/sudoers.d" out_lacks '/usr/bin/gone-dropin'
 
+## 9. existence is resolved CONFINED to --root: an absolute symlink inside the
+##    image must not be followed to the host filesystem (the false-clean bug),
+##    while a relative symlink resolving within the image is present.
+imgroot="${work}/imgroot"
+mkdir -p -- "${imgroot}/usr/bin" "${imgroot}/etc/sudoers.d"
+printf '%s\n' '#!/bin/sh' > "${work}/outside-target"
+chmod +x -- "${work}/outside-target"
+## absolute target that exists on the real fs but is OUTSIDE imgroot.
+ln -s -- "${work}/outside-target" "${imgroot}/usr/bin/escaping"
+printf '%s\n' 'user ALL=NOPASSWD: /usr/bin/escaping' > "${imgroot}/etc/sudoers.d/esc"
+printf '%s\n' '#!/bin/sh' > "${imgroot}/usr/bin/realbin"
+chmod +x -- "${imgroot}/usr/bin/realbin"
+ln -s realbin "${imgroot}/usr/bin/reltool"
+printf '%s\n' 'user ALL=NOPASSWD: /usr/bin/reltool' > "${imgroot}/etc/sudoers.d/rel"
+run_audit --root "${imgroot}" "${imgroot}/etc/sudoers.d/esc"
+check "absolute symlink escaping root is flagged, not followed to host (exit 1)" rc_is 1
+check "escaping command is named" out_has '/usr/bin/escaping'
+run_audit --root "${imgroot}" "${imgroot}/etc/sudoers.d/rel"
+check "relative symlink resolving within root is present (exit 0)" rc_is 0
+
+## 10. a command PATH that legitimately contains a (backslash-escaped) space is
+##     matched via progressive prefixes, not mis-split on the first space.
+mkdir -p -- "${root}/opt/my dir"
+printf '%s\n' '#!/bin/sh' > "${root}/opt/my dir/tool"
+chmod +x -- "${root}/opt/my dir/tool"
+printf '%s\n' 'user ALL=NOPASSWD: /opt/my\ dir/tool' > "${work}/spaced"
+run_audit --root "${root}" "${work}/spaced"
+check "spaced command path matched, not mis-split (exit 0)" rc_is 0
+
 ## --- report ------------------------------------------------------------------
 printf '%s\n' "sudoers-command-audit-tests: ${pass} pass, ${fail} fail, 0 skip"
 [ "${fail}" -eq 0 ]
