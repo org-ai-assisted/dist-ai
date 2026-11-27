@@ -851,6 +851,47 @@ else
    fail "the tool ran 'git submodule update': <<<$(cat -- "${SUBUPDATE_LOG}")>>>"
 fi
 
+## =============================================================================
+## RAM-adaptive parallel fetch-job cap (compute_ram_capped_jobs).
+## The default fetch-job count must FALL under memory pressure and RISE when RAM is
+## ample, so the all-submodule prefetch never OOMs a shared host -- the failure the
+## operator used to dodge by hand-forcing serial. Extract the function from the REAL
+## tool (so the test exercises the shipped code, not a drifting copy) and drive its
+## arithmetic via the DM_JOBS_MEMAVAILABLE_KB seam. OLD code has no such function (a
+## fixed default) -> the extraction finds nothing and this FAILS, as a canary must.
+## =============================================================================
+ramcap_fn="$(sed -n '/^compute_ram_capped_jobs() {$/,/^}$/p' "${tool}")"
+if [ -z "${ramcap_fn}" ]; then
+   fail "compute_ram_capped_jobs not found in ${tool} (RAM-adaptive job cap missing)"
+else
+   eval "${ramcap_fn}"
+   ramcap() { DM_JOBS_MEMAVAILABLE_KB="$1" compute_ram_capped_jobs "$2" "$3" "$4"; }
+   ramcap_check() {
+      local desc="$1" got="$2" want="$3"
+      if [ "${got}" = "${want}" ]; then
+         pass "${desc} (=${got})"
+      else
+         fail "${desc}: got ${got}, want ${want}"
+      fi
+   }
+   ## dm-submodule-ai-sync's real knobs: want 8, floor 2, ~500MB/job.
+   ramcap_check "ample RAM (8 GB) rises to want"           "$(ramcap 8396800 8 2 500)"  8
+   ramcap_check "tight RAM (2 GB) falls below want"        "$(ramcap 2097152 8 2 500)"  4
+   ramcap_check "scarce RAM (0.5 GB) clamps to floor"      "$(ramcap 512000 8 2 500)"   2
+   ramcap_check "huge RAM (16 GB) stays capped at want"    "$(ramcap 16777216 8 2 500)" 8
+   ramcap_check "non-numeric MemAvailable clamps to floor" "$(ramcap abc 8 2 500)"      2
+
+   ## Drift guard: dm-tidy carries a byte-identical copy of compute_ram_capped_jobs (a
+   ## shared lib would cross the dist-ai / private-ai-config boundary). Fail if the two
+   ## dist-ai copies ever diverge, so a fix to one is not silently lost on the other.
+   tidy_ramcap_fn="$(sed -n '/^compute_ram_capped_jobs() {$/,/^}$/p' "${dist_ai_bin}/dm-tidy")"
+   if [ -n "${tidy_ramcap_fn}" ] && [ "${tidy_ramcap_fn}" = "${ramcap_fn}" ]; then
+      pass "compute_ram_capped_jobs is byte-identical in dm-submodule-ai-sync and dm-tidy (no drift)"
+   else
+      fail "compute_ram_capped_jobs DRIFTED between dm-submodule-ai-sync and dm-tidy"
+   fi
+fi
+
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
    exit 1

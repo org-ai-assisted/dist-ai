@@ -102,6 +102,9 @@ make_stub SYNC     SYNC_RC
 make_stub REMASTER REMASTER_RC
 make_stub GITSYNC  GITSYNC_RC
 make_stub FSCK     FSCK_RC
+## PREFETCH records one line PER ai-workflow repo it is handed (parent + each submodule),
+## so a case can assert WHICH repos were warmed and that it ran before SYNC.
+make_stub PREFETCH PREFETCH_RC
 
 ## REMOTES is the phase-0 ensure (dm-packaging-helper-script); stubbed so the suite
 ## never runs the real remote-add. It only RECORDS its call -- it does NOT add
@@ -111,6 +114,10 @@ export DM_TIDY_SUBMODULE_SYNC="${stubs}/SYNC"
 export DM_TIDY_REMASTER_ALL="${stubs}/REMASTER"
 export DM_TIDY_GIT_SYNC="${stubs}/GITSYNC"
 export DM_TIDY_FSCK="${stubs}/FSCK"
+## Default the network prefetch OFF so the phase-orchestration cases stay offline and
+## deterministic (no real 'git fetch --all' against the file:// fixture). The dedicated
+## prefetch cases below re-enable it with the PREFETCH recording stub.
+export DM_TIDY_PREFETCH=skip
 
 ## --- Fixture: derivative-maker-shaped superproject on 'ai' + one submodule ------
 fork="${workspace}/fork.git"
@@ -202,6 +209,15 @@ if grep --quiet -- '--dry-run' <<< "$(log_lines)"; then
    fail "apply run leaked --dry-run into a phase; log:<<<$(log_lines)>>>"
 else
    pass "apply run passes no --dry-run to any phase"
+fi
+## CANARY: the summary reports a per-phase wall-clock timing block + total, so a slow
+## run is attributable to a phase instead of a hunch. On OLD dm-tidy (no timing) the
+## block is absent -> this FAILS, as a canary must.
+if grep --quiet -- 'phase timings' "${tidy_out}" \
+   && grep --quiet --extended-regexp -- '^  remaster +[0-9]+s$' "${tidy_out}"; then
+   pass "the summary reports a per-phase timing block (attributable runtime)"
+else
+   fail "per-phase timing block missing/malformed; out:<<<$(cat -- "${tidy_out}")>>>"
 fi
 
 ## --- Case 1b (CANARY): the default ensure uses the IN-TREE helper, never a PATH copy -
@@ -561,6 +577,45 @@ refuse_touches_nothing "non-derivative-maker repo" --dir "${plain}"
 ## 11c. an empty --dir value is a usage error, not a silent cwd run.
 refuse_touches_nothing "empty --dir value" --dir ""
 
+## --- Prefetch A: warms parent + every ai-workflow submodule, BEFORE sync ------------
+## The whole point of the prefetch phase: hoist the network to the front, over the parent
+## AND each submodule carrying 'ai', so the later fetching phases transfer nothing. With
+## the PREFETCH recording stub it must log one call per ai-workflow repo ({super},
+## {super}/sub) and run AFTER remotes-validation but BEFORE submodule-sync. Runs here,
+## while 'super' is still pristine (case 13 permanently adds a remote-less submodule).
+## OLD dm-tidy has no prefetch phase -> the stub is never invoked -> this FAILS (canary).
+run_tidy DM_TIDY_PREFETCH="${stubs}/PREFETCH" --dir "${super}"
+prefetch_line="$(log_lines | grep -n -- '^PREFETCH ' | head -1 | cut -d: -f1 || true)"
+sync_line="$(log_lines | grep -n -- '^SYNC ' | head -1 | cut -d: -f1 || true)"
+if [ "${tidy_rc}" -eq 0 ] \
+   && grep --quiet --fixed-strings --line-regexp -- "PREFETCH ${super_top}" "${TIDY_LOG}" \
+   && grep --quiet --fixed-strings --line-regexp -- "PREFETCH ${super_top}/sub" "${TIDY_LOG}" \
+   && [ -n "${prefetch_line}" ] && [ -n "${sync_line}" ] && [ "${prefetch_line}" -lt "${sync_line}" ]; then
+   pass "prefetch warms the parent AND the ai-workflow submodule, before the sync phase"
+else
+   fail "prefetch coverage/order wrong; rc=${tidy_rc} prefetch@${prefetch_line} sync@${sync_line} log:<<<$(log_lines)>>>"
+fi
+
+## --- Prefetch B: a MISS is best-effort -- never blocks or aborts the sweep -----------
+## Prefetch is a pure optimization: the owning sub-tool still fetches for real. A failing
+## prefetch (stub exit 1) must leave exit 0 and the full downstream sweep intact.
+run_tidy DM_TIDY_PREFETCH="${stubs}/PREFETCH" PREFETCH_RC=1 --dir "${super}"
+if [ "${tidy_rc}" -eq 0 ] && [ "$(labels_seen | sed -- 's/PREFETCH,//g')" = "REMOTES,SYNC,REMASTER,GITSYNC,FSCK" ]; then
+   pass "a failing prefetch is best-effort: exit 0, downstream phases still run"
+else
+   fail "prefetch miss not best-effort; rc=${tidy_rc} labels=$(labels_seen) out:<<<$(cat -- "${tidy_out}")>>>"
+fi
+
+## --- Prefetch C: DM_TIDY_PREFETCH=skip disables it, sweep unchanged ------------------
+run_tidy DM_TIDY_PREFETCH=skip --dir "${super}"
+if [ "${tidy_rc}" -eq 0 ] \
+   && ! grep --quiet -- '^PREFETCH ' "${TIDY_LOG}" \
+   && grep --quiet -- 'skipped (DM_TIDY_PREFETCH=skip)' "${tidy_out}"; then
+   pass "DM_TIDY_PREFETCH=skip disables prefetch (no fetch) and reports it; sweep unchanged"
+else
+   fail "prefetch skip wrong; rc=${tidy_rc} labels=$(labels_seen) out:<<<$(cat -- "${tidy_out}")>>>"
+fi
+
 ## --- Case 12 (CANARY): phase 0 refuses early on a MISSING expected remote --------
 ## Remove a dm-tidy-critical remote from the submodule; phase 0's validation must
 ## ABORT before any mutating phase, so a missing remote cannot SILENTLY skip
@@ -706,4 +761,4 @@ if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
    exit 1
 fi
-printf '%s\n' "OK: dm-tidy ensures+validates remotes (only on the helper's own tree, never the wrong one), orders the phases, exits nonzero on block/error, aborts safely (incl. a missing remote), dry-runs clean, refuses off-ai, survives an unset HOME."
+printf '%s\n' "OK: dm-tidy ensures+validates remotes (only on the helper's own tree, never the wrong one), orders the phases, prefetches the network up front (best-effort, skippable), exits nonzero on block/error, aborts safely (incl. a missing remote), dry-runs clean, refuses off-ai, survives an unset HOME."

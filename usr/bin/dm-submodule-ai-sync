@@ -238,12 +238,45 @@ fi
 ## repo, so concurrent fetches never contend. Results are recorded per path in 'prefetch_rc'; the
 ## loop consumes them instead of fetching inline (falling back to an inline fetch only if a path
 ## was somehow not pre-fetched). Runs in --dry-run too (fetch is the only way to classify).
-fetch_jobs="${DM_SUBMODULE_AI_SYNC_FETCH_JOBS:-4}"
+## Cap a desired job count to what free RAM safely allows: a large git fetch (index-pack of a big
+## repo) transiently needs a few hundred MB, so N concurrent fetches OOM a shared host under
+## memory pressure. Derive a ceiling from MemAvailable (the kernel's allocatable-without-swap
+## estimate), ~budget MB per job, clamped to [floor, want]; unreadable MemAvailable -> floor
+## (safe). DM_JOBS_MEMAVAILABLE_KB is a test seam to drive the arithmetic deterministically.
+compute_ram_capped_jobs() {
+   local want="$1" floor="$2" budget="$3" avail_kb avail_mb cap
+   avail_kb="${DM_JOBS_MEMAVAILABLE_KB:-$(awk '/^MemAvailable:/ { print $2; exit }' /proc/meminfo 2>/dev/null || true)}"
+   case "${avail_kb}" in
+      '' | *[!0-9]* )
+         printf '%s' "${floor}"
+         return 0
+         ;;
+   esac
+   avail_mb=$(( avail_kb / 1024 ))
+   cap=$(( avail_mb / budget ))
+   if [ "${cap}" -lt "${floor}" ]; then
+      cap="${floor}"
+   fi
+   if [ "${cap}" -gt "${want}" ]; then
+      cap="${want}"
+   fi
+   printf '%s' "${cap}"
+}
+
+## Default: RAM-adaptive (rises toward 8 when memory is ample, falls under pressure) so the
+## all-submodule prefetch never OOMs on a shared host; DM_SUBMODULE_AI_SYNC_FETCH_JOBS overrides.
+if [ -n "${DM_SUBMODULE_AI_SYNC_FETCH_JOBS:-}" ]; then
+   fetch_jobs="${DM_SUBMODULE_AI_SYNC_FETCH_JOBS}"
+else
+   ## ~500MB/job: a fork fetch's index-pack is the memory risk.
+   fetch_jobs="$(compute_ram_capped_jobs 8 2 500)"
+fi
 case "${fetch_jobs}" in
    '' | *[!0-9]* | 0 )
       fetch_jobs=4
       ;;
 esac
+log "submodule fork prefetch: up to ${fetch_jobs} parallel (override: DM_SUBMODULE_AI_SYNC_FETCH_JOBS)"
 declare -A prefetch_rc=()
 prefetch_paths=()
 for path in "${sub_paths[@]}"; do

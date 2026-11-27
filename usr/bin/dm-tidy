@@ -85,6 +85,11 @@ GIT_SYNC_CMD="${DM_TIDY_GIT_SYNC:-dm-git-sync}"
 ## Empty by default = run the built-in 'git fsck'. A stub path here lets the test
 ## drive a clean/corrupt verdict without a real object store.
 FSCK_CMD="${DM_TIDY_FSCK:-}"
+## Prefetch control. Empty = run the built-in parallel 'git fetch --all' warm-up.
+## 'skip' disables it (each sub-tool then fetches on demand, as before). A stub path
+## receives one <repo> arg per repo, letting the test drive the orchestration without
+## real fetches.
+PREFETCH_CMD="${DM_TIDY_PREFETCH:-}"
 
 ## Phase 0 validates that the dm-tidy-critical git remotes exist (a MISSING remote
 ## otherwise SILENTLY skips downstream work -- e.g. the mandatory arraybolt3/trixie
@@ -209,6 +214,10 @@ head_ref="$( git -C "${top}" symbolic-ref --quiet HEAD 2>/dev/null || true )"
 ## On an abort the remaining MUTATING steps are skipped -- never push on a half-done
 ## tree -- but the read-only fsck still runs so the store is still verified.
 step_results=()   ## "<label>\t<verdict>"
+## Per-phase wall-clock seconds, for the summary. The remaster/mirror phases
+## dominate the runtime; printing each phase's duration turns "it felt slow" into
+## a measured number, so a future speedup is judged against data, not a hunch.
+phase_timings=()  ## "<phase>\t<seconds>"
 any_blocked="false"
 any_error="false"
 aborted="false"
@@ -434,6 +443,135 @@ phase_remotes() {
       return 0
    fi
    record "1 remotes" "ok"
+}
+
+## Cap a desired parallel-job count to what free RAM safely allows: a large git fetch
+## (index-pack of a big repo) transiently needs a few hundred MB, so N concurrent fetches
+## OOM a shared host under memory pressure. Derive a ceiling from MemAvailable (the kernel's
+## allocatable-without-swap estimate), ~budget MB per job, clamped to [floor, want];
+## unreadable MemAvailable -> floor (safe). DM_JOBS_MEMAVAILABLE_KB is a test seam.
+## KEEP IDENTICAL to the copies in dm-submodule-ai-sync and dm-remaster-all (a shared lib
+## would cross the dist-ai / private-ai-config boundary); a drift guard covers the dist-ai pair.
+compute_ram_capped_jobs() {
+   local want="$1" floor="$2" budget="$3" avail_kb avail_mb cap
+   avail_kb="${DM_JOBS_MEMAVAILABLE_KB:-$(awk '/^MemAvailable:/ { print $2; exit }' /proc/meminfo 2>/dev/null || true)}"
+   case "${avail_kb}" in
+      '' | *[!0-9]* )
+         printf '%s' "${floor}"
+         return 0
+         ;;
+   esac
+   avail_mb=$(( avail_kb / 1024 ))
+   cap=$(( avail_mb / budget ))
+   if [ "${cap}" -lt "${floor}" ]; then
+      cap="${floor}"
+   fi
+   if [ "${cap}" -gt "${want}" ]; then
+      cap="${want}"
+   fi
+   printf '%s' "${cap}"
+}
+
+## Phase 1.5: hoist the pipeline's network to the FRONT. The remaster, mirror and
+## submodule-sync phases each FETCH the same fork/upstream tips on demand, so the run
+## interleaves network (fetch) with compute (merge-tree) and re-downloads the same objects
+## across phases. Warm every ai-workflow repo's remotes HERE, in ONE bounded-parallel pass:
+## the later fetches then negotiate against now-current tracking refs and transfer nothing,
+## so the bulk download happens once, overlapped, up front. 'git fetch --all' warms every
+## remote (fork + upstream + trixie + mirrors) without this tool needing each repo's upstream
+## remote NAME; once the fork's objects are local, a mirror's fetch is cheap. --no-write-fetch-head
+## leaves FETCH_HEAD untouched (a concurrent sibling's 'git merge FETCH_HEAD' stays safe);
+## --prune clears the stale tracking refs that otherwise D/F-conflict a later fetch.
+##
+## BEST-EFFORT, never a gate: a per-repo fetch failure is NOT fatal -- the owning sub-tool still
+## fetches it for real -- so prefetch never blocks or aborts the sweep, and it is skipped when the
+## sweep is already halted (nothing downstream will fetch). Bounded-parallel + RAM-adaptive so a
+## shared host never OOMs. DM_TIDY_PREFETCH=skip disables it; a stub path drives it in tests.
+phase_prefetch() {
+   if mutation_halted; then
+      record "1 prefetch" "${mutation_halt_reason}"
+      return 0
+   fi
+   if [ "${PREFETCH_CMD}" = "skip" ]; then
+      record "1 prefetch" "skipped (DM_TIDY_PREFETCH=skip)"
+      return 0
+   fi
+   log ">>> [1/6] prefetch all remotes in parallel (warm the object DB; best-effort)"
+
+   ## ai-workflow repos: the parent plus every submodule carrying a local 'ai' (the exact
+   ## set the downstream phases fetch; upstream-only submodules have no 'ai' work).
+   local repos=() path sub_rc=0
+   repos+=( "${top}" )
+   read_submodule_paths || sub_rc="$?"
+   if [ "${sub_rc}" -eq 0 ]; then
+      for path in "${submodule_path_list[@]}"; do
+         [ -n "${path}" ] || continue
+         git -C "${top}/${path}" show-ref --verify --quiet "refs/heads/${AI_BRANCH}" 2>/dev/null \
+            || continue
+         repos+=( "${top}/${path}" )
+      done
+   fi
+
+   local jobs
+   jobs="$( compute_ram_capped_jobs 16 4 500 )"
+
+   ## 'wait -n -p' (reap a SPECIFIC finished child to decrement the counter) needs bash >= 5.1;
+   ## older bash runs serial rather than refuse -- prefetch is an optimization, never a reason to
+   ## fail the tidy. (The supported OS ships 5.2.)
+   local parallel="true"
+   if [ "${BASH_VERSINFO[0]}" -lt 5 ] \
+      || { [ "${BASH_VERSINFO[0]}" -eq 5 ] && [ "${BASH_VERSINFO[1]}" -lt 1 ]; }; then
+      parallel="false"
+   fi
+
+   prefetch_one() {
+      ## Stub seam: an executable DM_TIDY_PREFETCH gets one <repo> arg; else the real warm-up.
+      if [ -n "${PREFETCH_CMD}" ]; then
+         "${PREFETCH_CMD}" "$1" >/dev/null 2>&1
+         return "$?"
+      fi
+      git -C "$1" fetch --all --prune --no-tags --no-write-fetch-head \
+         --no-recurse-submodules --quiet >/dev/null 2>&1
+   }
+
+   ## 'wait -n' (no pid) reaps the NEXT finished child and returns its exit status --
+   ## all this needs: a simple warmed/failed tally and a running-counter decrement, not
+   ## which specific pid finished.
+   local repo running=0 reap_rc warmed=0 failed=0 total="${#repos[@]}"
+   for repo in "${repos[@]}"; do
+      if [ "${parallel}" = "false" ]; then
+         if prefetch_one "${repo}"; then
+            warmed=$(( warmed + 1 ))
+         else
+            failed=$(( failed + 1 ))
+         fi
+         continue
+      fi
+      prefetch_one "${repo}" &
+      running=$(( running + 1 ))
+      if [ "${running}" -ge "${jobs}" ]; then
+         reap_rc=0
+         wait -n || reap_rc="$?"
+         if [ "${reap_rc}" -eq 0 ]; then
+            warmed=$(( warmed + 1 ))
+         else
+            failed=$(( failed + 1 ))
+         fi
+         running=$(( running - 1 ))
+      fi
+   done
+   ## Drain the remaining in-flight children, counting each exactly once.
+   while [ "${running}" -gt 0 ]; do
+      reap_rc=0
+      wait -n || reap_rc="$?"
+      if [ "${reap_rc}" -eq 0 ]; then
+         warmed=$(( warmed + 1 ))
+      else
+         failed=$(( failed + 1 ))
+      fi
+      running=$(( running - 1 ))
+   done
+   record "1 prefetch" "ok (warmed ${warmed}/${total}; ${failed} best-effort misses)"
 }
 
 ## Phase 1: submodule 'ai' sync (dm-submodule-ai-sync). 0 ok | 1 some stopped
@@ -740,21 +878,38 @@ phase_mergecheck() {
    mergecheck_scrub_refs
 }
 
-phase_remotes
-phase_submodule_sync
-phase_content_recheck
-phase_remaster
-phase_parent_sync
+## Record a phase's wall-clock into phase_timings. The phase CALLS below stay LITERAL
+## (not dispatched through a '"$@"' wrapper) so shellcheck still sees each phase invoked
+## -- a wrapper hides them and every phase body trips SC2317 'unreachable'. SECONDS is the
+## shell's monotonic uptime builtin (1s resolution, ample for the multi-minute phases);
+## phase_start is set immediately before each call. Every phase self-records its verdict
+## and returns 0 (it never exits), so the sequence is errexit-safe.
+phase_start="${SECONDS}"
+mark() {
+   phase_timings+=( "${1}"$'\t'"$(( SECONDS - phase_start ))" )
+}
+
+phase_start="${SECONDS}" ; phase_remotes         ; mark remotes
+phase_start="${SECONDS}" ; phase_prefetch        ; mark prefetch
+phase_start="${SECONDS}" ; phase_submodule_sync  ; mark submodule-sync
+phase_start="${SECONDS}" ; phase_content_recheck ; mark content-recheck
+phase_start="${SECONDS}" ; phase_remaster        ; mark remaster
+phase_start="${SECONDS}" ; phase_parent_sync     ; mark parent-sync
 ## fsck is read-only: always verify the store, even after an abort.
-phase_fsck
+phase_start="${SECONDS}" ; phase_fsck            ; mark fsck
 ## mergecheck is read-only + informational: always run it.
-phase_mergecheck
+phase_start="${SECONDS}" ; phase_mergecheck      ; mark mergecheck
 
 ## --- Summary ---------------------------------------------------------------------
 mode_label="apply"
 [ "${dry_run}" = "true" ] && mode_label="dry-run"
 printf '%s\n' "" "${0##*/}: summary (${mode_label} run on '${top}'):"
 printf '%s\n' "${step_results[@]}" | awk -F '\t' '{printf "  %-22s %s\n", $1, $2}'
+
+## Per-phase wall-clock, so the runtime is attributable (the remaster + mirror
+## phases dominate). Total is SECONDS -- this process's whole uptime.
+printf '%s\n' "" "${0##*/}: phase timings (${mode_label}, total ${SECONDS}s):"
+printf '%s\n' "${phase_timings[@]}" | awk -F '\t' '{printf "  %-22s %ss\n", $1, $2}'
 
 if [ "${any_error}" = "true" ]; then
    die 1 "dm-tidy did NOT complete cleanly -- a step failed (see the table). Resolve, then re-run."
