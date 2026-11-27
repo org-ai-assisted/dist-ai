@@ -1,0 +1,64 @@
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## dist-ai SELF-test lane for the suite-registry consistency lint.
+##
+## usr/share/dist-ai-registry-tests/registry_test.sh verifies every registered
+## suite has an executable entrypoint, a debian/*.install entry, a wire() case and
+## a suite_component() mapping. An unmapped/unwired suite silently drops out of
+## every --component run (per-repo CI) while looking registered. Without this lane
+## that integrity check runs NOWHERE in CI, so a broken registry rides a
+## green-scanners PR -- which happened: a suite was added without a mapping. Pure
+## bash over the checkout (git for the payload check), no network, no root. The
+## FULL dist-ai-registry-tests battery (the other ~44 tool-regression tests, with
+## heavier shellcheck/yq/shfmt/bandit deps) is deliberately NOT run here. local-*
+## prefix per G-A-005: dist-ai-specific, not a cross-repo reusable, and NOT a
+## pkg_update_consumer_workflows-managed consumer-*.yml template.
+
+name: registry-lint-self-tests
+
+on:
+  push:
+    branches:
+      - master
+      - ai
+    paths:
+      - 'usr/bin/dist-ai-tests-all'
+      - 'usr/share/dist-ai-registry-tests/registry_test.sh'
+      - 'debian/dist-ai.install'
+      - '.github/workflows/local-registry-lint-tests.yml'
+  pull_request:
+    paths:
+      - 'usr/bin/dist-ai-tests-all'
+      - 'usr/share/dist-ai-registry-tests/registry_test.sh'
+      - 'debian/dist-ai.install'
+      - '.github/workflows/local-registry-lint-tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  registry-lint-self-tests:
+    ## CI runs only where we enabled it. Unset variable -> the job is skipped, no
+    ## runner is allocated, and the run stays green: forks are never handed a red X
+    ## for a lane they did not opt into.
+    if: vars.CI_ENABLED_ORG_AI_ASSISTED == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      ## No apt deps: registry_test.sh is bash over the checkout and uses only git
+      ## (pre-installed on the runner) for its payload-shipping check. It
+      ## auto-detects the tree from its own location, so no DIST_AI_REPO is needed.
+      - name: Run suite-registry consistency lint (bash + git; no root, no network)
+        run: bash ./usr/share/dist-ai-registry-tests/registry_test.sh
