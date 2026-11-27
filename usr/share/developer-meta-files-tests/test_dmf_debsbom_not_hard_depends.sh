@@ -66,11 +66,14 @@ fi
 ## continuation lines. Values ACCUMULATE (not overwrite), so a hard Depends in a
 ## non-final binary 'Package:' stanza is still caught if the package ever grows a
 ## second binary. The Source stanza has Build-Depends, which '^Depends:' skips.
+## Column-zero '#' comment lines are transparent (deb822 allows them, including
+## between continuation lines) -- they neither end nor start a field.
 extract_field() {
   local field="$1"
   awk -v field="${field}" '
     BEGIN { infield = 0; val = "" }
     {
+      if ($0 ~ /^#/) { next }
       if (infield) {
         if ($0 ~ /^[ \t]/) { line = $0; sub(/^[ \t]+/, "", line); val = val " " line; next }
         infield = 0
