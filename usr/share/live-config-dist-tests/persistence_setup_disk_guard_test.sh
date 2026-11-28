@@ -236,9 +236,35 @@ check "h8a: postrm runs NO recursive rm" \
    "$( grep --extended-regexp --quiet 'rm[[:space:]]+(-[[:alnum:]]*[rR]|--recursive)' <<< "${postrm_code}" && printf '%s' false || printf '%s' true )" "recursive rm present"
 ## No ROOT (non-runuser) rm touching a home path at all: a root rm of a
 ## user-controlled path follows a parent symlink as root even without -r.
-home_rm="$( grep --extended-regexp 'rm[[:space:]].*(/home|~)' <<< "${postrm_code}" | grep --extended-regexp --invert-match 'runuser' | head --lines 1 || true )"
+## A line is exempt ONLY when its rm is the OPERAND of a 'runuser -u <user> -- rm'
+## invocation ON THAT line. Filtering on the bare substring 'runuser' would exempt
+## a dangerous bare root rm whose line merely MENTIONS runuser (e.g. in a trailing
+## comment or an unrelated compound command), so require the actual structure.
+unsafe_home_rm() {
+   grep --extended-regexp 'rm[[:space:]].*(/home|~)' \
+   | grep --extended-regexp --invert-match \
+        'runuser[[:space:]]+-u[[:space:]]+[^[:space:]]+[[:space:]]+--[[:space:]]+rm[[:space:]]' \
+   | head --lines 1 \
+   || true
+}
+home_rm="$( unsafe_home_rm <<< "${postrm_code}" )"
 check "h8a: postrm runs NO root (non-runuser) rm on a home path" \
    "$( [ -z "${home_rm}" ] && printf '%s' true || printf '%s' false )" "root rm on home: ${home_rm}"
+
+## Regression (reviewdrain52): the exemption matches the runuser-rm STRUCTURE, not
+## the substring 'runuser'. A bare root rm on a home path whose line only mentions
+## runuser (here in a trailing comment) must still be REJECTED; a genuine
+## 'runuser -u user -- rm ... /home' must still be ACCEPTED.
+danger_postrm="$( printf '%s\n' \
+   'runuser -u user -- rm -f -- /opt/app/launcher.desktop' \
+   'rm -f "/home/user/leftover"   # runuser cannot reach this' )"
+check "h8a regression: root rm on home with 'runuser' only in a comment is REJECTED" \
+   "$( [ -n "$( unsafe_home_rm <<< "${danger_postrm}" )" ] && printf '%s' true || printf '%s' false )" \
+   "guard failed to flag the dangerous bare root rm"
+safe_postrm='runuser -u user -- rm -rf -- /home/user/.cache'
+check "h8a regression: a genuine 'runuser -u user -- rm' on a home path is ACCEPTED" \
+   "$( [ -z "$( unsafe_home_rm <<< "${safe_postrm}" )" ] && printf '%s' true || printf '%s' false )" \
+   "guard wrongly flagged a privilege-dropped rm"
 
 printf '%s\n' ""
 printf '%s\n' "===== persistence-setup disk guard: ${pass_count} pass, ${fail_count} fail ====="
