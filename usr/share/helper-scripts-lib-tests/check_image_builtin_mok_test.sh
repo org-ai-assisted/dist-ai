@@ -94,7 +94,9 @@ dkms="${work}/var/lib/dkms"
 efi="${work}/efi"
 bindir="${work}/bin"
 sentinel_file="${work}/mokutil.invoked"
-mkdir --parents -- "${bindir}"
+## A second PATH dir with NO mokutil, for the "mokutil absent" case.
+empty_bindir="${work}/nobin"
+mkdir --parents -- "${bindir}" "${empty_bindir}"
 
 ## mokutil stub: records that it was invoked, then forces a branch via MOKUTIL_MODE.
 ## 'mokutil --test-key <pubfile>' is $1=--test-key $2=<pubfile>. The real script reads
@@ -213,6 +215,39 @@ if [ -f "${do_once}/check_image_builtin_mok_version_1" ]; then
 fi
 check "no keys -> 0" "${rc}" "0"
 check "no keys -> writes version_1 marker" "${marker}" "present"
+
+## --- mok-ok flag (Calamares-set) -> 0, mokutil NOT invoked -----------------
+## Calamares drops the mok-ok flag after legitimately setting up a MOK during
+## installation. The check must short-circuit to 0 BEFORE consulting mokutil,
+## even with a key ENROLLED (the strongest vulnerable signal otherwise).
+reset_state uefi
+touch -- "${dkms}/mok.pub"
+export MOKUTIL_MODE='enrolled'
+mkdir --parents -- "${do_once}"
+touch -- "${do_once}/mok-ok"
+check "mok-ok flag -> 0, mokutil not invoked" "$(run_mok)" "0:no"
+
+## --- mokutil absent -> 0 and do NOT mark the system safe --------------------
+## Without mokutil, enrollment cannot be detected; return 0 but must NOT write
+## the version_1 marker -- the user may have uninstalled mokutil before this ran,
+## so a later run must still get the chance to detect the key.
+reset_state uefi
+touch -- "${dkms}/mok.pub"
+nomok_rc=0
+PATH="${empty_bindir}" check_image_builtin_mok || nomok_rc=$?
+nomok_marker='absent'
+if [ -f "${do_once}/check_image_builtin_mok_version_1" ]; then
+   nomok_marker='present'
+fi
+check "mokutil absent -> 0" "${nomok_rc}" "0"
+check "mokutil absent -> does NOT set the version_1 marker" "${nomok_marker}" "absent"
+
+## --- private key only (no public), non-UEFI -> 1 ---------------------------
+## The key-presence check is '-f pub || -f priv'; a lone private key must still
+## count as a present (deletable) key, not be missed.
+reset_state
+touch -- "${dkms}/mok.key"
+check "non-UEFI, private key only -> 1" "$(run_mok)" "1:no"
 
 ## --- CANARY: the exact enrolled-string compare is load-bearing --------------
 ## With a key present + UEFI but mokutil returning a DIFFERENT message (nonzero),

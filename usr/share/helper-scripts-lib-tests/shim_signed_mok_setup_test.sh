@@ -99,7 +99,9 @@ dkms_base="${work}/var/lib/dkms"
 shim_base="${work}/var/lib/shim-signed/mok"
 bindir="${work}/bin"
 gen_sentinel="${work}/dkms.generate_mok.invoked"
-mkdir --parents -- "${bindir}"
+## A second PATH dir with NO dkms, for the "dkms missing" case.
+empty_bindir="${work}/nobin"
+mkdir --parents -- "${bindir}" "${empty_bindir}"
 
 ## dkms stub: records a 'generate_mok' invocation, optionally fails, and (on success)
 ## creates the key files in DKMS_STUB_MOK_DIR to emulate the real tool.
@@ -138,6 +140,15 @@ check() {
    fi
 }
 
+## Echoes a symlink's target, or 'NOTLINK' if it is not a symlink.
+link_target() {
+   if [ -L "$1" ]; then
+      readlink -- "$1"
+   else
+      printf '%s' 'NOTLINK'
+   fi
+}
+
 reset_state() {
    safe-rm --recursive --force -- "${dkms_base}" "${shim_base}" "${gen_sentinel}"
    mkdir --parents -- "${dkms_base}"
@@ -153,6 +164,8 @@ run_setup() {
 ## --- (1) dkms_mok_variables_set derives the six paths from the base dirs -----
 reset_state
 dkms_mok_variables_set
+check "dkms_mok_dir"          "${dkms_mok_dir}"          "${dkms_base}"
+check "shim_mok_dir"          "${shim_mok_dir}"          "${shim_base}"
 check "dkms_mok_public_file"  "${dkms_mok_public_file}"  "${dkms_base}/mok.pub"
 check "dkms_mok_private_file" "${dkms_mok_private_file}" "${dkms_base}/mok.key"
 check "shim_mok_public_file"  "${shim_mok_public_file}"  "${shim_base}/MOK.der"
@@ -193,6 +206,10 @@ check "no keys -> rc 0"                    "${rc}"  "0"
 check "no keys -> generate_mok invoked"    "${gen}" "yes"
 check "no keys -> keys created by generate" "${keys}" "yes"
 check "no keys -> shim MOK symlinks created" "${link}" "yes"
+## SECURITY: '-L' alone passes even if the two links were swapped or point at a
+## wrong path. Pin each link's TARGET: public -> dkms mok.pub, private -> mok.key.
+check "no keys -> MOK.der links to dkms mok.pub"  "$(link_target "${shim_base}/MOK.der")"  "${dkms_base}/mok.pub"
+check "no keys -> MOK.priv links to dkms mok.key" "$(link_target "${shim_base}/MOK.priv")" "${dkms_base}/mok.key"
 
 ## --- CANARY: a failing 'dkms generate_mok' must return 1 --------------------
 ## If the generate branch did not check the result, this would be 0 -- so rc 1
@@ -200,6 +217,40 @@ check "no keys -> shim MOK symlinks created" "${link}" "yes"
 reset_state
 export DKMS_GENMOK_MODE='fail'
 check "canary: dkms generate_mok fails -> rc 1" "$(run_setup)" "1"
+
+## --- generate_mok reports success but writes NO key files -> rc 1, NO links --
+## SECURITY: if this branch regressed, the script would fall through to 'ln -s'
+## and create shim symlinks pointing at NONEXISTENT dkms keys (a dangling-key
+## false-enrollment footgun). DKMS_STUB_MOK_DIR='' makes the stub exit 0 without
+## creating the files.
+reset_state
+nolink_rc=0
+DKMS_STUB_MOK_DIR='' shim_signed_mok_setup >/dev/null 2>&1 || nolink_rc=$?
+check "generate success but no key files -> rc 1" "${nolink_rc}" "1"
+check "generate success but no key files -> no dangling MOK.der link" "$(link_target "${shim_base}/MOK.der")" "NOTLINK"
+
+## --- dkms tool absent -> rc 1 (cannot generate, must fail loud) -------------
+reset_state
+nodkms_rc=0
+PATH="${empty_bindir}" shim_signed_mok_setup >/dev/null 2>&1 || nodkms_rc=$?
+check "dkms tool absent -> rc 1" "${nodkms_rc}" "1"
+
+## --- idempotency: a second run with keys + links already present ------------
+## keys present short-circuits generate, and the 'test -L' guards must SKIP the
+## ln (no clobber): rc 0, links intact, generate_mok NOT invoked again.
+reset_state
+touch -- "${dkms_base}/mok.pub" "${dkms_base}/mok.key"
+run_setup >/dev/null
+safe-rm --force -- "${gen_sentinel}"
+rc="$(run_setup)"
+gen='no'
+if [ -e "${gen_sentinel}" ]; then
+   gen='yes'
+fi
+check "second run -> rc 0" "${rc}" "0"
+check "second run -> generate_mok NOT invoked" "${gen}" "no"
+check "second run -> MOK.der still links to dkms mok.pub"  "$(link_target "${shim_base}/MOK.der")"  "${dkms_base}/mok.pub"
+check "second run -> MOK.priv still links to dkms mok.key" "$(link_target "${shim_base}/MOK.priv")" "${dkms_base}/mok.key"
 
 printf '%s\n' ""
 printf '%s\n' "===== shim_signed_mok_setup: ${pass} pass, ${fail} fail, 0 skip ====="

@@ -530,6 +530,62 @@ mok_setup "${test_dir}/mok-other"; CIBM_RC=2
 rc="$(call_fn secure_boot_mok_cleanup)"
 check "mok_cleanup: rc 2 -> pub kept" "$(exists "${MOK_PUB}")" "yes"
 check "mok_cleanup: rc 2 -> key kept" "$(exists "${MOK_KEY}")" "yes"
+
+## Detector crash / unexpected rc (127) -> fail SAFE: keys KEPT, never deleted.
+## Only rc 1 deletes; a broken/absent detector must not scrub a legitimate key.
+mok_setup "${test_dir}/mok-crash"; CIBM_RC=127
+rc="$(call_fn secure_boot_mok_cleanup)"
+check "mok_cleanup: detector rc 127 -> pub kept (fail-safe)" "$(exists "${MOK_PUB}")" "yes"
+check "mok_cleanup: detector rc 127 -> key kept (fail-safe)" "$(exists "${MOK_KEY}")" "yes"
+
+## Vulnerable (rc 1) but the key files are already ABSENT -> rc 0, no error.
+## --force must tolerate ENOENT; a regression dropping --force would fail here.
+mok_setup "${test_dir}/mok-gone"; CIBM_RC=1
+safe-rm --force -- "${MOK_PUB}" "${MOK_KEY}"
+rc="$(call_fn secure_boot_mok_cleanup)"
+check "mok_cleanup: vuln + files already absent -> rc 0" "${rc}" "0"
+check "mok_cleanup: vuln + files absent -> pub stays absent" "$(exists "${MOK_PUB}")" "no"
+
+## Negative control: on rc 1 ONLY the two MOK files are removed; a sibling survives.
+mok_setup "${test_dir}/mok-bystander"; CIBM_RC=1
+bystander="$(dirname -- "${MOK_PUB}")/unrelated.txt"; touch -- "${bystander}"
+rc="$(call_fn secure_boot_mok_cleanup)"
+check "mok_cleanup: vuln -> unrelated sibling file survives" "$(exists "${bystander}")" "yes"
+
+## SECURITY: a failing public-key delete must NOT abort the sensitive private-key
+## delete. pub sits in a read-only dir (its unlink fails), key in a writable dir;
+## on rc 1 the private key must STILL be removed (the two safe-rm calls are
+## independent, errexit off via the '|| true' dispatch).
+ro_dir="${test_dir}/mok-rofail/ro"; rw_dir="${test_dir}/mok-rofail/rw"
+mkdir --parents -- "${ro_dir}" "${rw_dir}"
+MOK_PUB="${ro_dir}/mok.pub"; MOK_KEY="${rw_dir}/mok.key"
+export MOK_PUB MOK_KEY
+touch -- "${MOK_PUB}" "${MOK_KEY}"
+chmod 0500 -- "${ro_dir}"
+CIBM_RC=1
+rc="$(call_fn secure_boot_mok_cleanup)"
+chmod 0700 -- "${ro_dir}"
+check "mok_cleanup: pub-delete failure still deletes the private key" "$(exists "${MOK_KEY}")" "no"
+
+## SECURITY: variable-name drift guard. The deleter removes whatever
+## dkms_mok_public_file / dkms_mok_private_file hold -- names set by the REAL
+## shim-signed-mok-setup. If those drift, safe-rm targets an empty path and a
+## leaked key survives while this suite (which mocks the helper) stays green.
+## Assert the real helper still sets BOTH path vars, non-empty.
+real_hs_sbin="${real_hs_libdir%/libexec/helper-scripts}/sbin"
+drift="$(
+   export HELPER_SCRIPTS_PATH="${HELPER_SCRIPTS_REPO}"
+   # shellcheck disable=SC1090,SC1091
+   source "${real_hs_sbin}/shim-signed-mok-setup" >/dev/null 2>&1 || { printf '%s' 'source-failed'; exit 0; }
+   declare -F dkms_mok_variables_set >/dev/null || { printf '%s' 'no-function'; exit 0; }
+   dkms_mok_variables_set
+   if [ -n "${dkms_mok_public_file:-}" ] && [ -n "${dkms_mok_private_file:-}" ]; then
+      printf '%s' 'ok'
+   else
+      printf '%s' 'empty-vars'
+   fi
+)"
+check "mok_cleanup: real shim-signed-mok-setup sets both MOK path vars (drift guard)" "${drift}" "ok"
 CIBM_RC=0; unset MOK_PUB MOK_KEY
 
 ## ================================ summary ================================
