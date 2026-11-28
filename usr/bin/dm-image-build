@@ -64,9 +64,22 @@ dry_run="false"
 ## without it the harness cannot reach its root serial shell. Mirrors CI's '--smbios-reader true'.
 smbios_reader="false"
 dir="${DM_IMAGE_BUILD_DIR:-${HOME}/derivative-maker}"
+## --ref COMMITISH: git fetch org-ai-assisted + git reset --hard the checkout to COMMITISH before
+## building (the convenience that syncs the source folder to the intended commit, instead of a hand
+## reset). Empty = do not touch the checkout; instead run the freshness guard below.
+ref=""
+## Freshness-guard off-switch. With --ref ABSENT, the checkout is checked against its
+## org-ai-assisted upstream BRANCH tip and the build is REFUSED (exit 2) when it has drifted BEHIND
+## -- a stale tree silently builds an OLD commit (a green that tested nothing). --allow-stale
+## downgrades that refusal to a warning and proceeds.
+allow_stale="false"
+## --check-only: run arg validation + the freshness guard (or --ref sync) + the dpkg-audit
+## surfacing, then exit 0 WITHOUT building -- the fast path that exercises the guards with no ~1 h
+## build, and a pre-build probe of checkout freshness + host dpkg state.
+check_only="false"
 
 usage() {
-   printf '%s\n' "usage: ${me} [--flavor F] [--target T] [--arch A] [--multi-target LIST] [--freshness frozen|current] [--freedom true|false] [--smbios-reader true|false] [--dry-run true|false] [--dir DIR]
+   printf '%s\n' "usage: ${me} [--flavor F] [--target T] [--arch A] [--multi-target LIST] [--freshness frozen|current] [--freedom true|false] [--smbios-reader true|false] [--dry-run true|false] [--dir DIR] [--ref COMMITISH] [--allow-stale] [--check-only]
 
 Build a derivative-maker image on the OVH host, NO docker, from DIR (default
 \${HOME}/derivative-maker). Defaults: --flavor kicksecure-lxqt --target iso
@@ -76,8 +89,13 @@ Build a derivative-maker image on the OVH host, NO docker, from DIR (default
 overrides the per-arch default, so '--multi-target virtualbox' forces the OVA even for
 arm64. --smbios-reader true bakes in the GRUB SMBIOS kernel-cmdline reader (REQUIRED for
 the dm-smbios-reader boot-test harness; keep false for any production/shipping image).
---dry-run true builds dummy images (fast pipeline check). Run as a sudo-capable
-NON-root user."
+--dry-run true builds dummy images (fast pipeline check). --ref COMMITISH fetches
+org-ai-assisted and git reset --hard's the checkout to it (a sha, tag, or
+org-ai-assisted/<branch> for the remote tip) before building. Without --ref, the checkout
+is checked against its org-ai-assisted upstream branch tip and the build is REFUSED (exit 2)
+if it has drifted BEHIND; --allow-stale downgrades that to a warning. --check-only validates
+args, runs the freshness guard and the dpkg-audit surfacing, then exits WITHOUT building. Run
+as a sudo-capable NON-root user."
 }
 
 ## Release loop/kpartx devices THIS user's own prior failed build leaked: grml-debootstrap's
@@ -167,6 +185,19 @@ main() {
             dir="$2"
             shift 2
             ;;
+         --ref)
+            require_value "$1" "$#"
+            ref="$2"
+            shift 2
+            ;;
+         --allow-stale)
+            allow_stale="true"
+            shift
+            ;;
+         --check-only)
+            check_only="true"
+            shift
+            ;;
          --help|-h)
             usage
             exit 0
@@ -189,9 +220,72 @@ main() {
    printf '%s\n' "${me}: build start $(date -u +%Y-%m-%dT%H:%M:%SZ) in ${dir}"
    printf '%s\n' "${me}: HEAD $(git rev-parse HEAD)"
 
+   ## --- source-freshness: NEVER silently build a stale checkout ---------------------------------
+   ## The upstream remote whose branch tip is the intended build point.
+   local upstream_remote="org-ai-assisted"
+   if [ -n "${ref}" ]; then
+      ## --ref: sync the checkout to the INTENDED build point (fetch + hard reset), so it need not
+      ## be hand-reset first. The tree is then definitionally at ${ref}, so the behind-tip freshness
+      ## guard is skipped. ${ref} is any commitish -- a sha, a tag, or ${upstream_remote}/<branch>
+      ## for the remote tip (a bare branch name resolves to the LOCAL branch, which may be stale).
+      printf '%s\n' "${me}: --ref ${ref}: fetch ${upstream_remote} + git reset --hard"
+      git fetch --quiet "${upstream_remote}" \
+         || { printf '%s\n' "${me}: ERROR: --ref given but 'git fetch ${upstream_remote}' failed -- cannot sync to ${ref}" >&2; exit 2; }
+      local resolved_ref=""
+      resolved_ref="$(git rev-parse --verify --quiet "${ref}^{commit}")" || resolved_ref=""
+      [ -n "${resolved_ref}" ] \
+         || { printf '%s\n' "${me}: ERROR: --ref '${ref}' does not resolve to a commit (after fetching ${upstream_remote})" >&2; exit 2; }
+      git reset --hard --quiet "${resolved_ref}"
+      printf '%s\n' "${me}: --ref: checkout now at $(git rev-parse HEAD)"
+   else
+      ## Freshness guard (DEFAULT): refuse to SILENTLY build a checkout that has drifted BEHIND its
+      ## ${upstream_remote} upstream branch tip -- a green that tested an OLD commit is the dangerous
+      ## case. ONLY a CONFIRMED behind hard-fails (exit 2); when the check CANNOT run (detached HEAD,
+      ## offline, no such remote/branch) WARN and proceed -- inability to check is not evidence of
+      ## staleness. --allow-stale downgrades a confirmed behind to a warning.
+      local current_branch=""
+      current_branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" || current_branch=""
+      if [ -z "${current_branch}" ] || [ "${current_branch}" = "HEAD" ]; then
+         printf '%s\n' "${me}: WARNING: detached HEAD -- cannot check freshness against ${upstream_remote}; proceeding (use --ref to pin a commit)" >&2
+      elif ! git fetch --quiet "${upstream_remote}" "refs/heads/${current_branch}" 2>/dev/null; then
+         printf '%s\n' "${me}: WARNING: could not fetch ${upstream_remote} ${current_branch} (offline, or no such remote/branch) -- skipping freshness check; proceeding" >&2
+      else
+         local behind_count=0
+         behind_count="$(git rev-list --count HEAD..FETCH_HEAD 2>/dev/null)" || behind_count=0
+         if [ "${behind_count}" -gt 0 ]; then
+            if [ "${allow_stale}" = "true" ]; then
+               printf '%s\n' "${me}: WARNING: checkout is ${behind_count} commit(s) BEHIND ${upstream_remote}/${current_branch} -- building a STALE tree (--allow-stale given)" >&2
+            else
+               printf '%s\n' \
+                  "${me}: ERROR: checkout is ${behind_count} commit(s) BEHIND ${upstream_remote}/${current_branch} -- refusing to silently build a stale tree." \
+                  "${me}:   build the upstream tip:          git reset --hard ${upstream_remote}/${current_branch}" \
+                  "${me}:   sync + build a given commit:     ${me} --ref <commitish>" \
+                  "${me}:   build this older tree anyway:    ${me} --allow-stale" >&2
+               exit 2
+            fi
+         fi
+      fi
+   fi
+
    ## --- persistent-checkout cascade: leave a tree git_sanity_test + dm-check-unicode accept ---
    printf '%s\n' "${me}: cascade: configure pending dpkg"
    sudo --non-interactive dpkg-noninteractive --configure -a || true
+   ## Surface a wedged host dpkg state UP FRONT. A half-configured package (e.g. a stale grub-live
+   ## wedging grub-efi-amd64) otherwise makes the build fail cryptically ~37 s into
+   ## 1200_prepare-build-machine. The `|| true` above swallows it, so audit the db and name the
+   ## offender here. NOT fatal (some audit states are benign) -- surfaced LOUDLY so it is diagnosed
+   ## before the build, not mid-build.
+   local dpkg_audit_out=""
+   dpkg_audit_out="$(dpkg --audit 2>/dev/null || true)"
+   if [ -n "${dpkg_audit_out}" ]; then
+      printf '%s\n' "${me}: WARNING: host has half-configured package(s); the build's apt steps will likely fail until fixed:" >&2
+      printf '%s\n' "${dpkg_audit_out}" >&2
+   fi
+
+   if [ "${check_only}" = "true" ]; then
+      printf '%s\n' "${me}: --check-only: args validated, freshness guard + dpkg audit done; NOT building"
+      exit 0
+   fi
 
    printf '%s\n' "${me}: cascade: release leaked build loop/kpartx devices (this user's tree only)"
    release_leaked_build_loops "${HOME}/derivative-binary/"
