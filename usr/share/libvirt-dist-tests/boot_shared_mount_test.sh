@@ -13,16 +13,16 @@
 ## host-side attach; this lane closes the loop by installing for real + booting.
 ##
 ## Multi-account model: the root libvirt-dist install creates group kvmsf and the
-## shared dir (${LIBVIRT_DIST_SHARED_DIR:-/mnt/shared}) owned root:kvmsf mode 3770
+## shared dir (${LIBVIRT_DIST_SHARED_DIR:-/mnt/shared}) owned user:kvmsf mode 3770
 ## (setgid + sticky, NO world) -- a system path so both "user" and "sysmaint"
-## reach it via the group (a $HOME dir could not be cross-account traversable);
-## root (NOT a member) owns it so the sticky bit protects BOTH members. user-setup
-## then attaches it (9p accessmode='mapped,fmode=0660,dmode=0770') to the domains.
-## So this test:
+## reach it via the group (a $HOME dir could not be cross-account traversable). It
+## is owned by the qemu:///session "user" NOT root: a root-owned sticky dir would
+## EPERM the guest-side mapped user.virtfs.* xattr writes (that VFS rule is guarded
+## directly in shared_folder_test.sh). user-setup then attaches it (9p
+## accessmode='mapped,fmode=0640,dmode=0750') to the domains. So this test:
 ##   - runs the real install (resolved via LIBVIRT_DIST_REPO) against a temp
-##     LIBVIRT_DIST_SHARED_DIR and asserts the dir is owner root, group kvmsf,
-##     mode 3770 (NOT the old 0700 $HOME dir, NOT a world-exposed 0777), and that
-##     a non-owner kvmsf member cannot chmod it (finding 1);
+##     LIBVIRT_DIST_SHARED_DIR and asserts the dir is owner user, group kvmsf,
+##     mode 3770 (NOT the old 0700 $HOME dir, NOT a world-exposed 0777);
 ##   - injects the checkout's mount-shared (VM_CONFIG_DIST_REPO, else the
 ##     installed /usr copy) into the boot overlay, testing THAT code, not the
 ##     release image's;
@@ -43,9 +43,11 @@
 ##   - asserts the bare mountpoint UNDER the mount is root:root 0755 and a member
 ##     cannot create a file on it (no setuid drop when NO share mounts), and that
 ##     mount-shared's virtiofs branch does no chown/chmod (fixup scoped to 9p);
-##   - asserts the HOST backing inode of a guest-written file is group kvmsf and
-##     group-readable by a host kvmsf non-owner member (finding 2: fmode/dmode on
-##     the attach, else host "sysmaint" could not read what the guest wrote);
+##   - asserts the HOST backing inode of a guest-written (group-writable) file is
+##     group kvmsf mode 0640 -- a host kvmsf non-owner member can READ but NOT
+##     write it (finding 2: fmode=0640 on the attach gives group-read only; qemu
+##     runs under umask 0002 like libvirtd so an fmode=0660 regression would show
+##     as group-writable 0660 instead of being masked);
 ##   - asserts the host<->guest canary still round-trips.
 ##
 ## Mechanics: user-setup attaches the share; the boot runs the overlay under a
@@ -262,11 +264,17 @@ printf 'PROBE-BEGIN\n'
   ## nosymfollow effective: a symlink planted in the share must NOT be followed
   ## (the 3770 dir is group- but not world-writable, so fs.protected_symlinks
   ## does not cover it). Under nosymfollow, opening the link fails (ELOOP).
-  ln --symbolic /etc/hostname "${mp}/symlink-probe" 2>/dev/null
-  if cat "${mp}/symlink-probe" >/dev/null 2>&1; then
-    printf 'SYMLINK-FOLLOWED: yes-BAD\n'
+  ## Gate on ln SUCCESS: if the symlink was not created, the cat below would also
+  ## fail and falsely record "not followed". A distinct ln-failed value fails the
+  ## assertion instead of masking as a pass.
+  if ln --symbolic /etc/hostname "${mp}/symlink-probe" 2>/dev/null; then
+    if cat "${mp}/symlink-probe" >/dev/null 2>&1; then
+      printf 'SYMLINK-FOLLOWED: yes-BAD\n'
+    else
+      printf 'SYMLINK-FOLLOWED: no-good\n'
+    fi
   else
-    printf 'SYMLINK-FOLLOWED: no-good\n'
+    printf 'SYMLINK-FOLLOWED: ln-failed\n'
   fi
   ## Bare-mountpoint hardening: reveal the dir UNDER the 9p mount (a plain
   ## bind of / does not carry the submount) -- it is the mountpoint mount-shared
@@ -340,6 +348,13 @@ printf 'PROBE-BEGIN\n'
   else
     printf 'GUEST-WRITE-FAIL\n'
   fi
+  ## finding 2 (fmode) probe: create a file the GUEST intends group-WRITABLE
+  ## (umask 0002 -> create mode 0664), so the host backing mode is decided by
+  ## fmode, not masked to look safe. fmode=0640 -> host 0640 (no group-w);
+  ## a regression to fmode=0660 -> host 0660 (group-w). The host side checks it.
+  ( umask 0002; printf 'fmode-probe\n' > "${mp}/FMODE-PROBE.txt" ) 2>/dev/null
+  printf 'FMODE-PROBE-GUEST-MODE: '
+  stat -c '%a' "${mp}/FMODE-PROBE.txt" 2>&1
 } > "${res}" 2>&1
 cat "${res}"
 printf 'PROBE-END\n'
@@ -416,27 +431,19 @@ main() {
   ##    real 'user' account, so its adduser/chown apply.
   "${install_script}"
 
-  ## 1a. Host-side: the install made the shared dir owner root, group kvmsf, mode
-  ##     3770 -- root (NOT a member) owns it so the sticky bit protects BOTH
-  ##     members; NOT the old 0700 $HOME dir, NOT a world-exposed 0777.
+  ## 1a. Host-side: the install made the shared dir owner USER, group kvmsf, mode
+  ##     3770 -- owned by the qemu:///session user, NOT root: a root-owned sticky
+  ##     dir would EPERM the guest-side mapped user.virtfs.* xattr writes and lose
+  ##     group access (see shared_folder_test.sh xattr_sticky_regression_check).
+  ##     NOT the old 0700 $HOME dir, NOT a world-exposed 0777.
   local host_owner host_mode host_group
   host_owner="$(stat --format='%U' -- "${shared_dir}")"
   host_mode="$(stat --format='%a' -- "${shared_dir}")"
   host_group="$(stat --format='%G' -- "${shared_dir}")"
-  if [ "${host_owner}" = "root" ] && [ "${host_mode}" = "3770" ] && [ "${host_group}" = "kvmsf" ]; then
-    pass "install created ${shared_dir} owner root group kvmsf mode 3770 (sticky, no world)"
+  if [ "${host_owner}" = "user" ] && [ "${host_mode}" = "3770" ] && [ "${host_group}" = "kvmsf" ]; then
+    pass "install created ${shared_dir} owner user group kvmsf mode 3770 (sticky, no world)"
   else
-    fail "install left ${shared_dir} owner=${host_owner} group=${host_group} mode=${host_mode} (want root kvmsf 3770)"
-  fi
-
-  ## 1b. finding 1: a non-owner kvmsf member ('user') cannot chmod the root-owned
-  ##     share, so it cannot widen perms or defeat the sticky bit.
-  local chmod_rc=0
-  runuser -u user -- chmod 0755 "${shared_dir}" 2>/dev/null || chmod_rc="$?"
-  if [ "${chmod_rc}" -ne 0 ] && [ "$(stat --format='%a' -- "${shared_dir}")" = "3770" ]; then
-    pass "non-owner kvmsf member 'user' cannot chmod the root-owned share"
-  else
-    fail "non-owner 'user' changed the share mode (chmod rc=${chmod_rc}, mode now $(stat --format='%a' -- "${shared_dir}"))"
+    fail "install left ${shared_dir} owner=${host_owner} group=${host_group} mode=${host_mode} (want user kvmsf 3770)"
   fi
 
   ## 1c. Static: the mount-shared virtiofs branch does NO chown/chmod -- virtiofs
@@ -474,24 +481,28 @@ main() {
   seed_overlay
 
   ## 3. Host canary, then boot. The 9p device reproduces the attached one
-  ## (mapped / mount_tag=shared / path=$HOME/shared / fmode=0660,dmode=0770) so
+  ## (mapped / mount_tag=shared / path=$HOME/shared / fmode=0640,dmode=0750) so
   ## the guest runs the identical mnt-shared-kvm.service mount path AND the
   ## host-side inode perms of guest-created files match production (finding 2).
   printf '%s\n' 'host-canary' > "${shared_dir}/HOST-CANARY.txt"
   ## -nographic routes the guest serial console to qemu's stdout, which we
   ## redirect to the log -- '-serial file:' does NOT reliably flush here, and a
   ## hardened Kicksecure boot is silent on serial anyway. -no-reboot makes qemu
-  ## exit when the observer powers the guest off.
+  ## exit when the observer powers the guest off. umask 0002 matches libvirtd's
+  ## process umask so a guest-created host inode's mode reflects fmode the SAME
+  ## way production does -- without it the shell's 0022 would strip group-write
+  ## and mask an fmode=0660 (group-writable) regression.
   local accel='tcg'
   [ -w /dev/kvm ] && accel='kvm'
-  timeout --kill-after=10 "${boot_timeout}" qemu-system-x86_64 \
-    -machine q35 -accel "${accel}" \
-    -m "${guest_mem_mib}" -smp 2 \
-    -drive file="${overlay}",if=virtio,format=qcow2 \
-    -fsdev local,id=fsdev0,path="${shared_dir}",security_model=mapped,fmode=0660,dmode=0770 \
-    -device virtio-9p-pci,fsdev=fsdev0,mount_tag=shared \
-    -netdev user,id=n0 -device virtio-net-pci,netdev=n0 \
-    -nographic -no-reboot </dev/null >"${serial_log}" 2>&1 || true
+  ( umask 0002
+    timeout --kill-after=10 "${boot_timeout}" qemu-system-x86_64 \
+      -machine q35 -accel "${accel}" \
+      -m "${guest_mem_mib}" -smp 2 \
+      -drive file="${overlay}",if=virtio,format=qcow2 \
+      -fsdev local,id=fsdev0,path="${shared_dir}",security_model=mapped,fmode=0640,dmode=0750 \
+      -device virtio-9p-pci,fsdev=fsdev0,mount_tag=shared \
+      -netdev user,id=n0 -device virtio-net-pci,netdev=n0 \
+      -nographic -no-reboot </dev/null >"${serial_log}" 2>&1 ) || true
 
   ## 4. Evidence. The observer wrote PROBE-RESULT.txt into the share, so its
   ## mere presence host-side already proves guest->host write works.
@@ -629,23 +640,37 @@ main() {
 
   ## 4h. finding 2 (the key empirical one): under mapped, QEMU creates the HOST
   ##     backing inode for a guest-written file at 0600/0700 by default, so host
-  ##     "sysmaint" could not even READ it. fmode=0660,dmode=0770 on the attach
-  ##     set the host backing mode; combined with the setgid dir (group kvmsf) a
-  ##     guest-created host file is group kvmsf and group-readable, so a host
-  ##     kvmsf non-owner member reaches it via the group. Here qemu ran as root
-  ##     (boot lane), so the file is root:kvmsf; 'user' is a kvmsf member and
-  ##     NON-owner -- the same group-read path host "sysmaint" uses in production.
-  local gcanary hinode_group hinode_mode hread_rc=0
-  gcanary="${shared_dir}/GUEST-CANARY.txt"
-  if [ -f "${gcanary}" ]; then
-    hinode_group="$(stat --format='%G' -- "${gcanary}")"
-    hinode_mode="$(stat --format='%a' -- "${gcanary}")"
-    runuser -u user -- cat "${gcanary}" >/dev/null 2>&1 || hread_rc="$?"
-    note "finding 2 host inode of guest-written file: $(stat --format='owner=%U group=%G mode=%a' -- "${gcanary}")"
-    if [ "${hinode_group}" = 'kvmsf' ] && [ "${hread_rc}" -eq 0 ]; then
-      pass "guest-written host inode is group kvmsf and a host kvmsf member can read it (mode ${hinode_mode})"
+  ##     "sysmaint" could not even READ it. fmode=0640,dmode=0750 on the attach
+  ##     sets the host backing mode; combined with the setgid dir (group kvmsf) a
+  ##     guest-created host file is group kvmsf and group-READ but NOT group-WRITE
+  ##     (0640), so a host kvmsf non-owner member reads it via the group but
+  ##     cannot modify another member's file. The guest wrote FMODE-PROBE.txt
+  ##     group-WRITABLE (umask 0002 -> 0664), so the host mode reflects fmode and
+  ##     NOT a mask: fmode=0640 -> 0640; a regression to fmode=0660 -> 0660
+  ##     (group-w). qemu ran under umask 0002 (like libvirtd), so this matches
+  ##     production. Here qemu ran as root, so the file is root:kvmsf and 'user'
+  ##     is a kvmsf NON-owner -- the group-read/write path host "sysmaint" uses.
+  local fprobe hinode_group hinode_mode hread_rc=0 hwrite_rc=0
+  fprobe="${shared_dir}/FMODE-PROBE.txt"
+  if [ -f "${fprobe}" ]; then
+    hinode_group="$(stat --format='%G' -- "${fprobe}")"
+    hinode_mode="$(stat --format='%a' -- "${fprobe}")"
+    runuser -u user -- cat "${fprobe}" >/dev/null 2>&1 || hread_rc="$?"
+    ## Write probe must be O_WRONLY, NOT a shell '>>' (O_CREAT): the share dir is
+    ## sticky and owned by 'user' while the file is root-owned, so fs.protected_
+    ## regular (=2 here) blocks ANY O_CREAT open for the non-file-owner REGARDLESS
+    ## of mode -- that would deny even a 0660 file and make this a tautology. A
+    ## pure O_WRONLY open reflects only the group-write bit: denied at 0640,
+    ## allowed at 0660, so the canary (fmode=0660) actually fails this axis.
+    runuser -u user -- python3 -c \
+      'import os,sys; fd=os.open(sys.argv[1], os.O_WRONLY); os.write(fd, b"y"); os.close(fd)' \
+      "${fprobe}" 2>/dev/null || hwrite_rc="$?"
+    note "finding 2 host inode of guest-written file: $(stat --format='owner=%U group=%G mode=%a' -- "${fprobe}")"
+    if [ "${hinode_group}" = 'kvmsf' ] && [ "${hinode_mode}" = '640' ] \
+      && [ "${hread_rc}" -eq 0 ] && [ "${hwrite_rc}" -ne 0 ]; then
+      pass "guest-written host inode is user:kvmsf 0640: a kvmsf member can READ but NOT write it"
     else
-      fail "guest-written host inode not group-readable by a kvmsf member: group=${hinode_group} mode=${hinode_mode} read_rc=${hread_rc}"
+      fail "finding 2 host inode wrong: group=${hinode_group} mode=${hinode_mode} (want kvmsf 640) read_rc=${hread_rc} (want 0) write_rc=${hwrite_rc} (want non-0)"
     fi
   else
     fail "no guest-written host inode to check for finding 2"

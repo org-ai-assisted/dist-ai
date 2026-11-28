@@ -8,19 +8,25 @@
 ## dist-ai behaviour test for libvirt-dist's per-user setup (user-setup) + root
 ## install, HOST side, no boot. The multi-account model: the root libvirt-dist
 ## install creates group kvmsf and the shared folder at ${LIBVIRT_DIST_SHARED_DIR
-## :-/mnt/shared} owned root:kvmsf mode 3770 (setgid + sticky, NO world) -- a
+## :-/mnt/shared} owned user:kvmsf mode 3770 (setgid + sticky, NO world) -- a
 ## system path both "user" and "sysmaint" reach via the group (a $HOME dir could
-## not be cross-account traversable); root (NOT a member) owns it so the sticky
-## bit protects BOTH members. user-setup no longer creates the dir: it requires
-## it and attaches it (9p accessmode='mapped') to all three domains.
+## not be cross-account traversable). It is owned by the qemu:///session "user",
+## NOT root: under 9p accessmode=mapped qemu runs as that user and records guest
+## perms as user.virtfs.* xattrs here, and the kernel forbids a NON-owner from
+## setting user.* xattrs on a STICKY dir -- a root-owned share would EPERM and
+## lose group access. user-setup no longer creates the dir: it requires it and
+## attaches it (9p accessmode='mapped,fmode=0640,dmode=0750') to all three domains.
 ##
 ## Two lanes:
-##   ROOT lane (CI/sandbox only, root_host_checks) -- runs the REAL install
-##   against a throwaway LIBVIRT_DIST_SHARED_DIR (never real /mnt/shared) and
-##   asserts:
-##     - install makes the share root:kvmsf 3770;
-##     - a non-owner kvmsf member ('user') canNOT chmod the root-owned share
-##       (finding 1: sticky-exempt owner must be root, not a member);
+##   ROOT lane (CI/sandbox only, root_host_checks + xattr_sticky_regression_check)
+##   -- runs the REAL install against a throwaway LIBVIRT_DIST_SHARED_DIR (never
+##   real /mnt/shared) and asserts:
+##     - install makes the share user:kvmsf 3770 (owned by the qemu user);
+##     - the mapped-9p ownership rule at the VFS level (no boot): a non-owner
+##       kvmsf member is BLOCKED (EPERM) from writing user.virtfs.* xattrs on a
+##       ROOT-owned sticky dir but SUCCEEDS on a USER-owned one, with a canary
+##       that flipping the user-owned dir to root makes it fail (this is the bug
+##       a root-run qemu would mask via CAP_FOWNER);
 ##     - install is an idempotent self-heal: a member dropped from kvmsf is
 ##       re-added by a second install run, and install.service carries no
 ##       run-once guard (so ExecStart re-applies every boot).
@@ -63,6 +69,14 @@ else
   exit 77  ## style-ok: allow-skip: libvirt/qemu stack is an opt-in apt set, absent in the core lane
 fi
 
+## The SUBJECT (user-setup) is present. Its same-package siblings MUST be too: a
+## present-subject-but-missing-tool is a BROKEN env, not an optional absence --
+## FAIL (never SKIP, which would hide an incomplete test environment).
+if [ ! -x "${install_script}" ] || [ ! -r "${install_service}" ]; then
+  printf '%s\n' "FATAL: user-setup found but install (${install_script}) or install.service (${install_service}) missing -- broken libvirt-dist checkout" >&2
+  exit 1
+fi
+
 ## The libvirt/qemu stack is an opt-in apt set; a lane without it SKIPs (77),
 ## never fails. Self-contained -- sources no helper-scripts, so it detects tools
 ## with command -v rather than has():
@@ -92,43 +106,43 @@ user_in_kvmsf() {
 }
 
 ## Privileged host-logic lane (CI/sandbox): the REAL install's idempotent group
-## re-apply and the root-owned 3770 dir need root AND mutate system groups, so
+## re-apply and the user-owned 3770 dir need root AND mutate system groups, so
 ## they run ONLY as root, against a throwaway LIBVIRT_DIST_SHARED_DIR (never the
 ## real /mnt/shared). Exits non-zero on any failure; returns 0 otherwise.
 root_host_checks() {
-  local idem_parent idem_dir owner group mode chmod_rc rc=0
-  [ -x "${install_script}" ] || { printf '%s\n' "SKIP: libvirt-dist install not found (set LIBVIRT_DIST_REPO or install libvirt-dist)" >&2; exit 77; }  ## style-ok: allow-skip: libvirt/qemu stack is an opt-in apt set, absent in the core lane
+  local idem_parent idem_dir owner group mode inst_rc rc=0
+  ## install presence is guaranteed by the top-level FATAL check.
   if ! getent passwd user >/dev/null; then
     printf '%s\n' "NOTE: account 'user' absent; skipping the root install-idempotency lane"
     return 0
   fi
-  ## Parent 0755 so the non-owner member can TRAVERSE to the share: the chmod
-  ## denial below must come from NOT OWNING it, not from an unreachable parent.
+  ## Nothing non-root traverses idem_dir (the chmod-denial check was dropped when
+  ## the share moved to user-owned), so the default mktemp base is fine.
   idem_parent="$(mktemp --directory)"
-  chmod 0755 -- "${idem_parent}"
   idem_dir="${idem_parent}/shared"
 
-  ## A. install makes the share root:kvmsf 3770 -- root (NOT a member) owns it so
-  ##    the sticky bit protects BOTH members from each other.
-  LIBVIRT_DIST_SHARED_DIR="${idem_dir}" "${install_script}"
+  ## A. install makes the share USER:kvmsf 3770 -- owned by the qemu:///session
+  ##    user, NOT root. Under 9p accessmode=mapped qemu runs as that user and
+  ##    records guest perms as user.virtfs.* xattrs here; the kernel forbids a
+  ##    non-owner from setting user.* xattrs on a STICKY dir, so a root-owned
+  ##    share would EPERM and lose group access (see xattr_sticky_regression_check).
+  ##    'user' owning + chmod-able is the documented mapped-session trade-off; the
+  ##    guest-side view stays 3770-sticky via the mapped xattrs.
+  ## rc captured EXPLICITLY: this function is called under `if !`, which disables
+  ## errexit inside it, so a failing install would otherwise be silently ignored.
+  inst_rc=0
+  LIBVIRT_DIST_SHARED_DIR="${idem_dir}" "${install_script}" || inst_rc="$?"
+  if [ "${inst_rc}" -ne 0 ]; then
+    printf '%s\n' "FAIL: install exited ${inst_rc} (first run)" >&2
+    rc=1
+  fi
   owner="$(stat --format='%U' -- "${idem_dir}")"
   group="$(stat --format='%G' -- "${idem_dir}")"
   mode="$(stat --format='%a' -- "${idem_dir}")"
-  if [ "${owner}" = 'root' ] && [ "${group}" = 'kvmsf' ] && [ "${mode}" = '3770' ]; then
-    printf '%s\n' "PASS: install made ${idem_dir} owner root, group kvmsf, mode 3770"
+  if [ "${owner}" = 'user' ] && [ "${group}" = 'kvmsf' ] && [ "${mode}" = '3770' ]; then
+    printf '%s\n' "PASS: install made ${idem_dir} owner user, group kvmsf, mode 3770"
   else
-    printf '%s\n' "FAIL: install left ${idem_dir} owner=${owner} group=${group} mode=${mode} (want root kvmsf 3770)" >&2
-    rc=1
-  fi
-
-  ## A (finding 1). A non-owner kvmsf member cannot chmod the root-owned share
-  ##    (not the owner), so it cannot widen perms or defeat the sticky bit.
-  chmod_rc=0
-  runuser -u user -- chmod 0755 "${idem_dir}" 2>/dev/null || chmod_rc="$?"
-  if [ "${chmod_rc}" -ne 0 ] && [ "$(stat --format='%a' -- "${idem_dir}")" = '3770' ]; then
-    printf '%s\n' "PASS: non-owner member 'user' cannot chmod the root-owned share"
-  else
-    printf '%s\n' "FAIL: non-owner 'user' changed the share mode (chmod rc=${chmod_rc}, mode now $(stat --format='%a' -- "${idem_dir}"))" >&2
+    printf '%s\n' "FAIL: install left ${idem_dir} owner=${owner} group=${group} mode=${mode} (want user kvmsf 3770)" >&2
     rc=1
   fi
 
@@ -143,7 +157,12 @@ root_host_checks() {
     printf '%s\n' "FAIL: could not drop 'user' from kvmsf to simulate a fresh account" >&2
     rc=1
   fi
-  LIBVIRT_DIST_SHARED_DIR="${idem_dir}" "${install_script}"
+  inst_rc=0
+  LIBVIRT_DIST_SHARED_DIR="${idem_dir}" "${install_script}" || inst_rc="$?"
+  if [ "${inst_rc}" -ne 0 ]; then
+    printf '%s\n' "FAIL: install exited ${inst_rc} (self-heal re-run)" >&2
+    rc=1
+  fi
   if user_in_kvmsf; then
     printf '%s\n' "PASS: re-running install re-adds the dropped member to kvmsf (self-heal)"
   else
@@ -165,10 +184,85 @@ root_host_checks() {
   return "${rc}"
 }
 
+## The mapped-9p mechanism, at the VFS level (no qemu boot needed -- a root-run
+## qemu would MASK this via CAP_FOWNER, which is exactly the bug this guards):
+## qemu:///session runs qemu UNPRIVILEGED (as "user") and records guest perms as
+## user.virtfs.* xattrs on the host share. The kernel forbids a NON-owner from
+## setting user.* xattrs on a STICKY dir (EPERM), so the share MUST be owned by
+## the qemu user -- a root-owned sticky share silently loses group access in
+## production. Assert the rule directly + CANARY it.
+xattr_sticky_regression_check() {
+  local base rs us tg='libvirtdist-xattrtest' tu='libvirtdist-xattrprobe' rc=0
+  ## Disk-backed fs (tmpfs often lacks user.* xattrs); require support or SKIP.
+  base="$(mktemp --directory -- /var/lib/libvirt-dist-xattr.XXXXXX)"
+  chmod 0755 -- "${base}"
+  if ! setfattr --name user.probe --value x -- "${base}" 2>/dev/null; then
+    safe-rm --recursive --force -- "${base}"
+    printf '%s\n' "SKIP: /var/lib fs lacks user.* xattr support (cannot test the mapped-9p ownership rule)" >&2
+    exit 77  ## style-ok: allow-skip: the mapped user.virtfs xattr rule needs a user-xattr-capable fs
+  fi
+  setfattr --remove user.probe -- "${base}" 2>/dev/null || true
+  ## Setup rc checked EXPLICITLY: called under `if !` disables errexit here, so a
+  ## failed groupadd/useradd would otherwise make the setfattr probes fail for the
+  ## WRONG reason (missing user) and masquerade as "blocked".
+  groupadd --force "${tg}"
+  id "${tu}" >/dev/null 2>&1 \
+    || useradd --no-create-home --no-user-group --gid "${tg}" "${tu}"
+  if ! id "${tu}" >/dev/null 2>&1; then
+    printf '%s\n' "FAIL: could not create probe user ${tu} for the xattr rule check" >&2
+    safe-rm --recursive --force -- "${base}"
+    groupdel "${tg}" >/dev/null 2>&1 || true
+    return 1
+  fi
+  rs="${base}/root_sticky"
+  us="${base}/user_sticky"
+  mkdir "${rs}" "${us}"
+  chown "root:${tg}" "${rs}"; chmod 3770 "${rs}"
+  chown "${tu}:${tg}" "${us}"; chmod 3770 "${us}"
+
+  ## 1. ROOT-owned sticky dir: a non-owner member is BLOCKED (EPERM) -- this is
+  ##    the production failure a root-owned share would hit.
+  if runuser -u "${tu}" -- setfattr --name user.virtfs.mode --value testval -- "${rs}" 2>/dev/null; then
+    printf '%s\n' "FAIL: non-owner member set user.virtfs xattr on a ROOT-owned sticky dir (kernel rule gone; a root-owned share would NOT fail)" >&2
+    rc=1
+  else
+    printf '%s\n' "PASS: non-owner member is BLOCKED (EPERM) from user.virtfs xattr on a root-owned sticky dir"
+  fi
+
+  ## 2. USER-owned sticky dir: the OWNER member SUCCEEDS -- so the committed
+  ##    user:kvmsf share lets the mapped fixup write its xattrs.
+  if runuser -u "${tu}" -- setfattr --name user.virtfs.mode --value testval -- "${us}" 2>/dev/null; then
+    printf '%s\n' "PASS: owner member CAN set user.virtfs xattr on a user-owned sticky dir (mapped fixup works)"
+  else
+    printf '%s\n' "FAIL: owner member BLOCKED from user.virtfs xattr on a user-owned sticky dir (share would lose group access)" >&2
+    rc=1
+  fi
+
+  ## 3. CANARY assertion 2: flip user_sticky to ROOT-owned and confirm the SAME
+  ##    setfattr now FAILS -- proving this test detects the exact root-ownership
+  ##    regression (a root-run qemu would have masked it).
+  chown "root:${tg}" "${us}"
+  if runuser -u "${tu}" -- setfattr --name user.virtfs.mode --value testval2 -- "${us}" 2>/dev/null; then
+    printf '%s\n' "FAIL: canary -- setfattr still succeeded after flipping the dir to root-owned (test is INSENSITIVE to the regression)" >&2
+    rc=1
+  else
+    printf '%s\n' "PASS: canary -- flipping the dir to root-owned makes the owner-member setfattr FAIL (test catches the regression)"
+  fi
+
+  safe-rm --recursive --force -- "${base}"
+  userdel "${tu}" >/dev/null 2>&1 || true
+  groupdel "${tg}" >/dev/null 2>&1 || true
+  return "${rc}"
+}
+
 ## qemu:///session needs a non-root user; re-exec as a throwaway one when root.
 if [ "$(id -u)" -eq 0 ]; then
   if ! root_host_checks; then
     printf '%s\n' "FAILED: root host-logic assertions" >&2
+    exit 1
+  fi
+  if ! xattr_sticky_regression_check; then
+    printf '%s\n' "FAILED: mapped-9p xattr ownership regression check" >&2
     exit 1
   fi
   test_user='libvirtdisttest'
@@ -274,6 +368,22 @@ main() {
       pass "${vm}: one mapped filesystem on ${shared_dir}"
     else
       fail "${vm}: want 1 mapped filesystem on ${shared_dir}, got count=${count}"
+    fi
+  done
+
+  ## 2b. user-setup's attach must EMIT fmode=0640,dmode=0750 in the domain XML.
+  ##     Without this the boot test's fmode check would only exercise the test's
+  ##     OWN qemu line, never catching user-setup dropping fmode (so a guest-
+  ##     written host inode would be 0600, host "sysmaint" could not read it).
+  ##     Quote-agnostic: libvirt may emit single or double quotes.
+  for vm in "${domain_list[@]}"; do
+    local xml
+    xml="$(virsh -c qemu:///session dumpxml --inactive "${vm}")"
+    if grep --quiet --extended-regexp "fmode=['\"]0640['\"]" <<< "${xml}" \
+      && grep --quiet --extended-regexp "dmode=['\"]0750['\"]" <<< "${xml}"; then
+      pass "${vm}: user-setup emitted fmode=0640,dmode=0750 on the mapped share"
+    else
+      fail "${vm}: mapped share is missing fmode=0640/dmode=0750 in the domain XML"
     fi
   done
 
