@@ -187,6 +187,51 @@ check 'detached HEAD -> proceeds (exit 0), not a hard fail' "${rc}"
 rc=0; grep --quiet -i 'detached' "${errf}" || rc=1
 check 'detached HEAD -> warning explaining the check was skipped' "${rc}"
 
+## --- enum validation: --freshness / --freedom reject a non-enum value at PARSE time, so
+## --check-only cannot report "args validated" for a bogus value --------------------------------
+make_repo 8 fresh
+run_subject --freshness bogus
+rc=0; [ "${RC}" -eq 2 ] || rc=1
+check '--freshness bogus -> exit 2 (not a false --check-only "validated")' "${rc}"
+rc=0; grep --quiet -- 'freshness must be frozen or current' "${errf}" || rc=1
+check '--freshness bogus -> error names the valid values' "${rc}"
+run_subject --freedom maybe
+rc=0; [ "${RC}" -eq 2 ] || rc=1
+check '--freedom maybe -> exit 2 (enum validated)' "${rc}"
+rc=0; grep --quiet -- 'freedom must be true or false' "${errf}" || rc=1
+check '--freedom maybe -> error names the valid values' "${rc}"
+run_subject --freshness frozen --freedom true
+rc=0; [ "${RC}" -eq 0 ] || rc=1
+check 'valid --freshness/--freedom enums -> exit 0 (accepted)' "${rc}"
+
+## --- parent core.autocrlf forced OFF before the --ref reset (no CRLF smudge) ----------------------
+## With core.autocrlf=true the reset's checkout smudges LF->CRLF in the working tree, which
+## git_sanity_test (and derivative-update) then see as "modified" -> exit 3. The fix forces
+## autocrlf=false BEFORE the reset, so the checkout keeps LF. CANARY: old code (reset first, then
+## autocrlf in the post-check-only cascade) writes CR into the working file, failing the no-CR assert.
+acr_up="${work}/up-acr.git"
+acr_seed="${work}/seed-acr"
+acr_co="${work}/co-acr"
+git init --quiet --bare --initial-branch=ai "${acr_up}"
+git init --quiet --initial-branch=ai "${acr_seed}"
+(
+   cd -- "${acr_seed}"
+   printf '%s\n' line1 line2 line3 > textfile; git add textfile; git commit --quiet -m c1
+   printf '%s\n' line1 line2 line3 line4 > textfile; git add textfile; git commit --quiet -m c2
+   git remote add origin "${acr_up}"; git push --quiet origin ai
+)
+acr_tip="$(git -C "${acr_seed}" rev-parse HEAD)"
+git clone --quiet --origin org-ai-assisted "${acr_up}" "${acr_co}"
+git -C "${acr_co}" reset --hard --quiet "$(git -C "${acr_seed}" rev-parse 'HEAD~1')"
+git -C "${acr_co}" config core.autocrlf true
+REPO="${acr_co}"
+run_subject --ref "${acr_tip}"
+rc=0; [ "${RC}" -eq 0 ] || rc=1
+check 'autocrlf=true + --ref -> exit 0' "${rc}"
+crlf_probe="$(od -An -c "${REPO}/textfile")"
+rc=0; case "${crlf_probe}" in *'\r'*) rc=1 ;; esac
+check 'autocrlf=true + --ref -> working tree keeps LF (autocrlf forced off before the reset)' "${rc}"
+
 printf '%s\n' "" "$(basename -- "$0"): ${pass} pass, ${fail} fail"
 [ "${fail}" -eq 0 ] || exit 1
 exit 0
