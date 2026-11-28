@@ -1,0 +1,142 @@
+#!/usr/bin/python3 -Bsu
+
+## Shell-invocation guard.
+"exec" "bash" "-c" "printf '%s\n' '$0: ERROR: Do not execute this script with bash!' >&2; exit 1"
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+"""Run dm-root-lpe-audit over several source trees and aggregate the verdict.
+
+Each tree is audited by the sibling dm-root-lpe-audit (its JSON is authoritative;
+exploitability stays a human verdict -- every row is a CANDIDATE). A per-tree line
+shows coverage and the open (non-waived) candidates by severity, then the open
+candidates themselves, then an aggregate footer.
+
+Exit: 0 = every tree scanned clean (no open candidate); 1 = at least one open
+candidate to triage; 2 = a tree could not be scanned (missing tree, tool error,
+parse/walk errors, or unusable JSON). A scan error outranks a finding in the exit
+code so a broken scan is never mistaken for 'clean'. Coverage is always printed so
+a zero-candidate tree is visibly a real scan, not a silent 'clean'.
+
+Usage:  dm-root-lpe-audit-all <tree> [<tree> ...]   (default: the current dir)
+"""
+
+import json
+import os
+import subprocess
+import sys
+
+AUDIT_TOOL = "dm-root-lpe-audit"
+SEVERITIES = ("HIGH", "MEDIUM", "LOW", "INFO")
+
+EXIT_CLEAN = 0
+EXIT_FINDINGS = 1
+EXIT_SCAN_ERROR = 2
+
+
+def audit_path():
+    """The auditor to drive: the sibling dm-root-lpe-audit by default, so the
+    wrapper and the auditor are the same checkout's pair (never a stale /usr copy
+    of one beside a checkout of the other). `DM_ROOT_LPE_AUDIT` overrides it (a
+    test seam; unset -> production byte-identical)."""
+    override = os.environ.get("DM_ROOT_LPE_AUDIT")
+    if override:
+        return override
+    sibling = os.path.join(
+        os.path.dirname(os.path.realpath(__file__)), AUDIT_TOOL)
+    if os.path.isfile(sibling):
+        return sibling
+    return AUDIT_TOOL  ## PATH fallback
+
+
+def severity_line(counts):
+    return ", ".join("%d %s" % (counts.get(sev, 0), sev) for sev in SEVERITIES)
+
+
+def audit_tree(tool, tree):
+    """Audit one tree. Returns (report_or_None, error_or_None): a dict on a usable
+    scan, else an error string (the tree is a scan ERROR, never a silent clean)."""
+    if not os.path.isdir(tree):
+        return None, "not a directory"
+    proc = subprocess.run([tool, tree], capture_output=True, text=True,
+                          check=False)
+    if not proc.stdout.strip():
+        tail = proc.stderr.strip().splitlines()[-1:] or ["no output"]
+        return None, "auditor produced no JSON (exit %d: %s)" % (
+            proc.returncode, tail[0])
+    try:
+        report = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        return None, "unparseable auditor JSON (%s)" % exc
+    if not isinstance(report, dict) or "coverage" not in report:
+        return None, "auditor JSON is not a report object"
+    return report, None
+
+
+def main(argv):
+    tool = audit_path()
+    trees = argv[1:] or [os.getcwd()]
+
+    totals = {sev: 0 for sev in SEVERITIES}
+    trees_with_findings = 0
+    scan_errors = 0
+
+    for tree in trees:
+        label = os.path.basename(os.path.normpath(tree)) or tree
+        report, error = audit_tree(tool, tree)
+        if error is not None:
+            scan_errors += 1
+            print("=== %s: SCAN ERROR -- %s" % (label, error))
+            continue
+
+        cov = report["coverage"]
+        counts = {sev: report.get("severity_counts", {}).get(sev, 0)
+                  for sev in SEVERITIES}
+        findings = report.get("findings", [])
+        suppressed = report.get("suppressed", [])
+        degraded = len(cov.get("parse_errors", [])) + len(cov.get("walk_errors", []))
+
+        print("=== %s ===" % label)
+        print("  coverage: %d root files, %d shell, %d sinks, %d unresolved, "
+              "%d parse errors" % (
+                  cov.get("root_files", 0), cov.get("shell_scanned", 0),
+                  cov.get("sinks_examined", 0), cov.get("unresolved_targets", 0),
+                  len(cov.get("parse_errors", []))))
+        print("  open: %s  |  waived: %d" % (severity_line(counts),
+                                             len(suppressed)))
+        for finding in findings:
+            where = finding.get("path", "?")
+            if finding.get("line") is not None:
+                where = "%s:%s" % (where, finding["line"])
+            print("    [%-6s] %s  %s  %s  (%s)" % (
+                finding.get("severity", "?"), where, finding.get("rule", "?"),
+                finding.get("tainted_operand", ""),
+                finding.get("root_reason", "")))
+
+        if degraded:
+            ## A degraded scan is incomplete -- never counted as clean.
+            scan_errors += 1
+            print("  DEGRADED: %d parse/walk error(s) -- scan incomplete" % degraded)
+        if findings:
+            trees_with_findings += 1
+            for sev in SEVERITIES:
+                totals[sev] += counts.get(sev, 0)
+
+    print("")
+    print("dm-root-lpe-audit-all: %d tree(s) | open candidates: %s across %d "
+          "tree(s) | %d scan error(s)" % (
+              len(trees), severity_line(totals), trees_with_findings,
+              scan_errors))
+
+    if scan_errors:
+        return EXIT_SCAN_ERROR
+    if any(totals[sev] for sev in SEVERITIES):
+        return EXIT_FINDINGS
+    return EXIT_CLEAN
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
