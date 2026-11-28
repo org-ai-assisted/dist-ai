@@ -18,16 +18,21 @@
 ## This guard RUNS the real mount-shared vbox branch under a recording `mount`
 ## stub and asserts on the ACTUAL mount calls bash makes -- NOT a text grep of the
 ## source. A text grep cannot tell a comment / heredoc / continuation line from a
-## live command, cannot resolve option order or the mount TARGET, and so
-## green-lights insecure refactors; letting bash parse the script and inspecting
-## the real calls closes that gap. It checks the SECURITY EFFECT (nosymfollow
-## effective on the /mnt/shared vboxsf mount), so it is implementation-agnostic.
-## The runtime effectiveness (a host symlink becomes ELOOP) is proven separately
-## on a booted vbox guest; vboxsf cannot run under GitHub CI. The umount-peel
-## resilience of the remount,bind design is likewise a runtime (guest) property.
+## live command, cannot resolve option order, option FORM or the mount TARGET, and
+## so green-lights insecure refactors; letting bash parse the script and
+## inspecting the real calls closes that gap.
+##
+## It models the EFFECTIVE state: mount applies flags in order and the LAST mount
+## (new mount or remount) that covers /mnt/shared sets the per-mount flag set path
+## resolution sees, so the final such call is what the security assertions judge.
+## Option forms `-o X`, `-oX`, `--options X`, `--options=X` are all collected, and
+## a toggle flag is resolved last-wins (`symfollow` cancels `nosymfollow`). Exotic
+## forms (fstab lookup, -O propagation, LIBMOUNT env) are out of scope -- the
+## booted-guest test is the effectiveness proof; vboxsf cannot run under CI.
 ##
 ## CANARY: a vbox branch that drops the remount (or its nosymfollow), passes
-## nosymfollow to mount.vboxsf, inverts a flag, or targets a subdir, FAILS here.
+## nosymfollow to mount.vboxsf, inverts a flag, targets a subdir, or re-mounts
+## vboxsf over the hardened mount, FAILS here.
 ##
 ## Runs headless as a normal user: `id -u` and every privileged command are
 ## stubbed, so nothing touches the real /mnt/shared.
@@ -75,18 +80,19 @@ calls_dir="${work_dir}/mountcalls"
 mkdir --parents -- "${stub_dir}" "${calls_dir}"
 
 ## SC2016: the stub bodies below are LITERAL shell code written into files; the $
-## must NOT expand here.
+## must NOT expand here. The recording dir reaches the stub via the environment
+## (MOUNT_CALLS_DIR), never interpolated into the body, so an odd ${TMP} cannot
+## break or inject the stub.
 # shellcheck disable=SC2016
 create_stubs() {
    local noop
 
    ## Recording stub: one file per mount invocation, one argv element per line, so
-   ## multi-word and repeated options survive intact for last-wins analysis.
+   ## multi-word and repeated options survive intact for the option analysis.
    {
       printf '%s\n' '#!/bin/bash'
-      printf '%s\n' "calls_dir='${calls_dir}'"
-      printf '%s\n' 'n="$(find "${calls_dir}" -maxdepth 1 -type f | wc -l)"'
-      printf '%s\n' 'f="${calls_dir}/$(printf "%04d" "${n}")"'
+      printf '%s\n' 'n="$(find "${MOUNT_CALLS_DIR}" -maxdepth 1 -type f | wc -l)"'
+      printf '%s\n' 'f="${MOUNT_CALLS_DIR}/$(printf "%04d" "${n}")"'
       printf '%s\n' 'for a in "$@"; do printf "%s\n" "${a}"; done >"${f}"'
       printf '%s\n' 'exit 0'
    } >"${stub_dir}/mount"
@@ -127,7 +133,8 @@ create_stubs() {
 create_stubs
 
 ## Run the REAL vbox branch; bash does all script parsing.
-PATH="${stub_dir}:${PATH}" bash "${subject}" vbox >"${work_dir}/run.out" 2>&1 || true
+MOUNT_CALLS_DIR="${calls_dir}" PATH="${stub_dir}:${PATH}" \
+   bash "${subject}" vbox >"${work_dir}/run.out" 2>&1 || true
 
 pass_count=0
 fail_count=0
@@ -156,35 +163,6 @@ refute() {
    fi
 }
 
-## Concatenate every `-o` value of a recorded mount call (comma-joined), so a
-## continuation-line `-o x` folds into the same call's option set.
-collect_opts() {
-   local -a a=( "$@" )
-   local i opts=""
-   for (( i = 0; i < ${#a[@]}; i++ )); do
-      if [ "${a[i]}" = "-o" ] && [ $(( i + 1 )) -lt ${#a[@]} ]; then
-         i=$(( i + 1 ))
-         if [ -n "${opts}" ]; then
-            opts="${opts},${a[i]}"
-         else
-            opts="${a[i]}"
-         fi
-      fi
-   done
-   printf '%s' "${opts}"
-}
-
-is_vboxsf() {
-   local -a a=( "$@" )
-   local i
-   for (( i = 0; i + 1 < ${#a[@]}; i++ )); do
-      if [ "${a[i]}" = "-t" ] && [ "${a[i+1]}" = "vboxsf" ]; then
-         return 0
-      fi
-   done
-   return 1
-}
-
 token_present() {
    local opts="$1" token="$2" tok
    local IFS=,
@@ -211,57 +189,127 @@ flag_effective() {
    [ "${state}" = "set" ]
 }
 
-vbox_found=no
-vbox_opts=""
-remount_found=no
-remount_opts=""
+## Parse a recorded mount call (one argv element per line) into globals:
+##   CALL_TARGET     -- the mount target (last positional, trailing slash stripped)
+##   CALL_OPTS       -- every option value, comma-joined, from -o / -oX /
+##                      --options / --options= (so a continuation or long form
+##                      folds into the same set)
+##   CALL_IS_VBOXSF  -- yes if this call mounts the vboxsf filesystem
+CALL_TARGET=""
+CALL_OPTS=""
+CALL_IS_VBOXSF="no"
+parse_call() {
+   local -a args=()
+   mapfile -t args <"$1"
+   CALL_TARGET=""
+   CALL_OPTS=""
+   CALL_IS_VBOXSF="no"
+   local -a positional=()
+   local i tok
+   for (( i = 0; i < ${#args[@]}; i++ )); do
+      tok="${args[i]}"
+      case "${tok}" in
+         -t)
+            i=$(( i + 1 ))
+            if [ "${args[i]:-}" = "vboxsf" ]; then
+               CALL_IS_VBOXSF="yes"
+            fi
+            ;;
+         -t*)
+            if [ "${tok#-t}" = "vboxsf" ]; then
+               CALL_IS_VBOXSF="yes"
+            fi
+            ;;
+         -o|--options)
+            i=$(( i + 1 ))
+            if [ -n "${CALL_OPTS}" ]; then
+               CALL_OPTS="${CALL_OPTS},${args[i]:-}"
+            else
+               CALL_OPTS="${args[i]:-}"
+            fi
+            ;;
+         --options=*)
+            if [ -n "${CALL_OPTS}" ]; then
+               CALL_OPTS="${CALL_OPTS},${tok#--options=}"
+            else
+               CALL_OPTS="${tok#--options=}"
+            fi
+            ;;
+         -o*)
+            if [ -n "${CALL_OPTS}" ]; then
+               CALL_OPTS="${CALL_OPTS},${tok#-o}"
+            else
+               CALL_OPTS="${tok#-o}"
+            fi
+            ;;
+         -*)
+            : ## other flags carry no per-mount security option
+            ;;
+         *)
+            positional+=( "${tok}" )
+            ;;
+      esac
+   done
+   if [ "${#positional[@]}" -gt 0 ]; then
+      CALL_TARGET="${positional[-1]}"
+      while [ "${CALL_TARGET}" != "/" ] && [ "${CALL_TARGET%/}" != "${CALL_TARGET}" ]; do
+         CALL_TARGET="${CALL_TARGET%/}"
+      done
+   fi
+}
+
+## Walk the recorded calls IN ORDER (the stub names them 0000, 0001, ...). The
+## LAST call that targets /mnt/shared decides the effective per-mount flags.
+final_seen="no"
+final_opts=""
+vboxsf_on_share="no"
+vboxsf_opts=""
+vboxsf_passed_nosymfollow="no"
 
 shopt -s nullglob
 for call_file in "${calls_dir}"/*; do
-   mapfile -t call_args <"${call_file}"
-   [ "${#call_args[@]}" -gt 0 ] || continue
-   target="${call_args[-1]}"
-   opts="$(collect_opts "${call_args[@]}")"
-   if is_vboxsf "${call_args[@]}" && [ "${target}" = /mnt/shared ]; then
-      vbox_found=yes
-      vbox_opts="${opts}"
-   fi
-   if [ "${target}" = /mnt/shared ] \
-      && token_present "${opts}" remount \
-      && token_present "${opts}" bind; then
-      remount_found=yes
-      remount_opts="${opts}"
+   parse_call "${call_file}"
+   [ "${CALL_TARGET}" = "/mnt/shared" ] || continue
+   final_seen="yes"
+   final_opts="${CALL_OPTS}"
+   if [ "${CALL_IS_VBOXSF}" = "yes" ]; then
+      vboxsf_on_share="yes"
+      vboxsf_opts="${CALL_OPTS}"
+      if token_present "${CALL_OPTS}" nosymfollow; then
+         vboxsf_passed_nosymfollow="yes"
+      fi
    fi
 done
 
 ## The vbox branch actually mounts vboxsf on /mnt/shared.
 assert "vbox branch mounts vboxsf on /mnt/shared" \
-   test "${vbox_found}" = yes
+   test "${vboxsf_on_share}" = "yes"
 
 ## nosymfollow must NOT reach mount.vboxsf -- it rejects the unknown option and the
-## share would stay unmounted. (Catches a continuation-line -o nosymfollow too.)
+## share would stay unmounted. (Catches -o / --options continuation forms too.)
 refute "nosymfollow is NOT passed to mount.vboxsf (would unmount the share)" \
-   token_present "${vbox_opts}" nosymfollow
+   test "${vboxsf_passed_nosymfollow}" = "yes"
 
-## The vboxsf mount keeps its base hardening.
-assert "vboxsf mount is effectively nosuid" flag_effective "${vbox_opts}" nosuid suid
-assert "vboxsf mount is effectively nodev" flag_effective "${vbox_opts}" nodev dev
-assert "vboxsf mount is effectively noexec" flag_effective "${vbox_opts}" noexec exec
+## The vboxsf mount itself keeps the base hardening, so the best-effort degraded
+## state (remount failed) is still nosuid,nodev,noexec.
+assert "vboxsf mount is effectively nosuid" flag_effective "${vboxsf_opts}" nosuid suid
+assert "vboxsf mount is effectively nodev" flag_effective "${vboxsf_opts}" nodev dev
+assert "vboxsf mount is effectively noexec" flag_effective "${vboxsf_opts}" noexec exec
 
-## A remount,bind re-applies the flags to /mnt/shared itself (not a subdir).
-assert "a remount,bind targets /mnt/shared" \
-   test "${remount_found}" = yes
+## A mount operation finalizes /mnt/shared (not a subdir, and not left with a
+## trailing vboxsf mount over the hardened one).
+assert "a mount operation finalizes /mnt/shared" \
+   test "${final_seen}" = "yes"
 
-## CANARY: the remount makes nosymfollow effective -- dropping it, or inverting it
-## with a later symfollow, FAILS here.
-assert "remount makes nosymfollow effective on /mnt/shared" \
-   flag_effective "${remount_opts}" nosymfollow symfollow
+## CANARY: the final /mnt/shared mount is effectively nosymfollow -- dropping it,
+## inverting it with a later symfollow, or re-mounting vboxsf on top FAILS here.
+assert "final /mnt/shared mount is effectively nosymfollow" \
+   flag_effective "${final_opts}" nosymfollow symfollow
 
-## The remount must also keep the other three effective (remount,bind resets any
-## per-mount flag not restated).
-assert "remount keeps nosuid effective" flag_effective "${remount_opts}" nosuid suid
-assert "remount keeps nodev effective" flag_effective "${remount_opts}" nodev dev
-assert "remount keeps noexec effective" flag_effective "${remount_opts}" noexec exec
+## The final mount must also keep the other three effective.
+assert "final /mnt/shared mount is effectively nosuid" flag_effective "${final_opts}" nosuid suid
+assert "final /mnt/shared mount is effectively nodev" flag_effective "${final_opts}" nodev dev
+assert "final /mnt/shared mount is effectively noexec" flag_effective "${final_opts}" noexec exec
 
 printf '%s\n' "===== mount_shared_vbox_nosymfollow: ${pass_count} pass, ${fail_count} fail ====="
 if [ "${fail_count}" -gt 0 ]; then
