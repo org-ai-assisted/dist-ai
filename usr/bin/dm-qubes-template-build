@@ -148,6 +148,37 @@ flavor_to_fork_url() {
   esac
 }
 
+## The PRIMARY derivative a flavor's own packages come from. --local-repo MUST override this one
+## (and fail loud if it is absent locally) -- otherwise the very packages under test would be
+## pulled from the remote testers repo.
+flavor_to_derivative() {
+  case "$1" in
+  kicksecure-18)
+    printf '%s\n' "kicksecure"
+    ;;
+  whonix-gateway-18 | whonix-workstation-18)
+    printf '%s\n' "whonix"
+    ;;
+  *)
+    return 1
+    ;;
+  esac
+}
+
+## The apt suite (Debian codename) a flavor's template is built for. Taken from the flavor, NOT
+## scanned from the local repo: a repo holding several codenames must not steer a trixie template
+## at bookworm. The '-18' templates are trixie.
+flavor_to_suite() {
+  case "$1" in
+  kicksecure-18 | whonix-gateway-18 | whonix-workstation-18)
+    printf '%s\n' "trixie"
+    ;;
+  *)
+    return 1
+    ;;
+  esac
+}
+
 ## True if STAGE (or its one-letter qubes-builderv2 alias) is among the space-separated ${stages}.
 stages_build_requested() {
   case " ${stages} " in
@@ -255,36 +286,41 @@ local_repo_bridge_ip() {
   printf '%s\n' "${ip:-172.17.0.1}"
 }
 
-## First free TCP port in a small range, for the throwaway apt http server. A refused connect
-## (nothing listening) means the port is free.
+## First TCP port in a small range that is free ON THE BIND ADDRESS. Probe the SAME address the
+## server binds (the docker bridge gateway), not loopback: an orphaned prior server binds the
+## bridge IP and must be seen as taken. A refused connect means nothing is listening there.
 local_repo_pick_port() {
-  local p
+  local ip="$1" p
   for ((p = 8080; p <= 8179; p++)); do
-    if ! (exec 3<>"/dev/tcp/127.0.0.1/${p}") 2>/dev/null; then
+    if ! (exec 3<>"/dev/tcp/${ip}/${p}") 2>/dev/null; then
       printf '%s\n' "${p}"
       return 0
     fi
   done
-  printf '%s\n' "${me}: no free TCP port in 8080-8179 for the local apt repo server" >&2
+  printf '%s\n' "${me}: no free TCP port in 8080-8179 on ${ip} for the local apt repo server" >&2
   return 1
 }
 
-## A reprepro-published derivative has dists/<codename>/; take the first codename as the suite.
-local_repo_suite() {
-  local d="$1" dist
-  dist="$(find "${local_repo_dir}/${d}/dists" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | head -1)"
-  printf '%s\n' "${dist:-trixie}"
-}
-
-## Emit local-repo.conf: for each derivative present under the local repo base, override its
-## *_repository_sources to the served local repo with 'Trusted: yes' (unsigned local packages).
+## Emit local-repo.conf for the flavor under build. The flavor's OWN derivative MUST be published
+## locally for the required suite, else --local-repo would silently leave the packages under test
+## to the remote testers repo -- fail loud instead. A whonix template also installs kicksecure
+## packages, so override kicksecure too WHEN it is published locally (absent -> kicksecure comes
+## from the remote, acceptable when it was not built here). Stanzas carry 'Trusted: yes' for the
+## unsigned local packages.
 build_local_repo_conf() {
-  local bridge_ip d suite found=0
+  local bridge_ip primary suite d derivs
   bridge_ip="$(local_repo_bridge_ip)"
-  for d in kicksecure whonix; do
-    [ -d "${local_repo_dir}/${d}/dists" ] || continue
-    found=1
-    suite="$(local_repo_suite "${d}")"
+  primary="$(flavor_to_derivative "${flavor}")"
+  suite="$(flavor_to_suite "${flavor}")"
+  if [ ! -d "${local_repo_dir}/${primary}/dists/${suite}" ]; then
+    printf '%s\n' "${me}: --local-repo: no ${primary} '${suite}' packages under ${local_repo_dir}/${primary}/dists/${suite} -- build ${primary} ${suite} packages into the local repo first" >&2
+    exit 1
+  fi
+  derivs=("${primary}")
+  if [ "${primary}" = "whonix" ] && [ -d "${local_repo_dir}/kicksecure/dists/${suite}" ]; then
+    derivs+=("kicksecure")
+  fi
+  for d in "${derivs[@]}"; do
     printf '%s\n' \
       "${d}_repository_sources=\"Types: deb" \
       "URIs: http://${bridge_ip}:${local_repo_port}/${d}" \
@@ -294,10 +330,6 @@ build_local_repo_conf() {
       "Trusted: yes\"" \
       ""
   done
-  if [ "${found}" = 0 ]; then
-    printf '%s\n' "${me}: no published derivative (kicksecure/whonix with dists/) under ${local_repo_dir}" >&2
-    exit 1
-  fi
 }
 
 ## Write local-repo.conf into the fetched template content so the in-template hook sources it.
@@ -313,13 +345,26 @@ inject_local_repo_conf() {
   printf '%s\n' "${me}: injected local-repo.conf into ${content_dir}" >&2
 }
 
-## Serve the local apt repo on the docker bridge for the duration of the build.
+## Serve the local apt repo on the docker bridge for the duration of the build. Fails LOUD if the
+## server does not come up (e.g. its port is already bound by an orphan) -- otherwise build()
+## would run apt against a dead repo URL and fail later with a confusing error. Takes the bind
+## address so the readiness probe targets exactly what was bound.
 serve_local_repo() {
-  local bridge_ip
-  bridge_ip="$(local_repo_bridge_ip)"
+  local bridge_ip="$1"
   python3 -m http.server --bind "${bridge_ip}" "${local_repo_port}" --directory "${local_repo_dir}" >/dev/null 2>&1 &
   local_repo_server_pid="$!"
+  ## Give a bind failure (e.g. port already in use) time to manifest -- python exits fast on
+  ## OSError -- then confirm OUR process is still alive. A port-connect probe is unreliable here:
+  ## an orphan already bound to the same address would answer it even though our bind failed, so
+  ## check the process we launched, not the port.
+  sleep 0.5
+  if ! kill -0 "${local_repo_server_pid}" 2>/dev/null; then
+    printf '%s\n' "${me}: local apt repo server failed to start on ${bridge_ip}:${local_repo_port} (port already in use?)" >&2
+    local_repo_server_pid=""
+    return 1
+  fi
   printf '%s\n' "${me}: serving ${local_repo_dir} at http://${bridge_ip}:${local_repo_port}/ (pid ${local_repo_server_pid})" >&2
+  return 0
 }
 
 cleanup_local_repo_server() {
@@ -360,6 +405,11 @@ write_builder_conf() {
     printf '%s\n' "  options:"
     printf '%s\n' "    image: \"${image}\""
     if [ -n "${local_repo}" ]; then
+      ## Force a fresh fetch: a prior normal build leaves the UPSTREAM template checkout cached,
+      ## and the fetch stage would UPDATE that (origin stays upstream, no local-repo.conf hook)
+      ## rather than re-clone the fork. force-fetch rmtree's the cache so the fork is obtained.
+      printf '%s\n' ""
+      printf '%s\n' "force-fetch: true"
       ## Repoint the template component at our fork (carries the local-repo.conf hook) and skip
       ## its git-signature check: the fork's 'ai' commits are not signed by the upstream
       ## maintainer key, so verification is disabled for this component only (testing).
@@ -386,9 +436,11 @@ build() {
   ## --local-repo: fetch first so the fork's template content (with the hook) lands on the host,
   ## inject local-repo.conf into it, serve the repo on the docker bridge, then run the rest.
   (cd -- "${dir}" && ./qubesbuilder-cli -t "${flavor}" template fetch)
-  local_repo_port="$(local_repo_pick_port)"
+  local bridge_ip
+  bridge_ip="$(local_repo_bridge_ip)"
+  local_repo_port="$(local_repo_pick_port "${bridge_ip}")"
   inject_local_repo_conf
-  serve_local_repo
+  serve_local_repo "${bridge_ip}"
   local rest
   rest="$(stages_without_fetch)"
   if [ -n "${rest}" ]; then
