@@ -196,20 +196,27 @@ def resolve_targets(program, by_path, by_base, search_dirs=PATH_COMMAND_DIRS):
     """The tree file(s) a root category's program target refers to (a list, maybe
     empty).
 
-    A token CONTAINING '/' is a filesystem path, not a PATH lookup: the kernel/
-    shell runs exactly it, so it resolves ONLY by its exact install path and is
-    unresolved otherwise (a relative path is CWD-dependent, so unknowable -- never
-    guessed from the basename).
+    An EXACT install-path match wins first (an absolute token, or any literal
+    path key the tree installs).
 
-    A BARE command (no '/') resolves the way its invoker would search: among the
-    shippers of that basename the one installed into a `search_dirs` dir wins --
-    root's PATH for a shell/exec target (default), udev's helper dirs for a udev
-    rule. This lets a real '/usr/bin/foo' beat an unrelated '/usr/libexec/.../foo'
-    or a bash-completion data file of the same name. Only when no shipper is in
-    `search_dirs` does it fall back to a unique match over ALL shippers (so a
-    helper that ships solely off the search path is still found); a genuine
-    collision stays unresolved. An external tool (apt, systemctl) is not our code,
-    so it stays unresolved too.
+    Otherwise it falls back to the BASENAME. A bare command resolves the way its
+    invoker searches: among the shippers of that basename the one installed into a
+    `search_dirs` dir wins -- root's PATH for a shell/exec target (default),
+    udev's helper dirs for a udev rule. This lets a real '/usr/bin/foo' beat an
+    unrelated '/usr/libexec/.../foo' or a bash-completion data file of the same
+    name. Only when no shipper is in `search_dirs` does it fall back to a unique
+    match over ALL shippers; a genuine collision stays unresolved. An external
+    tool (apt, systemctl) is not our code, so it stays unresolved too.
+
+    The basename fallback ALSO applies to a token that contains '/' but whose
+    exact path the tree does not install: such a target routinely still names a
+    tree file RELOCATED from its install path -- usrmerge ('/usr/sbin/x' shipped
+    at '/sbin/x'), a Debian '.links' alias, an initramfs copy ('/lib/x' built
+    from '/usr/libexec/.../x'), or a build-time '@SBIN@/x' placeholder -- and the
+    basename recovers it. A coincidental-basename over-match (an external
+    '/usr/bin/tor' hitting an unrelated skel 'tor') is an ACCEPTED over-report:
+    for a root-surface audit a MISSED real script (false negative) is worse than
+    an extra candidate a human dismisses.
 
     The FIRST whitespace token is the program; a surrounding quote on that token
     is stripped AFTER the split, so '"/usr/bin/foo" arg' resolves."""
@@ -221,8 +228,8 @@ def resolve_targets(program, by_path, by_base, search_dirs=PATH_COMMAND_DIRS):
     token = tokens[0].strip('"').strip("'")
     if not token:
         return []
-    if "/" in token:
-        return list(by_path.get(token, []))
+    if token in by_path:
+        return list(by_path[token])
     matches = by_base.get(install_name(os.path.basename(token)))
     if not matches:
         return []

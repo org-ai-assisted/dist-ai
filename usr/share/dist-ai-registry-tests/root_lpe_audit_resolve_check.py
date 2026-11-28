@@ -11,13 +11,15 @@ Targeted unit canary for dm-root-lpe-audit's target RESOLUTION. Imports the REAL
 tool (argv[1]) as a module and drives build_index + resolve_targets over a small
 synthetic file tree (controlled INPUT, not a copy of the subject).
 
-The pinned contract: a BARE command (no '/') resolves the way its invoker would
-search -- root's PATH for a shell/exec target, udevd's helper dirs for a udev
-rule -- so among several shippers of one basename the one installed into a search
-dir wins. A token CONTAINING '/' is a filesystem path: it resolves ONLY by its
-exact install path, never guessed from the basename. Without this a real
-'/usr/bin/foo' is dropped as "ambiguous" (a false negative on a security-inventory
-tool) or a '/'-path silently audits the wrong file. Asserts:
+The pinned contract: an EXACT install-path hit wins first. Otherwise the BASENAME
+resolves it: a bare command the way its invoker searches -- root's PATH for a
+shell/exec target, udevd's helper dirs for a udev rule -- so the shipper in a
+search dir wins; and a '/'-token whose exact path the tree does not install still
+recovers a file RELOCATED from its install path (usrmerge, a Debian '.links'
+alias, an initramfs copy, a build '@SBIN@' placeholder). Without the search-dir
+preference a real '/usr/bin/foo' is dropped as "ambiguous"; without the basename
+fallback a relocated real root script is silently dropped (false negatives on a
+security-inventory tool). Asserts:
   1. PATH shipper beats a same-name bash-completion data file (apt-get-noninteractive);
   2. PATH shipper beats a same-name off-PATH libexec helper (onion-time-pre-script);
   3. a helper shipped ONLY off the search path still resolves by its unique basename;
@@ -25,12 +27,14 @@ tool) or a '/'-path silently audits the wrong file. Asserts:
   5. an ABSOLUTE token present in by_path resolves by exact install path (off-PATH dir);
   6. only the FIRST token of the program string is resolved (args ignored);
   7. a /usr/games shipper is NOT a root-PATH rival -- the /usr/bin shipper wins;
-  8. a relative '/'-token is unresolved, not basename-guessed;
-  9. an ABSOLUTE token absent from by_path is unresolved, not basename-guessed;
- 10. an ABSOLUTE token present in by_path resolves exactly;
- 11. a udev bare program prefers the /usr/lib/udev shipper over /usr/bin;
- 12. the same bare name as a shell target prefers the /usr/bin shipper.
-Cases 1, 2, 7, 8, 9 FAIL on the pre-fix tool. Prints 'N pass, N fail'.
+  8. an exact install-path hit resolves directly;
+  9. a usrmerge-variant path ('/usr/sbin/x' shipped at '/sbin/x') resolves via basename;
+ 10. a build-placeholder path ('@SBIN@/x') resolves via basename;
+ 11. a relocated-lib path ('/lib/x' for a libexec file) resolves via basename;
+ 12. a udev bare program prefers the /usr/lib/udev shipper over /usr/bin;
+ 13. the same bare name as a shell target prefers the /usr/bin shipper.
+Cases 1, 2, 7 FAIL on the first-fix tool; 9, 10, 11 FAIL on the slash-only tool.
+Prints 'N pass, N fail'.
 """
 
 import os
@@ -68,9 +72,12 @@ FIXTURE = [
     ## udev program resolves against udevd's helper dirs, not root PATH.
     ("F_udev_bin",     "usr/bin/udevprog"),
     ("F_udev_hlp",     "usr/lib/udev/udevprog"),
-    ## unique basename shipped only under /usr/bin -- used to prove a '/'-token is
-    ## resolved by exact path, never guessed from the basename.
+    ## unique basename under /usr/bin -- an exact-path hit resolves it directly.
     ("F_slash_bin",    "usr/bin/slashcmd"),
+    ## unique basename shipped under /sbin -- a usrmerge-variant invoked path
+    ## ('/usr/sbin/sbincmd') and a build placeholder ('@SBIN@/sbincmd') must
+    ## recover it by basename when the exact install path is not a by_path key.
+    ("F_sbin",         "sbin/sbincmd"),
 ]
 
 
@@ -117,13 +124,17 @@ def main(argv):
     ## games dir is not root PATH: /usr/bin shipper wins, /usr/games is not a rival.
     check("games dir is not a PATH collision (/usr/bin wins)",
           resolve("realcmd"), ["F_real_bin"], checks)
-    ## a token with '/' is a path, resolved ONLY by exact install path.
-    check("relative '/'-token is not basename-guessed (unresolved)",
-          resolve("./slashcmd"), [], checks)
-    check("absolute token missing from by_path is unresolved (not basename-guessed)",
-          resolve("/opt/x/slashcmd"), [], checks)
+    ## an exact install-path hit resolves directly.
     check("absolute token present in by_path resolves exactly",
           resolve("/usr/bin/slashcmd"), ["F_slash_bin"], checks)
+    ## a '/'-token whose exact path the tree does not install falls back to the
+    ## basename, recovering a file relocated from its install path.
+    check("usrmerge-variant path resolves via basename (/usr/sbin vs /sbin)",
+          resolve("/usr/sbin/sbincmd"), ["F_sbin"], checks)
+    check("build-placeholder path resolves via basename (@SBIN@/x)",
+          resolve("@SBIN@/sbincmd"), ["F_sbin"], checks)
+    check("relocated-lib path resolves via basename (/lib copy of a libexec file)",
+          resolve("/lib/onlyhelper"), ["F_only_lx"], checks)
     ## udev program resolves against udevd's helper dirs, not root PATH.
     check("udev bare program prefers the udev helper-dir shipper",
           resolve_udev("udevprog"), ["F_udev_hlp"], checks)
