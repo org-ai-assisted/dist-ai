@@ -149,10 +149,13 @@ HELPER_SCRIPTS_PATH="${HELPER_SCRIPTS_PATH}" bash -c 'source "$1"; false; true' 
    || leak_rc=$?
 check "sourcing does not leak strict-mode" "${leak_rc}" "0"
 
-src_out="$(HELPER_SCRIPTS_PATH="${HELPER_SCRIPTS_PATH}" bash -c 'source "$1"' placeholder "${subject}" 2>&1)" || true
-check "sourcing does not auto-run" "${src_out}" ""
+## Append a sentinel AFTER the source: a subject that EXITS (even 'exit 0') when
+## sourced never reaches it, catching a silent exit that would otherwise abort the
+## in-process source below with every assertion unrun (a false green).
+src_out="$(HELPER_SCRIPTS_PATH="${HELPER_SCRIPTS_PATH}" bash -c 'source "$1"; printf %s SRC_RETURNED' placeholder "${subject}" 2>&1)" || true
+check "sourcing returns without auto-run output" "${src_out}" "SRC_RETURNED"
 
-if [ "${leak_rc}" -ne 0 ] || [ -n "${src_out}" ]; then
+if [ "${leak_rc}" -ne 0 ] || [ "${src_out}" != "SRC_RETURNED" ]; then
    printf '%s\n' "FATAL: subject is not safe to source in-process (see checks above)" >&2
    exit 1
 fi
