@@ -273,13 +273,15 @@ def scan_systemd(abs_path, rel_path):
     ## are not lost -- computed BEFORE the %h exclusion so that exclusion can never
     ## suppress a forced-root program.
     forced = parse_service_forced_root(text)
-    ## A payload .service (not under /systemd/system/) whose Exec PROGRAM is located
-    ## via %h is a user-scope unit the user manager runs, not a root surface -- UNLESS
-    ## it carries a '+'-forced-root Exec, which runs as root regardless of scope and
-    ## must never be dropped.
-    if not forced \
+    ## A payload .service (not under /systemd/system/) is a user-scope unit the user
+    ## manager runs -- excluded -- only when it is PURELY %h-located: EVERY Exec
+    ## program via %h (the invoking user's home) and NO '+'-forced-root Exec. If any
+    ## program is an absolute path (which runs as root in a root-scope payload) or
+    ## any Exec is forced-root, the unit is KEPT so that program is never lost --
+    ## over-reporting the %h member is the safe direction for a security inventory.
+    if not forced and exec_targets \
             and "/systemd/system/" not in ("/" + rel_path) \
-            and any(USER_SCOPE_EXEC_RE.search(prog) for prog in exec_targets):
+            and all(USER_SCOPE_EXEC_RE.search(prog) for prog in exec_targets):
         return None
     if not runs_as_root:
         if not forced:

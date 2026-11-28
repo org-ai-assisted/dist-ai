@@ -118,6 +118,10 @@ def main(argv):
          one("systemd-unit", "payload-forced.service") is not None
          and "%h/.local/bin/payloadforced"
          in one("systemd-unit", "payload-forced.service")["root_forced_exec"]),
+        ("a payload mixing an absolute Exec with a %h Exec is KEPT (abs program not lost)",
+         one("systemd-unit", "payload-mixed.service") is not None
+         and "/usr/sbin/mixed-root"
+         in one("systemd-unit", "payload-mixed.service")["exec"]),
         ("ExecCondition and ExecStopPost root programs are captured",
          one("systemd-unit", "execkeys.service") is not None
          and "/usr/bin/root-cond" in one("systemd-unit", "execkeys.service")["exec"]

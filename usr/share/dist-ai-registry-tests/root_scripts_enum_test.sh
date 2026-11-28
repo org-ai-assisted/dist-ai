@@ -328,6 +328,16 @@ User=nobody
 ExecStart=+%h/.local/bin/payloadforced
 EOF
 
+## a PAYLOAD unit MIXING an absolute-path Exec with a %h Exec (no User=, no '+'):
+## the %h exclusion fires only for a PURE-%h payload, so a unit with any non-%h
+## program is KEPT -> the absolute program (root in a root-scope payload) is never
+## lost. Over-reporting the %h member is the SAFE direction for a security inventory.
+write 'packages/kicksecure/foo/usr/share/foo/payload-mixed.service' <<'EOF'
+[Service]
+ExecStartPre=/usr/sbin/mixed-root
+ExecStart=%h/.local/bin/mixed-home
+EOF
+
 ## every Exec* directive that runs as root is captured; a bare ExecStartPre=
 ## resets ONLY that key (root-pre must NOT survive; cond + cleanup MUST).
 write 'packages/kicksecure/foo/usr/lib/systemd/system/execkeys.service' <<'EOF'
