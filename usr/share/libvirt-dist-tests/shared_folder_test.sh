@@ -84,7 +84,7 @@ fi
 ## with command -v rather than has():
 ## style-ok: no-has
 missing=''
-for cmd in virsh virt-xml qemu-img runuser safe-rm; do
+for cmd in virsh virt-xml qemu-img runuser safe-rm setfattr; do
   command -v "${cmd}" >/dev/null 2>&1 || missing="${missing} ${cmd}"
 done
 if [ -n "${missing}" ]; then
@@ -199,31 +199,57 @@ root_host_checks() {
 ##    hole). Assert both directly + CANARY each against its regression.
 xattr_sticky_regression_check() {
   local base shipped tg='libvirtdist-xattrtest' tu='libvirtdist-xattrprobe' rc=0
-  ## Disk-backed fs (tmpfs often lacks user.* xattrs); require support or SKIP.
-  base="$(mktemp --directory -- /var/lib/libvirt-dist-xattr.XXXXXX)"
+  ## This fn runs under `if !` (errexit OFF), so EVERY setup step's rc is checked
+  ## explicitly -- an unchecked failure would make a probe fail for the WRONG
+  ## reason and masquerade as a real (or a false-skip) result.
+  ## mktemp FIRST: an empty base would make the setfattr probe below fail and look
+  ## like "fs lacks xattr support" -- a false SKIP. mktemp failure is FATAL here.
+  if ! base="$(mktemp --directory -- /var/lib/libvirt-dist-xattr.XXXXXX)" \
+    || [ -z "${base}" ]; then
+    printf '%s\n' "FAIL: mktemp could not create the xattr probe dir under /var/lib" >&2
+    return 1
+  fi
   chmod 0755 -- "${base}"
+  ## setfattr is a REQUIRED command (checked at startup), so a failure HERE is a
+  ## genuine fs limitation (tmpfs often lacks user.* xattrs), not a missing tool.
   if ! setfattr --name user.probe --value x -- "${base}" 2>/dev/null; then
     safe-rm --recursive --force -- "${base}"
     printf '%s\n' "SKIP: /var/lib fs lacks user.* xattr support (cannot test the mapped-9p host-dir rule)" >&2
     exit 77  ## style-ok: allow-skip: the mapped user.virtfs xattr rule needs a user-xattr-capable fs
   fi
   setfattr --remove user.probe -- "${base}" 2>/dev/null || true
-  ## Setup rc checked EXPLICITLY: called under `if !` disables errexit here, so a
-  ## failed groupadd/useradd would otherwise make the probes fail for the WRONG
-  ## reason (missing user) and masquerade as "blocked".
+  ## Probe group + user, with MEMBERSHIP asserted: a pre-existing tu with a
+  ## different group would skip useradd and NOT be in tg, so the group-write probe
+  ## would fail for not-a-member rather than the sticky/ownership rule. usermod
+  ## guarantees membership; the case test (pipe-free, R-161) asserts it.
   groupadd --force "${tg}"
   id "${tu}" >/dev/null 2>&1 \
     || useradd --no-create-home --no-user-group --gid "${tg}" "${tu}"
-  if ! id "${tu}" >/dev/null 2>&1; then
-    printf '%s\n' "FAIL: could not create probe user ${tu} for the host-dir rule check" >&2
+  usermod --append --groups "${tg}" "${tu}" >/dev/null 2>&1 || true
+  case " $(id -nG "${tu}" 2>/dev/null) " in
+    *" ${tg} "*)
+      ;;
+    *)
+      printf '%s\n' "FAIL: probe user ${tu} is not a member of ${tg} -- cannot test the group-write rule" >&2
+      safe-rm --recursive --force -- "${base}"
+      userdel "${tu}" >/dev/null 2>&1 || true
+      groupdel "${tg}" >/dev/null 2>&1 || true
+      return 1
+      ;;
+  esac
+  ## The SHIPPED host-dir config: root:kvmsf 2770 (setgid, group rwx, NON-sticky).
+  ## Each setup step's rc checked so a failed chown/chmod cannot make the sticky /
+  ## chmod-open conclusions fire for the wrong reason.
+  shipped="${base}/shipped"
+  if ! mkdir "${shipped}" \
+    || ! chown "root:${tg}" "${shipped}" \
+    || ! chmod 2770 "${shipped}"; then
+    printf '%s\n' "FAIL: could not set up the root:kvmsf 2770 probe dir" >&2
     safe-rm --recursive --force -- "${base}"
+    userdel "${tu}" >/dev/null 2>&1 || true
     groupdel "${tg}" >/dev/null 2>&1 || true
     return 1
   fi
-  ## The SHIPPED host-dir config: root:kvmsf 2770 (setgid, group rwx, NON-sticky).
-  shipped="${base}/shipped"
-  mkdir "${shipped}"
-  chown "root:${tg}" "${shipped}"; chmod 2770 "${shipped}"
 
   ## 1. SHIPPED (root:kvmsf 2770, non-sticky): a non-owner kvmsf member CAN set
   ##    user.virtfs.* -- so the mapped fixup qemu-as-"user" performs works.
@@ -394,15 +420,25 @@ main() {
   ##     Without this the boot test's fmode check would only exercise the test's
   ##     OWN qemu line, never catching user-setup dropping fmode (so a guest-
   ##     written host inode would be 0600, host "sysmaint" could not read it).
-  ##     Quote-agnostic: libvirt may emit single or double quotes.
+  ##     ANCHORED: extract the <filesystem> block whose <source dir> is shared_dir
+  ##     and assert BOTH attrs ON THAT element -- unanchored whole-XML greps would
+  ##     false-pass if fmode/dmode landed on a different device or were absent from
+  ##     the shared one. Quote-agnostic: libvirt may emit single or double quotes.
   for vm in "${domain_list[@]}"; do
-    local xml
+    local xml fsblock
     xml="$(virsh -c qemu:///session dumpxml --inactive "${vm}")"
-    if grep --quiet --extended-regexp "fmode=['\"]0640['\"]" <<< "${xml}" \
-      && grep --quiet --extended-regexp "dmode=['\"]0750['\"]" <<< "${xml}"; then
-      pass "${vm}: user-setup emitted fmode=0640,dmode=0750 on the mapped share"
+    fsblock="$(awk -v sd="${shared_dir}" '
+      index($0, "<filesystem") { infs = 1; buf = $0; hassrc = 0; next }
+      infs { buf = buf ORS $0 }
+      infs && (index($0, "dir=\"" sd "\"") || index($0, "dir=\047" sd "\047")) { hassrc = 1 }
+      index($0, "</filesystem>") { if (infs && hassrc) { print buf } infs = 0 }
+    ' <<< "${xml}")"
+    if [ -n "${fsblock}" ] \
+      && grep --quiet --extended-regexp "fmode=['\"]0640['\"]" <<< "${fsblock}" \
+      && grep --quiet --extended-regexp "dmode=['\"]0750['\"]" <<< "${fsblock}"; then
+      pass "${vm}: user-setup emitted fmode=0640,dmode=0750 on the shared-dir mapped device"
     else
-      fail "${vm}: mapped share is missing fmode=0640/dmode=0750 in the domain XML"
+      fail "${vm}: the shared-dir <filesystem> device is missing fmode=0640/dmode=0750 in the domain XML"
     fi
   done
 
