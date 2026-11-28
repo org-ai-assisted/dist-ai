@@ -71,6 +71,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from dist_ai.webcheck.mobile import (
     _MountHandler, _MountingTCPServer, _page_urls, _skip, SUBSITES)
+from dist_ai.webcheck._retry import audit_with_retry
 
 # WCAG 2.5.8 AA minimum target edge / circle diameter, in CSS px.
 MIN_PX = 24.0
@@ -84,6 +85,13 @@ SETTLE_MS = 400
 # lands near 45s is cancelled before its (successful) measurement and falsely reported "wedged".
 # 55 gives ~10s headroom over the 45s goto, matching axe.check.
 HARD_TIMEOUT = 55
+# Attempts per (page, viewport): the initial try + one retry on a fresh browser. Under the deploy's
+# two concurrent per-site lanes a measurement can hit a TRANSIENT contention WEDGE or audit ERROR
+# (both NON-completions) on a page that measures fine in isolation; retrying on a fresh browser
+# absorbs the flake, while a genuinely un-measurable page faults on EVERY attempt and is STILL
+# reported -- the retry cannot mask a real tap-target violation (that needs a COMPLETED measurement).
+# Shared with the axe lane via _retry.audit_with_retry (operator decision 2026-11-28).
+AUDIT_ATTEMPTS = 2
 _CTRL_CHARS = re.compile(r'[\x00-\x1f\x7f-\x9f]')
 
 
@@ -315,10 +323,16 @@ _FORCE_LAZY_JS = (
     "} catch (e) {} }")
 
 
-async def _taptarget_page(browser, url: str, width: int, height: int,
-                          settle_ms: int) -> Dict[str, Any]:
-    """Load one page at one viewport, return its extracted records (or a redirect/status marker).
-    Mirrors axe._axe_page's hermetic routing so an off-mount redirect stub is not measured."""
+async def _open_and_measure(browser, url: str, width: int, height: int,
+                            settle_ms: int) -> Tuple[Any, Dict[str, Any]]:
+    """Load one page at one viewport; return (page, result) with the page STILL OPEN. The caller (via
+    _retry.audit_with_retry) times ONLY this call and closes the page OUTSIDE the wall-clock budget, so
+    a completed measurement (returned BEFORE its close) is never discarded by a slow/failed teardown,
+    and a wedged / dead-browser new_page surfaces inside the time-boxed call as a bounded wedge /
+    caught error rather than an unbounded hang or an uncaught traceback. `result` is the extracted
+    records (or a redirect/status marker). Mirrors axe._open_and_audit; the hermetic routing keeps an
+    off-mount redirect stub from being measured. On a fault the caller relaunches the browser, which
+    reaps this still-open page."""
     from urllib.parse import urlparse
     allowed = urlparse(url).netloc
     nav: Dict[str, Any] = {"count": 0, "redirect": None}
@@ -341,37 +355,29 @@ async def _taptarget_page(browser, url: str, width: int, height: int,
 
     await page.route("**/*", _hermetic)
     try:
-        try:
-            resp = await page.goto(url, wait_until="networkidle", timeout=45000)
-        except Exception:
-            if nav["redirect"]:
-                return {"redirect": nav["redirect"]}
-            raise
+        resp = await page.goto(url, wait_until="networkidle", timeout=45000)
+    except Exception:
         if nav["redirect"]:
-            return {"redirect": nav["redirect"]}
-        status = resp.status if resp is not None else 0
-        if status < 200 or status >= 400:
-            return {"status": status}
-        # Force lazy images to load before measuring. The wiki's icon+text link pairs
-        # (`<a href=X><img loading=lazy></a> <a href=X>text</a>`) rely on the icon's box to form a
-        # >=24px same-href target; a below-the-fold lazy icon stays unloaded (0x0) on a static load,
-        # so the pair would FALSELY read as just the narrow text link. A real user sees the icon
-        # once the row scrolls in -- so eager-load every image (and nudge any IntersectionObserver
-        # loader with a scroll) to measure the real visible state. Mirrors mobile.py forcing
-        # content-visibility before an a11y measure.
-        await page.evaluate(_FORCE_LAZY_JS)
-        await page.wait_for_timeout(settle_ms)
-        if nav["redirect"]:
-            return {"redirect": nav["redirect"]}
-        records = await page.evaluate(TAPTARGET_JS)
-        return {"status": status, "records": records}
-    finally:
-        try:
-            await asyncio.wait_for(page.close(), timeout=5)
-        except Exception:
-            # Best-effort teardown: a page that already closed / hangs on close must not mask the
-            # measurement or the real exception in flight.
-            pass
+            return page, {"redirect": nav["redirect"]}
+        raise
+    if nav["redirect"]:
+        return page, {"redirect": nav["redirect"]}
+    status = resp.status if resp is not None else 0
+    if status < 200 or status >= 400:
+        return page, {"status": status}
+    # Force lazy images to load before measuring. The wiki's icon+text link pairs
+    # (`<a href=X><img loading=lazy></a> <a href=X>text</a>`) rely on the icon's box to form a
+    # >=24px same-href target; a below-the-fold lazy icon stays unloaded (0x0) on a static load,
+    # so the pair would FALSELY read as just the narrow text link. A real user sees the icon
+    # once the row scrolls in -- so eager-load every image (and nudge any IntersectionObserver
+    # loader with a scroll) to measure the real visible state. Mirrors mobile.py forcing
+    # content-visibility before an a11y measure.
+    await page.evaluate(_FORCE_LAZY_JS)
+    await page.wait_for_timeout(settle_ms)
+    if nav["redirect"]:
+        return page, {"redirect": nav["redirect"]}
+    records = await page.evaluate(TAPTARGET_JS)
+    return page, {"status": status, "records": records}
 
 
 class _EngineUnavailable(Exception):
@@ -382,10 +388,14 @@ class _EngineUnavailable(Exception):
 async def check(base: str, paths: List[str], settle_ms: int = SETTLE_MS,
                 hard_timeout: int = HARD_TIMEOUT) -> Tuple[List[str], List[str], int]:
     """Measure every page at every viewport. Returns (failures, problems, measured): a failure is a
-    WCAG 2.5.8 violation line; a problem is an unauditable page (wedge / bad status), which the
-    caller fails on -- an unmeasured page is never a silent clean (mirrors axe.check). `measured` is
-    the count of (page, viewport) loads actually audited (not a redirect stub / bad status / wedge),
-    so the caller can refuse a vacuous audit where nothing was measured."""
+    WCAG 2.5.8 violation line; a problem is an unauditable page (wedge / audit error / bad status),
+    which the caller fails on -- an unmeasured page is never a silent clean (mirrors axe.check). A
+    transient contention WEDGE or audit ERROR is retried on a fresh browser (see AUDIT_ATTEMPTS and
+    _retry.audit_with_retry) and reported only when EVERY attempt faults; a mid-run chromium death
+    that cannot relaunch records the remaining pages and RETURNS what was collected (never a traceback,
+    never a masking SKIP). `measured` is the count of (page, viewport) loads actually audited (not a
+    redirect stub / bad status / wedge), so the caller can refuse a vacuous audit where nothing was
+    measured."""
     from playwright.async_api import async_playwright
 
     failures: List[str] = []
@@ -396,22 +406,40 @@ async def check(base: str, paths: List[str], settle_ms: int = SETTLE_MS,
             browser = await p.chromium.launch()
         except Exception as exc:              # noqa: BLE001 -- engine not installed
             raise _EngineUnavailable(str(exc)) from exc
+        engine_gone = False
         for path in paths:
             url = base.rstrip("/") + "/" + path.lstrip("/")
             for vname, vw, vh in VIEWPORTS:
-                try:
-                    res = await asyncio.wait_for(
-                        _taptarget_page(browser, url, vw, vh, settle_ms), timeout=hard_timeout)
-                except Exception:
-                    try:
-                        await asyncio.wait_for(browser.close(), timeout=5)
-                    except Exception:
-                        # The page wedged; a close that also errors/hangs does not change recovery.
-                        # Relaunch a clean browser so the wedge cannot cascade to later pages.
-                        pass
-                    browser = await p.chromium.launch()
-                    print("TIMEOUT   %s [%s]" % (_safe_terminal(path), vname), flush=True)
-                    problems.append("wedged: %s [%s]" % (path, vname))
+                label = "%s [%s]" % (path, vname)
+                if engine_gone:
+                    # chromium could not be relaunched on an earlier page -> this one cannot be
+                    # measured either. Record a hard problem (never a silent clean); check() still
+                    # RETURNS the failures collected before the engine died.
+                    print("ERROR     %s (engine unavailable)" % _safe_terminal(label), flush=True)
+                    problems.append("audit error: %s" % label)
+                    continue
+                # A WEDGE (asyncio.TimeoutError) and a non-timeout audit ERROR (a dead-browser
+                # new_page, a nav / evaluation exception) are BOTH transient contention
+                # non-completions, retried on a fresh browser and reported only when EVERY attempt
+                # faults (see AUDIT_ATTEMPTS). _open_and_measure returns the page STILL OPEN; the
+                # helper closes it OUTSIDE the budget, so a slow/failing teardown cannot discard a
+                # completed measurement. A relaunch that cannot start chromium ends measuring
+                # (engine_gone) but still records this page and returns what was collected.
+                res, browser, fault = await audit_with_retry(
+                    p, browser,
+                    functools.partial(_open_and_measure, url=url, width=vw, height=vh,
+                                      settle_ms=settle_ms),
+                    hard_timeout, AUDIT_ATTEMPTS, label)
+                if res is None:
+                    kind, detail = fault
+                    if browser is None:
+                        engine_gone = True
+                    if kind == "wedged":
+                        print("TIMEOUT   %s" % _safe_terminal(label), flush=True)
+                    else:
+                        print("ERROR     %s%s"
+                              % (_safe_terminal(label), (": " + detail) if detail else ""), flush=True)
+                    problems.append("%s: %s" % (kind, label))
                     continue
                 if res.get("redirect"):
                     print("redir     %s [%s]" % (_safe_terminal(path), vname), flush=True)
@@ -431,12 +459,14 @@ async def check(base: str, paths: List[str], settle_ms: int = SETTLE_MS,
                                _safe_terminal(rec.get("href", ""))))
                     failures.append(line)
                     print("          -> %s" % _safe_terminal(line), flush=True)
-        try:
-            await asyncio.wait_for(browser.close(), timeout=5)
-        except Exception:
-            # Best-effort final teardown: the measurement is complete and captured; a close that
-            # errors/hangs here must not turn a clean run into a failure.
-            pass
+        if browser is not None:
+            try:
+                await asyncio.wait_for(browser.close(), timeout=5)
+            except Exception:
+                # Best-effort final teardown: the measurement is complete and captured; a close that
+                # errors/hangs here must not turn a clean run into a failure. (browser is None only
+                # when chromium died mid-run and could not relaunch.)
+                pass
     return failures, problems, measured
 
 

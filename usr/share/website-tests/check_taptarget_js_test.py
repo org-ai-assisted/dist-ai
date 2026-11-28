@@ -156,7 +156,7 @@ async def _run_async(stats):
             except Exception:
                 # Best-effort teardown: the assertions already ran and their verdicts are
                 # captured in `stats`; a browser that already closed or hangs on close must not
-                # turn a completed check run into a failure (mirrors taptarget._taptarget_page).
+                # turn a completed check run into a failure (mirrors _retry.audit_with_retry teardown).
                 pass
 
 

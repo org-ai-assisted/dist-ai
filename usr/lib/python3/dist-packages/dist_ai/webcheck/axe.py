@@ -54,6 +54,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from dist_ai.webcheck.mobile import (
     _MountHandler, _MountingTCPServer, _page_urls, _skip, SUBSITES)
+from dist_ai.webcheck._retry import audit_with_retry
 
 # (page path, axe rule id, normalized target selector).
 Key = Tuple[str, str, str]
@@ -260,22 +261,25 @@ _VIEWPORTS = (("desktop", {"width": 1280, "height": 720}),
               ("mobile", {"width": 390, "height": 844}))
 
 
-# A wedge is a wall-clock TIMEOUT (a per-page audit exceeding hard_timeout). Under the deploy's two
-# concurrent per-site lanes, both drive chromium in the SINGLE sandbox qube at once, so a heavy
-# desktop audit can spike past the budget from CPU CONTENTION -- a timing fault, NOT a content one.
-# So retry a wedged (page, viewport) ONCE on a fresh browser before recording a problem: a transient
-# spike passes on the retry, while a genuinely un-auditable page (real hang / infinite loop) wedges
-# on BOTH attempts and is STILL reported -- the retry cannot mask a real defect. Content VIOLATIONS
-# are still never retried; the deterministic-localhost-mount rationale holds for THEM, not for timing
-# under contention. 2 == the initial attempt + one retry.
-_WEDGE_ATTEMPTS = 2
+# Under the deploy's two concurrent per-site lanes, both drive chromium in the SINGLE sandbox qube at
+# once, so a page that audits fine in isolation can hit a TRANSIENT contention NON-COMPLETION: a
+# wall-clock WEDGE (the audit exceeding hard_timeout from CPU contention) or a non-timeout audit ERROR
+# (a dead-browser new_page, a nav / axe-evaluation exception). Both retry up to _AUDIT_ATTEMPTS times
+# on a fresh browser (see _retry.audit_with_retry): a transient fault passes on a retry, while a
+# genuinely un-auditable page faults on EVERY attempt and is STILL reported -- the retry cannot mask a
+# real defect, because a real VIOLATION needs a COMPLETED audit and a deterministic error recurs every
+# attempt. Content VIOLATIONS are never retried: a completed audit is authoritative (the
+# deterministic-localhost-mount rationale, mirroring check_roots' retries=0 in the console lane).
+# 2 == the initial attempt + one retry. (Operator decision 2026-11-28: retry transient audit ERRORS
+# too, not wedges only -- a clean full deploy was withheld by contention errors under dual-lane load.)
+_AUDIT_ATTEMPTS = 2
 
 # Per-page audit WALL-CLOCK budget (seconds). The old 55s cut off a heavy page whose load merely
 # SLOWED under concurrent-lane contention; 120s gives a slow-but-progressing audit room while still
-# tripping on a genuine hang (then one retry, then reported). This single outer budget is the ONLY
+# tripping on a genuine hang (then a retry, then reported). This single outer budget is the ONLY
 # timeout authority: page.goto runs with NO per-call timeout, so a networkidle that never settles
-# manifests as THIS wall-clock wedge (asyncio.TimeoutError, retryable) rather than a playwright nav
-# TimeoutError that the error path would (correctly) treat as non-retryable. page.close() is timed
+# manifests as THIS wall-clock wedge (asyncio.TimeoutError) rather than a playwright nav TimeoutError;
+# both are transient non-completions that retry (see _AUDIT_ATTEMPTS). page.close() is timed
 # SEPARATELY, outside this budget, so teardown can neither discard a completed audit nor convert an
 # in-flight audit error into a false wedge.
 _HARD_TIMEOUT_DEFAULT = 120
@@ -381,19 +385,20 @@ async def _axe_page(browser, url: str, axe_src: str, settle_ms: int,
 async def check(base: str, paths: List[str], axe_source: str, settle_ms: int = 1000,
                 hard_timeout: int = _HARD_TIMEOUT_DEFAULT) -> Tuple[Set[Key], List[str]]:
     """Audit every page served at `base`, returning (fresh_keys, problems). A problem (a wedged
-    page, a bad HTTP status) is a hard fault the caller fails on -- an unauditable page is never a
-    silent clean. A content VIOLATION is never retried: a localhost mount is deterministic (mirrors
-    check_roots' retries=0 rationale in the sibling console lane). A WEDGE -- page creation + the audit
-    (time-boxed together via _open_and_audit) exceeding the single hard wall-clock budget
-    (asyncio.TimeoutError; page.close() is timed SEPARATELY, outside it) -- IS retried once on a fresh
-    browser: a TIMING fault under concurrent-lane contention, not a content one, so the determinism
-    rationale does not apply; a truly un-auditable page wedges on both attempts and is still reported
-    (see _WEDGE_ATTEMPTS). A NON-timeout audit error (a dead-browser new_page crash, or a navigation /
-    axe-evaluation error) is recorded immediately, never retried (a retry could mask it). Because the
-    audit returns BEFORE its close, a slow/failed teardown never discards a completed audit. A mid-run
-    chromium death that cannot relaunch records the remaining pages as problems and RETURNS the
-    collected keys (a hard FAIL for the caller) -- never a traceback, never a violation-masking SKIP;
-    only the INITIAL launch failure raises _EngineUnavailable (the one honest env-unmet SKIP)."""
+    page, an audit error, a bad HTTP status) is a hard fault the caller fails on -- an unauditable page
+    is never a silent clean. A content VIOLATION is never retried: a localhost mount is deterministic
+    (mirrors check_roots' retries=0 rationale in the sibling console lane). A transient NON-COMPLETION
+    -- a WEDGE (page creation + audit, time-boxed together via _open_and_audit, exceeding the single
+    hard wall-clock budget) OR a non-timeout audit ERROR (a dead-browser new_page, a navigation /
+    axe-evaluation exception) -- IS retried on a fresh browser (see _AUDIT_ATTEMPTS and
+    _retry.audit_with_retry): both are TIMING faults under concurrent-lane contention, not content
+    ones, so the determinism rationale does not apply; a truly un-auditable page faults on every
+    attempt and is still reported -- the retry cannot mask a real defect (a real violation needs a
+    COMPLETED audit; a deterministic error recurs every attempt). page.close() is timed SEPARATELY,
+    outside the budget, so a slow/failed teardown never discards a completed audit. A mid-run chromium
+    death that cannot relaunch records the remaining pages as problems and RETURNS the collected keys
+    (a hard FAIL for the caller) -- never a traceback, never a violation-masking SKIP; only the INITIAL
+    launch failure raises _EngineUnavailable (the one honest env-unmet SKIP)."""
     from playwright.async_api import async_playwright
 
     keys: Set[Key] = set()
@@ -410,91 +415,41 @@ async def check(base: str, paths: List[str], axe_source: str, settle_ms: int = 1
             # after an earlier docroot already ran is a mid-run fault, not a silent SKIP.
             raise _EngineUnavailable(str(exc)) from exc
 
-        async def _relaunch():
-            # Discard the (possibly stuck) current browser best-effort and return a FRESH one, so a
-            # wedge/crash cannot cascade to later pages and any retry runs on a healthy browser.
-            # Returns None when chromium can no longer launch (engine gone MID-RUN): the caller then
-            # records the un-auditable pages as audit-error PROBLEMS and still RETURNS its collected
-            # keys -- a hard FAIL for the caller, never a raised traceback (which would abort every
-            # remaining page and docroot) and never a SKIP(77) that would MASK a violation already
-            # found on an earlier page. Only the INITIAL launch (nothing audited yet) raises
-            # _EngineUnavailable, the one honest env-unmet SKIP.
-            if browser is not None:
-                try:
-                    await asyncio.wait_for(browser.close(), timeout=5)
-                except Exception:
-                    # A close that also errors or hangs does not change recovery. Nothing to do.
-                    pass
-            try:
-                return await p.chromium.launch()
-            except Exception:                 # noqa: BLE001 -- engine gone mid-run
-                return None
-
         engine_gone = False
         for path in paths:
             url = base.rstrip("/") + "/" + path.lstrip("/")
             for vp_name, vp in _VIEWPORTS:
-                res = None
-                audit_error = False
-                # The single hard wall-clock budget times page creation AND the audit together (via
-                # _open_and_audit); page.close() runs OUTSIDE it. So an asyncio.TimeoutError is a
-                # genuine WEDGE -- a timing fault under concurrent-lane contention, including a wedged
-                # new_page -- retried once on a fresh browser (see _WEDGE_ATTEMPTS). ANY other
-                # exception (a dead-browser new_page crash, or a navigation / axe-evaluation error) is
-                # recorded immediately, NEVER retried (a retry could let a transient error pass and
-                # MASK a real failure). A completed audit returns BEFORE its close, so a slow or
-                # failing teardown can never discard it.
+                label = "%s [%s]" % (path, vp_name)
                 if engine_gone:
                     # chromium could not be relaunched on an earlier page -> this one cannot be
                     # audited either. Record a hard problem (never a silent clean) and move on;
                     # check() still RETURNS the keys collected before the engine died.
-                    audit_error = True
-                else:
-                    for attempt in range(_WEDGE_ATTEMPTS):
-                        try:
-                            page, res = await asyncio.wait_for(
-                                _open_and_audit(browser, url, axe_src, settle_ms, vp),
-                                timeout=hard_timeout)
-                        except asyncio.TimeoutError:
-                            # Page creation or audit wedged -> discard the browser (closes the stuck
-                            # page) and retry on a fresh one. A relaunch that cannot start chromium
-                            # (None) ends the run's auditing but still records this page as a problem.
-                            browser = await _relaunch()
-                            if browser is None:
-                                engine_gone = True
-                                audit_error = True
-                                break
-                            if attempt + 1 < _WEDGE_ATTEMPTS:
-                                print("RETRY     %s [%s] (wedged; retrying once on a fresh browser)"
-                                      % (path, vp_name), flush=True)
-                            continue
-                        except Exception:
-                            # A dead-browser new_page crash, or a navigation / axe-evaluation error ->
-                            # relaunch to avoid cascade, record now, never retry (would risk masking).
-                            browser = await _relaunch()
-                            if browser is None:
-                                engine_gone = True
-                            audit_error = True
-                            break
-                        else:
-                            # Audit COMPLETED. Close just this page OUTSIDE the budget (best-effort);
-                            # the result is already captured, so a slow/failed close cannot discard it.
-                            try:
-                                await asyncio.wait_for(page.close(), timeout=5)
-                            except Exception:
-                                # Teardown only: the result is already in `res`, so a close that hangs
-                                # (capped at 5s) or errors changes nothing. Nothing to recover.
-                                pass
-                            break
+                    print("ERROR     %s (engine unavailable)" % label, flush=True)
+                    problems.append("audit error: %s" % label)
+                    continue
+                # The single hard wall-clock budget times page creation AND the audit together (via
+                # _open_and_audit); page.close() runs OUTSIDE it. A WEDGE (asyncio.TimeoutError,
+                # including a wedged new_page) and a non-timeout audit ERROR (a dead-browser new_page,
+                # a nav / axe-evaluation exception) are BOTH transient contention non-completions,
+                # retried on a fresh browser and reported only when EVERY attempt faults (see
+                # _AUDIT_ATTEMPTS). A completed audit returns BEFORE its close, so a slow/failing
+                # teardown can never discard it; a relaunch that cannot start chromium ends the run's
+                # auditing (engine_gone) but still records this page and returns the collected keys.
+                res, browser, fault = await audit_with_retry(
+                    p, browser,
+                    functools.partial(_open_and_audit, url=url, axe_src=axe_src,
+                                      settle_ms=settle_ms, viewport=vp),
+                    hard_timeout, _AUDIT_ATTEMPTS, label)
                 if res is None:
-                    if audit_error:
-                        print("ERROR     %s [%s]" % (path, vp_name), flush=True)
-                        problems.append("audit error: %s [%s]" % (path, vp_name))
+                    kind, detail = fault
+                    if browser is None:
+                        engine_gone = True
+                    if kind == "wedged":
+                        print("TIMEOUT   %s" % label, flush=True)
                     else:
-                        # Wedged on EVERY attempt -> a genuinely un-auditable page, not a transient
-                        # contention spike. A hard problem the caller fails on.
-                        print("TIMEOUT   %s [%s]" % (path, vp_name), flush=True)
-                        problems.append("wedged: %s [%s]" % (path, vp_name))
+                        print("ERROR     %s%s" % (label, (": " + detail) if detail else ""),
+                              flush=True)
+                    problems.append("%s: %s" % (kind, label))
                     continue
                 if res.get("redirect"):
                     # A redirect stub (meta-refresh off-mount); not an auditable content page. Its

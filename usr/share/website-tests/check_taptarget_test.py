@@ -13,8 +13,11 @@ records the in-page extractor returns. Also canaries the extractor JS so the inl
 selectors and the viewport sweep cannot be silently dropped.
 
 Run by the website-tests launcher (a required unit) or directly: ./check_taptarget_test.py"""
+import asyncio
+import inspect
 import os
 import sys
+import types
 
 
 def _load():
@@ -141,6 +144,127 @@ def run() -> int:
         ck(False, "_skip raises SystemExit(77)")
     except SystemExit as exc:
         ck(exc.code == 77, "_skip raises SystemExit(77)")
+
+    # --- check() RETRY under dual-lane contention (operator decision 2026-11-28) ------------------
+    # The deploy runs the two site lanes in PARALLEL (one sandbox), so a transient contention WEDGE or
+    # audit ERROR can hit a page that measures fine in isolation. check() delegates each (page,
+    # viewport) to the shared _retry.audit_with_retry: BOTH fault kinds retry on a fresh browser,
+    # reported only when EVERY attempt faults -- a real violation needs a COMPLETED measurement, so the
+    # retry cannot mask one. Drive the REAL check() with _open_and_measure faked per (page, viewport);
+    # a fake async_playwright supplies browsers.
+    _pw_mod = sys.modules.setdefault("playwright.async_api", types.ModuleType("playwright.async_api"))
+    _WBASE = "http://127.0.0.1:8000"
+
+    class _FP:
+        def __init__(self, width):
+            self.width = width
+
+        async def close(self):
+            pass
+
+    class _FB:
+        def __init__(self, state):
+            self._state = state
+
+        async def new_page(self, viewport=None):
+            return _FP((viewport or {}).get("width"))
+
+        async def close(self):
+            pass
+
+    class _FC:
+        def __init__(self, state):
+            self._state = state
+
+        async def launch(self):
+            self._state["launches"] += 1
+            return _FB(self._state)
+
+    class _FPW:
+        def __init__(self, state):
+            self.chromium = _FC(state)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_a):
+            return False
+
+    def _run_check(paths, wedge_counts=None, error_counts=None, records=None, hard_timeout=1):
+        # wedge_counts / error_counts: {(path,width): N} -- raise TimeoutError / RuntimeError the first
+        # N measurements of that (page, viewport), then measure clean. records: the clean result's
+        # extracted records (fed to evaluate()). Returns (failures, problems, measured, launches).
+        wedge_counts = wedge_counts or {}
+        error_counts = error_counts or {}
+        records = records or {}
+        state = {"launches": 0}
+        seen: dict = {}
+
+        async def _fake_open_and_measure(browser, url, width, height, settle_ms):
+            path = url[len(_WBASE):] or "/"
+            if not path.startswith("/"):
+                path = "/" + path
+            key = (path, width)
+            seen[key] = seen.get(key, 0) + 1
+            n = seen[key]
+            if n <= error_counts.get(key, 0):
+                raise RuntimeError("simulated taptarget evaluation error")
+            if n <= wedge_counts.get(key, 0):
+                raise asyncio.TimeoutError()
+            return _FP(width), {"status": 200, "records": records.get(key, [])}
+
+        _orig = tt._open_and_measure
+        _orig_apw = getattr(_pw_mod, "async_playwright", None)
+        setattr(_pw_mod, "async_playwright", lambda: _FPW(state))
+        tt._open_and_measure = _fake_open_and_measure
+        try:
+            failures, problems, measured = asyncio.run(
+                tt.check(_WBASE, list(paths), 0, hard_timeout))
+        finally:
+            tt._open_and_measure = _orig
+            if _orig_apw is None:
+                if hasattr(_pw_mod, "async_playwright"):
+                    delattr(_pw_mod, "async_playwright")
+            else:
+                setattr(_pw_mod, "async_playwright", _orig_apw)
+        return failures, problems, measured, state["launches"]
+
+    # at least one retry is configured.
+    ck(getattr(tt, "AUDIT_ATTEMPTS", 1) >= 2,
+       "a fault gets at least one retry (AUDIT_ATTEMPTS >= 2): %r" % getattr(tt, "AUDIT_ATTEMPTS", 1))
+    # a page that WEDGES once then measures clean is NOT a problem (transient flake absorbed).
+    _f1, _p1, _m1, _l1 = _run_check(["/"], wedge_counts={("/", 390): 1})
+    ck(_p1 == [], "wedge RETRY: a page that wedges once then measures clean is NOT a problem: %r" % _p1)
+    ck(_l1 == 2, "wedge RETRY: one wedge triggers exactly one relaunch (1 initial + 1 retry): %r" % _l1)
+    # a page WEDGING on every attempt is STILL reported (retry does not mask it).
+    _f2, _p2, _m2, _l2 = _run_check(["/"], wedge_counts={("/", 390): 99})
+    ck(_p2 == ["wedged: / [mobile]"],
+       "wedge RETRY: a page wedging on every attempt is STILL reported: %r" % _p2)
+    # a page that ERRORS once then measures clean is NOT a problem (transient error absorbed).
+    _f3, _p3, _m3, _l3 = _run_check(["/"], error_counts={("/", 390): 1})
+    ck(_p3 == [],
+       "audit-error RETRY: a page that errors once then measures clean is NOT a problem: %r" % _p3)
+    # a page ERRORING on every attempt is STILL reported (masking-safety).
+    _f4, _p4, _m4, _l4 = _run_check(["/"], error_counts={("/", 390): 99})
+    ck(_p4 == ["audit error: / [mobile]"],
+       "audit-error RETRY: a page erroring on every attempt is STILL reported (no mask): %r" % _p4)
+    # a COMPLETED measurement with a real undersized+crowded pair is STILL reported as a FAILURE even
+    # when the page first wedged -- the retry absorbs only non-completions, never a real violation the
+    # measurement found.
+    _cp = [_rec(34, 13004, 106, 20, href="/A"), _rec(61, 13014, 106, 20, href="/B")]
+    _f5, _p5, _m5, _l5 = _run_check(["/"], wedge_counts={("/", 390): 1}, records={("/", 390): _cp})
+    ck(len(_f5) == 2 and _p5 == [],
+       "a real violation on a page that first wedged is STILL reported after the retry completes: "
+       "failures=%d problems=%r" % (len(_f5), _p5))
+    # STRUCTURAL: check() delegates to the shared helper; _open_and_measure never closes its page (the
+    # helper closes it OUTSIDE the budget, so a slow/failed teardown cannot discard a measurement).
+    _check_src = inspect.getsource(tt.check)
+    ck("audit_with_retry" in _check_src and "_open_and_measure" in _check_src,
+       "check() delegates per-page measuring to the shared retry helper")
+    ck("browser.new_page" not in _check_src,
+       "check() creates no page outside the timed region (new_page lives in _open_and_measure)")
+    ck(".close(" not in inspect.getsource(tt._open_and_measure),
+       "_open_and_measure never closes the page (close is outside the timed measurement)")
 
     sys.stdout.write("check_taptarget_test: %d pass, %d fail, 0 skip\n"
                      % (stats["pass"], stats["fail"]))
