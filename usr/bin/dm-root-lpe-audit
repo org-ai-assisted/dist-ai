@@ -79,6 +79,13 @@ ENUM_TOOL = "dm-root-scripts-enum"
 ## Filesystem-root dirs a package mirrors; the install path starts at the first.
 FHS_TOPS = ("usr", "etc", "bin", "sbin", "lib", "lib64", "opt", "var", "run", "srv")
 
+## Command dirs on root's PATH. A BARE command (no '/') resolves only here, never
+## to a libexec helper or a bash-completion data file that merely shares the name,
+## so a basename match prefers a shipper installed in one of these.
+PATH_COMMAND_DIRS = frozenset((
+    "/bin", "/sbin", "/usr/bin", "/usr/sbin",
+    "/usr/local/bin", "/usr/local/sbin", "/usr/games", "/usr/local/games"))
+
 ## Enum categories whose 'path' IS the root-run script (no target to resolve).
 DIRECT_SCRIPT_CATEGORIES = frozenset((
     "maintainer-script", "build-chroot", "grub-script", "grub-default-config",
@@ -165,22 +172,32 @@ def build_index(tree_files, submodules):
     the same install path (e.g. '#pkgA'/'#pkgB' variants), and dropping the
     later one would skip a real root target."""
     by_path: dict[str, list[str]] = {}
-    by_base: dict[str, set[str]] = {}
+    ## basename -> {(tree file, installs onto PATH)}: the PATH flag lets a bare
+    ## command prefer the shipper it would actually exec (see resolve_targets).
+    by_base: dict[str, set[tuple[str, bool]]] = {}
     for abs_path, rel_path in tree_files:
         _component, sub = component_for(rel_path, submodules)
         install = install_path_for(rel_path, sub)
         if install is not None:
             by_path.setdefault(install, []).append(abs_path)
-            by_base.setdefault(os.path.basename(install), set()).add(abs_path)
+            on_path = os.path.dirname(install) in PATH_COMMAND_DIRS
+            by_base.setdefault(os.path.basename(install), set()).add(
+                (abs_path, on_path))
     return by_path, by_base
 
 
 def resolve_targets(program, by_path, by_base):
     """The tree file(s) a root category's program target refers to (a list, maybe
-    empty). Try the exact install path, then a UNIQUE basename match; an external
-    tool (apt, systemctl) or an ambiguous basename stays unresolved (not our
-    code). The FIRST whitespace token is the program; a surrounding quote on that
-    token is stripped AFTER the split, so '"/usr/bin/foo" arg' resolves."""
+    empty). An ABSOLUTE token resolves by exact install path. A BARE command (no
+    '/') resolves the way root's shell would -- via PATH -- so among the shippers
+    of that basename the one installed onto a PATH command dir wins: this lets a
+    real '/usr/bin/foo' beat an unrelated '/usr/libexec/.../foo' or a
+    bash-completion data file of the same name. Only when there is no single PATH
+    shipper does it fall back to a unique match over ALL shippers (preserving a
+    helper that ships solely off PATH); a genuine collision stays unresolved. An
+    external tool (apt, systemctl) is not our code, so it stays unresolved too.
+    The FIRST whitespace token is the program; a surrounding quote on that token
+    is stripped AFTER the split, so '"/usr/bin/foo" arg' resolves."""
     if not program:
         return []
     tokens = program.strip().split()
@@ -192,8 +209,14 @@ def resolve_targets(program, by_path, by_base):
     if token.startswith("/") and token in by_path:
         return list(by_path[token])
     matches = by_base.get(install_name(os.path.basename(token)))
-    if matches and len(matches) == 1:
-        return list(matches)
+    if not matches:
+        return []
+    on_path = [abs_path for abs_path, is_path in matches if is_path]
+    if len(on_path) == 1:
+        return on_path
+    ## No single PATH shipper: unique over all shippers, else unresolved.
+    if not on_path and len(matches) == 1:
+        return [next(iter(matches))[0]]
     return []
 
 
