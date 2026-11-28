@@ -25,10 +25,15 @@
 ## It models the EFFECTIVE state: mount applies flags in order and the LAST mount
 ## (new mount or remount) that covers /mnt/shared sets the per-mount flag set path
 ## resolution sees, so the final such call is what the security assertions judge.
-## Option forms `-o X`, `-oX`, `--options X`, `--options=X` are all collected, and
-## a toggle flag is resolved last-wins (`symfollow` cancels `nosymfollow`). Exotic
-## forms (fstab lookup, -O propagation, LIBMOUNT env) are out of scope -- the
-## booted-guest test is the effectiveness proof; vboxsf cannot run under CI.
+## A propagation-only change (--make-*) is skipped (it alters propagation, not VFS
+## flags). The mountpoint is canonicalized (realpath -ms) so a non-canonical
+## spelling cannot evade the /mnt/shared match. The fstype (-t / --types / --type)
+## and target (positional or --target) and option set (-o / -oX / --options /
+## --options=) are read in the short AND long forms the style guide may produce; a
+## toggle flag is resolved last-wins (`symfollow` cancels `nosymfollow`). Out of
+## scope (not forms this direct-mount script would produce; the booted-guest ELOOP
+## test is the effectiveness proof): fstab-driven mounts (-T/--fstab), -O filters,
+## a separate --source spec, and LIBMOUNT_* env. vboxsf cannot run under CI.
 ##
 ## CANARY: a vbox branch that drops the remount (or its nosymfollow), passes
 ## nosymfollow to mount.vboxsf, inverts a flag, targets a subdir, or re-mounts
@@ -198,48 +203,64 @@ flag_effective() {
 CALL_TARGET=""
 CALL_OPTS=""
 CALL_IS_VBOXSF="no"
+CALL_IS_PROPAGATION="no"
 parse_call() {
    local -a args=()
    mapfile -t args <"$1"
    CALL_TARGET=""
    CALL_OPTS=""
    CALL_IS_VBOXSF="no"
+   CALL_IS_PROPAGATION="no"
    local -a positional=()
-   local i tok
+   local i tok val explicit_target="" have_explicit="no"
    for (( i = 0; i < ${#args[@]}; i++ )); do
       tok="${args[i]}"
       case "${tok}" in
-         -t)
+         -t|--types|--type)
             i=$(( i + 1 ))
-            if [ "${args[i]:-}" = "vboxsf" ]; then
-               CALL_IS_VBOXSF="yes"
-            fi
+            [ "${args[i]:-}" = "vboxsf" ] && CALL_IS_VBOXSF="yes"
             ;;
-         -t*)
-            if [ "${tok#-t}" = "vboxsf" ]; then
-               CALL_IS_VBOXSF="yes"
-            fi
+         --types=*|--type=*)
+            [ "${tok#*=}" = "vboxsf" ] && CALL_IS_VBOXSF="yes"
+            ;;
+         -t?*)
+            [ "${tok#-t}" = "vboxsf" ] && CALL_IS_VBOXSF="yes"
+            ;;
+         --target)
+            i=$(( i + 1 ))
+            explicit_target="${args[i]:-}"
+            have_explicit="yes"
+            ;;
+         --target=*)
+            explicit_target="${tok#--target=}"
+            have_explicit="yes"
+            ;;
+         --make-*)
+            CALL_IS_PROPAGATION="yes"
             ;;
          -o|--options)
             i=$(( i + 1 ))
+            val="${args[i]:-}"
             if [ -n "${CALL_OPTS}" ]; then
-               CALL_OPTS="${CALL_OPTS},${args[i]:-}"
+               CALL_OPTS="${CALL_OPTS},${val}"
             else
-               CALL_OPTS="${args[i]:-}"
+               CALL_OPTS="${val}"
             fi
             ;;
          --options=*)
+            val="${tok#--options=}"
             if [ -n "${CALL_OPTS}" ]; then
-               CALL_OPTS="${CALL_OPTS},${tok#--options=}"
+               CALL_OPTS="${CALL_OPTS},${val}"
             else
-               CALL_OPTS="${tok#--options=}"
+               CALL_OPTS="${val}"
             fi
             ;;
-         -o*)
+         -o?*)
+            val="${tok#-o}"
             if [ -n "${CALL_OPTS}" ]; then
-               CALL_OPTS="${CALL_OPTS},${tok#-o}"
+               CALL_OPTS="${CALL_OPTS},${val}"
             else
-               CALL_OPTS="${tok#-o}"
+               CALL_OPTS="${val}"
             fi
             ;;
          -*)
@@ -250,11 +271,17 @@ parse_call() {
             ;;
       esac
    done
-   if [ "${#positional[@]}" -gt 0 ]; then
+   if [ "${have_explicit}" = "yes" ]; then
+      CALL_TARGET="${explicit_target}"
+   elif [ "${#positional[@]}" -gt 0 ]; then
       CALL_TARGET="${positional[-1]}"
-      while [ "${CALL_TARGET}" != "/" ] && [ "${CALL_TARGET%/}" != "${CALL_TARGET}" ]; do
-         CALL_TARGET="${CALL_TARGET%/}"
-      done
+   fi
+   if [ -n "${CALL_TARGET}" ]; then
+      ## Canonicalize lexically (collapse '.', '//', '..'), matching how mount
+      ## resolves the mountpoint, so a non-canonical spelling cannot evade the
+      ## /mnt/shared match. -s: no symlink expansion (mount-shared refuses a
+      ## symlink at /mnt/shared); -m: components need not exist.
+      CALL_TARGET="$(realpath -ms -- "${CALL_TARGET}")"
    fi
 }
 
@@ -271,6 +298,9 @@ shopt -s nullglob
 for call_file in "${calls_dir}"/*; do
    parse_call "${call_file}"
    [ "${CALL_TARGET}" = "/mnt/shared" ] || continue
+   ## A propagation-only change (--make-*) alters propagation, not the VFS flag
+   ## set, so it does not re-establish the effective flags -- skip it.
+   [ "${CALL_IS_PROPAGATION}" = "yes" ] && continue
    final_seen="yes"
    final_opts="${CALL_OPTS}"
    if token_present "${CALL_OPTS}" remount && token_present "${CALL_OPTS}" bind; then
@@ -281,11 +311,15 @@ for call_file in "${calls_dir}"/*; do
    if [ "${CALL_IS_VBOXSF}" = "yes" ]; then
       vboxsf_on_share="yes"
       vboxsf_opts="${CALL_OPTS}"
-      if token_present "${CALL_OPTS}" nosymfollow; then
-         vboxsf_passed_nosymfollow="yes"
-      fi
    fi
 done
+
+## The surviving vboxsf mount (the last vboxsf call on /mnt/shared) must not have
+## tried to pass nosymfollow to mount.vboxsf -- a superseded earlier vboxsf call
+## does not matter, so this is judged on the final vboxsf options, not sticky.
+if token_present "${vboxsf_opts}" nosymfollow; then
+   vboxsf_passed_nosymfollow="yes"
+fi
 
 ## The vbox branch actually mounts vboxsf on /mnt/shared.
 assert "vbox branch mounts vboxsf on /mnt/shared" \
