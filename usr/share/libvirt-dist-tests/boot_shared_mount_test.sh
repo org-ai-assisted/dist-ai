@@ -13,13 +13,16 @@
 ## host-side attach; this lane closes the loop by installing for real + booting.
 ##
 ## Multi-account model: the root libvirt-dist install creates group kvmsf and the
-## shared dir (${LIBVIRT_DIST_SHARED_DIR:-/mnt/shared}) owned user:kvmsf mode 3770
+## shared dir (${LIBVIRT_DIST_SHARED_DIR:-/mnt/shared}) owned root:kvmsf mode 3770
 ## (setgid + sticky, NO world) -- a system path so both "user" and "sysmaint"
-## reach it (a $HOME dir could not be cross-account traversable). user-setup then
-## attaches it (9p accessmode='mapped') to the domains. So this test:
+## reach it via the group (a $HOME dir could not be cross-account traversable);
+## root (NOT a member) owns it so the sticky bit protects BOTH members. user-setup
+## then attaches it (9p accessmode='mapped,fmode=0660,dmode=0770') to the domains.
+## So this test:
 ##   - runs the real install (resolved via LIBVIRT_DIST_REPO) against a temp
-##     LIBVIRT_DIST_SHARED_DIR and asserts the dir is mode 3770, group kvmsf, no
-##     world bit (NOT the old 0700 $HOME dir, NOT a world-exposed 0777);
+##     LIBVIRT_DIST_SHARED_DIR and asserts the dir is owner root, group kvmsf,
+##     mode 3770 (NOT the old 0700 $HOME dir, NOT a world-exposed 0777), and that
+##     a non-owner kvmsf member cannot chmod it (finding 1);
 ##   - injects the checkout's mount-shared (VM_CONFIG_DIST_REPO, else the
 ##     installed /usr copy) into the boot overlay, testing THAT code, not the
 ##     release image's;
@@ -31,11 +34,18 @@
 ##     mount);
 ##   - asserts a non-owner kvmsf member can traverse + read + create, and READ a
 ##     file another member owns (the access requirement);
-##   - asserts the sticky bit stops a member unlinking another member's file
-##     (finding 2), and RECORDS that group-WRITE is not achievable under 9p
-##     mapped (finding 4: new files are group-readable only);
-##   - asserts the share is mounted nosuid,nodev,noexec and that a setuid binary
-##     placed in it cannot execute (blocks cross-account setuid escalation);
+##   - asserts the sticky bit stops a member unlinking another member's file,
+##     and RECORDS that guest-side group-WRITE is not achievable under 9p mapped
+##     (new files are group-readable only);
+##   - asserts the share is mounted nosuid,nodev,noexec,nosymfollow, that a
+##     setuid binary placed in it cannot execute, and that a planted symlink is
+##     not followed (blocks cross-account setuid escalation + symlink redirect);
+##   - asserts the bare mountpoint UNDER the mount is root:root 0755 and a member
+##     cannot create a file on it (no setuid drop when NO share mounts), and that
+##     mount-shared's virtiofs branch does no chown/chmod (fixup scoped to 9p);
+##   - asserts the HOST backing inode of a guest-written file is group kvmsf and
+##     group-readable by a host kvmsf non-owner member (finding 2: fmode/dmode on
+##     the attach, else host "sysmaint" could not read what the guest wrote);
 ##   - asserts the host<->guest canary still round-trips.
 ##
 ## Mechanics: user-setup attaches the share; the boot runs the overlay under a
@@ -134,6 +144,7 @@ member='user'
 nbd_dev=''
 nbd_mnt=''
 test_home=''
+share_base=''
 overlay=''
 test_failures=0
 pass_count=0
@@ -161,6 +172,7 @@ cleanup() {
   [ -z "${nbd_dev}" ] || qemu-nbd --disconnect "${nbd_dev}" &>/dev/null || true
   [ -z "${nbd_mnt}" ] || rmdir "${nbd_mnt}" &>/dev/null || true
   [ -z "${test_home}" ] || safe-rm --recursive --force -- "${test_home}"
+  [ -z "${share_base}" ] || safe-rm --recursive --force -- "${share_base}"
 }
 
 ## Pick the first free /dev/nbdN (a used one has a non-zero size).
@@ -234,7 +246,7 @@ printf 'PROBE-BEGIN\n'
     || printf '%s is not a mountpoint\n' "${mp}"
   printf 'MOUNTSTAT: '
   stat -c 'owner=%U(%u) group=%G(%g) mode=%a type=%F' "${mp}" 2>&1
-  ## Mount hardening: the share must carry nosuid,nodev,noexec.
+  ## Mount hardening: the share must carry nosuid,nodev,noexec,nosymfollow.
   printf 'MOUNTOPTS: '
   findmnt --noheadings --output OPTIONS "${mp}" 2>&1 || printf 'none\n'
   ## noexec/nosuid effective: a setuid-root binary dropped in the share must NOT
@@ -246,6 +258,34 @@ printf 'PROBE-BEGIN\n'
     printf 'SUIDPROBE-EXEC: ran-BAD\n'
   else
     printf 'SUIDPROBE-EXEC: blocked-good\n'
+  fi
+  ## nosymfollow effective: a symlink planted in the share must NOT be followed
+  ## (the 3770 dir is group- but not world-writable, so fs.protected_symlinks
+  ## does not cover it). Under nosymfollow, opening the link fails (ELOOP).
+  ln --symbolic /etc/hostname "${mp}/symlink-probe" 2>/dev/null
+  if cat "${mp}/symlink-probe" >/dev/null 2>&1; then
+    printf 'SYMLINK-FOLLOWED: yes-BAD\n'
+  else
+    printf 'SYMLINK-FOLLOWED: no-good\n'
+  fi
+  ## Bare-mountpoint hardening: reveal the dir UNDER the 9p mount (a plain
+  ## bind of / does not carry the submount) -- it is the mountpoint mount-shared
+  ## created before mounting. It must be root:root 0755 (NOT group-writable), so
+  ## when NO share mounts a member cannot drop a setuid binary on the suid rootfs.
+  mkdir --parents /mnt/bind-probe 2>/dev/null
+  if mount --bind / /mnt/bind-probe 2>/dev/null; then
+    printf 'BARE-MOUNTPOINT-STAT: '
+    stat -c 'owner=%U group=%G mode=%a' /mnt/bind-probe/mnt/shared 2>&1
+    if runuser -u "${member}" -- touch /mnt/bind-probe/mnt/shared/member-drop 2>/dev/null; then
+      printf 'BARE-MEMBER-CREATE: yes-BAD\n'
+      rm -f /mnt/bind-probe/mnt/shared/member-drop 2>/dev/null
+    else
+      printf 'BARE-MEMBER-CREATE: no-good\n'
+    fi
+    umount /mnt/bind-probe 2>/dev/null || umount -l /mnt/bind-probe 2>/dev/null
+  else
+    printf 'BARE-MOUNTPOINT-STAT: bind-failed\n'
+    printf 'BARE-MEMBER-CREATE: bind-failed\n'
   fi
   printf 'KVMSF-GROUP: '; getent group kvmsf 2>&1
   printf 'MEMBER-ID: '; id "${member}" 2>&1
@@ -355,7 +395,16 @@ main() {
 
   trap cleanup EXIT
   test_home="$(mktemp --directory)"
-  local shared_dir="${test_home}/shared"
+  ## The share must sit on a world-traversable path so a non-owner kvmsf member
+  ## ('user') reaches it by the share's OWN perms (the chmod-denial + host-read
+  ## checks) rather than being blocked by an ancestor. Under libpam-tmpdir the
+  ## default mktemp base is root's 0700 /tmp/user/0, which 'user' cannot enter.
+  ## /run is world-traversable (0755) and holds only the tiny canaries; the heavy
+  ## overlay stays under test_home. Mirrors production /mnt/shared, whose
+  ## ancestors (/, /mnt) are traversable.
+  share_base="$(mktemp --directory --tmpdir=/run libvirt-dist-share.XXXXXX)"
+  chmod 0711 -- "${share_base}"
+  local shared_dir="${share_base}/shared"
   local serial_log="${test_home}/serial.log"
   overlay="${test_home}/overlay.qcow2"
   ## The root install and user-setup both honour this; keep it off the real
@@ -367,16 +416,40 @@ main() {
   ##    real 'user' account, so its adduser/chown apply.
   "${install_script}"
 
-  ## 1a. Host-side: the install made the shared dir mode 3770 (setgid + sticky),
-  ##     group kvmsf, no world bit -- NOT the old 0700 $HOME dir, NOT a
-  ##     world-exposed 0777.
-  local host_mode host_group
+  ## 1a. Host-side: the install made the shared dir owner root, group kvmsf, mode
+  ##     3770 -- root (NOT a member) owns it so the sticky bit protects BOTH
+  ##     members; NOT the old 0700 $HOME dir, NOT a world-exposed 0777.
+  local host_owner host_mode host_group
+  host_owner="$(stat --format='%U' -- "${shared_dir}")"
   host_mode="$(stat --format='%a' -- "${shared_dir}")"
   host_group="$(stat --format='%G' -- "${shared_dir}")"
-  if [ "${host_mode}" = "3770" ] && [ "${host_group}" = "kvmsf" ]; then
-    pass "install created ${shared_dir} mode 3770 group kvmsf (setgid + sticky, no world)"
+  if [ "${host_owner}" = "root" ] && [ "${host_mode}" = "3770" ] && [ "${host_group}" = "kvmsf" ]; then
+    pass "install created ${shared_dir} owner root group kvmsf mode 3770 (sticky, no world)"
   else
-    fail "install left ${shared_dir} mode=${host_mode} group=${host_group} (want 3770 kvmsf)"
+    fail "install left ${shared_dir} owner=${host_owner} group=${host_group} mode=${host_mode} (want root kvmsf 3770)"
+  fi
+
+  ## 1b. finding 1: a non-owner kvmsf member ('user') cannot chmod the root-owned
+  ##     share, so it cannot widen perms or defeat the sticky bit.
+  local chmod_rc=0
+  runuser -u user -- chmod 0755 "${shared_dir}" 2>/dev/null || chmod_rc="$?"
+  if [ "${chmod_rc}" -ne 0 ] && [ "$(stat --format='%a' -- "${shared_dir}")" = "3770" ]; then
+    pass "non-owner kvmsf member 'user' cannot chmod the root-owned share"
+  else
+    fail "non-owner 'user' changed the share mode (chmod rc=${chmod_rc}, mode now $(stat --format='%a' -- "${shared_dir}"))"
+  fi
+
+  ## 1c. Static: the mount-shared virtiofs branch does NO chown/chmod -- virtiofs
+  ##     is passthrough, so a guest fixup would mutate the exported HOST dir; the
+  ##     group fixup stays SCOPED to the 9p branch.
+  ## Skip '##' comment lines so a comment that merely NAMES chown/chmod (to
+  ## explain why they are absent) is not mistaken for a real command.
+  local virtiofs_arm
+  virtiofs_arm="$(awk '/^ *virtiofs\)/{f=1} f && $0 !~ /^ *##/ {print} f&&/;;/{exit}' "${mount_shared_src}")"
+  if ! grep --quiet --extended-regexp 'chown|chmod' <<< "${virtiofs_arm}"; then
+    pass "mount-shared virtiofs branch does no chown/chmod (fixup scoped to 9p)"
+  else
+    fail "mount-shared virtiofs branch contains a chown/chmod (would mutate the host dir)"
   fi
 
   ## 2. Drive the REAL user-setup: define the domains + attach the 9p share. It
@@ -401,8 +474,9 @@ main() {
   seed_overlay
 
   ## 3. Host canary, then boot. The 9p device reproduces the attached one
-  ## (mapped / mount_tag=shared / path=$HOME/shared) so the guest runs the
-  ## identical mnt-shared-kvm.service mount path.
+  ## (mapped / mount_tag=shared / path=$HOME/shared / fmode=0660,dmode=0770) so
+  ## the guest runs the identical mnt-shared-kvm.service mount path AND the
+  ## host-side inode perms of guest-created files match production (finding 2).
   printf '%s\n' 'host-canary' > "${shared_dir}/HOST-CANARY.txt"
   ## -nographic routes the guest serial console to qemu's stdout, which we
   ## redirect to the log -- '-serial file:' does NOT reliably flush here, and a
@@ -414,7 +488,7 @@ main() {
     -machine q35 -accel "${accel}" \
     -m "${guest_mem_mib}" -smp 2 \
     -drive file="${overlay}",if=virtio,format=qcow2 \
-    -fsdev local,id=fsdev0,path="${shared_dir}",security_model=mapped \
+    -fsdev local,id=fsdev0,path="${shared_dir}",security_model=mapped,fmode=0660,dmode=0770 \
     -device virtio-9p-pci,fsdev=fsdev0,mount_tag=shared \
     -netdev user,id=n0 -device virtio-net-pci,netdev=n0 \
     -nographic -no-reboot </dev/null >"${serial_log}" 2>&1 || true
@@ -484,15 +558,15 @@ main() {
     fail "sticky bit did NOT stop '${member}' unlinking another member's file"
   fi
 
-  ## 4f-bis. Mount hardening: the share carries nosuid, nodev AND noexec.
+  ## 4f-bis. Mount hardening: nosuid, nodev, noexec AND nosymfollow.
   local mountopts opt missing_opt=''
   mountopts="$(probe_field MOUNTOPTS "${result}")"
-  for opt in nosuid nodev noexec; do
+  for opt in nosuid nodev noexec nosymfollow; do
     grep --quiet --extended-regexp "(^|,)${opt}(,|$)" <<< "${mountopts}" \
       || missing_opt="${missing_opt} ${opt}"
   done
   if [ -z "${missing_opt}" ]; then
-    pass "share is mounted nosuid,nodev,noexec (opts: ${mountopts})"
+    pass "share is mounted nosuid,nodev,noexec,nosymfollow (opts: ${mountopts})"
   else
     fail "share mount is missing option(s):${missing_opt} (opts: ${mountopts})"
   fi
@@ -503,6 +577,31 @@ main() {
     pass "a setuid binary in the share cannot execute (noexec/nosuid effective)"
   else
     fail "a setuid binary in the share executed (noexec/nosuid NOT effective)"
+  fi
+
+  ## 4f-sym. nosymfollow effective: a symlink planted in the share is not
+  ##         followed, so a member cannot redirect another off the share.
+  if [ "$(probe_field SYMLINK-FOLLOWED "${result}")" = 'no-good' ]; then
+    pass "a symlink in the share is not followed (nosymfollow effective)"
+  else
+    fail "a symlink in the share WAS followed (nosymfollow NOT effective)"
+  fi
+
+  ## 4f-bare. Bare-mountpoint hardening: the dir UNDER the mount is root:root
+  ##          0755 (NOT group-writable) and a non-root member cannot create a
+  ##          file in it, so when NO share mounts there is no setuid-drop path on
+  ##          the suid/exec rootfs.
+  local barestat
+  barestat="$(probe_field BARE-MOUNTPOINT-STAT "${result}")"
+  if [ "${barestat}" = 'owner=root group=root mode=755' ]; then
+    pass "bare mountpoint under the share is root:root 0755 (not group-writable)"
+  else
+    fail "bare mountpoint is not root:root 0755: ${barestat}"
+  fi
+  if [ "$(probe_field BARE-MEMBER-CREATE "${result}")" = 'no-good' ]; then
+    pass "a non-root member cannot create a file on the bare mountpoint (no setuid drop)"
+  else
+    fail "a non-root member could create a file on the bare mountpoint (setuid-drop path open)"
   fi
 
   ## 4g. Group-WRITE parity (finding 4): recorded, NOT asserted. Under 9p mapped
@@ -526,6 +625,30 @@ main() {
     pass "guest canary round-tripped to the host under \$HOME/shared"
   else
     fail "guest canary did not round-trip to the host"
+  fi
+
+  ## 4h. finding 2 (the key empirical one): under mapped, QEMU creates the HOST
+  ##     backing inode for a guest-written file at 0600/0700 by default, so host
+  ##     "sysmaint" could not even READ it. fmode=0660,dmode=0770 on the attach
+  ##     set the host backing mode; combined with the setgid dir (group kvmsf) a
+  ##     guest-created host file is group kvmsf and group-readable, so a host
+  ##     kvmsf non-owner member reaches it via the group. Here qemu ran as root
+  ##     (boot lane), so the file is root:kvmsf; 'user' is a kvmsf member and
+  ##     NON-owner -- the same group-read path host "sysmaint" uses in production.
+  local gcanary hinode_group hinode_mode hread_rc=0
+  gcanary="${shared_dir}/GUEST-CANARY.txt"
+  if [ -f "${gcanary}" ]; then
+    hinode_group="$(stat --format='%G' -- "${gcanary}")"
+    hinode_mode="$(stat --format='%a' -- "${gcanary}")"
+    runuser -u user -- cat "${gcanary}" >/dev/null 2>&1 || hread_rc="$?"
+    note "finding 2 host inode of guest-written file: $(stat --format='owner=%U group=%G mode=%a' -- "${gcanary}")"
+    if [ "${hinode_group}" = 'kvmsf' ] && [ "${hread_rc}" -eq 0 ]; then
+      pass "guest-written host inode is group kvmsf and a host kvmsf member can read it (mode ${hinode_mode})"
+    else
+      fail "guest-written host inode not group-readable by a kvmsf member: group=${hinode_group} mode=${hinode_mode} read_rc=${hread_rc}"
+    fi
+  else
+    fail "no guest-written host inode to check for finding 2"
   fi
 
   if [ "${test_failures}" -ne 0 ]; then
