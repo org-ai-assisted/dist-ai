@@ -282,12 +282,15 @@ local_repo_derivatives() {
 
 ## Emit local-repo.conf for the flavor under build. The flavor's OWN derivative MUST be published
 ## locally under the reprepro codename, else --local-repo would silently leave the packages under
-## test to the remote testers repo -- fail loud instead. URIs are file:///mnt-local-repo/<deriv>:
-## the in-template hook bind-mounts the staged repo there inside the build chroot. Suites/Components
-## match dm's canonical local stanza (codename 'local', all three components); 'Trusted: yes' for
-## the unsigned local packages.
+## test to the remote testers repo -- fail loud instead. The stanza itself comes from helper-scripts'
+## canonical local_apt_repo_sources_stanza (single source of truth, also used by dm-whonix-pair /
+## repo-add-local / create-local-apt-repo): it probes component residency on the HOST repo and emits
+## only populated components (defaulting to main), so an empty component index cannot hard-fail apt.
+## URIs are the CAGE path file:///mnt-local-repo/<deriv> that the in-template hook bind-mounts.
 build_local_repo_conf() {
-  local primary d derivs
+  local primary d derivs stanza
+  # shellcheck disable=SC1091
+  source "${HELPER_SCRIPTS_PATH:-}/usr/libexec/helper-scripts/local-apt-repo-sources.bsh"
   primary="$(flavor_to_derivative "${flavor}")"
   if [ ! -d "${local_repo_dir}/${primary}/dists/${local_repo_codename}" ]; then
     printf '%s\n' "${me}: --local-repo: no ${primary} '${local_repo_codename}' packages under ${local_repo_dir}/${primary}/dists/${local_repo_codename} -- build ${primary} packages into the local repo first" >&2
@@ -295,20 +298,15 @@ build_local_repo_conf() {
   fi
   mapfile -t derivs < <(local_repo_derivatives)
   for d in "${derivs[@]}"; do
-    printf '%s\n' \
-      "${d}_repository_sources=\"Types: deb" \
-      "URIs: file:///mnt-local-repo/${d}" \
-      "Suites: ${local_repo_codename}" \
-      "Components: main contrib non-free" \
-      "Enabled: yes" \
-      "Trusted: yes\"" \
-      ""
+    ## URI is the in-cage bind-mount path; probe the HOST repo tree for populated components.
+    stanza="$(local_apt_repo_sources_stanza "file:///mnt-local-repo/${d}" "${local_repo_codename}" "${local_repo_dir}/${d}")"
+    printf '%s\n' "${d}_repository_sources=\"${stanza}\"" ""
   done
 }
 
 ## Stage the local repo into the fetched template content and write local-repo.conf beside it. The
 ## executor's copy_in carries both into the build cage (at FLAVORS_DIR); the in-template hook binds
-## the repo into the chroot. The fork is fetched fresh (force-fetch), so the content dir is clean.
+## the repo into the chroot. build() pre-cleans the component dir, so the fetched content is fresh.
 inject_local_repo_conf() {
   local component content_dir repo_dst d derivs
   component="$(flavor_to_component "${flavor}")"

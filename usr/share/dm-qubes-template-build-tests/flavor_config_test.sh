@@ -275,16 +275,21 @@ else
   check "build_local_repo_conf fails loud on an empty local repo" 1
 fi
 
+## Populate main + non-free (but NOT contrib): the canonical helper probes residency and must emit
+## only populated components, so the stanza lists 'main non-free' and omits the empty contrib.
 local_repo_dir="${work}/aptrepo"
-mkdir -p -- "${local_repo_dir}/kicksecure/dists/local"
+for lr_component in main non-free; do
+  mkdir -p -- "${local_repo_dir}/kicksecure/dists/local/${lr_component}/binary-amd64"
+  printf '%s\n' "Package: x" >"${local_repo_dir}/kicksecure/dists/local/${lr_component}/binary-amd64/Packages"
+done
 lr_conf="$(build_local_repo_conf)"
 case "${lr_conf}" in
-*'kicksecure_repository_sources="Types: deb'*'URIs: file:///mnt-local-repo/kicksecure'*'Suites: local'*'Components: main contrib non-free'*'Trusted: yes"'*)
-  check "build_local_repo_conf emits a Trusted kicksecure stanza" 0
+*'kicksecure_repository_sources="Types: deb'*'URIs: file:///mnt-local-repo/kicksecure'*'Suites: local'*'Components: main non-free'*'Trusted: yes"'*)
+  check "build_local_repo_conf emits a Trusted kicksecure stanza (probed components)" 0
   ;;
 *)
   printf '%s\n' "  got='${lr_conf}'" >&2
-  check "build_local_repo_conf emits a Trusted kicksecure stanza" 1
+  check "build_local_repo_conf emits a Trusted kicksecure stanza (probed components)" 1
   ;;
 esac
 case "${lr_conf}" in
