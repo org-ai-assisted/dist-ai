@@ -322,6 +322,24 @@ def run() -> int:
                 ck(False, "full re-seed crashed on a malformed existing baseline: %r" % _exc)
             finally:
                 _ign.unlink(missing_ok=True)
+
+            # (E) check_roots' stderr sinks (NEW / resolved / FAIL problem) carry page-derived
+            # paths + problem strings; a C0/C1 control char in one must not reach the terminal raw
+            # (dev1877 CodeRabbit). No baseline -> the fresh key prints as a NEW line; the returned
+            # problem prints as a FAIL line. Capture stderr, assert control chars stripped (as
+            # _safe_terminal does for every other line) while the printable payload survives.
+            _evil = "/\x1b]52;c;SGk\x07\x1b[2J"
+            ax._serve_and_audit = lambda *_a, **_k: (
+                {(_evil, "color-contrast", "a")}, ["audit error: %s [desktop]" % _evil], 0)
+            Path(_bdir, "axe-baseline-%s.txt" % os.path.basename(_r2)).unlink(missing_ok=True)
+            _cap_e = io.StringIO()
+            with contextlib.redirect_stderr(_cap_e):
+                ax.check_roots([_r2], _bdir)
+            _err_e = _cap_e.getvalue()
+            ck("\x1b" not in _err_e and "\x07" not in _err_e,
+               "check_roots sanitizes control chars in its stderr NEW/FAIL lines: %r" % _err_e[-160:])
+            ck("SGk" in _err_e,
+               "the sanitized path/problem keeps its printable payload: %r" % _err_e[-160:])
         finally:
             ax._serve_and_audit = _orig_sna
             os.environ.pop("AXE_SOURCE", None)

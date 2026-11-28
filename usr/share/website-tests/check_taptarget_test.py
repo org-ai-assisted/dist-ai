@@ -279,6 +279,26 @@ def run() -> int:
     ck("\x1b" not in _out and "\x07" not in _out,
        "a control-char page path is stripped from the RETRY + ERROR diagnostics (no escape injection): %r"
        % _out)
+    # dev1877 CodeRabbit: check_roots prints each `problems` entry (a page-derived label) to stderr and
+    # must strip control chars like the sibling `failures` line already does -- a C0/C1 char in a path
+    # must not inject a terminal escape. Fake the per-site audit to return a control-char problem, drive
+    # the REAL check_roots, capture stderr, assert stripped while the printable payload survives.
+    import tempfile as _tempfile
+    sys.modules.setdefault("playwright", types.ModuleType("playwright"))
+    _orig_sac = tt._serve_and_check
+    _evil2 = "/\x1b]52;c;SGk\x07\x1b[2J"
+    tt._serve_and_check = lambda *_a, **_k: ([], ["audit error: %s [mobile]" % _evil2], 1)
+    try:
+        with _tempfile.TemporaryDirectory() as _root2:
+            _cap2 = io.StringIO()
+            with contextlib.redirect_stderr(_cap2):
+                tt.check_roots([_root2])
+            _err2 = _cap2.getvalue()
+    finally:
+        tt._serve_and_check = _orig_sac
+    ck("\x1b" not in _err2 and "\x07" not in _err2,
+       "check_roots sanitizes control chars in its stderr FAIL problem lines: %r" % _err2[-160:])
+    ck("SGk" in _err2, "check_roots keeps the sanitized problem's printable payload: %r" % _err2[-160:])
 
     sys.stdout.write("check_taptarget_test: %d pass, %d fail, 0 skip\n"
                      % (stats["pass"], stats["fail"]))

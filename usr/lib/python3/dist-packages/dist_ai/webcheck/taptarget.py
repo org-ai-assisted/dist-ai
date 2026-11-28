@@ -556,7 +556,7 @@ def check_roots(roots: List[str], settle_ms: int = SETTLE_MS, hard_timeout: int 
         for line in failures:
             print("%s: FAIL    %s" % (site, _safe_terminal(line)), file=sys.stderr)
         for problem in problems:
-            print("%s: FAIL    %s" % (site, problem), file=sys.stderr)
+            print("%s: FAIL    %s" % (site, _safe_terminal(problem)), file=sys.stderr)
         # Vacuous-audit guard (fail CLOSED, mirrors axe._VacuousAudit): a docroot that was served
         # but measured ZERO pages -- every requested page was a redirect stub -- certifies nothing,
         # so a "0 violations" is a hollow pass. This lane has no baseline to backstop it, so refuse

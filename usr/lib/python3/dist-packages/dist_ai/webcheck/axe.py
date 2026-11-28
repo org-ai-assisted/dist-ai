@@ -672,12 +672,12 @@ def check_roots(roots: List[str], baseline_dir: str, settle_ms: int = 1000,
                   "'webcheck-axe-sandbox --write-baseline'" % (site, bpath), file=sys.stderr)
         for path, rule, target in new:
             print("%s: NEW     %s %s @ %s"
-                  % (site, path, rule, _safe_terminal(target[:200])), file=sys.stderr)
+                  % (site, _safe_terminal(path), rule, _safe_terminal(target[:200])), file=sys.stderr)
         for path, rule, target in resolved:
             print("%s: fixed   %s %s @ %s (baselined, no longer firing)"
-                  % (site, path, rule, _safe_terminal(target[:200])))
+                  % (site, _safe_terminal(path), rule, _safe_terminal(target[:200])))
         for problem in problems:
-            print("%s: FAIL    %s" % (site, problem), file=sys.stderr)
+            print("%s: FAIL    %s" % (site, _safe_terminal(problem)), file=sys.stderr)
         print("%s: %d accepted, %d fresh, %d NEW, %d resolved, %d problem(s)"
               " (excluded %d enumerated demo/test fixture(s) from this run)"
               % (site, len(baseline), len(fresh), len(new), len(resolved), len(problems),
