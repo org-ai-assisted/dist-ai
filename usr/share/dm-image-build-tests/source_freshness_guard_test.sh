@@ -11,7 +11,7 @@
 ## the guards that stop a SILENT stale build (an OLD commit that greens yet tested nothing) and
 ## surface a wedged host dpkg state UP FRONT:
 ##   - checkout BEHIND its org-ai-assisted upstream tip, default -> REFUSE (exit 2), naming the
-##     behind-count, the exact `git reset --hard org-ai-assisted/<branch>`, --ref and --allow-stale
+##     behind-count, the exact `git reset --hard 'org-ai-assisted/<branch>'`, --ref and --allow-stale
 ##   - behind + --allow-stale                -> WARN and proceed (exit 0 under --check-only)
 ##   - --ref <commit>                        -> fetch + reset --hard lands the intended commit
 ##   - up-to-date checkout, default          -> exit 0, no false "BEHIND" refusal
@@ -58,12 +58,17 @@ work="$(mktemp --directory)"
 cleanup() { safe-rm --recursive --force -- "${work}"; }
 trap cleanup EXIT
 
-## PATH shims: sudo is a no-op (the cascade's `sudo ... --configure -a` must not touch the host);
-## dpkg answers --print-architecture and emits an --audit report from a fixture file (empty when
-## the fixture is unset). git is deliberately NOT shimmed -- the guard runs real git.
+## PATH shims: sudo is a no-op that, when SUDO_CALLS is exported, records its args there (so a test
+## can assert the cascade's `sudo ... --configure -a` did NOT fire under --check-only); dpkg answers
+## --print-architecture and emits an --audit report from a fixture file (empty when the fixture is
+## unset). git is deliberately NOT shimmed -- the guard runs real git.
 shimbin="${work}/bin"
 mkdir -p -- "${shimbin}"
-printf '%s\n' '#!/bin/bash' 'exit 0' > "${shimbin}/sudo"
+cat > "${shimbin}/sudo" <<'SUDO_STUB'
+#!/bin/bash
+[ -z "${SUDO_CALLS:-}" ] || printf '%s\n' "$*" >> "${SUDO_CALLS}"
+exit 0
+SUDO_STUB
 cat > "${shimbin}/dpkg" <<'DPKG_STUB'
 #!/bin/bash
 case "${1:-}" in
@@ -128,8 +133,8 @@ rc=0; [ "${RC}" -eq 2 ] || rc=1
 check 'behind checkout, default -> refuse with exit 2' "${rc}"
 rc=0; grep --quiet 'BEHIND' "${errf}" || rc=1
 check 'refusal names the behind drift' "${rc}"
-rc=0; grep --quiet -- 'git reset --hard org-ai-assisted/ai' "${errf}" || rc=1
-check 'refusal prints the exact reset --hard command' "${rc}"
+rc=0; grep --quiet -- "git reset --hard 'org-ai-assisted/ai'" "${errf}" || rc=1
+check 'refusal prints the exact reset --hard command (branch quoted)' "${rc}"
 rc=0; grep --quiet -- '--ref' "${errf}" || rc=1
 check 'refusal mentions --ref' "${rc}"
 rc=0; grep --quiet -- '--allow-stale' "${errf}" || rc=1
@@ -231,6 +236,36 @@ check 'autocrlf=true + --ref -> exit 0' "${rc}"
 crlf_probe="$(od -An -c "${REPO}/textfile")"
 rc=0; case "${crlf_probe}" in *'\r'*) rc=1 ;; esac
 check 'autocrlf=true + --ref -> working tree keeps LF (autocrlf forced off before the reset)' "${rc}"
+
+## --- --check-only is READ-ONLY: no repo config write, no root dpkg mutation ----------------------
+## The parent core.autocrlf=false normalization is scoped to the re-checkout paths (--ref reset,
+## build cascade) and `dpkg --configure -a` is gated to the build path, so --check-only mutates
+## NOTHING. CANARY: old code wrote core.autocrlf=false AND ran sudo dpkg --configure -a before the
+## check-only exit -- the config flip is the single root cause of the worktree-smudge symptom too.
+roc_up="${work}/up-roc.git"
+roc_seed="${work}/seed-roc"
+roc_co="${work}/co-roc"
+git init --quiet --bare --initial-branch=ai "${roc_up}"
+git init --quiet --initial-branch=ai "${roc_seed}"
+(
+   cd -- "${roc_seed}"
+   printf '%s\n' alpha bravo charlie > textfile; git add textfile; git commit --quiet -m c1
+   git remote add origin "${roc_up}"; git push --quiet origin ai
+)
+## Fresh checkout (at the upstream tip) so the freshness guard passes and --check-only reaches its
+## exit; a known core.autocrlf makes a stray config write detectable.
+git clone --quiet --origin org-ai-assisted "${roc_up}" "${roc_co}"
+git -C "${roc_co}" config core.autocrlf true
+REPO="${roc_co}"
+export SUDO_CALLS="${work}/sudo-calls.log"; touch -- "${SUDO_CALLS}"
+run_subject
+unset SUDO_CALLS
+rc=0; [ "${RC}" -eq 0 ] || rc=1
+check '--check-only (no --ref, fresh) -> exit 0' "${rc}"
+rc=0; [ "$(git -C "${REPO}" config --local core.autocrlf)" = "true" ] || rc=1
+check '--check-only leaves core.autocrlf UNCHANGED (read-only; no config write)' "${rc}"
+rc=0; if grep --quiet -- '--configure' "${work}/sudo-calls.log"; then rc=1; fi
+check '--check-only does NOT run sudo dpkg --configure (mutation gated to build path)' "${rc}"
 
 printf '%s\n' "" "$(basename -- "$0"): ${pass} pass, ${fail} fail"
 [ "${fail}" -eq 0 ] || exit 1

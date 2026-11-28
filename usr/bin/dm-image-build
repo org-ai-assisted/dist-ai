@@ -204,6 +204,7 @@ main() {
          --ref)
             require_value "$1" "$#"
             ref="$2"
+            [ -n "${ref}" ] || { printf '%s\n' "${me}: ERROR: --ref requires a non-empty commitish" >&2; exit 2; }
             shift 2
             ;;
          --allow-stale)
@@ -236,14 +237,6 @@ main() {
    printf '%s\n' "${me}: build start $(date -u +%Y-%m-%dT%H:%M:%SZ) in ${dir}"
    printf '%s\n' "${me}: HEAD $(git rev-parse HEAD)"
 
-   ## Normalize PARENT line endings BEFORE the --ref 'git reset --hard' below: a stray
-   ## core.autocrlf=true CRLF-smudges text files on checkout, so git_sanity_test (1100_sanity-tests
-   ## AND derivative-update) sees them "modified" and fails exit 3 (observed on
-   ## qubes-template-whonix). Submodule working trees are re-checked-out later in the cascade,
-   ## which forces their autocrlf off there, before 'git submodule update'.
-   printf '%s\n' "${me}: force parent core.autocrlf=false (avoid CRLF git_sanity_test smudge)"
-   git config core.autocrlf false || true
-
    ## --- source-freshness: NEVER silently build a stale checkout ---------------------------------
    ## The upstream remote whose branch tip is the intended build point.
    local upstream_remote="org-ai-assisted"
@@ -252,8 +245,13 @@ main() {
       ## be hand-reset first. The tree is then definitionally at ${ref}, so the behind-tip freshness
       ## guard is skipped. ${ref} is any commitish -- a sha, a tag, or ${upstream_remote}/<branch>
       ## for the remote tip (a bare branch name resolves to the LOCAL branch, which may be stale).
-      printf '%s\n' "${me}: --ref ${ref}: fetch ${upstream_remote} + git reset --hard"
-      git fetch --quiet "${upstream_remote}" \
+      ## Force parent core.autocrlf=false BEFORE the reset re-checks-out the tree: a stray
+      ## autocrlf=true CRLF-smudges text files, so git_sanity_test sees them "modified" (exit 3,
+      ## observed on qubes-template-whonix). Scoped to this re-checkout path -- the --check-only and
+      ## stale-refusal paths below touch nothing and must stay read-only.
+      git config core.autocrlf false || true
+      printf '%s\n' "${me}: --ref ${ref}: fetch ${upstream_remote} (--tags --prune) + git reset --hard"
+      git fetch --quiet --tags --prune "${upstream_remote}" \
          || { printf '%s\n' "${me}: ERROR: --ref given but 'git fetch ${upstream_remote}' failed -- cannot sync to ${ref}" >&2; exit 2; }
       local resolved_ref=""
       resolved_ref="$(git rev-parse --verify --quiet "${ref}^{commit}")" || resolved_ref=""
@@ -282,7 +280,7 @@ main() {
             else
                printf '%s\n' \
                   "${me}: ERROR: checkout is ${behind_count} commit(s) BEHIND ${upstream_remote}/${current_branch} -- refusing to silently build a stale tree." \
-                  "${me}:   build the upstream tip:          git reset --hard ${upstream_remote}/${current_branch}" \
+                  "${me}:   build the upstream tip:          git reset --hard '${upstream_remote}/${current_branch}'" \
                   "${me}:   sync + build a given commit:     ${me} --ref <commitish>" \
                   "${me}:   build this older tree anyway:    ${me} --allow-stale" >&2
                exit 2
@@ -292,13 +290,19 @@ main() {
    fi
 
    ## --- persistent-checkout cascade: leave a tree git_sanity_test + dm-check-unicode accept ---
-   printf '%s\n' "${me}: cascade: configure pending dpkg"
-   sudo --non-interactive dpkg-noninteractive --configure -a || true
-   ## Surface a wedged host dpkg state UP FRONT. A half-configured package (e.g. a stale grub-live
+   ## MUTATING host action (configures packages, runs maintainer scripts as root) -- gated to the
+   ## BUILD path so --check-only stays read-only. A half-configured package (e.g. a stale grub-live
    ## wedging grub-efi-amd64) otherwise makes the build fail cryptically ~37 s into
-   ## 1200_prepare-build-machine. The `|| true` above swallows it, so audit the db and name the
-   ## offender here. NOT fatal (some audit states are benign) -- surfaced LOUDLY so it is diagnosed
-   ## before the build, not mid-build.
+   ## 1200_prepare-build-machine.
+   if [ "${check_only}" != "true" ]; then
+      printf '%s\n' "${me}: cascade: configure pending dpkg"
+      sudo --non-interactive dpkg-noninteractive --configure -a || true
+   fi
+
+   ## Surface a wedged host dpkg state (READ-ONLY -- safe under --check-only). On the build path this
+   ## runs AFTER the configure above, so it names what configure could NOT fix; under --check-only
+   ## there is no configure and it reports the raw state. NOT fatal (some audit states are benign) --
+   ## surfaced LOUDLY so it is diagnosed before the build, not mid-build.
    local dpkg_audit_out=""
    dpkg_audit_out="$(dpkg --audit 2>/dev/null || true)"
    if [ -n "${dpkg_audit_out}" ]; then
@@ -307,18 +311,20 @@ main() {
    fi
 
    if [ "${check_only}" = "true" ]; then
-      printf '%s\n' "${me}: --check-only: args validated, freshness guard + dpkg audit done; NOT building"
+      printf '%s\n' "${me}: --check-only: args validated, freshness guard + dpkg audit done; NOT building (read-only)"
       exit 0
    fi
 
    printf '%s\n' "${me}: cascade: release leaked build loop/kpartx devices (this user's tree only)"
    release_leaked_build_loops "${HOME}/derivative-binary/"
 
-   ## Submodule line-ending normalization BEFORE 'git submodule update' re-checks-out their working
-   ## trees below: a stray core.autocrlf=true CRLF-smudges text files, so git_sanity_test sees them
-   ## "modified" and fails exit 3 (observed on qubes-template-whonix). The parent was already forced
-   ## off above, before the --ref reset.
-   printf '%s\n' "${me}: cascade: force submodule core.autocrlf=false (avoid CRLF git_sanity_test smudge)"
+   ## Line-ending normalization BEFORE 'git submodule update' re-checks-out the working trees (and
+   ## before the parent's own git_sanity_test): a stray core.autocrlf=true CRLF-smudges text files,
+   ## so git_sanity_test sees them "modified" and fails exit 3 (observed on qubes-template-whonix).
+   ## Build path only (after the --check-only exit) so --check-only stays read-only; the --ref reset
+   ## path forces the parent off separately, above.
+   printf '%s\n' "${me}: cascade: force parent + submodule core.autocrlf=false (avoid CRLF git_sanity_test smudge)"
+   git config core.autocrlf false || true
    git submodule foreach --recursive 'git config core.autocrlf false || true' || true
 
    printf '%s\n' "${me}: cascade: drop ephemeral signing tags (parent + submodules)"
