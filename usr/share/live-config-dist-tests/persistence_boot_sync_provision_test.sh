@@ -59,7 +59,7 @@ stub_lib="${helpers}/persistent-boot.sh"
    printf '%s\n' 'persistent_boot_device() { printf "%s\n" "${STUB_BOOT_DEV-/dev/fake-boot}"; }'
    printf '%s\n' 'persistent_boot_luks_uuid() { printf "%s\n" "${STUB_LUKS_UUID:-}"; return "${STUB_LUKS_RC:-0}"; }'
    printf '%s\n' 'persistent_boot_safe_boot_dir() { mkdir --parents -- "$1/boot"; printf "%s\n" "$1/boot"; }'
-   printf '%s\n' 'persistent_boot_prune() { return 0; }'
+   printf '%s\n' 'persistent_boot_prune() { return "${STUB_PRUNE_RC:-0}"; }'
    printf '%s\n' 'persistent_boot_install() { [ -n "${STUB_MARKER:-}" ] && : > "${STUB_MARKER}"; return "${STUB_INSTALL_RC:-0}"; }'
    printf '%s\n' 'persistent_boot_cmdline() { printf "%s\n" "${STUB_CMDLINE-root=live rd.live.overlay=LABEL=persistence}"; return "${STUB_CMDLINE_RC:-0}"; }'
    printf '%s\n' 'persistent_boot_write_grub_cfg() { return "${STUB_WRITE_RC:-0}"; }'
@@ -70,8 +70,10 @@ shimdir="${work}/bin"
 mkdir --parents -- "${shimdir}"
 seed="${work}/seed"
 mkdir --parents -- "${seed}"
-# shellcheck disable=SC2016  ## ${seed} is expanded now (the dir the stub mktemp returns)
-printf '%s\n' '#!/bin/bash' "printf '%s\\n' '${seed}'" 'exit 0' > "${shimdir}/mktemp"
+## The stub reads the seed dir from SEED_DIR (passed via env -i), so a work dir
+## containing a shell metacharacter (e.g. a quote from TMPDIR) cannot corrupt it.
+# shellcheck disable=SC2016  ## ${SEED_DIR} is expanded when the stub runs
+printf '%s\n' '#!/bin/bash' 'printf "%s\n" "${SEED_DIR}"' 'exit 0' > "${shimdir}/mktemp"
 printf '%s\n' '#!/bin/bash' 'exit 0' > "${shimdir}/mount"
 printf '%s\n' '#!/bin/bash' 'exit 1' > "${shimdir}/mountpoint"
 printf '%s\n' '#!/bin/bash' 'exit 0' > "${shimdir}/umount"
@@ -108,8 +110,10 @@ run_sync() {
       PERSISTENCE_BOOT_SYNC_PROVISION="${prov}" \
       PERSISTENCE_BOOT_SYNC_LUKS_UUID="${PROV_UUID:-}" \
       PERSISTENT_BOOT_CMDLINE_FILE="${cf}" \
+      SEED_DIR="${seed}" \
       STUB_BOOT_DEV="${STUB_BOOT_DEV-/dev/fake-boot}" \
       STUB_INSTALL_RC="${STUB_INSTALL_RC:-0}" \
+      STUB_PRUNE_RC="${STUB_PRUNE_RC:-0}" \
       STUB_CMDLINE="${STUB_CMDLINE-root=live rd.live.overlay=LABEL=persistence}" \
       STUB_CMDLINE_RC="${STUB_CMDLINE_RC:-0}" \
       STUB_WRITE_RC="${STUB_WRITE_RC:-0}" \
@@ -122,7 +126,7 @@ helper_ok="${work}/helpers"
 
 ## reset the STUB_* knobs to the healthy defaults
 reset_stubs() {
-   STUB_BOOT_DEV='/dev/fake-boot'; STUB_INSTALL_RC='0'
+   STUB_BOOT_DEV='/dev/fake-boot'; STUB_INSTALL_RC='0'; STUB_PRUNE_RC='0'
    STUB_CMDLINE='root=live rd.live.overlay=LABEL=persistence'; STUB_CMDLINE_RC='0'; STUB_WRITE_RC='0'
 }
 
@@ -164,6 +168,13 @@ reset_stubs; STUB_INSTALL_RC='1'
 run_sync 'true' "${helper_ok}" "${cmdline_plain}"
 check "h8c: provisioning with a kernel-install failure exits non-zero" \
    "$( [ "${sync_rc}" -ne 0 ] && printf '%s' true || printf '%s' false )" "rc=${sync_rc}"
+
+## prune is best-effort: a prune failure must NOT abort provisioning -- the new
+## kernel still installs and the sync succeeds (pins the deliberate soft-fail).
+reset_stubs; STUB_PRUNE_RC='1'
+run_sync 'true' "${helper_ok}" "${cmdline_plain}"
+check "provisioning tolerates a prune failure (best-effort), still installs + exits 0" \
+   "$( [ "${sync_rc}" -eq 0 ] && [ -e "${marker}" ] && printf '%s' true || printf '%s' false )" "rc=${sync_rc} marker=$( [ -e "${marker}" ] && printf '%s' yes || printf '%s' no )"
 
 ## --- h8l: a GRUB config build/write failure fails provisioning ---------------
 reset_stubs; STUB_CMDLINE_RC='1'

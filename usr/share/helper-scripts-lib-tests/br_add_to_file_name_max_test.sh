@@ -55,9 +55,18 @@ check() {
   fi
 }
 
-## A 252-char basename: valid under NAME_MAX=255 and the 255-char "_br"
-## destination, but a "${file_name}.br.XXXXXX" template needs 262 chars.
-long_base="$(head --bytes=252 /dev/zero | tr '\0' 'a')"
+## Size fixtures to the WORK filesystem's ACTUAL NAME_MAX (255 on typical Linux),
+## so a smaller limit cannot false-fail the test nor a larger one let the old
+## overflowing "${file_name}.br.XXXXXX" template pass. Longest valid basename is
+## NAME_MAX-3 (so "<name>_br" fits); NAME_MAX-2 makes "<name>_br" overflow.
+name_max="$(getconf NAME_MAX "${work}" 2>/dev/null || true)"
+case "${name_max}" in ''|*[!0-9]*) name_max=255 ;; esac
+long_len=$(( name_max - 3 ))
+over_len=$(( name_max - 2 ))
+
+## A longest-valid basename: "<name>_br" fits NAME_MAX, but a template built from
+## it ("<name>.br.XXXXXX") needs NAME_MAX+7 bytes and fails at mktemp.
+long_base="$(head --bytes="${long_len}" /dev/zero | tr '\0' 'a')"
 long_src="${work}/${long_base}"
 printf '%s\n' 'line1' 'line2' > "${long_src}"
 rc=0
@@ -93,18 +102,18 @@ check "newline-named directory: converted in place, no stripped-sibling write" \
       && [ ! -e "${work}/pre" ] \
       && printf '%s' true || printf '%s' false )" "rc=${rc}"
 
-## A 253-byte basename: "${file_name}_br" exceeds NAME_MAX, so the rename fails.
-## The function must fail AND leave no orphaned 0600 temp (the short template
-## creates the temp before the doomed rename; it must be cleaned up).
+## An over-long basename (NAME_MAX-2): "<name>_br" exceeds NAME_MAX, so the
+## rename fails. The function must fail AND leave no orphaned 0600 temp (the
+## short template creates the temp before the doomed rename; it must be cleaned up).
 leak_dir="${work}/leak"
 mkdir -- "${leak_dir}"
-b253="$(head --bytes=253 /dev/zero | tr '\0' 'b')"
-printf '%s\n' 'M' > "${leak_dir}/${b253}"
+over_base="$(head --bytes="${over_len}" /dev/zero | tr '\0' 'b')"
+printf '%s\n' 'M' > "${leak_dir}/${over_base}"
 rc=0
-( br_add_to_file "${leak_dir}/${b253}" ) || rc=$?
+( br_add_to_file "${leak_dir}/${over_base}" ) || rc=$?
 orphans="$(find "${leak_dir}" -maxdepth 1 -name '.br.*' | wc --lines)"
-check "253-byte basename: fails cleanly, no leaked temp" \
-  "$( [ "${rc}" -ne 0 ] && [ ! -e "${leak_dir}/${b253}_br" ] && [ "${orphans}" -eq 0 ] && printf '%s' true || printf '%s' false )" \
+check "over-long basename: fails cleanly, no leaked temp" \
+  "$( [ "${rc}" -ne 0 ] && [ ! -e "${leak_dir}/${over_base}_br" ] && [ "${orphans}" -eq 0 ] && printf '%s' true || printf '%s' false )" \
   "rc=${rc} orphans=${orphans}"
 
 printf '%s\n' ""

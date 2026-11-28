@@ -39,7 +39,9 @@ if [ -n "${LIVE_CONFIG_DIST_REPO}" ]; then
    postrm="${LIVE_CONFIG_DIST_REPO}/debian/live-config-dist.postrm"
 else
    subject='/usr/bin/persistence-setup'
-   postrm='/usr/share/doc/live-config-dist/live-config-dist.postrm'
+   ## dpkg keeps maintainer scripts here, NOT under /usr/share/doc; the subject's
+   ## presence above means the package is installed, so this exists.
+   postrm='/var/lib/dpkg/info/live-config-dist.postrm'
 fi
 if [ ! -r "${subject}" ]; then
    printf '%s\n' "FATAL: subject not found: ${subject}" >&2
@@ -213,15 +215,30 @@ cp_ok_rc=0; ( create_partitions ) >/dev/null 2>&1 || cp_ok_rc=$?
 check "h8v: create_partitions accepts partitions on the target disk" \
    "$( [ "${cp_ok_rc}" -eq 0 ] && printf '%s' true || printf '%s' false )" "rc=${cp_ok_rc}"
 
-## --- h8a: the postrm removal runs unprivileged (runuser), never a root rm -r on home
-if [ -r "${postrm}" ]; then
-   check "h8a: postrm removes the launcher via runuser (unprivileged)" \
-      "$( grep --extended-regexp --quiet 'runuser +-u +user +--' "${postrm}" && printf '%s' true || printf '%s' false )" "no runuser line"
-   check "h8a: postrm does NOT run a root 'rm -r ... /home' on the user path" \
-      "$( grep --extended-regexp --quiet '^[[:space:]]*rm[[:space:]].*-r.*/home/' "${postrm}" && printf '%s' false || printf '%s' true )" "root rm -r on /home present"
-else
-   printf '%s\n' "NOTE: postrm not found at '${postrm}', skipping postrm static checks (not gating)"
+## --- h8a: the postrm removal runs unprivileged (runuser), never a root rm on home
+## A maintainer script is required (never skip-to-green): repo mode points at the
+## checkout's debian/live-config-dist.postrm, installed mode at the dpkg copy.
+if [ ! -r "${postrm}" ]; then
+   printf '%s\n' "FATAL: postrm not readable: ${postrm}" >&2
+   printf '%s\n' "set LIVE_CONFIG_DIST_REPO to a checkout, or install live-config-dist" >&2
+   exit 1
 fi
+## Scan CODE lines only -- a comment that merely discusses the avoided root rm
+## must not satisfy (or trip) these checks.
+postrm_code="$( grep --extended-regexp --invert-match '^[[:space:]]*(#|$)' "${postrm}" )"
+## The launcher removal must go THROUGH 'runuser -u user -- rm' so parent-path
+## symlink resolution uses the user's privileges, not root's.
+check "h8a: postrm removes the launcher via 'runuser -u user -- rm'" \
+   "$( grep --extended-regexp --quiet 'runuser[[:space:]]+-u[[:space:]]+user[[:space:]]+--[[:space:]]+rm[[:space:]]' <<< "${postrm_code}" && printf '%s' true || printf '%s' false )" "no 'runuser ... rm' line"
+## No RECURSIVE rm anywhere (catches -rf, -fr, -Rf, -fR, -r, -R, --recursive,
+## /usr/bin/rm, any line position) -- the correct postrm removes a single file.
+check "h8a: postrm runs NO recursive rm" \
+   "$( grep --extended-regexp --quiet 'rm[[:space:]]+(-[[:alnum:]]*[rR]|--recursive)' <<< "${postrm_code}" && printf '%s' false || printf '%s' true )" "recursive rm present"
+## No ROOT (non-runuser) rm touching a home path at all: a root rm of a
+## user-controlled path follows a parent symlink as root even without -r.
+home_rm="$( grep --extended-regexp 'rm[[:space:]].*(/home|~)' <<< "${postrm_code}" | grep --extended-regexp --invert-match 'runuser' | head --lines 1 || true )"
+check "h8a: postrm runs NO root (non-runuser) rm on a home path" \
+   "$( [ -z "${home_rm}" ] && printf '%s' true || printf '%s' false )" "root rm on home: ${home_rm}"
 
 printf '%s\n' ""
 printf '%s\n' "===== persistence-setup disk guard: ${pass_count} pass, ${fail_count} fail ====="

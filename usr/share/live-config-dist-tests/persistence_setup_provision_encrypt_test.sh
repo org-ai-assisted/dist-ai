@@ -148,6 +148,10 @@ run_case() {
       check "${desc}: luksOpen the partition onto the mapper" "$(line_has true 'cryptsetup' 'luksOpen' "${fake_part}" "${mapper}")"
       check "${desc}: luksClose closes the mapper" "$(line_has true 'cryptsetup' 'luksClose' "${mapper}")"
       check "${desc}: mkfs -L persistence on the opened mapper" "$(line_has true 'mkfs.ext4' '-L' 'persistence' "${mapper_dev}")"
+   else
+      ## plaintext: no LUKS at all, mkfs straight onto the bare partition.
+      check "${desc}: no luksFormat" "$(line_has false 'cryptsetup' 'luksFormat')"
+      check "${desc}: mkfs -L persistence on the BARE partition" "$(line_has true 'mkfs.ext4' '-L' 'persistence' "${fake_part}")"
    fi
    ## $7 addkey, $8 tpm presence
    if [ "$7" = 'true' ]; then
@@ -171,6 +175,8 @@ run_case 'keyfile'             true  ''             x "${keyfile_a}"   false  fa
 run_case 'password+keyfile'     true  "${test_pass}" x "${keyfile_a}"   false  true   false
 run_case 'password+tpm'         true  "${test_pass}" x ''               true   false  true
 run_case 'keyfile+tpm'         true  ''             x "${keyfile_a}"   true   false  true
+run_case 'password+keyfile+tpm' true  "${test_pass}" x "${keyfile_a}"   true   true   true
+run_case 'plaintext'            false ''             x ''               false  false  false
 
 ## --- h8w: keyfile+tpm enroll uses the keyfile (crypt_cmd ran, not crypt_msg) --
 true > "${PS_RECORD}"
