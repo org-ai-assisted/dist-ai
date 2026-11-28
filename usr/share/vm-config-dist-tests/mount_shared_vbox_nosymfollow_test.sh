@@ -262,6 +262,7 @@ parse_call() {
 ## LAST call that targets /mnt/shared decides the effective per-mount flags.
 final_seen="no"
 final_opts=""
+final_is_remount_bind="no"
 vboxsf_on_share="no"
 vboxsf_opts=""
 vboxsf_passed_nosymfollow="no"
@@ -272,6 +273,11 @@ for call_file in "${calls_dir}"/*; do
    [ "${CALL_TARGET}" = "/mnt/shared" ] || continue
    final_seen="yes"
    final_opts="${CALL_OPTS}"
+   if token_present "${CALL_OPTS}" remount && token_present "${CALL_OPTS}" bind; then
+      final_is_remount_bind="yes"
+   else
+      final_is_remount_bind="no"
+   fi
    if [ "${CALL_IS_VBOXSF}" = "yes" ]; then
       vboxsf_on_share="yes"
       vboxsf_opts="${CALL_OPTS}"
@@ -300,6 +306,13 @@ assert "vboxsf mount is effectively noexec" flag_effective "${vboxsf_opts}" noex
 ## trailing vboxsf mount over the hardened one).
 assert "a mount operation finalizes /mnt/shared" \
    test "${final_seen}" = "yes"
+
+## The hardening must be applied by a remount,bind -- the only mechanism that adds
+## nosymfollow to the EXISTING vboxsf mount. A plain mount merely listing the flags
+## would record the tokens (passing the flag checks) without re-applying them to
+## the vboxsf mount, so assert the operation, not just the resulting options.
+assert "the /mnt/shared hardening is a remount,bind operation" \
+   test "${final_is_remount_bind}" = "yes"
 
 ## CANARY: the final /mnt/shared mount is effectively nosymfollow -- dropping it,
 ## inverting it with a later symfollow, or re-mounting vboxsf on top FAILS here.
