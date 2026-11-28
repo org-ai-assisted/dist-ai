@@ -38,6 +38,22 @@
 ##
 ## Stages default to 'fetch prep build', producing the template .noarch.rpm but NOT signing or
 ## publishing it (those need the Qubes templates-community signing key).
+##
+## Apt caching (not wired -- deliberate): the Debian/Whonix build fetches every .deb fresh from
+## the upstream https repos each run. qubes-builderv2 has no first-class apt cache for Debian
+## templates, and REPO_PROXY is a dead lever here: never populated into the template env, and
+## http-only, so it cannot cache the https repos (a proxy only CONNECT-tunnels TLS, caching
+## nothing). The caching route is approx-style http-mirror URL rewriting (as derivative-maker
+## does), reusing dm's approx (approx.conf, socket :9977; already maps debian / debian-security /
+## kicksecure / whonix). To wire in later:
+##   - base Debian bulk (debootstrap + base install, the largest share): DRIVER-ONLY -- emit a
+##     `mirrors:` block in write_builder_conf (flows to DEBIAN_MIRRORS) pointing debian at the
+##     approx http mirror, plus set kicksecure_repository_uri / whonix_repository_uri to approx
+##     in the injected local-repo.conf.
+##   - debian-security / backports / deb.qubes-os.org: hardcoded https in the builder-debian
+##     component (template_debian/distribution.sh) -- needs a small fork change to parametrize.
+##   - docker networking: use host-networking on the fork's container executor (container.py
+##     run()) so http://127.0.0.1:9977 works verbatim (avoids fragile bridge-gateway-IP discovery).
 
 set -o errexit
 set -o nounset
