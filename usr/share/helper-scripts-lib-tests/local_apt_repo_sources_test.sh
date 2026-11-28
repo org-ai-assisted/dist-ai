@@ -187,8 +187,12 @@ evil_dir="${evil_root}/dists/local/${evil_comp}/binary-${native_arch}"
 mkdir --parents -- "${evil_dir}"
 printf '%s' x > "${evil_dir}/Packages"
 evil_out="$(local_apt_repo_sources_stanza "file:${evil_root}" 'local')"
+## The forged value must not leak ANYWHERE in the stanza (the injected field
+## renders as 'Suites: trixie main' -- the next component is appended -- so an
+## exact 'Suites: trixie' line match would miss it); and the suite must stay 'local'.
 if [ "$(printf '%s\n' "${evil_out}" | sed -n 's/^Components: //p')" = "main" ] \
-   && [[ "${nl}${evil_out}${nl}" != *"${nl}Suites: trixie${nl}"* ]]; then
+   && [[ "${evil_out}" != *trixie* ]] \
+   && [[ "${nl}${evil_out}${nl}" == *"${nl}Suites: local${nl}"* ]]; then
    pass_count=$(( pass_count + 1 ))
    printf '%s\n' "PASS: malicious component dir name (newline + forged field) is skipped"
 else
