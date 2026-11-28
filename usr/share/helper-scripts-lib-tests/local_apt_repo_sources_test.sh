@@ -159,6 +159,43 @@ allonly_comps="$(local_apt_repo_sources_stanza "file:${repo_fix}/allonly" 'local
 check_eq "binary-all-only component is dropped (native binary-<arch> is the sole signal)" \
    "main" "${allonly_comps}"
 
+## --- compressed-only index: a component whose binary-<arch> ships ONLY a non-empty
+## compressed Packages.gz/.xz (reprepro / a real mirror form, no uncompressed Packages)
+## must still be seen. CANARY: an uncompressed-Packages-only probe drops it, and with
+## an empty native main this falls back to 'main' -- the exact silent contrib/non-free
+## drop this guards. main is 0-byte here, so a correct probe lists ONLY the two
+## compressed components.
+mk_local_repo "${repo_fix}/compressed" local "main:${native_arch}:0"
+for comp_idx in "contrib:Packages.gz" "non-free:Packages.xz"; do
+   comp="${comp_idx%%:*}"; idx_name="${comp_idx##*:}"
+   comp_dir="${repo_fix}/compressed/dists/local/${comp}/binary-${native_arch}"
+   mkdir --parents -- "${comp_dir}"
+   printf '%s' idx > "${comp_dir}/${idx_name}"
+done
+compressed_comps="$(local_apt_repo_sources_stanza "file:${repo_fix}/compressed" 'local' | sed -n 's/^Components: //p')"
+check_eq "compressed-only Packages.gz/.xz components are recognized (empty main dropped)" \
+   "contrib non-free" "${compressed_comps}"
+
+## --- component-name charset guard: a dir name embedding a newline + a forged deb822
+## field must be skipped, never copied into this Trusted stanza (a forged Suites:
+## would override the suite and point apt elsewhere). CANARY: without the guard the
+## injected 'Suites: trixie' appears in the output and the component leaks in.
+evil_root="${repo_fix}/evilname"
+mk_local_repo "${evil_root}" local "main:${native_arch}:40"
+evil_comp="evil${nl}Suites: trixie"
+evil_dir="${evil_root}/dists/local/${evil_comp}/binary-${native_arch}"
+mkdir --parents -- "${evil_dir}"
+printf '%s' x > "${evil_dir}/Packages"
+evil_out="$(local_apt_repo_sources_stanza "file:${evil_root}" 'local')"
+if [ "$(printf '%s\n' "${evil_out}" | sed -n 's/^Components: //p')" = "main" ] \
+   && [[ "${nl}${evil_out}${nl}" != *"${nl}Suites: trixie${nl}"* ]]; then
+   pass_count=$(( pass_count + 1 ))
+   printf '%s\n' "PASS: malicious component dir name (newline + forged field) is skipped"
+else
+   fail_count=$(( fail_count + 1 ))
+   printf '%s\n' "FAIL: malicious component name leaked into the stanza -- got: ${evil_out}"
+fi
+
 ## --- read_root override: emit guest URI, read residency from host path ------
 ## A host-side caller (dm-whonix-pair) emits the GUEST mount URI but must probe
 ## residency at the readable HOST path.
