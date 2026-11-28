@@ -71,8 +71,14 @@ def audit_tree(tool, tree):
         report = json.loads(proc.stdout)
     except json.JSONDecodeError as exc:
         return None, "unparseable auditor JSON (%s)" % exc
-    if not isinstance(report, dict) or "coverage" not in report:
-        return None, "auditor JSON is not a report object"
+    if not isinstance(report, dict) or not isinstance(report.get("coverage"), dict):
+        return None, "auditor JSON is not a report object (coverage missing or not a dict)"
+    ## Right keys, wrong container types (a truncated-but-parseable or future/broken
+    ## auditor): a scan error -> exit 2, never an uncaught crash main() would exit 1
+    ## (which a caller reads as a clean-ish finding).
+    if not isinstance(report.get("findings", []), list) \
+            or not isinstance(report.get("severity_counts", {}), dict):
+        return None, "auditor JSON has a malformed findings/severity_counts container"
     return report, None
 
 

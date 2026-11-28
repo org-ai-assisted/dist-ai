@@ -43,6 +43,11 @@ elif name == "degraded_tree":
 elif name == "noout_tree":
     sys.stderr.write("stub: simulated failure\n")
     sys.exit(1)
+elif name == "malformed_tree":
+    ## valid JSON, right top-level keys, WRONG container types: coverage is null.
+    ## The wrapper's contract makes this a scan error (exit 2), never a crash.
+    print('{"coverage": null, "severity_counts": null, "findings": null}')
+    sys.exit(0)
 print(json.dumps(r))
 '''
 
@@ -77,7 +82,7 @@ def main(argv):
         os.chmod(stub, os.stat(stub).st_mode | stat.S_IXUSR | stat.S_IXGRP
                  | stat.S_IXOTH)
         for name in ("clean_tree", "finding_tree", "degraded_tree", "noout_tree",
-                     "second_clean"):
+                     "malformed_tree", "second_clean"):
             os.mkdir(os.path.join(work, name))
 
         rc, out = run(subject, ["clean_tree", "second_clean"], work, stub)
@@ -111,6 +116,11 @@ def main(argv):
         rc, out = run(subject, ["noout_tree"], work, stub)
         check("auditor with no JSON -> exit 2", rc == 2, checks)
         check("no-JSON is a SCAN ERROR", "auditor produced no JSON" in out, checks)
+
+        rc, out = run(subject, ["malformed_tree"], work, stub)
+        check("a parseable-but-malformed report -> exit 2 (not a crash/finding)",
+              rc == 2, checks)
+        check("malformed report is a SCAN ERROR", "SCAN ERROR" in out, checks)
 
         ## default tree is CWD when no args are given.
         env = dict(os.environ, DM_ROOT_LPE_AUDIT=stub)
