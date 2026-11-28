@@ -77,6 +77,36 @@ rc=0
 check "short input basename still works" \
   "$( [ "${rc}" -eq 0 ] && [ "$(tr '\n' '|' < "${work}/short_br")" = 'x<br />|y<br />|' ] && printf '%s' true || printf '%s' false )" "rc=${rc}"
 
+## A directory whose name ends in a newline: the temp MUST stay in that exact
+## directory (byte-exact), the file is converted, and the newline-stripped
+## sibling path is never created. $(dirname ...) would strip the newline and
+## retarget the temp outside the directory (symlink-safety escape + wrong dir).
+nl_dir="${work}/pre"$'\n'
+mkdir -- "${nl_dir}"
+printf '%s\n' 'hi' > "${nl_dir}/note"
+rc=0
+( br_add_to_file "${nl_dir}/note" ) || rc=$?
+check "newline-named directory: converted in place, no stripped-sibling write" \
+  "$( [ "${rc}" -eq 0 ] \
+      && [ -f "${nl_dir}/note_br" ] \
+      && [ "$(cat -- "${nl_dir}/note_br")" = 'hi<br />' ] \
+      && [ ! -e "${work}/pre" ] \
+      && printf '%s' true || printf '%s' false )" "rc=${rc}"
+
+## A 253-byte basename: "${file_name}_br" exceeds NAME_MAX, so the rename fails.
+## The function must fail AND leave no orphaned 0600 temp (the short template
+## creates the temp before the doomed rename; it must be cleaned up).
+leak_dir="${work}/leak"
+mkdir -- "${leak_dir}"
+b253="$(head --bytes=253 /dev/zero | tr '\0' 'b')"
+printf '%s\n' 'M' > "${leak_dir}/${b253}"
+rc=0
+( br_add_to_file "${leak_dir}/${b253}" ) || rc=$?
+orphans="$(find "${leak_dir}" -maxdepth 1 -name '.br.*' | wc --lines)"
+check "253-byte basename: fails cleanly, no leaked temp" \
+  "$( [ "${rc}" -ne 0 ] && [ ! -e "${leak_dir}/${b253}_br" ] && [ "${orphans}" -eq 0 ] && printf '%s' true || printf '%s' false )" \
+  "rc=${rc} orphans=${orphans}"
+
 printf '%s\n' ""
 printf '%s\n' "===== br_add_to_file name-max: ${pass_count} pass, ${fail_count} fail ====="
 [ "${fail_count}" -eq 0 ]
