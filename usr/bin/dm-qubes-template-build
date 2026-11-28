@@ -362,14 +362,11 @@ write_builder_conf() {
     printf '%s\n' "  options:"
     printf '%s\n' "    image: \"${image}\""
     if [ -n "${local_repo}" ]; then
-      ## Force a fresh fetch: a prior normal build leaves the UPSTREAM template checkout cached,
-      ## and the fetch stage would UPDATE that (origin stays upstream, no local-repo.conf hook)
-      ## rather than re-clone the fork. force-fetch rmtree's the cache so the fork is obtained.
-      printf '%s\n' ""
-      printf '%s\n' "force-fetch: true"
       ## Repoint the template component at our fork (carries the local-repo.conf hook) and skip
       ## its git-signature check: the fork's 'ai' commits are not signed by the upstream
       ## maintainer key, so verification is disabled for this component only (testing).
+      ## NO force-fetch: it re-clones the component during prep/build and WIPES the injected repo.
+      ## build() pre-removes the component dir so the first fetch still clones the fork fresh.
       printf '%s\n' ""
       printf '%s\n' "+components:"
       printf '%s\n' "  - $(flavor_to_component "${flavor}"):"
@@ -385,10 +382,17 @@ write_builder_conf() {
 build() {
   local rest
   rest="$(stages_without_fetch)"
+  if [ -n "${local_repo}" ]; then
+    ## Remove any prior component checkout so 'package fetch' clones the FORK fresh (the +components
+    ## override sets the url). Replaces force-fetch, which would re-clone during prep/build and wipe
+    ## the injected repo; without it a stale upstream checkout would otherwise be reused as-is.
+    ## style-ok: no-safe-rm -- one-shot clean of a build-artifact dir, not an interactive rm.
+    rm --recursive --force -- "${dir}/artifacts/sources/$(flavor_to_component "${flavor}")"
+  fi
   ## Fetch the template COMPONENT source into artifacts/sources/template-<flavor>. A 'template
   ## fetch' is a no-op here: the template content lives in the template-<flavor> component
-  ## (packages: False), obtained by the package/fetch plugin. For --local-repo, force-fetch + the
-  ## +components override in builder.yml get the fork carrying the local-repo.conf hook.
+  ## (packages: False), obtained by the package/fetch plugin. For --local-repo, the +components
+  ## override in builder.yml points it at the fork carrying the local-repo.conf hook.
   ## Call qubesbuilder-cli directly ('qb' is just a symlink to it, dead on a core.symlinks=false host).
   (cd -- "${dir}" && ./qubesbuilder-cli package fetch)
   if [ -n "${local_repo}" ]; then

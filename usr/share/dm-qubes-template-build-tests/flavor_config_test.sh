@@ -253,8 +253,11 @@ assert "--local-repo: builder.yml skip-checks the fork component" \
   grep --quiet --fixed-strings "insecure-skip-checking:" "${conf}"
 assert "--local-repo: skip-checking names the component" \
   grep --quiet --fixed-strings -- "- template-kicksecure" "${conf}"
-assert "--local-repo: builder.yml forces a fresh fetch" \
-  grep --quiet --fixed-strings "force-fetch: true" "${conf}"
+## No force-fetch even WITH --local-repo: it re-clones the component during prep/build and wipes
+## the injected repo. build() pre-removes the component dir instead (so the fork is still cloned
+## fresh). CANARY: a reintroduced force-fetch would silently break the local-repo install.
+assert_not "--local-repo: builder.yml still omits force-fetch" \
+  grep --quiet --fixed-strings "force-fetch:" "${conf}"
 
 ## build_local_repo_conf emits a Trusted file:// stanza for the FLAVOR's own derivative, at the
 ## suite the flavor requires, and fails loud when that derivative's suite is absent (so a build
