@@ -73,9 +73,10 @@ ref=""
 ## -- a stale tree silently builds an OLD commit (a green that tested nothing). --allow-stale
 ## downgrades that refusal to a warning and proceeds.
 allow_stale="false"
-## --check-only: run arg validation + the freshness guard (or --ref sync) + the dpkg-audit
-## surfacing, then exit 0 WITHOUT building -- the fast path that exercises the guards with no ~1 h
-## build, and a pre-build probe of checkout freshness + host dpkg state.
+## --check-only: run arg validation + the freshness guard (or, with --ref, the --ref sync) + the
+## dpkg-audit surfacing, then exit 0 WITHOUT building -- the fast path that exercises the guards with
+## no ~1 h build, a pre-build probe of checkout freshness + host dpkg state. READ-ONLY *without*
+## --ref; WITH --ref it still performs the explicit --ref sync (git reset --hard) before exiting.
 check_only="false"
 
 usage() {
@@ -94,8 +95,9 @@ org-ai-assisted and git reset --hard's the checkout to it (a sha, tag, or
 org-ai-assisted/<branch> for the remote tip) before building. Without --ref, the checkout
 is checked against its org-ai-assisted upstream branch tip and the build is REFUSED (exit 2)
 if it has drifted BEHIND; --allow-stale downgrades that to a warning. --check-only validates
-args, runs the freshness guard and the dpkg-audit surfacing, then exits WITHOUT building. Run
-as a sudo-capable NON-root user."
+args, runs the freshness guard and the dpkg-audit surfacing, then exits WITHOUT building; it is
+read-only WITHOUT --ref, but --check-only --ref still performs the --ref sync (git reset --hard,
+which discards tracked edits) before exiting. Run as a sudo-capable NON-root user."
 }
 
 ## Release loop/kpartx devices THIS user's own prior failed build leaked: grml-debootstrap's
@@ -250,9 +252,15 @@ main() {
       ## observed on qubes-template-whonix). Scoped to this re-checkout path -- the --check-only and
       ## stale-refusal paths below touch nothing and must stay read-only.
       git config core.autocrlf false || true
-      printf '%s\n' "${me}: --ref ${ref}: fetch ${upstream_remote} (--tags --prune) + git reset --hard"
-      git fetch --quiet --tags --prune "${upstream_remote}" \
+      printf '%s\n' "${me}: --ref ${ref}: fetch ${upstream_remote} (branches pruned + tags forced) + git reset --hard"
+      ## Prune-fetch BRANCHES (so a deleted-upstream branch cannot resolve to a leftover
+      ## remote-tracking ref) -- fatal, since a --ref sync needs the remote reachable.
+      git fetch --quiet --prune "${upstream_remote}" "+refs/heads/*:refs/remotes/${upstream_remote}/*" \
          || { printf '%s\n' "${me}: ERROR: --ref given but 'git fetch ${upstream_remote}' failed -- cannot sync to ${ref}" >&2; exit 2; }
+      ## Force-fetch TAGS separately (NON-fatal, no prune): '+' so a moved remote tag updates AND a
+      ## DIVERGENT local tag does not reject the fetch and abort an unrelated branch --ref. A tag
+      ## --ref that genuinely cannot be fetched still fails below at the resolve step.
+      git fetch --quiet "${upstream_remote}" "+refs/tags/*:refs/tags/*" || true
       local resolved_ref=""
       resolved_ref="$(git rev-parse --verify --quiet "${ref}^{commit}")" || resolved_ref=""
       [ -n "${resolved_ref}" ] \

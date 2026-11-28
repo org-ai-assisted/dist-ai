@@ -237,6 +237,31 @@ crlf_probe="$(od -An -c "${REPO}/textfile")"
 rc=0; case "${crlf_probe}" in *'\r'*) rc=1 ;; esac
 check 'autocrlf=true + --ref -> working tree keeps LF (autocrlf forced off before the reset)' "${rc}"
 
+## --- a DIVERGENT local tag must NOT fail the --ref fetch and abort an unrelated branch --ref ------
+## CANARY: `git fetch --tags` (git >=2.20) rejects a non-ff tag update and the handler then exits 2
+## even when --ref is a branch/sha unrelated to that tag; the forced, non-fatal tag fetch fixes it.
+dt_up="${work}/up-dt.git"
+dt_seed="${work}/seed-dt"
+dt_co="${work}/co-dt"
+git init --quiet --bare --initial-branch=ai "${dt_up}"
+git init --quiet --initial-branch=ai "${dt_seed}"
+(
+   cd -- "${dt_seed}"
+   printf '%s\n' one > f; git add f; git commit --quiet -m c1
+   git tag shared-tag
+   printf '%s\n' two > f; git add f; git commit --quiet -m c2
+   git remote add origin "${dt_up}"; git push --quiet origin ai; git push --quiet origin shared-tag
+)
+dt_tip="$(git -C "${dt_seed}" rev-parse HEAD)"
+git clone --quiet --origin org-ai-assisted "${dt_up}" "${dt_co}"
+## Local 'shared-tag' diverges from the remote's (point it at c2; remote stays c1), so a plain
+## 'git fetch --tags' would REJECT the non-ff update and exit non-zero.
+git -C "${dt_co}" tag --force shared-tag "$(git -C "${dt_co}" rev-parse HEAD)"
+REPO="${dt_co}"
+run_subject --ref "${dt_tip}"
+rc=0; [ "${RC}" -eq 0 ] || rc=1
+check 'divergent local tag does NOT block an unrelated branch --ref' "${rc}"
+
 ## --- --check-only is READ-ONLY: no repo config write, no root dpkg mutation ----------------------
 ## The parent core.autocrlf=false normalization is scoped to the re-checkout paths (--ref reset,
 ## build cascade) and `dpkg --configure -a` is gated to the build path, so --check-only mutates
