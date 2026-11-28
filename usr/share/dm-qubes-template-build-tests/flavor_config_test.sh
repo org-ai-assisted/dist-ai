@@ -185,5 +185,111 @@ else
   check "clone_or_update refuses a dirty tracked checkout" 1
 fi
 
+## --- --local-repo generators -----------------------------------------------
+
+## expect_fn MSG EXPECTED FN ARGS...: FN prints EXPECTED and returns 0.
+expect_fn() {
+  local msg="$1" expected="$2"
+  shift 2
+  local got rc=0
+  got="$("$@")" || rc=$?
+  if [ "${rc}" -eq 0 ] && [ "${got}" = "${expected}" ]; then
+    check "${msg}" 0
+  else
+    printf '%s\n' "  got rc=${rc} out='${got}' want='${expected}'" >&2
+    check "${msg}" 1
+  fi
+}
+
+expect_fn "flavor_to_component kicksecure-18" "template-kicksecure" flavor_to_component kicksecure-18
+expect_fn "flavor_to_component whonix-gateway-18" "template-whonix" flavor_to_component whonix-gateway-18
+expect_fn "flavor_to_component whonix-workstation-18" "template-whonix" flavor_to_component whonix-workstation-18
+assert_not "flavor_to_component rejects unknown flavor" flavor_to_component "not-a-real-flavor"
+
+expect_fn "flavor_to_fork_url kicksecure-18" \
+  "https://github.com/org-ai-assisted/qubes-template-kicksecure" flavor_to_fork_url kicksecure-18
+expect_fn "flavor_to_fork_url whonix-gateway-18" \
+  "https://github.com/org-ai-assisted/qubes-template-whonix" flavor_to_fork_url whonix-gateway-18
+
+## stages_without_fetch drops the fetch stage (and its 'f' alias), keeping the rest in order.
+expect_stages() {
+  local msg="$1" expected="$3" got
+  stages="$2"
+  got="$(stages_without_fetch)"
+  if [ "${got}" = "${expected}" ]; then
+    check "${msg}" 0
+  else
+    printf '%s\n' "  got='${got}' want='${expected}'" >&2
+    check "${msg}" 1
+  fi
+}
+expect_stages "stages_without_fetch drops 'fetch'" "fetch prep build" "prep build"
+expect_stages "stages_without_fetch drops the 'f' alias" "f b" "b"
+expect_stages "stages_without_fetch keeps a fetchless list" "prep build" "prep build"
+
+## write_builder_conf gates the fork repoint + insecure-skip-checking on --local-repo. CANARY:
+## emitting them unconditionally would make EVERY build fetch the fork and skip its verification.
+dir="${work}/co-lr"
+mkdir -p -- "${dir}"
+conf="${dir}/builder.yml"
+
+flavor="kicksecure-18"
+local_repo=""
+write_builder_conf "example-configs/kicksecure.yml"
+assert_not "no --local-repo: builder.yml omits +components" \
+  grep --quiet --fixed-strings "+components:" "${conf}"
+assert_not "no --local-repo: builder.yml omits insecure-skip-checking" \
+  grep --quiet --fixed-strings "insecure-skip-checking:" "${conf}"
+
+local_repo=1
+write_builder_conf "example-configs/kicksecure.yml"
+assert "--local-repo: builder.yml repoints to the org-ai-assisted fork" \
+  grep --quiet --fixed-strings "url: https://github.com/org-ai-assisted/qubes-template-kicksecure" "${conf}"
+assert "--local-repo: builder.yml pins the fork branch ai" \
+  grep --quiet --fixed-strings "branch: ai" "${conf}"
+assert "--local-repo: builder.yml skip-checks the fork component" \
+  grep --quiet --fixed-strings "insecure-skip-checking:" "${conf}"
+assert "--local-repo: skip-checking names the component" \
+  grep --quiet --fixed-strings -- "- template-kicksecure" "${conf}"
+
+## build_local_repo_conf emits a Trusted local stanza per PUBLISHED derivative (dists/<codename>),
+## and fails loud when none is present (so a build never silently falls back to the remote repo).
+## Stub the bridge IP so no docker is needed.
+local_repo_bridge_ip() { printf '%s\n' "172.17.0.1"; }
+local_repo_port=9999
+
+local_repo_dir="${work}/aptrepo-empty"
+mkdir -p -- "${local_repo_dir}"
+lr_rc=0
+## Subshell: build_local_repo_conf exit()s on the empty path -- contain it, do not abort the test.
+(build_local_repo_conf) >/dev/null 2>&1 || lr_rc=$?
+if [ "${lr_rc}" -ne 0 ]; then
+  check "build_local_repo_conf fails loud on an empty local repo" 0
+else
+  check "build_local_repo_conf fails loud on an empty local repo" 1
+fi
+
+local_repo_dir="${work}/aptrepo"
+mkdir -p -- "${local_repo_dir}/kicksecure/dists/trixie"
+lr_conf="$(build_local_repo_conf)"
+case "${lr_conf}" in
+*'kicksecure_repository_sources="Types: deb'*'URIs: http://172.17.0.1:9999/kicksecure'*'Suites: trixie'*'Trusted: yes"'*)
+  check "build_local_repo_conf emits a Trusted kicksecure stanza" 0
+  ;;
+*)
+  printf '%s\n' "  got='${lr_conf}'" >&2
+  check "build_local_repo_conf emits a Trusted kicksecure stanza" 1
+  ;;
+esac
+case "${lr_conf}" in
+*whonix_repository_sources*)
+  printf '%s\n' "  unexpected whonix stanza in '${lr_conf}'" >&2
+  check "build_local_repo_conf omits an absent derivative (whonix)" 1
+  ;;
+*)
+  check "build_local_repo_conf omits an absent derivative (whonix)" 0
+  ;;
+esac
+
 printf '%s\n' "" "flavor_config_test: ${pass} pass, ${fail} fail"
 [ "${fail}" -eq 0 ]

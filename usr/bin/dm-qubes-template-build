@@ -60,6 +60,15 @@ flavor="kicksecure-18"
 stages="fetch prep build"
 dir="${HOME}/qubes-builderv2"
 
+## --local-repo: build against a LOCAL on-disk apt repo (locally-built packages not yet
+## uploaded to a remote repo) instead of the remote testers repo. Repoints the fetch at our
+## org-ai-assisted fork (carrying the local-repo.conf hook), serves the repo over http on the
+## docker bridge, and injects local-repo.conf into the fetched template content. Empty => off.
+local_repo=""
+local_repo_dir="/srv/derivative-maker/aptrepo_local"
+local_repo_port=""
+local_repo_server_pid=""
+
 usage() {
   printf '%s\n' "usage: ${me} [--flavor F] [--dir DIR] [--stages 'S..']
 
@@ -69,6 +78,9 @@ Pins org-ai-assisted/qubes-builderv2 @ ai.
   --flavor   kicksecure-18 | whonix-gateway-18 | whonix-workstation-18 (default: ${flavor})
   --dir      qubes-builderv2 checkout directory (default: \${HOME}/qubes-builderv2)
   --stages   template stages to run (default: '${stages}')
+  --local-repo        build against a local apt repo instead of the remote testers repo,
+                      to test against locally-built packages not yet uploaded
+  --local-repo-dir D  local apt repo base, per-derivative subdirs (default: ${local_repo_dir})
 
 Produces <dir>/artifacts/templates/rpm/qubes-template-<flavor>-*.noarch.rpm" >&2
   exit "${1:-2}"
@@ -97,6 +109,38 @@ flavor_needs_qubes_repo() {
   case "$1" in
   whonix-gateway-18 | whonix-workstation-18)
     return 0
+    ;;
+  *)
+    return 1
+    ;;
+  esac
+}
+
+## Map a template flavor to its qubes-builderv2 component name. --local-repo repoints this
+## component at our fork and injects local-repo.conf into its fetched content.
+flavor_to_component() {
+  case "$1" in
+  kicksecure-18)
+    printf '%s\n' "template-kicksecure"
+    ;;
+  whonix-gateway-18 | whonix-workstation-18)
+    printf '%s\n' "template-whonix"
+    ;;
+  *)
+    return 1
+    ;;
+  esac
+}
+
+## Map a template flavor to our org-ai-assisted fork URL (the branch is always 'ai'). The fork
+## carries the local-repo.conf hook that upstream lacks, so --local-repo must fetch from here.
+flavor_to_fork_url() {
+  case "$1" in
+  kicksecure-18)
+    printf '%s\n' "https://github.com/org-ai-assisted/qubes-template-kicksecure"
+    ;;
+  whonix-gateway-18 | whonix-workstation-18)
+    printf '%s\n' "https://github.com/org-ai-assisted/qubes-template-whonix"
     ;;
   *)
     return 1
@@ -200,6 +244,106 @@ provision() {
   ensure_image
 }
 
+## --local-repo helpers -------------------------------------------------------
+
+## The docker bridge gateway IP: the address a default-bridge container reaches the host at.
+## The build container has no host mount and only this route back, so the local apt repo is
+## served here over http (not 127.0.0.1, not file:).
+local_repo_bridge_ip() {
+  local ip
+  ip="$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true)"
+  printf '%s\n' "${ip:-172.17.0.1}"
+}
+
+## First free TCP port in a small range, for the throwaway apt http server. A refused connect
+## (nothing listening) means the port is free.
+local_repo_pick_port() {
+  local p
+  for ((p = 8080; p <= 8179; p++)); do
+    if ! (exec 3<>"/dev/tcp/127.0.0.1/${p}") 2>/dev/null; then
+      printf '%s\n' "${p}"
+      return 0
+    fi
+  done
+  printf '%s\n' "${me}: no free TCP port in 8080-8179 for the local apt repo server" >&2
+  return 1
+}
+
+## A reprepro-published derivative has dists/<codename>/; take the first codename as the suite.
+local_repo_suite() {
+  local d="$1" dist
+  dist="$(find "${local_repo_dir}/${d}/dists" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | head -1)"
+  printf '%s\n' "${dist:-trixie}"
+}
+
+## Emit local-repo.conf: for each derivative present under the local repo base, override its
+## *_repository_sources to the served local repo with 'Trusted: yes' (unsigned local packages).
+build_local_repo_conf() {
+  local bridge_ip d suite found=0
+  bridge_ip="$(local_repo_bridge_ip)"
+  for d in kicksecure whonix; do
+    [ -d "${local_repo_dir}/${d}/dists" ] || continue
+    found=1
+    suite="$(local_repo_suite "${d}")"
+    printf '%s\n' \
+      "${d}_repository_sources=\"Types: deb" \
+      "URIs: http://${bridge_ip}:${local_repo_port}/${d}" \
+      "Suites: ${suite}" \
+      "Components: main" \
+      "Enabled: yes" \
+      "Trusted: yes\"" \
+      ""
+  done
+  if [ "${found}" = 0 ]; then
+    printf '%s\n' "${me}: no published derivative (kicksecure/whonix with dists/) under ${local_repo_dir}" >&2
+    exit 1
+  fi
+}
+
+## Write local-repo.conf into the fetched template content so the in-template hook sources it.
+inject_local_repo_conf() {
+  local component content_dir
+  component="$(flavor_to_component "${flavor}")"
+  content_dir="${dir}/artifacts/sources/${component}"
+  if [ ! -d "${content_dir}" ]; then
+    printf '%s\n' "${me}: fetched template content not found at ${content_dir} (did fetch run?)" >&2
+    exit 1
+  fi
+  build_local_repo_conf >"${content_dir}/local-repo.conf"
+  printf '%s\n' "${me}: injected local-repo.conf into ${content_dir}" >&2
+}
+
+## Serve the local apt repo on the docker bridge for the duration of the build.
+serve_local_repo() {
+  local bridge_ip
+  bridge_ip="$(local_repo_bridge_ip)"
+  python3 -m http.server --bind "${bridge_ip}" "${local_repo_port}" --directory "${local_repo_dir}" >/dev/null 2>&1 &
+  local_repo_server_pid="$!"
+  printf '%s\n' "${me}: serving ${local_repo_dir} at http://${bridge_ip}:${local_repo_port}/ (pid ${local_repo_server_pid})" >&2
+}
+
+cleanup_local_repo_server() {
+  [ -n "${local_repo_server_pid}" ] || return 0
+  kill "${local_repo_server_pid}" 2>/dev/null || true
+  local_repo_server_pid=""
+}
+
+## Strip the fetch stage from ${stages}: --local-repo runs fetch on its own, then injects.
+stages_without_fetch() {
+  local s out=""
+  # shellcheck disable=SC2086
+  for s in ${stages}; do
+    case "${s}" in
+    fetch | f)
+      ;;
+    *)
+      out="${out:+${out} }${s}"
+      ;;
+    esac
+  done
+  printf '%s\n' "${out}"
+}
+
 write_builder_conf() {
   local config="$1"
   {
@@ -215,14 +359,42 @@ write_builder_conf() {
     printf '%s\n' "  type: docker"
     printf '%s\n' "  options:"
     printf '%s\n' "    image: \"${image}\""
+    if [ -n "${local_repo}" ]; then
+      ## Repoint the template component at our fork (carries the local-repo.conf hook) and skip
+      ## its git-signature check: the fork's 'ai' commits are not signed by the upstream
+      ## maintainer key, so verification is disabled for this component only (testing).
+      printf '%s\n' ""
+      printf '%s\n' "+components:"
+      printf '%s\n' "  - $(flavor_to_component "${flavor}"):"
+      printf '%s\n' "      url: $(flavor_to_fork_url "${flavor}")"
+      printf '%s\n' "      branch: ai"
+      printf '%s\n' ""
+      printf '%s\n' "insecure-skip-checking:"
+      printf '%s\n' "  - $(flavor_to_component "${flavor}")"
+    fi
   } >"${dir}/builder.yml"
 }
 
 build() {
-  ## Call qubesbuilder-cli directly ('qb' is just a symlink to it, dead on a core.symlinks=false
-  ## host). Unquoted ${stages} intentionally splits into separate stage words.
-  # shellcheck disable=SC2086
-  (cd -- "${dir}" && ./qubesbuilder-cli -t "${flavor}" template ${stages})
+  if [ -z "${local_repo}" ]; then
+    ## Call qubesbuilder-cli directly ('qb' is just a symlink to it, dead on a core.symlinks=false
+    ## host). Unquoted ${stages} intentionally splits into separate stage words.
+    # shellcheck disable=SC2086
+    (cd -- "${dir}" && ./qubesbuilder-cli -t "${flavor}" template ${stages})
+    return
+  fi
+  ## --local-repo: fetch first so the fork's template content (with the hook) lands on the host,
+  ## inject local-repo.conf into it, serve the repo on the docker bridge, then run the rest.
+  (cd -- "${dir}" && ./qubesbuilder-cli -t "${flavor}" template fetch)
+  local_repo_port="$(local_repo_pick_port)"
+  inject_local_repo_conf
+  serve_local_repo
+  local rest
+  rest="$(stages_without_fetch)"
+  if [ -n "${rest}" ]; then
+    # shellcheck disable=SC2086
+    (cd -- "${dir}" && ./qubesbuilder-cli -t "${flavor}" template ${rest})
+  fi
 }
 
 report() {
@@ -256,6 +428,14 @@ main() {
       ;;
     --stages)
       stages="$2"
+      shift 2
+      ;;
+    --local-repo)
+      local_repo=1
+      shift
+      ;;
+    --local-repo-dir)
+      local_repo_dir="$2"
       shift 2
       ;;
     --help | -h)
@@ -294,6 +474,15 @@ main() {
 
   ## Absolutize so build()/report() agree on the path regardless of the current directory.
   dir="$(readlink -m -- "${dir}")"
+
+  if [ -n "${local_repo}" ]; then
+    if [ ! -d "${local_repo_dir}" ]; then
+      printf '%s\n' "${me}: --local-repo-dir does not exist: ${local_repo_dir}" >&2
+      printf '%s\n' "${me}: populate it first with a local derivative-maker package build" >&2
+      exit 1
+    fi
+    trap cleanup_local_repo_server EXIT
+  fi
 
   provision
   write_builder_conf "${config}"
