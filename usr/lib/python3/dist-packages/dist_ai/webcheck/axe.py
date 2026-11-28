@@ -424,7 +424,7 @@ async def check(base: str, paths: List[str], axe_source: str, settle_ms: int = 1
                     # chromium could not be relaunched on an earlier page -> this one cannot be
                     # audited either. Record a hard problem (never a silent clean) and move on;
                     # check() still RETURNS the keys collected before the engine died.
-                    print("ERROR     %s (engine unavailable)" % label, flush=True)
+                    print("ERROR     %s (engine unavailable)" % _safe_terminal(label), flush=True)
                     problems.append("audit error: %s" % label)
                     continue
                 # The single hard wall-clock budget times page creation AND the audit together (via
@@ -446,10 +446,10 @@ async def check(base: str, paths: List[str], axe_source: str, settle_ms: int = 1
                     if browser is None:
                         engine_gone = True
                     if kind == "wedged":
-                        print("TIMEOUT   %s" % label, flush=True)
+                        print("TIMEOUT   %s" % _safe_terminal(label), flush=True)
                     else:
-                        print("ERROR     %s%s" % (label, (": " + detail) if detail else ""),
-                              flush=True)
+                        print("ERROR     %s%s"
+                              % (_safe_terminal(label), (": " + detail) if detail else ""), flush=True)
                     problems.append("%s: %s" % (kind, label))
                     continue
                 if res.get("redirect"):

@@ -14,7 +14,9 @@ selectors and the viewport sweep cannot be silently dropped.
 
 Run by the website-tests launcher (a required unit) or directly: ./check_taptarget_test.py"""
 import asyncio
+import contextlib
 import inspect
+import io
 import os
 import sys
 import types
@@ -265,6 +267,18 @@ def run() -> int:
        "check() creates no page outside the timed region (new_page lives in _open_and_measure)")
     ck(".close(" not in inspect.getsource(tt._open_and_measure),
        "_open_and_measure never closes the page (close is outside the timed measurement)")
+    # codex+coderabbit+claude finding (2026-11-28): the RETRY line (shared helper) and the TIMEOUT /
+    # ERROR diagnostics print the page-derived label + exception detail; a control char in a path /
+    # exception must be stripped (like _safe_terminal) so it cannot inject a terminal escape. Erroring
+    # on EVERY attempt exercises the RETRY line AND the final ERROR line.
+    _evil = "/\x1b]52;c;SGk\x07\x1b[2J"
+    _cap = io.StringIO()
+    with contextlib.redirect_stdout(_cap):
+        _run_check([_evil], error_counts={(_evil, 390): 99, (_evil, 1280): 99})
+    _out = _cap.getvalue()
+    ck("\x1b" not in _out and "\x07" not in _out,
+       "a control-char page path is stripped from the RETRY + ERROR diagnostics (no escape injection): %r"
+       % _out)
 
     sys.stdout.write("check_taptarget_test: %d pass, %d fail, 0 skip\n"
                      % (stats["pass"], stats["fail"]))

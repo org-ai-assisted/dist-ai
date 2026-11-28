@@ -90,5 +90,8 @@ async def audit_with_retry(
         if browser is None:
             return None, None, fault
         if attempt + 1 < attempts:
-            print("RETRY     %s (%s; retrying on a fresh browser)" % (label, fault[0]), flush=True)
+            # Strip control chars from the (path-derived) label before it reaches the terminal, same
+            # as the gates' _safe_terminal -- a page path must not inject escapes into this log line.
+            print("RETRY     %s (%s; retrying on a fresh browser)"
+                  % (_CTRL.sub(" ", label), fault[0]), flush=True)
     return None, browser, fault

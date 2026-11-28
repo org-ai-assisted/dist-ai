@@ -10,7 +10,9 @@ the frame/shadow boundary shapes), violation -> (path, rule, target) key mapping
 parse/format roundtrip, and the accept-baseline comparison -- a NEW violation fails, a baselined
 one passes, a resolved one is reported, and a MISSING baseline fails CLOSED. Run by the
 website-tests launcher (a required unit) or directly: ./check_axe_test.py"""
+import contextlib
 import inspect
+import io
 import os
 import sys
 import tempfile
@@ -684,6 +686,25 @@ def run() -> int:
     _retry_src = inspect.getsource(ax.audit_with_retry)
     ck("wait_for" in _retry_src and "open_and_audit" in _retry_src,
        "the shared helper time-boxes page creation + audit together (wait_for over open_and_audit)")
+
+    # codex+coderabbit+claude finding (2026-11-28): the RETRY line (shared helper) and the TIMEOUT /
+    # ERROR diagnostics print the (page-derived) label and the exception detail; these lines bypass the
+    # baseline, so a control char in a path or exception string could inject a terminal escape (OSC-52
+    # clipboard write, erase-screen). Both sinks must strip C0/C1, like _safe_terminal does for every
+    # other line. _clip handles the detail; the label is sanitized at each print. Drive a page whose
+    # path carries ESC/BEL/erase-screen, erroring on EVERY attempt (exercises the RETRY line AND the
+    # final ERROR line), and assert the captured stdout carries no raw control char.
+    from dist_ai.webcheck import _retry as _retry_mod
+    ck("\x1b" not in _retry_mod._clip("a\x1b]52;c;x\x07b") and "\x07" not in _retry_mod._clip("a\x1b\x07b"),
+       "_clip strips C0/C1 control chars from the exception detail")
+    _evil = "/\x1b]52;c;SGk\x07\x1b[2J"
+    _cap = io.StringIO()
+    with contextlib.redirect_stdout(_cap):
+        _run_check([_evil], error_counts={(_evil, 1280): 99, (_evil, 390): 99})
+    _out = _cap.getvalue()
+    ck("\x1b" not in _out and "\x07" not in _out,
+       "a control-char page path is stripped from the RETRY + ERROR diagnostics (no escape injection): %r"
+       % _out)
 
     # grok finding (2026-11-27): a mid-run relaunch whose chromium.launch() FAILS must NOT raise
     # _EngineUnavailable out of check() -- reaching check_roots with audited==0 it would become a
