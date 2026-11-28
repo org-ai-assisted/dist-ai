@@ -383,21 +383,21 @@ write_builder_conf() {
 }
 
 build() {
-  if [ -z "${local_repo}" ]; then
-    ## Call qubesbuilder-cli directly ('qb' is just a symlink to it, dead on a core.symlinks=false
-    ## host). Unquoted ${stages} intentionally splits into separate stage words.
-    # shellcheck disable=SC2086
-    (cd -- "${dir}" && ./qubesbuilder-cli -t "${flavor}" template ${stages})
-    return
-  fi
-  ## --local-repo: fetch first so the fork's template content (with the hook) lands on the host,
-  ## stage the local repo + local-repo.conf into it, then run the rest. The executor copies the
-  ## staged repo into the cage and the in-template hook installs from it via file://.
-  (cd -- "${dir}" && ./qubesbuilder-cli -t "${flavor}" template fetch)
-  inject_local_repo_conf
   local rest
   rest="$(stages_without_fetch)"
+  ## Fetch the template COMPONENT source into artifacts/sources/template-<flavor>. A 'template
+  ## fetch' is a no-op here: the template content lives in the template-<flavor> component
+  ## (packages: False), obtained by the package/fetch plugin. For --local-repo, force-fetch + the
+  ## +components override in builder.yml get the fork carrying the local-repo.conf hook.
+  ## Call qubesbuilder-cli directly ('qb' is just a symlink to it, dead on a core.symlinks=false host).
+  (cd -- "${dir}" && ./qubesbuilder-cli package fetch)
+  if [ -n "${local_repo}" ]; then
+    ## Stage the local repo + local-repo.conf into the fetched content before prep/build. The
+    ## executor copies the staged repo into the cage; the in-template hook installs from it via file://.
+    inject_local_repo_conf
+  fi
   if [ -n "${rest}" ]; then
+    ## Unquoted ${rest} intentionally splits into separate stage words.
     # shellcheck disable=SC2086
     (cd -- "${dir}" && ./qubesbuilder-cli -t "${flavor}" template ${rest})
   fi
