@@ -88,6 +88,12 @@ fi
 backend='auto'
 backend_prev=''
 for arg in "$@"; do
+   ## Stop at '--': tokens after it are REMAINDER forwarded to dm-smbios-reader-qemu, which
+   ## image-test treats the same, so a --target there is NOT a backend selector. Scanning past
+   ## '--' would gate the VM-work lock on a target image-test never actually boots.
+   if [ "${arg}" = '--' ]; then
+      break
+   fi
    case "${backend_prev}" in
       --target)
          backend="${arg}"
@@ -100,6 +106,12 @@ for arg in "$@"; do
    esac
    backend_prev="${arg}"
 done
+## Validate the selector LOUDLY here (exit 2, matching image-test's argparse): an invalid value
+## must FAIL, never fall through to the auto arm below and SKIP (77) on an emulator-less host.
+if [ "${backend}" != 'auto' ] && [ "${backend}" != 'kvm' ] && [ "${backend}" != 'virtualbox' ]; then
+   printf '%s\n' "dm-smbios-reader-boot-tests: invalid --target '${backend}' (use auto|kvm|virtualbox). FAIL." >&2
+   exit 2
+fi
 
 have_qemu='false'
 if type -P qemu-system-x86_64 >/dev/null 2>&1 \

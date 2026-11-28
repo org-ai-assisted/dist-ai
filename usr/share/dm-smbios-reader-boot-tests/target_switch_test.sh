@@ -84,6 +84,27 @@ else
   fail "old --resolve-backend must be rejected (exit 2, unrecognized); rc=${rc} err=${err}"
 fi
 
+## --- Hardening (allow_abbrev=False): an abbreviated flag is a HARD unrecognized-argument error,
+## not a silent expansion the shell front-ends (which match only the exact --target spelling) would
+## gate inconsistently. ---
+rc=0; err="$(img --disk /dev/null --targ kvm --resolve-target --arch amd64 2>&1)" || rc=$?
+case "${err}" in *'unrecognized arguments: --targ'*) hit=0 ;; *) hit=1 ;; esac
+if [ "${rc}" -eq 2 ] && [ "${hit}" -eq 0 ]; then
+  pass "abbreviated --targ is rejected (allow_abbrev=False, exit 2)"
+else
+  fail "abbreviated --targ must be rejected (exit 2, unrecognized); rc=${rc} err=${err}"
+fi
+
+## --- The old INTERNAL tokens are invalid PUBLIC values: --target vbox / qemu must be an argparse
+## invalid-choice error (exit 2), never silently accepted (guards the muscle-memory old-value case). ---
+rc=0; err="$(img --disk /dev/null --target vbox --resolve-target --arch amd64 2>&1)" || rc=$?
+case "${err}" in *"invalid choice: 'vbox'"*) hit=0 ;; *) hit=1 ;; esac
+if [ "${rc}" -eq 2 ] && [ "${hit}" -eq 0 ]; then
+  pass "old value --target vbox is rejected (invalid choice, exit 2)"
+else
+  fail "old value --target vbox must be rejected (exit 2, invalid choice); rc=${rc} err=${err}"
+fi
+
 printf '%s\n' "" "$(basename -- "$0"): ${pass_count} pass, ${fail_count} fail"
 [ "${fail_count}" -eq 0 ] || exit 1
 exit 0

@@ -195,6 +195,10 @@ def parse_args():
     parser = argparse.ArgumentParser(
         prog="dm-smbios-reader-image-test",
         description="Boot an image, log in and run functional checks.",
+        ## No prefix abbreviation: an abbreviated flag (--targ) must be a hard
+        ## unrecognized-argument error, not a silent expansion the shell front-ends
+        ## (which match only the exact --target spelling) would gate inconsistently.
+        allow_abbrev=False,
     )
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--disk", help="disk image to boot (qcow2/raw/vdi/vmdk)")
