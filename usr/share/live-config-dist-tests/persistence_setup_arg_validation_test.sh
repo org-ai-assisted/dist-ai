@@ -75,7 +75,7 @@ read_passphrase() {
    if [ "${passphrase_file}" = '-' ]; then
       IFS= read -r passphrase || true
    else
-      passphrase="$(< "${passphrase_file}")"
+      IFS= read -r passphrase < "${passphrase_file}" || true
    fi
 }
 
