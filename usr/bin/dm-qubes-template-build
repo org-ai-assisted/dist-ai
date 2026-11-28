@@ -68,6 +68,10 @@ dir="${HOME}/qubes-builderv2"
 ## networking, which a Qubes build qube blocks). Empty => off.
 local_repo=""
 local_repo_dir="/srv/derivative-maker/aptrepo_local"
+## derivative-maker's local reprepro store publishes under this fixed codename (not a Debian
+## suite), matching dm's own add-local-test-repo / create-local-temp-apt-repo. The apt stanza's
+## Suites: and the dists/<codename>/ existence check both use it.
+readonly local_repo_codename="local"
 
 usage() {
   printf '%s\n' "usage: ${me} [--flavor F] [--dir DIR] [--stages 'S..']
@@ -165,19 +169,6 @@ flavor_to_derivative() {
   esac
 }
 
-## The apt suite (Debian codename) a flavor's template is built for. Taken from the flavor, NOT
-## scanned from the local repo: a repo holding several codenames must not steer a trixie template
-## at bookworm. The '-18' templates are trixie.
-flavor_to_suite() {
-  case "$1" in
-  kicksecure-18 | whonix-gateway-18 | whonix-workstation-18)
-    printf '%s\n' "trixie"
-    ;;
-  *)
-    return 1
-    ;;
-  esac
-}
 
 ## True if STAGE (or its one-letter qubes-builderv2 alias) is among the space-separated ${stages}.
 stages_build_requested() {
@@ -281,26 +272,25 @@ provision() {
 ## kicksecure for a whonix flavor when kicksecure is also published locally (a whonix template
 ## installs kicksecure packages too). The caller guarantees the flavor's own derivative is present.
 local_repo_derivatives() {
-  local primary suite
+  local primary
   primary="$(flavor_to_derivative "${flavor}")"
-  suite="$(flavor_to_suite "${flavor}")"
   printf '%s\n' "${primary}"
-  if [ "${primary}" = "whonix" ] && [ -d "${local_repo_dir}/kicksecure/dists/${suite}" ]; then
+  if [ "${primary}" = "whonix" ] && [ -d "${local_repo_dir}/kicksecure/dists/${local_repo_codename}" ]; then
     printf '%s\n' "kicksecure"
   fi
 }
 
 ## Emit local-repo.conf for the flavor under build. The flavor's OWN derivative MUST be published
-## locally for the required suite, else --local-repo would silently leave the packages under test
-## to the remote testers repo -- fail loud instead. URIs are file:///mnt-local-repo/<deriv>: the
-## in-template hook bind-mounts the staged repo there inside the build chroot. 'Trusted: yes' for
+## locally under the reprepro codename, else --local-repo would silently leave the packages under
+## test to the remote testers repo -- fail loud instead. URIs are file:///mnt-local-repo/<deriv>:
+## the in-template hook bind-mounts the staged repo there inside the build chroot. Suites/Components
+## match dm's canonical local stanza (codename 'local', all three components); 'Trusted: yes' for
 ## the unsigned local packages.
 build_local_repo_conf() {
-  local primary suite d derivs
+  local primary d derivs
   primary="$(flavor_to_derivative "${flavor}")"
-  suite="$(flavor_to_suite "${flavor}")"
-  if [ ! -d "${local_repo_dir}/${primary}/dists/${suite}" ]; then
-    printf '%s\n' "${me}: --local-repo: no ${primary} '${suite}' packages under ${local_repo_dir}/${primary}/dists/${suite} -- build ${primary} ${suite} packages into the local repo first" >&2
+  if [ ! -d "${local_repo_dir}/${primary}/dists/${local_repo_codename}" ]; then
+    printf '%s\n' "${me}: --local-repo: no ${primary} '${local_repo_codename}' packages under ${local_repo_dir}/${primary}/dists/${local_repo_codename} -- build ${primary} packages into the local repo first" >&2
     exit 1
   fi
   mapfile -t derivs < <(local_repo_derivatives)
@@ -308,8 +298,8 @@ build_local_repo_conf() {
     printf '%s\n' \
       "${d}_repository_sources=\"Types: deb" \
       "URIs: file:///mnt-local-repo/${d}" \
-      "Suites: ${suite}" \
-      "Components: main" \
+      "Suites: ${local_repo_codename}" \
+      "Components: main contrib non-free" \
       "Enabled: yes" \
       "Trusted: yes\"" \
       ""

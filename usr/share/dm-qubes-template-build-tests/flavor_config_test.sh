@@ -273,10 +273,10 @@ else
 fi
 
 local_repo_dir="${work}/aptrepo"
-mkdir -p -- "${local_repo_dir}/kicksecure/dists/trixie"
+mkdir -p -- "${local_repo_dir}/kicksecure/dists/local"
 lr_conf="$(build_local_repo_conf)"
 case "${lr_conf}" in
-*'kicksecure_repository_sources="Types: deb'*'URIs: file:///mnt-local-repo/kicksecure'*'Suites: trixie'*'Trusted: yes"'*)
+*'kicksecure_repository_sources="Types: deb'*'URIs: file:///mnt-local-repo/kicksecure'*'Suites: local'*'Components: main contrib non-free'*'Trusted: yes"'*)
   check "build_local_repo_conf emits a Trusted kicksecure stanza" 0
   ;;
 *)
@@ -298,7 +298,7 @@ esac
 ## silently leave kicksecure to the remote testers repo. CANARY: the per-present-derivative loop
 ## emitted a whonix stanza and returned 0 here, so the kicksecure hook fell back to remote.
 local_repo_dir="${work}/aptrepo-whonix-only"
-mkdir -p -- "${local_repo_dir}/whonix/dists/trixie"
+mkdir -p -- "${local_repo_dir}/whonix/dists/local"
 flavor="kicksecure-18"
 lr_rc=0
 (build_local_repo_conf) >/dev/null 2>&1 || lr_rc=$?
@@ -308,27 +308,26 @@ else
   check "build_local_repo_conf fails loud when the flavor's derivative is absent" 1
 fi
 
-## F2: the suite comes from the FLAVOR (trixie), never find|head over the repo -- a repo holding
-## both bookworm and trixie must not steer the trixie template at bookworm. CANARY: scanning the
-## dists dir could emit Suites: bookworm.
-local_repo_dir="${work}/aptrepo-multi-suite"
-mkdir -p -- "${local_repo_dir}/kicksecure/dists/bookworm" "${local_repo_dir}/kicksecure/dists/trixie"
+## The suite is dm's FIXED reprepro codename 'local', never scanned from the repo -- a stray extra
+## codename dir must not change it. CANARY: scanning the dists dir could emit Suites: bookworm.
+local_repo_dir="${work}/aptrepo-stray-codename"
+mkdir -p -- "${local_repo_dir}/kicksecure/dists/bookworm" "${local_repo_dir}/kicksecure/dists/local"
 flavor="kicksecure-18"
 lr_conf="$(build_local_repo_conf)"
 case "${lr_conf}" in
-*'Suites: trixie'*)
-  check "build_local_repo_conf takes the suite from the flavor (trixie)" 0
+*'Suites: local'*)
+  check "build_local_repo_conf uses the fixed 'local' codename" 0
   ;;
 *)
   printf '%s\n' "  got='${lr_conf}'" >&2
-  check "build_local_repo_conf takes the suite from the flavor (trixie)" 1
+  check "build_local_repo_conf uses the fixed 'local' codename" 1
   ;;
 esac
 
 ## A whonix flavor overrides BOTH whonix and kicksecure when both are published locally (the
 ## whonix template installs kicksecure packages too).
 local_repo_dir="${work}/aptrepo-both"
-mkdir -p -- "${local_repo_dir}/whonix/dists/trixie" "${local_repo_dir}/kicksecure/dists/trixie"
+mkdir -p -- "${local_repo_dir}/whonix/dists/local" "${local_repo_dir}/kicksecure/dists/local"
 flavor="whonix-gateway-18"
 lr_conf="$(build_local_repo_conf)"
 case "${lr_conf}" in
@@ -346,14 +345,14 @@ esac
 ## cp loop the hook's bind-mount finds no aptrepo and the template apt has nothing to install from.
 flavor="kicksecure-18"
 local_repo_dir="${work}/aptrepo-stage"
-mkdir -p -- "${local_repo_dir}/kicksecure/dists/trixie"
-printf '%s\n' "marker-kicksecure" >"${local_repo_dir}/kicksecure/dists/trixie/Release"
+mkdir -p -- "${local_repo_dir}/kicksecure/dists/local"
+printf '%s\n' "marker-kicksecure" >"${local_repo_dir}/kicksecure/dists/local/Release"
 dir="${work}/co-inject"
 inject_component_dir="${dir}/artifacts/sources/template-kicksecure"
 mkdir -p -- "${inject_component_dir}"
 inject_local_repo_conf >/dev/null 2>&1
 assert "inject stages the derivative repo into the fetched content" \
-  test -f "${inject_component_dir}/aptrepo/kicksecure/dists/trixie/Release"
+  test -f "${inject_component_dir}/aptrepo/kicksecure/dists/local/Release"
 assert "inject writes local-repo.conf with a file:// stanza" \
   grep --quiet --fixed-strings "file:///mnt-local-repo/kicksecure" "${inject_component_dir}/local-repo.conf"
 
