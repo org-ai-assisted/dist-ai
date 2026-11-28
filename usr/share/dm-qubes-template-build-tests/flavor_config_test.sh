@@ -256,11 +256,9 @@ assert "--local-repo: skip-checking names the component" \
 assert "--local-repo: builder.yml forces a fresh fetch" \
   grep --quiet --fixed-strings "force-fetch: true" "${conf}"
 
-## build_local_repo_conf emits a Trusted local stanza for the FLAVOR's own derivative, at the
+## build_local_repo_conf emits a Trusted file:// stanza for the FLAVOR's own derivative, at the
 ## suite the flavor requires, and fails loud when that derivative's suite is absent (so a build
-## never silently falls back to the remote repo). Stub the bridge IP so no docker is needed.
-local_repo_bridge_ip() { printf '%s\n' "172.17.0.1"; }
-local_repo_port=9999
+## never silently falls back to the remote repo). No docker/network needed.
 flavor="kicksecure-18"
 
 local_repo_dir="${work}/aptrepo-empty"
@@ -278,7 +276,7 @@ local_repo_dir="${work}/aptrepo"
 mkdir -p -- "${local_repo_dir}/kicksecure/dists/trixie"
 lr_conf="$(build_local_repo_conf)"
 case "${lr_conf}" in
-*'kicksecure_repository_sources="Types: deb'*'URIs: http://172.17.0.1:9999/kicksecure'*'Suites: trixie'*'Trusted: yes"'*)
+*'kicksecure_repository_sources="Types: deb'*'URIs: file:///mnt-local-repo/kicksecure'*'Suites: trixie'*'Trusted: yes"'*)
   check "build_local_repo_conf emits a Trusted kicksecure stanza" 0
   ;;
 *)
@@ -343,32 +341,21 @@ case "${lr_conf}" in
   ;;
 esac
 
-## serve_local_repo must FAIL LOUD (not return 0) when its port is already bound on the bind
-## address. CANARY: the pre-fix code had no liveness/readiness check -- it captured $! of the
-## already-dead python and returned 0, leaving build() to run apt against a dead repo URL. Uses
-## 127.0.0.1 as the bind address so the test needs no docker.
-occupy_port="$(local_repo_pick_port 127.0.0.1)"
-python3 -m http.server --bind 127.0.0.1 "${occupy_port}" --directory "${work}" >/dev/null 2>&1 &
-occupier_pid=$!
-occupier_up=0
-for ((probe_i = 0; probe_i < 30; probe_i++)); do
-  if (exec 3<>"/dev/tcp/127.0.0.1/${occupy_port}") 2>/dev/null; then
-    occupier_up=1
-    break
-  fi
-  sleep 0.1
-done
-local_repo_port="${occupy_port}"
-local_repo_server_pid=""
-serve_rc=0
-serve_local_repo 127.0.0.1 >/dev/null 2>&1 || serve_rc=$?
-kill "${occupier_pid}" 2>/dev/null || true
-if [ "${occupier_up}" -eq 1 ] && [ "${serve_rc}" -ne 0 ]; then
-  check "serve_local_repo fails loud when its port is already bound" 0
-else
-  printf '%s\n' "  occupier_up=${occupier_up} serve_rc=${serve_rc}" >&2
-  check "serve_local_repo fails loud when its port is already bound" 1
-fi
+## inject_local_repo_conf stages the repo bytes INTO the fetched content (so the executor's
+## copy_in carries them into the cage) and writes local-repo.conf beside them. CANARY: without the
+## cp loop the hook's bind-mount finds no aptrepo and the template apt has nothing to install from.
+flavor="kicksecure-18"
+local_repo_dir="${work}/aptrepo-stage"
+mkdir -p -- "${local_repo_dir}/kicksecure/dists/trixie"
+printf '%s\n' "marker-kicksecure" >"${local_repo_dir}/kicksecure/dists/trixie/Release"
+dir="${work}/co-inject"
+inject_component_dir="${dir}/artifacts/sources/template-kicksecure"
+mkdir -p -- "${inject_component_dir}"
+inject_local_repo_conf >/dev/null 2>&1
+assert "inject stages the derivative repo into the fetched content" \
+  test -f "${inject_component_dir}/aptrepo/kicksecure/dists/trixie/Release"
+assert "inject writes local-repo.conf with a file:// stanza" \
+  grep --quiet --fixed-strings "file:///mnt-local-repo/kicksecure" "${inject_component_dir}/local-repo.conf"
 
 printf '%s\n' "" "flavor_config_test: ${pass} pass, ${fail} fail"
 [ "${fail}" -eq 0 ]

@@ -62,12 +62,12 @@ dir="${HOME}/qubes-builderv2"
 
 ## --local-repo: build against a LOCAL on-disk apt repo (locally-built packages not yet
 ## uploaded to a remote repo) instead of the remote testers repo. Repoints the fetch at our
-## org-ai-assisted fork (carrying the local-repo.conf hook), serves the repo over http on the
-## docker bridge, and injects local-repo.conf into the fetched template content. Empty => off.
+## org-ai-assisted fork (carrying the local-repo.conf hook) and STAGES the repo into the fetched
+## template content: the executor copies it into the build cage, and the in-template hook
+## bind-mounts it into the chroot so apt installs from file:///mnt-local-repo (no container->host
+## networking, which a Qubes build qube blocks). Empty => off.
 local_repo=""
 local_repo_dir="/srv/derivative-maker/aptrepo_local"
-local_repo_port=""
-local_repo_server_pid=""
 
 usage() {
   printf '%s\n' "usage: ${me} [--flavor F] [--dir DIR] [--stages 'S..']
@@ -277,53 +277,37 @@ provision() {
 
 ## --local-repo helpers -------------------------------------------------------
 
-## The docker bridge gateway IP: the address a default-bridge container reaches the host at.
-## The build container has no host mount and only this route back, so the local apt repo is
-## served here over http (not 127.0.0.1, not file:).
-local_repo_bridge_ip() {
-  local ip
-  ip="$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true)"
-  printf '%s\n' "${ip:-172.17.0.1}"
-}
-
-## First TCP port in a small range that is free ON THE BIND ADDRESS. Probe the SAME address the
-## server binds (the docker bridge gateway), not loopback: an orphaned prior server binds the
-## bridge IP and must be seen as taken. A refused connect means nothing is listening there.
-local_repo_pick_port() {
-  local ip="$1" p
-  for ((p = 8080; p <= 8179; p++)); do
-    if ! (exec 3<>"/dev/tcp/${ip}/${p}") 2>/dev/null; then
-      printf '%s\n' "${p}"
-      return 0
-    fi
-  done
-  printf '%s\n' "${me}: no free TCP port in 8080-8179 on ${ip} for the local apt repo server" >&2
-  return 1
+## The derivatives this flavor pulls that we override with the local repo: the flavor's own, plus
+## kicksecure for a whonix flavor when kicksecure is also published locally (a whonix template
+## installs kicksecure packages too). The caller guarantees the flavor's own derivative is present.
+local_repo_derivatives() {
+  local primary suite
+  primary="$(flavor_to_derivative "${flavor}")"
+  suite="$(flavor_to_suite "${flavor}")"
+  printf '%s\n' "${primary}"
+  if [ "${primary}" = "whonix" ] && [ -d "${local_repo_dir}/kicksecure/dists/${suite}" ]; then
+    printf '%s\n' "kicksecure"
+  fi
 }
 
 ## Emit local-repo.conf for the flavor under build. The flavor's OWN derivative MUST be published
 ## locally for the required suite, else --local-repo would silently leave the packages under test
-## to the remote testers repo -- fail loud instead. A whonix template also installs kicksecure
-## packages, so override kicksecure too WHEN it is published locally (absent -> kicksecure comes
-## from the remote, acceptable when it was not built here). Stanzas carry 'Trusted: yes' for the
-## unsigned local packages.
+## to the remote testers repo -- fail loud instead. URIs are file:///mnt-local-repo/<deriv>: the
+## in-template hook bind-mounts the staged repo there inside the build chroot. 'Trusted: yes' for
+## the unsigned local packages.
 build_local_repo_conf() {
-  local bridge_ip primary suite d derivs
-  bridge_ip="$(local_repo_bridge_ip)"
+  local primary suite d derivs
   primary="$(flavor_to_derivative "${flavor}")"
   suite="$(flavor_to_suite "${flavor}")"
   if [ ! -d "${local_repo_dir}/${primary}/dists/${suite}" ]; then
     printf '%s\n' "${me}: --local-repo: no ${primary} '${suite}' packages under ${local_repo_dir}/${primary}/dists/${suite} -- build ${primary} ${suite} packages into the local repo first" >&2
     exit 1
   fi
-  derivs=("${primary}")
-  if [ "${primary}" = "whonix" ] && [ -d "${local_repo_dir}/kicksecure/dists/${suite}" ]; then
-    derivs+=("kicksecure")
-  fi
+  mapfile -t derivs < <(local_repo_derivatives)
   for d in "${derivs[@]}"; do
     printf '%s\n' \
       "${d}_repository_sources=\"Types: deb" \
-      "URIs: http://${bridge_ip}:${local_repo_port}/${d}" \
+      "URIs: file:///mnt-local-repo/${d}" \
       "Suites: ${suite}" \
       "Components: main" \
       "Enabled: yes" \
@@ -332,45 +316,28 @@ build_local_repo_conf() {
   done
 }
 
-## Write local-repo.conf into the fetched template content so the in-template hook sources it.
+## Stage the local repo into the fetched template content and write local-repo.conf beside it. The
+## executor's copy_in carries both into the build cage (at FLAVORS_DIR); the in-template hook binds
+## the repo into the chroot. The fork is fetched fresh (force-fetch), so the content dir is clean.
 inject_local_repo_conf() {
-  local component content_dir
+  local component content_dir repo_dst d derivs
   component="$(flavor_to_component "${flavor}")"
   content_dir="${dir}/artifacts/sources/${component}"
   if [ ! -d "${content_dir}" ]; then
     printf '%s\n' "${me}: fetched template content not found at ${content_dir} (did fetch run?)" >&2
     exit 1
   fi
+  ## Validates the flavor's derivative is published + emits the file:// stanzas; fails loud here
+  ## (direct redirection, not a subshell) before any bytes are copied.
   build_local_repo_conf >"${content_dir}/local-repo.conf"
-  printf '%s\n' "${me}: injected local-repo.conf into ${content_dir}" >&2
-}
-
-## Serve the local apt repo on the docker bridge for the duration of the build. Fails LOUD if the
-## server does not come up (e.g. its port is already bound by an orphan) -- otherwise build()
-## would run apt against a dead repo URL and fail later with a confusing error. Takes the bind
-## address so the readiness probe targets exactly what was bound.
-serve_local_repo() {
-  local bridge_ip="$1"
-  python3 -m http.server --bind "${bridge_ip}" "${local_repo_port}" --directory "${local_repo_dir}" >/dev/null 2>&1 &
-  local_repo_server_pid="$!"
-  ## Give a bind failure (e.g. port already in use) time to manifest -- python exits fast on
-  ## OSError -- then confirm OUR process is still alive. A port-connect probe is unreliable here:
-  ## an orphan already bound to the same address would answer it even though our bind failed, so
-  ## check the process we launched, not the port.
-  sleep 0.5
-  if ! kill -0 "${local_repo_server_pid}" 2>/dev/null; then
-    printf '%s\n' "${me}: local apt repo server failed to start on ${bridge_ip}:${local_repo_port} (port already in use?)" >&2
-    local_repo_server_pid=""
-    return 1
-  fi
-  printf '%s\n' "${me}: serving ${local_repo_dir} at http://${bridge_ip}:${local_repo_port}/ (pid ${local_repo_server_pid})" >&2
-  return 0
-}
-
-cleanup_local_repo_server() {
-  [ -n "${local_repo_server_pid}" ] || return 0
-  kill "${local_repo_server_pid}" 2>/dev/null || true
-  local_repo_server_pid=""
+  repo_dst="${content_dir}/aptrepo"
+  mkdir -p -- "${repo_dst}"
+  mapfile -t derivs < <(local_repo_derivatives)
+  for d in "${derivs[@]}"; do
+    ## style-ok: allow-cp-a -- staging a tree for copy_in; --archive preserves the repo layout.
+    cp --archive -- "${local_repo_dir}/${d}" "${repo_dst}/${d}"
+  done
+  printf '%s\n' "${me}: staged local repo (${derivs[*]}) + local-repo.conf into ${content_dir}" >&2
 }
 
 ## Strip the fetch stage from ${stages}: --local-repo runs fetch on its own, then injects.
@@ -434,13 +401,10 @@ build() {
     return
   fi
   ## --local-repo: fetch first so the fork's template content (with the hook) lands on the host,
-  ## inject local-repo.conf into it, serve the repo on the docker bridge, then run the rest.
+  ## stage the local repo + local-repo.conf into it, then run the rest. The executor copies the
+  ## staged repo into the cage and the in-template hook installs from it via file://.
   (cd -- "${dir}" && ./qubesbuilder-cli -t "${flavor}" template fetch)
-  local bridge_ip
-  bridge_ip="$(local_repo_bridge_ip)"
-  local_repo_port="$(local_repo_pick_port "${bridge_ip}")"
   inject_local_repo_conf
-  serve_local_repo "${bridge_ip}"
   local rest
   rest="$(stages_without_fetch)"
   if [ -n "${rest}" ]; then
@@ -527,13 +491,10 @@ main() {
   ## Absolutize so build()/report() agree on the path regardless of the current directory.
   dir="$(readlink -m -- "${dir}")"
 
-  if [ -n "${local_repo}" ]; then
-    if [ ! -d "${local_repo_dir}" ]; then
-      printf '%s\n' "${me}: --local-repo-dir does not exist: ${local_repo_dir}" >&2
-      printf '%s\n' "${me}: populate it first with a local derivative-maker package build" >&2
-      exit 1
-    fi
-    trap cleanup_local_repo_server EXIT
+  if [ -n "${local_repo}" ] && [ ! -d "${local_repo_dir}" ]; then
+    printf '%s\n' "${me}: --local-repo-dir does not exist: ${local_repo_dir}" >&2
+    printf '%s\n' "${me}: populate it first with a local derivative-maker package build" >&2
+    exit 1
   fi
 
   provision
