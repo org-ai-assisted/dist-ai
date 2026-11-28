@@ -51,7 +51,8 @@ fi
 ## drifted -- a hard error, not a silent pass.
 for sentinel in \
    ' is already enrolled' \
-   '_version_1'; do
+   '_version_1' \
+   'image_builtin_mok_absent_marker_basename'; do
    if ! grep --quiet --fixed-strings -- "${sentinel}" "${subject}"; then
       printf '%s\n' "FATAL: sentinel '${sentinel}' not found in '${subject}'; it drifted -- update this test." >&2
       exit 1
@@ -66,6 +67,15 @@ if [ "$(type -t check_image_builtin_mok)" != 'function' ]; then
 fi
 if [ "$(type -t dkms_mok_variables_set)" != 'function' ]; then
    printf '%s\n' "FATAL: sourcing '${subject}' did not pull in 'dkms_mok_variables_set' (shim-signed-mok-setup)" >&2
+   exit 1
+fi
+## The build-clean marker basename is the shared contract between the build and
+## the check. Source it directly so this test holds the SAME value the subject
+## does, and stays runnable (for the canary) against a subject lacking the gate.
+# shellcheck disable=SC1090,SC1091
+source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/legacy_dist_do_once_markers.bsh
+if [ -z "${image_builtin_mok_absent_marker_basename:-}" ]; then
+   printf '%s\n' "FATAL: legacy_dist_do_once_markers.bsh set no 'image_builtin_mok_absent_marker_basename'" >&2
    exit 1
 fi
 if ! has safe-rm; then
@@ -145,6 +155,26 @@ run_mok() {
    fi
    printf '%s' "${rc}:${invoked}"
 }
+
+## --- image_built_without_mok build-clean marker -> 0 ------------------------
+## The build drops this marker ONLY after proving the image shipped no built-in
+## MOK key, so any key present afterward is a legitimate per-machine runtime key.
+## Even with a key ENROLLED in UEFI (the strongest detection signal), the marker
+## must short-circuit to 0 BEFORE mokutil is consulted. REGRESSION CANARY: on the
+## pre-fix script (no marker gate) this returned 2.
+reset_state uefi
+touch -- "${dkms}/mok.pub"
+export MOKUTIL_MODE='enrolled'
+mkdir --parents -- "${do_once}"
+touch -- "${do_once}/${image_builtin_mok_absent_marker_basename}"
+check "image_built_without_mok gate -> 0, mokutil not invoked" "$(run_mok)" "0:no"
+
+## Same marker, non-UEFI, key present (pre-fix: 1).
+reset_state
+touch -- "${dkms}/mok.pub"
+mkdir --parents -- "${do_once}"
+touch -- "${do_once}/${image_builtin_mok_absent_marker_basename}"
+check "image_built_without_mok gate -> 0 (non-UEFI, key present)" "$(run_mok)" "0:no"
 
 ## --- check_image_builtin_mok_version_1 do_once gate -> 0 --------------------
 ## Same enrolled setup; the version_1 marker (no mok-ok) must also short-circuit.
