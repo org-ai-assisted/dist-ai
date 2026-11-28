@@ -11,11 +11,13 @@
 ## helper (whose generation logic is tested in helper-scripts-lib-tests/
 ## derivative_sbom_test.sh). This test drives the REAL hook end-to-end with
 ## derivative-sbom stubbed, and asserts ONLY the hook's own concerns:
-##   - the reproducibility context: it calls derivative-sbom with --out at the
-##     embedded path and --timestamp derived from SOURCE_DATE_EPOCH, then pins
-##     the output mtime to SOURCE_DATE_EPOCH;
-##   - the skip paths: SKIP_SCRIPTS membership, and a missing SOURCE_DATE_EPOCH
-##     (-> no SBOM, since a wall-clock timestamp would break reproducible builds).
+##   - the reproducibility context: with SOURCE_DATE_EPOCH set it calls derivative-sbom
+##     with --out at the embedded path and --timestamp derived from it, then pins the
+##     output mtime to SOURCE_DATE_EPOCH;
+##   - unset SOURCE_DATE_EPOCH: the SBOM is STILL generated (a legal requirement) but
+##     WITHOUT a timestamp and with no mtime pin -- the hook must not bail, so the
+##     SOURCE_DATE_EPOCH test must be nounset-safe;
+##   - the skip path: SKIP_SCRIPTS membership (the only way to suppress the SBOM).
 ##
 ## A missing subject is a HARD FAIL (exit 1). No root, no network.
 
@@ -109,15 +111,20 @@ check "happy: timestamp pinned from SOURCE_DATE_EPOCH" "$(yn called_with --times
 check "happy: SBOM present at output path" "$(yn test -f "${sbom_out}")" "yes"
 check "happy: output mtime pinned to SOURCE_DATE_EPOCH" "$(stat -c %Y -- "${sbom_out}")" "${sde}"
 
-## ===================== SOURCE_DATE_EPOCH unset -> graceful skip =====================
+## ============ SOURCE_DATE_EPOCH unset -> SBOM still generated, no timestamp ============
+## An SBOM is a legal requirement even when the build is not reproducible, so a missing
+## SOURCE_DATE_EPOCH must NOT bail: generate the SBOM WITHOUT --timestamp and skip the
+## mtime pin. The hook's `[ -n "${SOURCE_DATE_EPOCH:-}" ]` guard must be nounset-safe, or
+## it crashes here under 'set -o nounset' (the bug this case regresses).
 reset_state
 rc=0
 ## Unset in a subshell: a CI that exports SOURCE_DATE_EPOCH would otherwise leak it
-## into run_hook and make this case generate an SBOM instead of exercising the skip.
+## into run_hook and mask the unset path.
 ( unset SOURCE_DATE_EPOCH; run_hook ) || rc=$?
-check "no-epoch: hook exits 0 (graceful)" "${rc}" "0"
-check "no-epoch: derivative-sbom NOT called" "$(yn test -f "${rec}/derivative-sbom.argv")" "no"
-check "no-epoch: no SBOM written" "$(yn test -f "${sbom_out}")" "no"
+check "no-epoch: hook exits 0 (graceful, nounset-safe)" "${rc}" "0"
+check "no-epoch: derivative-sbom still called (SBOM is a legal requirement)" "$(yn test -f "${rec}/derivative-sbom.argv")" "yes"
+check "no-epoch: called WITHOUT a timestamp" "$(yn called_with --timestamp)" "no"
+check "no-epoch: SBOM written at output path" "$(yn test -f "${sbom_out}")" "yes"
 
 ## ===================== SKIP_SCRIPTS membership -> skip =====================
 reset_state
