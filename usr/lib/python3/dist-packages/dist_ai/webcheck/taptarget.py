@@ -431,6 +431,7 @@ async def check(base: str, paths: List[str], settle_ms: int = SETTLE_MS,
                                       settle_ms=settle_ms),
                     hard_timeout, AUDIT_ATTEMPTS, label)
                 if res is None:
+                    assert fault is not None  # the helper always returns a fault when result is None
                     kind, detail = fault
                     if browser is None:
                         engine_gone = True

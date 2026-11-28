@@ -20,6 +20,7 @@ OPEN; this helper times ONLY the audit and closes the page OUTSIDE the wall-cloc
 completed audit (which returns BEFORE its close) is never discarded by a slow/failed teardown, and a
 close can never convert an in-flight audit into a false wedge."""
 import asyncio
+import re
 from typing import Any, Awaitable, Callable, Optional, Tuple
 
 # A non-completion fault: ("wedged", "") for a wall-clock timeout, ("audit error", "<detail>") for any
@@ -28,10 +29,15 @@ from typing import Any, Awaitable, Callable, Optional, Tuple
 # log parse, so the detail never perturbs it.
 Fault = Tuple[str, str]
 
+# C0/C1 control chars: an exception string is untrusted-ish (carries page-derived text) and must not
+# inject escapes/newlines into the diagnostic log line -- same stripping the gates' _safe_terminal
+# applies to every other terminal line.
+_CTRL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
 
 def _clip(detail: str) -> str:
-    # One-line, bounded: an exception str can carry newlines or be huge; keep the log line legible.
-    return detail.replace("\n", " ").replace("\r", " ")[:200]
+    # One line, control-stripped, bounded: an exception str can carry newlines or be huge.
+    return _CTRL.sub(" ", detail)[:200]
 
 
 async def _relaunch(p, browser) -> Optional[Any]:
