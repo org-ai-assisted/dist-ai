@@ -13,16 +13,19 @@
 ## host-side attach; this lane closes the loop by installing for real + booting.
 ##
 ## Multi-account model: the root libvirt-dist install creates group kvmsf and the
-## shared dir (${LIBVIRT_DIST_SHARED_DIR:-/mnt/shared}) owned user:kvmsf mode 3770
-## (setgid + sticky, NO world) -- a system path so both "user" and "sysmaint"
-## reach it via the group (a $HOME dir could not be cross-account traversable). It
-## is owned by the qemu:///session "user" NOT root: a root-owned sticky dir would
-## EPERM the guest-side mapped user.virtfs.* xattr writes (that VFS rule is guarded
-## directly in shared_folder_test.sh). user-setup then attaches it (9p
-## accessmode='mapped,fmode=0640,dmode=0750') to the domains. So this test:
+## shared dir (${LIBVIRT_DIST_SHARED_DIR:-/mnt/shared}) owned root:kvmsf mode 2770
+## (setgid + group rwx, NO world, NON-sticky) -- a system path so both "user" and
+## "sysmaint" reach it via the group (a $HOME dir could not be cross-account
+## traversable). NON-sticky so qemu-as-"user" (a kvmsf member) CAN write the
+## guest-side mapped user.virtfs.* xattrs (the sticky bit, not ownership, blocks a
+## non-owner's user.* xattr write); ROOT-owned so no member can chmod the host dir
+## open (that VFS matrix is guarded directly in shared_folder_test.sh). user-setup
+## then attaches it (9p accessmode='mapped,fmode=0640,dmode=0750') to the domains.
+## So this test:
 ##   - runs the real install (resolved via LIBVIRT_DIST_REPO) against a temp
-##     LIBVIRT_DIST_SHARED_DIR and asserts the dir is owner user, group kvmsf,
-##     mode 3770 (NOT the old 0700 $HOME dir, NOT a world-exposed 0777);
+##     LIBVIRT_DIST_SHARED_DIR and asserts the dir is owner root, group kvmsf,
+##     mode 2770 (NOT the old 0700 $HOME dir, NOT a world-exposed 0777, NOT the
+##     user-owned 3770 chmod-open hole);
 ##   - injects the checkout's mount-shared (VM_CONFIG_DIST_REPO, else the
 ##     installed /usr copy) into the boot overlay, testing THAT code, not the
 ##     release image's;
@@ -84,7 +87,7 @@ else
 fi
 
 ## Resolve the ROOT install from the same base: it creates group kvmsf and the
-## shared dir (3770 user:kvmsf). This heavy root lane runs it for real.
+## shared dir (2770 root:kvmsf, non-sticky). This heavy root lane runs it for real.
 if [ -n "${LIBVIRT_DIST_REPO:-}" ] && [ -x "${LIBVIRT_DIST_REPO}/usr/libexec/libvirt-dist/install" ]; then
   install_script="${LIBVIRT_DIST_REPO}/usr/libexec/libvirt-dist/install"
 elif [ -x /usr/libexec/libvirt-dist/install ]; then
@@ -427,23 +430,25 @@ main() {
   export LIBVIRT_DIST_SHARED_DIR="${shared_dir}"
 
   ## 1. Run the REAL root install: it creates group kvmsf and the shared dir at
-  ##    3770 user:kvmsf (a system path, not a $HOME dir). The sandbox/CI has a
-  ##    real 'user' account, so its adduser/chown apply.
+  ##    2770 root:kvmsf (a system path, not a $HOME dir). The sandbox/CI has a
+  ##    real 'user' account, so its adduser applies.
   "${install_script}"
 
-  ## 1a. Host-side: the install made the shared dir owner USER, group kvmsf, mode
-  ##     3770 -- owned by the qemu:///session user, NOT root: a root-owned sticky
-  ##     dir would EPERM the guest-side mapped user.virtfs.* xattr writes and lose
-  ##     group access (see shared_folder_test.sh xattr_sticky_regression_check).
-  ##     NOT the old 0700 $HOME dir, NOT a world-exposed 0777.
+  ## 1a. Host-side: the install made the shared dir owner ROOT, group kvmsf, mode
+  ##     2770 -- NON-sticky so qemu-as-"user" (a kvmsf member) CAN write the
+  ##     mapped user.virtfs.* xattrs (the sticky bit, NOT ownership, is what blocks
+  ##     a non-owner's user.* xattr write), while ROOT ownership stops a member
+  ##     chmod-ing the host dir open (see shared_folder_test.sh
+  ##     xattr_sticky_regression_check). NOT the old 0700 $HOME dir, NOT a
+  ##     world-exposed 0777, NOT the user-owned 3770 chmod-open hole.
   local host_owner host_mode host_group
   host_owner="$(stat --format='%U' -- "${shared_dir}")"
   host_mode="$(stat --format='%a' -- "${shared_dir}")"
   host_group="$(stat --format='%G' -- "${shared_dir}")"
-  if [ "${host_owner}" = "user" ] && [ "${host_mode}" = "3770" ] && [ "${host_group}" = "kvmsf" ]; then
-    pass "install created ${shared_dir} owner user group kvmsf mode 3770 (sticky, no world)"
+  if [ "${host_owner}" = "root" ] && [ "${host_mode}" = "2770" ] && [ "${host_group}" = "kvmsf" ]; then
+    pass "install created ${shared_dir} owner root group kvmsf mode 2770 (non-sticky, no world)"
   else
-    fail "install left ${shared_dir} owner=${host_owner} group=${host_group} mode=${host_mode} (want user kvmsf 3770)"
+    fail "install left ${shared_dir} owner=${host_owner} group=${host_group} mode=${host_mode} (want root kvmsf 2770)"
   fi
 
   ## 1c. Static: the mount-shared virtiofs branch does NO chown/chmod -- virtiofs
@@ -668,7 +673,7 @@ main() {
     note "finding 2 host inode of guest-written file: $(stat --format='owner=%U group=%G mode=%a' -- "${fprobe}")"
     if [ "${hinode_group}" = 'kvmsf' ] && [ "${hinode_mode}" = '640' ] \
       && [ "${hread_rc}" -eq 0 ] && [ "${hwrite_rc}" -ne 0 ]; then
-      pass "guest-written host inode is user:kvmsf 0640: a kvmsf member can READ but NOT write it"
+      pass "guest-written host inode is group kvmsf mode 0640: a kvmsf member can READ but NOT write it"
     else
       fail "finding 2 host inode wrong: group=${hinode_group} mode=${hinode_mode} (want kvmsf 640) read_rc=${hread_rc} (want 0) write_rc=${hwrite_rc} (want non-0)"
     fi

@@ -8,31 +8,33 @@
 ## dist-ai behaviour test for libvirt-dist's per-user setup (user-setup) + root
 ## install, HOST side, no boot. The multi-account model: the root libvirt-dist
 ## install creates group kvmsf and the shared folder at ${LIBVIRT_DIST_SHARED_DIR
-## :-/mnt/shared} owned user:kvmsf mode 3770 (setgid + sticky, NO world) -- a
-## system path both "user" and "sysmaint" reach via the group (a $HOME dir could
-## not be cross-account traversable). It is owned by the qemu:///session "user",
-## NOT root: under 9p accessmode=mapped qemu runs as that user and records guest
-## perms as user.virtfs.* xattrs here, and the kernel forbids a NON-owner from
-## setting user.* xattrs on a STICKY dir -- a root-owned share would EPERM and
-## lose group access. user-setup no longer creates the dir: it requires it and
-## attaches it (9p accessmode='mapped,fmode=0640,dmode=0750') to all three domains.
+## :-/mnt/shared} owned root:kvmsf mode 2770 (setgid + group rwx, NO world,
+## NON-sticky) -- a system path both "user" and "sysmaint" reach via the group (a
+## $HOME dir could not be cross-account traversable). NON-sticky: under 9p
+## accessmode=mapped qemu runs as the kvmsf-member "user" and records guest perms
+## as user.virtfs.* xattrs here, and the kernel blocks a non-owner's user.* xattr
+## write ONLY on a STICKY dir -- so a sticky share would EPERM and lose group
+## access. ROOT-owned: a member cannot chmod the host dir open. user-setup no
+## longer creates the dir: it requires it and attaches it (9p
+## accessmode='mapped,fmode=0640,dmode=0750') to all three domains.
 ##
 ## Two lanes:
 ##   ROOT lane (CI/sandbox only, root_host_checks + xattr_sticky_regression_check)
 ##   -- runs the REAL install against a throwaway LIBVIRT_DIST_SHARED_DIR (never
 ##   real /mnt/shared) and asserts:
-##     - install makes the share user:kvmsf 3770 (owned by the qemu user);
-##     - the mapped-9p ownership rule at the VFS level (no boot): a non-owner
-##       kvmsf member is BLOCKED (EPERM) from writing user.virtfs.* xattrs on a
-##       ROOT-owned sticky dir but SUCCEEDS on a USER-owned one, with a canary
-##       that flipping the user-owned dir to root makes it fail (this is the bug
-##       a root-run qemu would mask via CAP_FOWNER);
+##     - install makes the share root:kvmsf 2770 (non-sticky);
+##     - the mapped-9p host-dir rule at the VFS level (no boot): on the shipped
+##       root:kvmsf 2770 non-sticky dir a non-owner kvmsf member CAN write
+##       user.virtfs.* xattrs (canary: setting the sticky bit BLOCKS it, EPERM --
+##       the mapped-break); and a member CANNOT chmod the root-owned dir open
+##       (canary: a user-owned dir lets the member chmod it -- the chmod-open
+##       hole). A root-run qemu would mask the xattr rule via CAP_FOWNER;
 ##     - install is an idempotent self-heal: a member dropped from kvmsf is
 ##       re-added by a second install run, and install.service carries no
 ##       run-once guard (so ExecStart re-applies every boot).
 ##   UNPRIVILEGED lane (also the dev-host path) -- drives only user-setup's
 ##   attach via qemu:///session, non-invasive (no real group/mnt mutation):
-##     - the shared dir is mode 3770 (setgid + sticky, no world bit);
+##     - the shared dir keeps mode 2770 (setgid, no world bit, non-sticky);
 ##     - user-setup attaches ONE 9p accessmode='mapped' filesystem per domain;
 ##     - a same-source re-run adds no duplicate device (dup guard);
 ##     - a DIFFERENT-source re-run adds no second <target dir='shared'/> device
@@ -106,7 +108,7 @@ user_in_kvmsf() {
 }
 
 ## Privileged host-logic lane (CI/sandbox): the REAL install's idempotent group
-## re-apply and the user-owned 3770 dir need root AND mutate system groups, so
+## re-apply and the root:kvmsf 2770 dir need root AND mutate system groups, so
 ## they run ONLY as root, against a throwaway LIBVIRT_DIST_SHARED_DIR (never the
 ## real /mnt/shared). Exits non-zero on any failure; returns 0 otherwise.
 root_host_checks() {
@@ -116,18 +118,18 @@ root_host_checks() {
     printf '%s\n' "NOTE: account 'user' absent; skipping the root install-idempotency lane"
     return 0
   fi
-  ## Nothing non-root traverses idem_dir (the chmod-denial check was dropped when
-  ## the share moved to user-owned), so the default mktemp base is fine.
+  ## Nothing non-root traverses idem_dir (the chmod-denial check lives in the
+  ## xattr regression lane), so the default mktemp base is fine.
   idem_parent="$(mktemp --directory)"
   idem_dir="${idem_parent}/shared"
 
-  ## A. install makes the share USER:kvmsf 3770 -- owned by the qemu:///session
-  ##    user, NOT root. Under 9p accessmode=mapped qemu runs as that user and
-  ##    records guest perms as user.virtfs.* xattrs here; the kernel forbids a
-  ##    non-owner from setting user.* xattrs on a STICKY dir, so a root-owned
-  ##    share would EPERM and lose group access (see xattr_sticky_regression_check).
-  ##    'user' owning + chmod-able is the documented mapped-session trade-off; the
-  ##    guest-side view stays 3770-sticky via the mapped xattrs.
+  ## A. install makes the share ROOT:kvmsf 2770 -- NON-sticky. Under 9p
+  ##    accessmode=mapped qemu runs as the kvmsf-member "user" and records guest
+  ##    perms as user.virtfs.* xattrs here; the kernel blocks a non-owner's
+  ##    user.* xattr write ONLY on a STICKY dir, so 2770 (no sticky) lets the
+  ##    mapped fixup through while ROOT ownership stops a member chmod-ing the
+  ##    host dir open to all local uids (see xattr_sticky_regression_check). The
+  ##    guest-side view stays 3770-sticky via the mapped xattrs (mount-shared).
   ## rc captured EXPLICITLY: this function is called under `if !`, which disables
   ## errexit inside it, so a failing install would otherwise be silently ignored.
   inst_rc=0
@@ -139,10 +141,10 @@ root_host_checks() {
   owner="$(stat --format='%U' -- "${idem_dir}")"
   group="$(stat --format='%G' -- "${idem_dir}")"
   mode="$(stat --format='%a' -- "${idem_dir}")"
-  if [ "${owner}" = 'user' ] && [ "${group}" = 'kvmsf' ] && [ "${mode}" = '3770' ]; then
-    printf '%s\n' "PASS: install made ${idem_dir} owner user, group kvmsf, mode 3770"
+  if [ "${owner}" = 'root' ] && [ "${group}" = 'kvmsf' ] && [ "${mode}" = '2770' ]; then
+    printf '%s\n' "PASS: install made ${idem_dir} owner root, group kvmsf, mode 2770 (non-sticky)"
   else
-    printf '%s\n' "FAIL: install left ${idem_dir} owner=${owner} group=${group} mode=${mode} (want user kvmsf 3770)" >&2
+    printf '%s\n' "FAIL: install left ${idem_dir} owner=${owner} group=${group} mode=${mode} (want root kvmsf 2770)" >&2
     rc=1
   fi
 
@@ -184,69 +186,84 @@ root_host_checks() {
   return "${rc}"
 }
 
-## The mapped-9p mechanism, at the VFS level (no qemu boot needed -- a root-run
-## qemu would MASK this via CAP_FOWNER, which is exactly the bug this guards):
-## qemu:///session runs qemu UNPRIVILEGED (as "user") and records guest perms as
-## user.virtfs.* xattrs on the host share. The kernel forbids a NON-owner from
-## setting user.* xattrs on a STICKY dir (EPERM), so the share MUST be owned by
-## the qemu user -- a root-owned sticky share silently loses group access in
-## production. Assert the rule directly + CANARY it.
+## The mapped-9p host-dir config, at the VFS level (no qemu boot needed -- a
+## root-run qemu would MASK the xattr rule via CAP_FOWNER, exactly the bug this
+## guards). qemu:///session runs qemu UNPRIVILEGED (as the kvmsf-member "user")
+## and records guest perms as user.virtfs.* xattrs on the host share. Two kernel
+## rules decide the one correct host-dir config (root:kvmsf 2770, NON-sticky):
+##  - a non-owner's user.* xattr write is blocked ONLY by the STICKY bit (not by
+##    ownership), so the share MUST be non-sticky or the mapped fixup EPERMs and
+##    loses group access;
+##  - chmod needs ownership, so ROOT ownership stops a kvmsf member chmod-ing the
+##    host dir open to all local uids (a user-owned share is a local-exposure
+##    hole). Assert both directly + CANARY each against its regression.
 xattr_sticky_regression_check() {
-  local base rs us tg='libvirtdist-xattrtest' tu='libvirtdist-xattrprobe' rc=0
+  local base shipped tg='libvirtdist-xattrtest' tu='libvirtdist-xattrprobe' rc=0
   ## Disk-backed fs (tmpfs often lacks user.* xattrs); require support or SKIP.
   base="$(mktemp --directory -- /var/lib/libvirt-dist-xattr.XXXXXX)"
   chmod 0755 -- "${base}"
   if ! setfattr --name user.probe --value x -- "${base}" 2>/dev/null; then
     safe-rm --recursive --force -- "${base}"
-    printf '%s\n' "SKIP: /var/lib fs lacks user.* xattr support (cannot test the mapped-9p ownership rule)" >&2
+    printf '%s\n' "SKIP: /var/lib fs lacks user.* xattr support (cannot test the mapped-9p host-dir rule)" >&2
     exit 77  ## style-ok: allow-skip: the mapped user.virtfs xattr rule needs a user-xattr-capable fs
   fi
   setfattr --remove user.probe -- "${base}" 2>/dev/null || true
   ## Setup rc checked EXPLICITLY: called under `if !` disables errexit here, so a
-  ## failed groupadd/useradd would otherwise make the setfattr probes fail for the
-  ## WRONG reason (missing user) and masquerade as "blocked".
+  ## failed groupadd/useradd would otherwise make the probes fail for the WRONG
+  ## reason (missing user) and masquerade as "blocked".
   groupadd --force "${tg}"
   id "${tu}" >/dev/null 2>&1 \
     || useradd --no-create-home --no-user-group --gid "${tg}" "${tu}"
   if ! id "${tu}" >/dev/null 2>&1; then
-    printf '%s\n' "FAIL: could not create probe user ${tu} for the xattr rule check" >&2
+    printf '%s\n' "FAIL: could not create probe user ${tu} for the host-dir rule check" >&2
     safe-rm --recursive --force -- "${base}"
     groupdel "${tg}" >/dev/null 2>&1 || true
     return 1
   fi
-  rs="${base}/root_sticky"
-  us="${base}/user_sticky"
-  mkdir "${rs}" "${us}"
-  chown "root:${tg}" "${rs}"; chmod 3770 "${rs}"
-  chown "${tu}:${tg}" "${us}"; chmod 3770 "${us}"
+  ## The SHIPPED host-dir config: root:kvmsf 2770 (setgid, group rwx, NON-sticky).
+  shipped="${base}/shipped"
+  mkdir "${shipped}"
+  chown "root:${tg}" "${shipped}"; chmod 2770 "${shipped}"
 
-  ## 1. ROOT-owned sticky dir: a non-owner member is BLOCKED (EPERM) -- this is
-  ##    the production failure a root-owned share would hit.
-  if runuser -u "${tu}" -- setfattr --name user.virtfs.mode --value testval -- "${rs}" 2>/dev/null; then
-    printf '%s\n' "FAIL: non-owner member set user.virtfs xattr on a ROOT-owned sticky dir (kernel rule gone; a root-owned share would NOT fail)" >&2
-    rc=1
+  ## 1. SHIPPED (root:kvmsf 2770, non-sticky): a non-owner kvmsf member CAN set
+  ##    user.virtfs.* -- so the mapped fixup qemu-as-"user" performs works.
+  if runuser -u "${tu}" -- setfattr --name user.virtfs.mode --value testval -- "${shipped}" 2>/dev/null; then
+    printf '%s\n' "PASS: non-owner member CAN set user.virtfs xattr on the shipped root:kvmsf 2770 non-sticky dir (mapped fixup works)"
   else
-    printf '%s\n' "PASS: non-owner member is BLOCKED (EPERM) from user.virtfs xattr on a root-owned sticky dir"
-  fi
-
-  ## 2. USER-owned sticky dir: the OWNER member SUCCEEDS -- so the committed
-  ##    user:kvmsf share lets the mapped fixup write its xattrs.
-  if runuser -u "${tu}" -- setfattr --name user.virtfs.mode --value testval -- "${us}" 2>/dev/null; then
-    printf '%s\n' "PASS: owner member CAN set user.virtfs xattr on a user-owned sticky dir (mapped fixup works)"
-  else
-    printf '%s\n' "FAIL: owner member BLOCKED from user.virtfs xattr on a user-owned sticky dir (share would lose group access)" >&2
+    printf '%s\n' "FAIL: non-owner member BLOCKED from user.virtfs xattr on root:kvmsf 2770 (mapped share would lose group access)" >&2
     rc=1
   fi
 
-  ## 3. CANARY assertion 2: flip user_sticky to ROOT-owned and confirm the SAME
-  ##    setfattr now FAILS -- proving this test detects the exact root-ownership
-  ##    regression (a root-run qemu would have masked it).
-  chown "root:${tg}" "${us}"
-  if runuser -u "${tu}" -- setfattr --name user.virtfs.mode --value testval2 -- "${us}" 2>/dev/null; then
-    printf '%s\n' "FAIL: canary -- setfattr still succeeded after flipping the dir to root-owned (test is INSENSITIVE to the regression)" >&2
+  ## 2. CANARY for the STICKY regression: set the sticky bit (-> 3770 root-owned)
+  ##    and confirm the SAME xattr write now BLOCKS (EPERM) -- the exact config
+  ##    that breaks mapped-9p. Reset to 2770 afterwards for assertion 3.
+  chmod 3770 "${shipped}"
+  if runuser -u "${tu}" -- setfattr --name user.virtfs.mode --value testval2 -- "${shipped}" 2>/dev/null; then
+    printf '%s\n' "FAIL: canary -- xattr write still succeeded after setting the sticky bit (test is INSENSITIVE to the sticky regression)" >&2
     rc=1
   else
-    printf '%s\n' "PASS: canary -- flipping the dir to root-owned makes the owner-member setfattr FAIL (test catches the regression)"
+    printf '%s\n' "PASS: canary -- setting the sticky bit (3770) BLOCKS the member xattr write (EPERM); test catches the mapped-break regression"
+  fi
+  chmod 2770 "${shipped}"
+
+  ## 3. CHMOD-OPEN protection (root ownership): a non-owner member CANNOT chmod
+  ##    the root-owned 2770 dir open -- only the owner (root) or CAP_FOWNER may.
+  if runuser -u "${tu}" -- chmod 0755 "${shipped}" 2>/dev/null; then
+    printf '%s\n' "FAIL: non-owner member chmod-ed the ROOT-owned share open (root ownership not protecting it)" >&2
+    rc=1
+  else
+    printf '%s\n' "PASS: non-owner member is BLOCKED (EPERM) from chmod-ing the root-owned 2770 share open"
+  fi
+
+  ## 4. CANARY for the CHMOD-OPEN hole: chown the dir to the member (the round-6
+  ##    user:kvmsf config) and confirm the member's chmod now SUCCEEDS -- proving
+  ##    this test detects the local-exposure regression a user-owned share is.
+  chown "${tu}:${tg}" "${shipped}"
+  if runuser -u "${tu}" -- chmod 0755 "${shipped}" 2>/dev/null; then
+    printf '%s\n' "PASS: canary -- a user-owned share lets the member chmod it open; test catches the chmod-open hole"
+  else
+    printf '%s\n' "FAIL: canary -- member could NOT chmod even a user-owned dir (test is INSENSITIVE to the chmod-open hole)" >&2
+    rc=1
   fi
 
   safe-rm --recursive --force -- "${base}"
@@ -342,20 +359,22 @@ main() {
   ## Stand in for the root install WITHOUT touching real groups or /mnt: a temp
   ## dir at the model's mode 3770 (setgid + sticky). Pointing
   ## LIBVIRT_DIST_SHARED_DIR here drives user-setup's attach against it.
-  install --directory --mode 3770 -- "${shared_dir}"
+  install --directory --mode 2770 -- "${shared_dir}"
   export LIBVIRT_DIST_SHARED_DIR="${shared_dir}"
 
   ## Drive the real user-setup (attach only) with an isolated HOME.
   HOME="${test_home}" XDG_STATE_HOME="${test_home}/.local/state" "${user_setup}"
 
-  ## 1. Shared dir is mode 3770 (setgid + sticky, no world bit): never
-  ##    world-exposed; sticky so kvmsf members cannot unlink each other's files.
+  ## 1. Shared dir keeps mode 2770 (setgid, group rwx, no world, NON-sticky):
+  ##    mirrors the shipped host dir; user-setup only ATTACHES and must not alter
+  ##    it. Host dir is non-sticky by design (the guest view is sticky 3770 via
+  ##    the mapped xattrs); world access is never opened.
   local mode
   mode="$(stat --format='%a' -- "${shared_dir}")"
-  if [ "${mode}" = "3770" ]; then
-    pass "shared dir ${shared_dir} is mode 3770 (setgid + sticky, no world bit)"
+  if [ "${mode}" = "2770" ]; then
+    pass "shared dir ${shared_dir} is mode 2770 (setgid, no world bit, non-sticky); user-setup left it unchanged"
   else
-    fail "shared dir mode is ${mode}, want 3770 (setgid + sticky, no world)"
+    fail "shared dir mode is ${mode}, want 2770 (setgid, no world, non-sticky)"
   fi
 
   ## 2. Attached once per domain, accessmode='mapped', source=shared_dir.
