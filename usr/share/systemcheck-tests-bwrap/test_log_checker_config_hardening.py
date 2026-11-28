@@ -23,7 +23,7 @@ log-checker is source-able (was_executed guard), so the tests SOURCE the real
 script -- defining its functions (and the real strings.bsh helpers) without
 running it or inheriting strict-mode -- then call the function under test. Only
 genuine external / root actions (leaprun, safe-rm) and the GUI-format sinks
-(sanitize-string / br_add_to_file / stcatn) are stubbed, for deterministic,
+(sanitize-string / br_add / stcatn) are stubbed, for deterministic,
 offline assertions. Absolute-path state (the Qubes marker-vm, the /etc config
 dirs) is neutralized with a bubblewrap tmpfs only where it EXISTS on the host,
 so on a non-Qubes CI container these run plain -- and still gate there, since a

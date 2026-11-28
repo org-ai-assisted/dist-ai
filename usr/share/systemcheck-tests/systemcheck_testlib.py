@@ -764,7 +764,7 @@ class LogCheckerHardeningBase(SystemcheckTestBase):
             f" read-journalctl-logs-this-boot) printf '%s\\n' {shlex.quote(journal_line)} ;;"
             ' *) : ;; esac ; }\n'
             'sanitize-string() { cat ; }\n'
-            'br_add_to_file() { cp -- "$1" "$1_br" ; }\n'
+            'br_add() { if [ "$#" -ge 1 ]; then printf "%s\\n" "$1"; else cat; fi ; }\n'
             'stcatn() { cat -- "$@" ; }\n'
             'safe-rm() { : ; }\n'
         )

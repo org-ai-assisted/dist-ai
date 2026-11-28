@@ -210,8 +210,8 @@ class TestLogCheckerCriticalKernelStream(SystemcheckTestBase):
         """Run the REAL check_critical_logs against a crafted RAW KERNEL-transport stream
         (the journalctl_kernel.txt file check_service_logs writes). Mirrors log-checker's
         own shell options (errexit + nounset, NO pipefail -- the grep pipeline legitimately
-        exits non-zero on no-match). stcatn/safe-rm/br_add_to_file are irrelevant to the
-        classification under test, so they are stubbed; sanitize-string runs for real."""
+        exits non-zero on no-match). stcatn/safe-rm are stubbed (irrelevant to the
+        classification under test); br_add and sanitize-string run for real."""
         log_checker = os.path.join(self.dir, 'log-checker')
         with tempfile.TemporaryDirectory() as td:
             raw = os.path.join(td, 'journalctl_kernel.txt')
@@ -305,11 +305,14 @@ class TestLogCheckerCriticalKernelStream(SystemcheckTestBase):
                          'every matched catastrophe line must be shown, none dropped')
         ## Distinct-line guard: the total count alone passes even if one line were omitted
         ## and another duplicated (both among the unprobed indices). Assert EACH of the 250
-        ## lines appears EXACTLY once -- the '<br />' delimiter makes each per-line substring
-        ## unambiguous ('number 2<br />' cannot match inside 'number 12<br />'), so a count
-        ## of 1 means present-and-not-duplicated and a count of 0/>=2 is caught.
+        ## lines appears EXACTLY once. br_add JOINS lines with '<br />' (no trailing delimiter
+        ## on the lexically-last line), so split on '<br />' and match each segment at its END:
+        ## endswith disambiguates 'number 9' from 'number 99', so exactly-one means
+        ## present-and-not-duplicated while zero or >=2 is caught.
+        shown = [seg.strip() for seg in out.replace('<br />', '\n').split('\n') if seg.strip()]
         for i in range(250):
-            self.assertEqual(out.count('synthetic oops number %d<br />' % i), 1,
+            needle = 'synthetic oops number %d' % i
+            self.assertEqual(sum(1 for seg in shown if seg.endswith(needle)), 1,
                              'line %d must appear exactly once (not omitted or duplicated)' % i)
 
     def test_bad_ram_critical(self) -> None:

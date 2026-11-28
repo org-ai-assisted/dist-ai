@@ -124,7 +124,7 @@ class TestRegressionInvariants(SystemcheckTestBase):
 
         Collaborators stubbed (non-subject): leaprun (privileged journal read)
         and safe-rm (a cross-package tool absent on plain CI). The sanitizer
-        (sanitize-string) and the '<br />' inserter (br_add_to_file) are the REAL
+        (sanitize-string) and the '<br />' inserter (br_add) are the REAL
         helper-scripts tools -- so the neutralization is exercised end to end.
         """
         log_checker = os.path.join(self.dir, 'log-checker')

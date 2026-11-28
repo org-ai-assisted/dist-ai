@@ -258,7 +258,9 @@ EOF
 ## target is unpredictable (an attacker cannot name the file to plant a symlink
 ## at it), so it is not a symlink-follow even when the mktemp template
 ## interpolates a tainted dir. Both lines are root-write-user-path at most --
-## NEVER symlink-follow. This is the real br_add_to_file (strings.bsh) shape.
+## NEVER symlink-follow. Synthetic audit fixture: a mktemp-plus-rename sink shape
+## that exercises the audit tool's root-write-user-path classification, not any
+## real function.
 write 'packages/kicksecure/targetpkg/usr/libexec/targetpkg/vuln-dashdash-mktemp' <<'EOF'
 #!/bin/bash
 root_check() {
