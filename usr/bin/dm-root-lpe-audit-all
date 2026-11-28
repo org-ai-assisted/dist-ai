@@ -61,8 +61,11 @@ def audit_tree(tool, tree):
     scan, else an error string (the tree is a scan ERROR, never a silent clean)."""
     if not os.path.isdir(tree):
         return None, "not a directory"
-    proc = subprocess.run([tool, tree], capture_output=True, text=True,
-                          check=False)
+    try:
+        proc = subprocess.run([tool, tree], capture_output=True, text=True,
+                              check=False)
+    except OSError as exc:
+        return None, "could not launch the auditor (%s)" % exc
     if not proc.stdout.strip():
         tail = proc.stderr.strip().splitlines()[-1:] or ["no output"]
         return None, "auditor produced no JSON (exit %d: %s)" % (
@@ -79,7 +82,48 @@ def audit_tree(tool, tree):
     if not isinstance(report.get("findings", []), list) \
             or not isinstance(report.get("severity_counts", {}), dict):
         return None, "auditor JSON has a malformed findings/severity_counts container"
+    ## The auditor prints a full report AND exits nonzero only when it examined
+    ## nothing (coverage.root_files == 0, its "wrong root?" advisory) or shfmt is
+    ## absent -- both scan errors. A clean findings run exits 0, so a nonzero exit
+    ## is never a usable scan: accepting its report would be a false-clean.
+    if proc.returncode != 0:
+        tail = proc.stderr.strip().splitlines()[-1:] or ["nonzero exit"]
+        return None, "auditor reported a scan error (exit %d: %s)" % (
+            proc.returncode, tail[0])
     return report, None
+
+
+def summarize_tree(label, report):
+    """Print one tree's block; return (counts, degraded_count, had_findings).
+
+    Reads the report's NESTED values with int()/len(), so a malformed one (a null
+    list, a non-int count) raises TypeError/ValueError -- the caller turns that into
+    a scan error, never an uncaught crash that would exit 1 (a clean-ish code)."""
+    cov = report["coverage"]
+    counts = {sev: int(report.get("severity_counts", {}).get(sev, 0))
+              for sev in SEVERITIES}
+    findings = report.get("findings", [])
+    suppressed = report.get("suppressed", [])
+    degraded = len(cov.get("parse_errors", [])) + len(cov.get("walk_errors", []))
+
+    print("=== %s ===" % label)
+    print("  coverage: %d root files, %d shell, %d sinks, %d unresolved, "
+          "%d parse errors" % (
+              int(cov.get("root_files", 0)), int(cov.get("shell_scanned", 0)),
+              int(cov.get("sinks_examined", 0)),
+              int(cov.get("unresolved_targets", 0)),
+              len(cov.get("parse_errors", []))))
+    print("  open: %s  |  waived: %d" % (severity_line(counts), len(suppressed)))
+    for finding in findings:
+        where = finding.get("path", "?")
+        if finding.get("line") is not None:
+            where = "%s:%s" % (where, finding["line"])
+        print("    [%-6s] %s  %s  %s  (%s)" % (
+            finding.get("severity", "?"), where, finding.get("rule", "?"),
+            finding.get("tainted_operand", ""), finding.get("root_reason", "")))
+    if degraded:
+        print("  DEGRADED: %d parse/walk error(s) -- scan incomplete" % degraded)
+    return counts, degraded, bool(findings)
 
 
 def main(argv):
@@ -97,36 +141,18 @@ def main(argv):
             scan_errors += 1
             print("=== %s: SCAN ERROR -- %s" % (label, error))
             continue
-
-        cov = report["coverage"]
-        counts = {sev: report.get("severity_counts", {}).get(sev, 0)
-                  for sev in SEVERITIES}
-        findings = report.get("findings", [])
-        suppressed = report.get("suppressed", [])
-        degraded = len(cov.get("parse_errors", [])) + len(cov.get("walk_errors", []))
-
-        print("=== %s ===" % label)
-        print("  coverage: %d root files, %d shell, %d sinks, %d unresolved, "
-              "%d parse errors" % (
-                  cov.get("root_files", 0), cov.get("shell_scanned", 0),
-                  cov.get("sinks_examined", 0), cov.get("unresolved_targets", 0),
-                  len(cov.get("parse_errors", []))))
-        print("  open: %s  |  waived: %d" % (severity_line(counts),
-                                             len(suppressed)))
-        for finding in findings:
-            where = finding.get("path", "?")
-            if finding.get("line") is not None:
-                where = "%s:%s" % (where, finding["line"])
-            print("    [%-6s] %s  %s  %s  (%s)" % (
-                finding.get("severity", "?"), where, finding.get("rule", "?"),
-                finding.get("tainted_operand", ""),
-                finding.get("root_reason", "")))
+        try:
+            counts, degraded, had_findings = summarize_tree(label, report)
+        except (TypeError, ValueError, AttributeError, KeyError) as exc:
+            ## Right top-level types, malformed nested value: still a scan error.
+            scan_errors += 1
+            print("=== %s: SCAN ERROR -- malformed report (%s)" % (label, exc))
+            continue
 
         if degraded:
             ## A degraded scan is incomplete -- never counted as clean.
             scan_errors += 1
-            print("  DEGRADED: %d parse/walk error(s) -- scan incomplete" % degraded)
-        if findings:
+        if had_findings:
             trees_with_findings += 1
             for sev in SEVERITIES:
                 totals[sev] += counts.get(sev, 0)

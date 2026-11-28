@@ -48,6 +48,24 @@ elif name == "malformed_tree":
     ## The wrapper's contract makes this a scan error (exit 2), never a crash.
     print('{"coverage": null, "severity_counts": null, "findings": null}')
     sys.exit(0)
+elif name == "wrongroot_tree":
+    ## a VALID report but the auditor EXITS NONZERO: its "wrong root?" advisory
+    ## (coverage.root_files == 0). A mis-pointed/empty scan must be a scan error,
+    ## never accepted as a usable clean scan.
+    print(json.dumps({"coverage": {"root_files": 0, "shell_scanned": 0,
+          "sinks_examined": 0, "unresolved_targets": 0, "parse_errors": [],
+          "walk_errors": []},
+          "severity_counts": {"HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0},
+          "findings": [], "suppressed": []}))
+    sys.exit(1)
+elif name == "nested_bad_tree":
+    ## right TOP-LEVEL types, wrong NESTED values: parse_errors null (len crash), a
+    ## severity_counts value a string (int/%d crash), suppressed null (len crash).
+    print('{"coverage": {"root_files": 1, "shell_scanned": 1, "sinks_examined": 1,'
+          ' "unresolved_targets": 0, "parse_errors": null, "walk_errors": null},'
+          ' "severity_counts": {"HIGH": "x", "MEDIUM": 0, "LOW": 0, "INFO": 0},'
+          ' "findings": [], "suppressed": null}')
+    sys.exit(0)
 print(json.dumps(r))
 '''
 
@@ -82,7 +100,8 @@ def main(argv):
         os.chmod(stub, os.stat(stub).st_mode | stat.S_IXUSR | stat.S_IXGRP
                  | stat.S_IXOTH)
         for name in ("clean_tree", "finding_tree", "degraded_tree", "noout_tree",
-                     "malformed_tree", "second_clean"):
+                     "malformed_tree", "wrongroot_tree", "nested_bad_tree",
+                     "second_clean"):
             os.mkdir(os.path.join(work, name))
 
         rc, out = run(subject, ["clean_tree", "second_clean"], work, stub)
@@ -122,6 +141,22 @@ def main(argv):
               rc == 2, checks)
         check("malformed report is a SCAN ERROR", "SCAN ERROR" in out, checks)
 
+        rc, out = run(subject, ["wrongroot_tree"], work, stub)
+        check("auditor nonzero exit (wrong root) -> exit 2, not accepted as clean",
+              rc == 2, checks)
+        check("wrong-root run is a SCAN ERROR", "SCAN ERROR" in out, checks)
+
+        rc, out = run(subject, ["nested_bad_tree"], work, stub)
+        check("a nested-malformed report -> exit 2 (no uncaught crash)",
+              rc == 2, checks)
+
+        ## A missing/unlaunchable auditor must be a scan error, not an OSError crash.
+        env = dict(os.environ, DM_ROOT_LPE_AUDIT=os.path.join(work, "no-such-auditor"))
+        proc = subprocess.run([subject, os.path.join(work, "clean_tree")],
+                              capture_output=True, text=True, check=False, env=env)
+        check("an unlaunchable auditor -> exit 2 (scan error, not a traceback)",
+              proc.returncode == 2, checks)
+
         ## default tree is CWD when no args are given.
         env = dict(os.environ, DM_ROOT_LPE_AUDIT=stub)
         proc = subprocess.run([subject], capture_output=True, text=True,
@@ -129,15 +164,38 @@ def main(argv):
                               cwd=os.path.join(work, "clean_tree"))
         check("no args defaults to CWD -> exit 0", proc.returncode == 0, checks)
 
-        ## Real-auditor smoke: no override, default sibling resolution, a missing
-        ## tree is reported before the auditor is even invoked -> exit 2.
+        ## Pre-launch guard with the DEFAULT sibling auditor (no override): a missing
+        ## tree is reported before the auditor is invoked -> exit 2.
         env = dict(os.environ)
         env.pop("DM_ROOT_LPE_AUDIT", None)
         proc = subprocess.run([subject, os.path.join(work, "no_such_tree")],
                               capture_output=True, text=True, check=False, env=env)
-        check("real-auditor path runs end to end (missing tree -> exit 2)",
+        check("default sibling resolution: a missing tree -> exit 2",
               proc.returncode == 2 and "SCAN ERROR" in proc.stdout + proc.stderr,
               checks)
+
+        ## Real-auditor smoke: a tree with a GENUINE root surface (a system unit whose
+        ## ExecStart script writes under $HOME), driven by the DEFAULT sibling auditor
+        ## -- proves the wrapper runs the REAL auditor end to end and returns a verdict,
+        ## not just the pre-launch guards. The auditor's deps (shfmt) are a hard
+        ## requirement; their absence fails here, it is not skipped.
+        smoke = os.path.join(work, "smoke_tree")
+        os.makedirs(os.path.join(smoke, "usr/lib/systemd/system"))
+        os.makedirs(os.path.join(smoke, "usr/bin"))
+        with open(os.path.join(smoke, "usr/lib/systemd/system/smoke.service"),
+                  "w", encoding="utf-8") as fh:
+            fh.write("[Service]\nExecStart=/usr/bin/smoke-root\n")
+        with open(os.path.join(smoke, "usr/bin/smoke-root"), "w",
+                  encoding="utf-8") as fh:
+            fh.write('#!/bin/bash\ncp --recursive -- "${src}" "${HOME}/dest"\n')
+        proc = subprocess.run([subject, smoke], capture_output=True, text=True,
+                              check=False, env=env)
+        smoke_out = proc.stdout + proc.stderr
+        check("real-auditor smoke: the sibling auditor actually scanned the tree",
+              "=== smoke_tree ===" in smoke_out and "0 root files" not in smoke_out,
+              checks)
+        check("real-auditor smoke: a genuine finding yields exit 1 (a real verdict)",
+              proc.returncode == 1, checks)
 
     passed = sum(1 for _, ok in checks if ok)
     failed = len(checks) - passed
