@@ -8,9 +8,9 @@
 """
 Silent-green guard for the check_runtime.bsh source.
 
-updatecheck, the systemcheck orchestrator, and canary each source the required
-runtime lib check_runtime.bsh (which provides was_executed) at the very top,
-BEFORE anything else runs. They carry a '#!/bin/bash -e' shebang, but errexit
+updatecheck, the systemcheck orchestrator, canary, and the systemcheck launcher
+(usr/bin/systemcheck) each source the required runtime lib check_runtime.bsh
+(which provides was_executed) at the very top, BEFORE anything else runs. They carry a '#!/bin/bash -e' shebang, but errexit
 from the shebang is NOT applied when a script is invoked as `bash <script>`
 (only when executed directly). So the source failure is caught ONLY by an
 explicit guard that fails loud when the runtime lib did not load. These tests are
@@ -46,6 +46,7 @@ class TestCheckRuntimeSourceGuard(unittest.TestCase):
     updatecheck: str
     orchestrator: str
     canary: str
+    launcher: str
     empty_hs: str
     _tmp: "tempfile.TemporaryDirectory[str]"
 
@@ -56,11 +57,15 @@ class TestCheckRuntimeSourceGuard(unittest.TestCase):
         cls.updatecheck = os.path.join(usr, 'bin', 'updatecheck')
         cls.orchestrator = os.path.join(sc_dir, 'systemcheck')
         cls.canary = os.path.join(sc_dir, 'canary')
+        ## The usr/bin launcher: a thin lock-and-dispatch wrapper that execs the
+        ## orchestrator. It sources check_runtime.bsh for the same was_executed
+        ## guard, so it carries the same silent-green risk and gets the same test.
+        cls.launcher = os.path.join(usr, 'bin', 'systemcheck')
         ## systemcheck_dir() already exit-77s when the sources are genuinely
-        ## absent; reaching here means they resolved, so all three scripts are
+        ## absent; reaching here means they resolved, so all four scripts are
         ## REQUIRED. A missing one is a corrupt checkout / incomplete install --
         ## an environment bug that must fail LOUD, never a silent skip-to-green.
-        for path in (cls.updatecheck, cls.orchestrator, cls.canary):
+        for path in (cls.updatecheck, cls.orchestrator, cls.canary, cls.launcher):
             if not os.path.isfile(path):
                 raise FileNotFoundError(
                     f"required systemcheck script absent: {path!r}")
@@ -104,6 +109,9 @@ class TestCheckRuntimeSourceGuard(unittest.TestCase):
 
     def test_canary_guard_fails_loud(self) -> None:
         self._assert_guard_fails_loud(self.canary)
+
+    def test_launcher_guard_fails_loud(self) -> None:
+        self._assert_guard_fails_loud(self.launcher)
 
 
 if __name__ == '__main__':
