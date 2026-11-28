@@ -324,8 +324,10 @@ inject_local_repo_conf() {
   mkdir -p -- "${repo_dst}"
   mapfile -t derivs < <(local_repo_derivatives)
   for d in "${derivs[@]}"; do
-    ## style-ok: allow-cp-a -- staging a tree for copy_in; --archive preserves the repo layout.
-    cp --archive -- "${local_repo_dir}/${d}" "${repo_dst}/${d}"
+    ## Dereference symlinks (-L): a derivative repo, or an entry inside it, may be an absolute
+    ## symlink to a host path that is absent inside the build cage. Copy real content so the staged
+    ## file:// tree is self-contained once copied into the cage.
+    cp --recursive --dereference -- "${local_repo_dir}/${d}" "${repo_dst}/${d}"
   done
   printf '%s\n' "${me}: staged local repo (${derivs[*]}) + local-repo.conf into ${content_dir}" >&2
 }
