@@ -209,6 +209,14 @@ def scan_maintainer(abs_path, rel_path):
 
 ## --- systemd units ----------------------------------------------------------
 
+## An Exec PROGRAM located via %h (the INVOKING user's home) marks a user-scope
+## unit: a system unit addresses its binary by an absolute path and never execs
+## from a user home. Applied ONLY to a .service shipped OUTSIDE a /systemd/system/
+## dir (a payload a user-manager deploys, e.g. one provision installs), so a real
+## system unit -- which the broad no-User=-is-root default must keep catching --
+## is never dropped by this.
+USER_SCOPE_EXEC_RE = re.compile(r"%h(?![A-Za-z])")
+
 
 def parse_service(text):
     """(runs_as_root, user_value, exec_targets) for a .service file.
@@ -260,6 +268,11 @@ def scan_systemd(abs_path, rel_path):
         return None
     text = read_text(abs_path)
     runs_as_root, user_value, exec_targets = parse_service(text)
+    ## A payload .service (not under /systemd/system/) whose Exec program is located
+    ## via %h is a user-scope unit the user manager runs, not a root surface.
+    if "/systemd/system/" not in ("/" + rel_path) \
+            and any(USER_SCOPE_EXEC_RE.search(prog) for prog in exec_targets):
+        return None
     ## systemd IGNORES User= for a '+'-prefixed command -- it runs as root even
     ## under a non-root User=. Capture those so a non-root unit's forced-root
     ## commands are not lost.

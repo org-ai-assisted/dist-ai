@@ -107,6 +107,13 @@ def main(argv):
          one("systemd-unit", "dynuser.service") is None),
         ("a debhelper .user.service source is excluded",
          one("systemd-unit", "foo.user.service") is None),
+        ("a payload unit with a %h Exec (no unit dir) is excluded as user-scope",
+         one("systemd-unit", "payload-user.service") is None),
+        ("a payload unit with an absolute Exec is still a root surface",
+         one("systemd-unit", "payload-root.service") is not None
+         and "/usr/sbin/payload-root" in one("systemd-unit", "payload-root.service")["exec"]),
+        ("%h in a /systemd/system/ unit is NOT dropped (the %h rule is payload-gated)",
+         one("systemd-unit", "syshome.service") is not None),
         ("ExecCondition and ExecStopPost root programs are captured",
          one("systemd-unit", "execkeys.service") is not None
          and "/usr/bin/root-cond" in one("systemd-unit", "execkeys.service")["exec"]

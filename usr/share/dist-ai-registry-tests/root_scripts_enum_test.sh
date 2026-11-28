@@ -292,6 +292,33 @@ write 'packages/kicksecure/foo/debian/foo.user.service' <<'EOF'
 ExecStart=/usr/bin/foouser
 EOF
 
+## a PAYLOAD .service shipped OUTSIDE any unit dir (a user manager deploys it, e.g.
+## via provision) whose Exec PROGRAM is located via %h (the invoking user's home)
+## -> user-scope -> MUST be excluded, though it has no User= and no /systemd/user/.
+write 'packages/kicksecure/foo/usr/share/foo/payload-user.service' <<'EOF'
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/payload-user
+EOF
+
+## a PAYLOAD .service outside a unit dir with an ABSOLUTE Exec (no %h) -> still a
+## real root surface -> MUST be found: real root units DO ship outside
+## /systemd/system/ (e.g. corridor's rendered *.service.in), so the %h rule must
+## not over-exclude them.
+write 'packages/kicksecure/foo/usr/share/foo/payload-root.service' <<'EOF'
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/payload-root
+EOF
+
+## %h in the Exec of a unit that IS under /systemd/system/ -> the %h rule is gated
+## to payloads, so a real system unit is NEVER dropped by it -> MUST be found.
+write 'packages/kicksecure/foo/usr/lib/systemd/system/syshome.service' <<'EOF'
+[Service]
+Type=oneshot
+ExecStart=%h/syshome-prog
+EOF
+
 ## every Exec* directive that runs as root is captured; a bare ExecStartPre=
 ## resets ONLY that key (root-pre must NOT survive; cond + cleanup MUST).
 write 'packages/kicksecure/foo/usr/lib/systemd/system/execkeys.service' <<'EOF'
