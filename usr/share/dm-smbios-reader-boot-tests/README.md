@@ -14,8 +14,8 @@ SMBIOS Type-1 serial -> in-image GRUB reader -> kernel chain (see below); a rele
 image carries no reader, so the injection is a silent no-op and every leg times out
 with a ~0-byte serial log (flagged by the image-test 0-byte-log diagnostic).
 
-- `dm-smbios-reader-image-test` -- orchestrator: picks a backend (`--backend
-  {auto,qemu,vbox}`), obtains a pexpect child, drives the SAME serial conversation,
+- `dm-smbios-reader-image-test` -- orchestrator: picks a target (`--target
+  {auto,kvm,virtualbox}`), obtains a pexpect child, drives the SAME serial conversation,
   reports 0 PASS / 5 FAIL / 2 SETUP.
 - `dm-smbios-reader-qemu` -- builds the qemu argv (does not boot). `--test-console`,
   `--smbios-append`, `--screendump`, `--iso`/`--disk`, `--emit-argv`, `--emit-cmdline`.
@@ -28,7 +28,7 @@ with a ~0-byte serial log (flagged by the image-test 0-byte-log diagnostic).
   `dm-smbios-reader-vbox` here captures with `VBoxManage controlvm <vm> screenshotpng <file>` instead.
 - `debug/` -- boot-once/poke-many dev tooling (`dmserial.py`); not gated.
 
-## Backends: QEMU (default) and VBox/AMD-V (`--backend vbox`)
+## Backends: KVM/QEMU (default) and VirtualBox/AMD-V (`--target virtualbox`)
 
 Both run the identical `systemcheck` serial battery; they differ only in how the VM
 is booted and how the serial console is reached.
@@ -42,8 +42,8 @@ is booted and how the serial console is reached.
   inject), calls `dm-smbios-reader-vbox serial-up` to build + boot a headless VM with
   COM1 wired to a host UNIX socket + the payload injected via VBox DMI, connects the
   socket with `pexpect.fdpexpect.fdspawn`, and drives `run_checks` unchanged.
-  `--backend auto` picks vbox when VBoxManage is present AND `/dev/kvm` is absent AND
-  the CPU is AMD, else qemu. VBoxManage is a HARD dependency of the vbox lane -- its
+  `--target auto` picks virtualbox when VBoxManage is present AND `/dev/kvm` is absent AND
+  the CPU is AMD, else kvm. VBoxManage is a HARD dependency of the virtualbox lane -- its
   absence is a loud SETUP error, never a skip.
 - **DMI vendor must be QEMU.** The in-image GRUB reader fires only when SMBIOS Type-1
   Manufacturer reads `QEMU`, so the vbox backend sets DMI vendor=QEMU; under VBox DMI

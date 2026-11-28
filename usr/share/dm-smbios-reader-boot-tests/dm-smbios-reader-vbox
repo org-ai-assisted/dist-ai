@@ -1444,7 +1444,7 @@ def _build_parser():
         help='build + boot a VM wired for SERIAL driving (headless, no network): '
              'COM1 -> host UNIX socket, DMI vendor=QEMU + dm-cmdline serial so the '
              'in-image GRUB reader injects the kernel cmdline. For '
-             'dm-smbios-reader-image-test --backend vbox. exit 0 up / 2 setup / 5 fail')
+             'dm-smbios-reader-image-test --target virtualbox. exit 0 up / 2 setup / 5 fail')
     su_media = serial_up.add_mutually_exclusive_group(required=True)
     su_media.add_argument('--iso', help='boot this ISO live (dvddrive)')
     su_media.add_argument('--disk',

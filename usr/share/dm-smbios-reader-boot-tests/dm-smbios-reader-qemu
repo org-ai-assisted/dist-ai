@@ -428,7 +428,7 @@ smbios_cmdline_payload() {
 
 ## --emit-cmdline is a PURE payload-print path: emit the raw SMBIOS 'dm-cmdline=' kernel
 ## cmdline and exit, for dm-smbios-reader-vbox to inject verbatim through VBox DMI. It MUST
-## return before the qemu/qemu-img preflight below, because --backend vbox installs no qemu
+## return before the qemu/qemu-img preflight below, because --target virtualbox installs no qemu
 ## -- requiring either binary would make the vbox image-test unable to read the cmdline.
 ## --iso/--disk is validated above for interface parity with --emit-argv, though the payload
 ## itself does not depend on the media.

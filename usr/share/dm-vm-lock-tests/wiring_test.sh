@@ -41,7 +41,7 @@ rec="${work}/calls"
 } > "${stubbin}/dm-vm-lock"
 chmod +x -- "${stubbin}/dm-vm-lock"
 
-## A VBoxManage stub so the VBox-gated lanes (smbios --backend vbox) see a VBox host and
+## A VBoxManage stub so the VBox-gated lanes (smbios --target virtualbox) see a VBox host and
 ## reach their lock guard. It is never actually run -- the dm-vm-lock stub exits before the boot.
 {
    printf '%s\n' '#!/bin/bash'
@@ -88,7 +88,7 @@ assert_class 'dm-iso-build (image build)'     work "${bin}/dm-iso-build"
 ## the guard re-execs under --class work AND is gated on the vbox backend. A revert/class-change FAILS.
 smbios_leaf="${bin}/dm-smbios-reader-boot-tests"
 if grep --extended-regexp --quiet "exec dm-vm-lock acquire --class work " -- "${smbios_leaf}" \
-   && grep --extended-regexp --quiet '\[ "\$\{effective_backend\}" = .vbox. \]' -- "${smbios_leaf}"; then r=0; else r=1; fi
+   && grep --extended-regexp --quiet '\[ "\$\{effective_backend\}" = .virtualbox. \]' -- "${smbios_leaf}"; then r=0; else r=1; fi
 check 'dm-smbios-reader-boot-tests self-locks (--class work), gated on the vbox backend [static]' "${r}"
 
 vmlock_done

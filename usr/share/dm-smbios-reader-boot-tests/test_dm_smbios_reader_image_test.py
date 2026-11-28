@@ -947,7 +947,7 @@ def test_release_check8_no_firmware_masking():
     assert cmd == base, cmd
 
 
-## --- backend selection (--backend {auto,qemu,vbox}) ---------------------------
+## --- target selection (public --target {auto,kvm,virtualbox}; internal resolve_backend) ---
 
 def test_resolve_backend_explicit_qemu():
     m = _load_dm_image_test()

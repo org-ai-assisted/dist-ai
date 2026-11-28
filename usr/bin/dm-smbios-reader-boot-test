@@ -76,8 +76,8 @@ while [ "$#" -gt 0 ]; do
          serial_log="$2"
          shift 2
          ;;
-      --backend)
-         [ "$#" -ge 2 ] || { printf '%s\n' "${BASH_SOURCE[0]}: --backend requires a value" >&2 ; exit 2 ; }
+      --target)
+         [ "$#" -ge 2 ] || { printf '%s\n' "${BASH_SOURCE[0]}: --target requires a value" >&2 ; exit 2 ; }
          backend="$2"
          shift 2
          ;;
@@ -128,12 +128,12 @@ if [ "${arch}" != 'amd64' ] && [ "${arch}" != 'arm64' ]; then
    printf '%s\n' "${BASH_SOURCE[0]}: unsupported --arch '${arch}'" >&2
    exit 2
 fi
-if [ "${backend}" = 'vbox' ]; then
+if [ "${backend}" = 'virtualbox' ]; then
    ## VBox is pre-provisioned on the image-test server (see the vbox-image-testing
    ## skill), never apt-installed here -- require it LOUDLY (hard dependency, not a
    ## skip) and install no qemu runtime.
    if ! type -P VBoxManage >/dev/null 2>&1; then
-      printf '%s\n' "${BASH_SOURCE[0]}: --backend vbox needs VBoxManage (install VirtualBox; see the vbox-image-testing skill); a hard dependency, not a skip." >&2
+      printf '%s\n' "${BASH_SOURCE[0]}: --target virtualbox needs VBoxManage (install VirtualBox; see the vbox-image-testing skill); a hard dependency, not a skip." >&2
       exit 2
    fi
 else
@@ -232,7 +232,7 @@ esac
 [ -n "${login_user}" ] || login_user="${session}"
 test_args+=(
    --arch "${arch}"
-   --backend "${backend}"
+   --target "${backend}"
    --session "${session}"
    --login-user "${login_user}"
 )

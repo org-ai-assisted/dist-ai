@@ -841,7 +841,7 @@ def test_cli_parser_accepts_ensure_amd_v():
     assert args.cmd == 'ensure-amd-v'
 
 
-## --- serial backend (for dm-smbios-reader-image-test --backend vbox) -----------
+## --- serial backend (for dm-smbios-reader-image-test --target virtualbox) -----------
 
 _DMI_VENDOR_KEY = 'VBoxInternal/Devices/pcbios/0/Config/DmiSystemVendor'
 _DMI_SERIAL_KEY = 'VBoxInternal/Devices/pcbios/0/Config/DmiSystemSerial'

@@ -234,13 +234,14 @@ def parse_args():
     )
     parser.add_argument("--serial-log", default="", help="write the serial log here")
     parser.add_argument(
-        "--backend", choices=("auto", "qemu", "vbox"), default="auto",
-        help="VM backend: auto (vbox when VBoxManage + no /dev/kvm + amd64, else"
-             " qemu), qemu, or vbox (forces VBox/AMD-V; requires VBoxManage)",
+        "--target", choices=("auto", "kvm", "virtualbox"), default="auto",
+        help="hypervisor target: auto (virtualbox when VBoxManage + no /dev/kvm +"
+             " amd64, else kvm), kvm (qemu/KVM), or virtualbox (forces VBox/AMD-V;"
+             " requires VBoxManage)",
     )
     parser.add_argument(
-        "--resolve-backend", dest="resolve_backend", action="store_true",
-        help="print the backend --backend/auto resolves to (qemu|vbox) and exit;"
+        "--resolve-target", dest="resolve_target", action="store_true",
+        help="print the target --target/auto resolves to (kvm|virtualbox) and exit;"
              " the single source the front-ends query to gate on the right tool",
     )
     parser.add_argument(
@@ -249,7 +250,10 @@ def parse_args():
     )
     ## Any tokens after '--' are passed straight to dm-smbios-reader-qemu (e.g. --memory, --smp).
     parser.add_argument("dm_smbios_reader_qemu_args", nargs=argparse.REMAINDER)
-    return parser.parse_args()
+    args = parser.parse_args()
+    ## public vocabulary kvm|virtualbox (matches dist-installer-cli); internal backend tokens stay qemu|vbox; translate once here.
+    args.backend = {"auto": "auto", "kvm": "qemu", "virtualbox": "vbox"}[args.target]
+    return args
 
 
 def merged_smbios_append(args):
@@ -744,7 +748,7 @@ def resolve_backend(args, log):
     is no usable /dev/kvm (so qemu would fall back to slow software TCG) AND the target
     arch is amd64 -- VBox is x86-only and CANNOT run a foreign-ISA (arm64) guest, which
     qemu does via TCG, so an arm64 image must stay on qemu. Else qemu. The safe default,
-    overridable, no flag to recall. Explicit --backend vbox REQUIRES VBoxManage (loud
+    overridable, no flag to recall. Explicit --target virtualbox REQUIRES VBoxManage (loud
     SETUP, never a skip)."""
     import shutil
     if args.backend == "qemu":
@@ -752,11 +756,11 @@ def resolve_backend(args, log):
     have_vbox = shutil.which("VBoxManage") is not None
     if args.backend == "vbox":
         if not have_vbox:
-            die_setup("--backend vbox requires VBoxManage (install VirtualBox);"
+            die_setup("--target virtualbox requires VBoxManage (install VirtualBox);"
                       " this is a hard dependency, not a skip")
         if args.arch not in ("", "amd64"):
-            die_setup("--backend vbox cannot run a %s guest (VBox is x86-only);"
-                      " use --backend qemu for a non-amd64 arch" % (args.arch,))
+            die_setup("--target virtualbox cannot run a %s guest (VBox is x86-only);"
+                      " use --target kvm for a non-amd64 arch" % (args.arch,))
         return "vbox"
     ## auto: vbox only when qemu would be slow (no KVM) AND the arch is x86.
     has_kvm = os.access("/dev/kvm", os.R_OK | os.W_OK)
@@ -1000,12 +1004,13 @@ def main():
     def log(message):
         print(message, file=sys.stderr)
 
-    if args.resolve_backend:
-        ## Query-only: print the resolved backend (to stdout) and exit, so the shell
-        ## front-ends gate on the SAME decision this resolver makes (no duplicated
-        ## auto-logic that could drift). resolve_backend may die_setup (explicit vbox
-        ## with VBoxManage absent / wrong arch), which is the correct signal too.
-        print(resolve_backend(args, lambda _message: None))
+    if args.resolve_target:
+        ## Query-only: print the resolved PUBLIC target (kvm|virtualbox) (to stdout) and
+        ## exit, so the shell front-ends gate on the SAME decision this resolver makes (no
+        ## duplicated auto-logic that could drift). resolve_backend may die_setup (explicit
+        ## virtualbox with VBoxManage absent / wrong arch), which is the correct signal too.
+        internal = resolve_backend(args, lambda _message: None)
+        print({"qemu": "kvm", "vbox": "virtualbox"}[internal])
         sys.exit(PASS)
 
     try:
@@ -1042,7 +1047,7 @@ def main():
         if empty:
             log("dm-smbios-reader-image-test: serial log is empty -- the image likely"
                 " lacks the --smbios-reader (build with --smbios-reader true), or the"
-                " DMI vendor is not QEMU under --backend vbox")
+                " DMI vendor is not QEMU under --target virtualbox")
 
     log("dm-smbios-reader-image-test: exiting (verdict rc=%s)" % verdict)
     sys.exit(verdict)
