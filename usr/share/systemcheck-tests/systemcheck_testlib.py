@@ -123,6 +123,13 @@ def has_bsh() -> str:
     return os.path.join(hs_root, 'usr', 'libexec', 'helper-scripts', 'has.bsh')
 
 
+def strings_bsh() -> str:
+    """helper-scripts strings.bsh -- defines br_add (and siblings), used by the
+    log / journal fragments to HTML-ify output for the GUI."""
+    hs_root = os.environ.get('HELPER_SCRIPTS_PATH', '').strip() or '/'
+    return os.path.join(hs_root, 'usr', 'libexec', 'helper-scripts', 'strings.bsh')
+
+
 def fragment_sources(*fragments: str) -> list[str]:
     """The real files a check fragment needs, in the entrypoint's order:
     has.bsh, preparation.bsh (emit_message & co.), then `fragments`."""
@@ -302,8 +309,7 @@ def source_orchestrator(body: str, stubs: str = '', strings: bool = False,
     ## Refuse to source an unguarded entrypoint (would run the tool on source).
     _assert_source_able(orch)
     hs = os.environ.get('HELPER_SCRIPTS_PATH', '').strip()
-    strings_path = (os.path.join(hs, 'usr/libexec/helper-scripts/strings.bsh')
-                    if hs else '/usr/libexec/helper-scripts/strings.bsh')
+    strings_path = strings_bsh()
     lines = []
     if strict:
         lines += ['set -o errexit', 'set -o pipefail']

@@ -36,8 +36,11 @@ import unittest
 from systemcheck_testlib import (
     SystemcheckTestBase,
     ScenarioTestBase,
+    fragment_sources,
     read,
     run_check_scenario,
+    run_sourced,
+    strings_bsh,
 )
 
 SERVICES = 'check_services.bsh'
@@ -180,6 +183,38 @@ class TestSpiceVdagentdJournalIgnore(SystemcheckTestBase):
                 'Error getting active session: No data available')
         self.assertIsNotNone(re.search(pat, line, re.IGNORECASE),
                              'ignore pattern must match the real journal line')
+
+
+class TestJournalIgnoreCliEndAnchored(SystemcheckTestBase):
+    """apply_journal_ignore_cli filters the REAL journal content, not the
+    HTML-ified ('<br />'-suffixed) text. br_add inserts '<br />' only BETWEEN
+    lines, so the bare last line would match an end-anchored pattern the earlier
+    tagged lines cannot -- silently dropping ONLY the last match. The fix strips
+    the render tags before grep and re-adds them after. Drives the REAL function
+    with the REAL br_add."""
+
+    def _filter(self, lines: list, match_pattern: str) -> str:
+        sources = fragment_sources(os.path.join(self.dir, SERVICES)) \
+            + [strings_bsh()]
+        raw = ''.join(f'{line}\n' for line in lines)
+        setup = (
+            'systemcheck_journal_ignore_match_cli='
+            f'{shlex.quote(match_pattern)}\n'
+            f"input=\"$(printf '%s' {shlex.quote(raw)} | br_add)\"\n"
+        )
+        return run_sourced(sources, 'apply_journal_ignore_cli "${input}"', setup)
+
+    def test_end_anchored_ignore_matches_first_not_only_last(self) -> None:
+        ## Two lines; an end-anchored ignore on the FIRST. The filter must drop
+        ## the first (its real EOL) and KEEP the second -- proving it matches
+        ## line CONTENT, not the HTML form where only the last line is bare.
+        ## RED on the pre-fix code: grep saw 'error: alpha<br />', the anchor
+        ## never matched, and NOTHING was dropped.
+        out = self._filter(['error: alpha', 'error: beta'], 'error: alpha$')
+        self.assertNotIn('error: alpha', out,
+                         'end-anchored ignore must drop the matching first line')
+        self.assertIn('error: beta', out,
+                      'the non-matching line must be kept')
 
 
 class TestLogCheckerCriticalKernelStream(SystemcheckTestBase):
