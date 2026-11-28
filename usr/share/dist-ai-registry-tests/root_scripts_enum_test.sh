@@ -319,6 +319,15 @@ Type=oneshot
 ExecStart=%h/syshome-prog
 EOF
 
+## a PAYLOAD %h unit with a '+'-forced-root Exec: '+' runs it as root regardless of
+## scope, so the %h exclusion must NOT suppress it -> the forced-root program MUST
+## still be captured (else the %h rule becomes a root-direction false negative).
+write 'packages/kicksecure/foo/usr/share/foo/payload-forced.service' <<'EOF'
+[Service]
+User=nobody
+ExecStart=+%h/.local/bin/payloadforced
+EOF
+
 ## every Exec* directive that runs as root is captured; a bare ExecStartPre=
 ## resets ONLY that key (root-pre must NOT survive; cond + cleanup MUST).
 write 'packages/kicksecure/foo/usr/lib/systemd/system/execkeys.service' <<'EOF'

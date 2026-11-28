@@ -268,15 +268,19 @@ def scan_systemd(abs_path, rel_path):
         return None
     text = read_text(abs_path)
     runs_as_root, user_value, exec_targets = parse_service(text)
-    ## A payload .service (not under /systemd/system/) whose Exec program is located
-    ## via %h is a user-scope unit the user manager runs, not a root surface.
-    if "/systemd/system/" not in ("/" + rel_path) \
+    ## systemd IGNORES User= for a '+'-prefixed command -- it runs as root even
+    ## under a non-root User=. Captured so a non-root unit's forced-root commands
+    ## are not lost -- computed BEFORE the %h exclusion so that exclusion can never
+    ## suppress a forced-root program.
+    forced = parse_service_forced_root(text)
+    ## A payload .service (not under /systemd/system/) whose Exec PROGRAM is located
+    ## via %h is a user-scope unit the user manager runs, not a root surface -- UNLESS
+    ## it carries a '+'-forced-root Exec, which runs as root regardless of scope and
+    ## must never be dropped.
+    if not forced \
+            and "/systemd/system/" not in ("/" + rel_path) \
             and any(USER_SCOPE_EXEC_RE.search(prog) for prog in exec_targets):
         return None
-    ## systemd IGNORES User= for a '+'-prefixed command -- it runs as root even
-    ## under a non-root User=. Capture those so a non-root unit's forced-root
-    ## commands are not lost.
-    forced = parse_service_forced_root(text)
     if not runs_as_root:
         if not forced:
             return None

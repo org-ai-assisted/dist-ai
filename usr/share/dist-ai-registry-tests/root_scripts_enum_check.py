@@ -114,6 +114,10 @@ def main(argv):
          and "/usr/sbin/payload-root" in one("systemd-unit", "payload-root.service")["exec"]),
         ("%h in a /systemd/system/ unit is NOT dropped (the %h rule is payload-gated)",
          one("systemd-unit", "syshome.service") is not None),
+        ("a +forced-root %h payload is NOT suppressed by the %h rule (forced-root wins)",
+         one("systemd-unit", "payload-forced.service") is not None
+         and "%h/.local/bin/payloadforced"
+         in one("systemd-unit", "payload-forced.service")["root_forced_exec"]),
         ("ExecCondition and ExecStopPost root programs are captured",
          one("systemd-unit", "execkeys.service") is not None
          and "/usr/bin/root-cond" in one("systemd-unit", "execkeys.service")["exec"]
