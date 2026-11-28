@@ -81,94 +81,35 @@ if [ "${image_given}" != 'true' ]; then
    exit "${SKIP}"
 fi
 
-## Backend availability. dm-smbios-reader-image-test resolves auto -> qemu/vbox itself;
-## here we only decide whether a boot test is POSSIBLE on this host. --target virtualbox
-## REQUIRES VBoxManage (hard dependency -> loud FAIL, never a skip); --target kvm
-## keeps the historical no-qemu SKIP; auto skips only when NEITHER emulator is present.
-backend='auto'
-backend_prev=''
-for arg in "$@"; do
-   ## Stop at '--': tokens after it are REMAINDER forwarded to dm-smbios-reader-qemu, which
-   ## image-test treats the same, so a --target there is NOT a backend selector. Scanning past
-   ## '--' would gate the VM-work lock on a target image-test never actually boots.
-   if [ "${arg}" = '--' ]; then
-      break
+## The backend decision belongs to dm-smbios-reader-image-test: its argparse is the SINGLE
+## authority that validates --target (abbreviation, invalid value, missing value, and the
+## REMAINDER after '--' or a bare positional) and resolves auto -> kvm|virtualbox from host
+## capability. Ask it ONCE and PROPAGATE its exit code -- a malformed --target FAILS loud
+## (image-test's exit 2) here exactly as it would when image-test boots. NEVER hand-parse
+## --target (a bash copy drifts from argparse on every one of those edge cases) and NEVER
+## '2>/dev/null' this call (that silently turns a rejection into a SKIP -- the bug this replaced).
+resolved_target="$("${tests_dir}/dm-smbios-reader-image-test" --resolve-target "$@")" || exit "$?"
+
+## resolved_target is authoritative now: 'kvm' or 'virtualbox'. An explicit 'virtualbox' with no
+## VBoxManage already FAILED above (the resolver's die_setup, exit 2), so a resolved 'virtualbox'
+## implies VBoxManage is present; 'kvm' still needs a qemu-system-* to actually boot.
+if [ "${resolved_target}" = 'kvm' ]; then
+   if ! type -P qemu-system-x86_64 >/dev/null 2>&1 \
+      && ! type -P qemu-system-aarch64 >/dev/null 2>&1; then
+      printf '%s\n' "dm-smbios-reader-boot-tests: target resolved to kvm but no qemu-system-* on PATH; cannot boot-test here. SKIP." >&2
+      ## style-ok: allow-skip: no qemu-system-* on PATH -- boot test needs an emulator
+      exit "${SKIP}"
    fi
-   case "${backend_prev}" in
-      --target)
-         backend="${arg}"
-         ;;
-   esac
-   case "${arg}" in
-      --target=*)
-         backend="${arg#--target=}"
-         ;;
-   esac
-   backend_prev="${arg}"
-done
-## Validate the selector LOUDLY here (exit 2, matching image-test's argparse): an invalid value
-## must FAIL, never fall through to the auto arm below and SKIP (77) on an emulator-less host.
-if [ "${backend}" != 'auto' ] && [ "${backend}" != 'kvm' ] && [ "${backend}" != 'virtualbox' ]; then
-   printf '%s\n' "dm-smbios-reader-boot-tests: invalid --target '${backend}' (use auto|kvm|virtualbox). FAIL." >&2
-   exit 2
 fi
-
-have_qemu='false'
-if type -P qemu-system-x86_64 >/dev/null 2>&1 \
-   || type -P qemu-system-aarch64 >/dev/null 2>&1; then
-   have_qemu='true'
-fi
-have_vbox='false'
-if type -P VBoxManage >/dev/null 2>&1; then
-   have_vbox='true'
-fi
-
-case "${backend}" in
-   virtualbox)
-      if [ "${have_vbox}" != 'true' ]; then
-         printf '%s\n' "dm-smbios-reader-boot-tests: --target virtualbox needs VBoxManage (install VirtualBox); a hard dependency, not a skip. FAIL." >&2
-         exit 1
-      fi
-      ;;
-   kvm)
-      if [ "${have_qemu}" != 'true' ]; then
-         printf '%s\n' "dm-smbios-reader-boot-tests: --target kvm but no qemu-system-* on PATH; cannot boot-test here. SKIP." >&2
-         ## style-ok: allow-skip: no qemu-system-* on PATH -- boot test needs an emulator
-         exit "${SKIP}"
-      fi
-      ;;
-   *)
-      ## auto: ask the resolver which target it will actually use (SINGLE source --
-      ## no duplicated auto-logic that could drift from dm-smbios-reader-image-test),
-      ## then gate on THAT tool, so we never SKIP a host the resolver can use nor let a
-      ## resolved-kvm-but-no-qemu host fall through to a spurious FAIL.
-      resolved_target="$("${tests_dir}/dm-smbios-reader-image-test" --resolve-target "$@" 2>/dev/null || true)"
-      if [ "${resolved_target}" = 'kvm' ] && [ "${have_qemu}" != 'true' ]; then
-         printf '%s\n' "dm-smbios-reader-boot-tests: target auto resolved to kvm but no qemu-system-* on PATH; cannot boot-test here. SKIP." >&2
-         ## style-ok: allow-skip: auto-resolved kvm target has no emulator on PATH
-         exit "${SKIP}"
-      fi
-      if [ -z "${resolved_target}" ] \
-         && [ "${have_qemu}" != 'true' ] && [ "${have_vbox}" != 'true' ]; then
-         printf '%s\n' "dm-smbios-reader-boot-tests: no qemu-system-* and no VBoxManage on PATH; cannot boot-test here. SKIP." >&2
-         ## style-ok: allow-skip: no emulator (qemu or VirtualBox) available to boot-test
-         exit "${SKIP}"
-      fi
-      ;;
-esac
 
 ## Serialize the actual VBox boot under the SHARED VM-work lock (class=work): the same mutex the
 ## other VBox lanes take, giving leak-exclusion + the N-slot CPU cap across lanes (the lane's own
 ## private AMD-V flock in start_vbox_backend only serialises smbios-vs-smbios, invisible to a leak
-## test and the cross-lane cap). ONLY when the EFFECTIVE backend is vbox: the qemu/CI path has no
-## /run/dm-vm-lock and must not try to take it, which is why this is NOT a top-of-script re-exec
-## like the pure-VBox lanes. The backend is already resolved above (lock-free); re-exec so the lock
-## wraps the whole boot, and dm-vm-lock's reentrancy passes the second pass through.
-effective_backend="${backend}"
-if [ "${backend}" = 'auto' ]; then
-   effective_backend="${resolved_target:-}"
-fi
-if [ "${effective_backend}" = 'virtualbox' ] && [ -z "${DM_VM_LOCK_HELD:-}" ]; then
+## test and the cross-lane cap). ONLY when the resolved target is virtualbox: the qemu/CI path has
+## no /run/dm-vm-lock and must not try to take it, which is why this is NOT a top-of-script re-exec
+## like the pure-VBox lanes. Re-exec so the lock wraps the whole boot; dm-vm-lock's reentrancy
+## passes the second pass (DM_VM_LOCK_HELD set) straight through.
+if [ "${resolved_target}" = 'virtualbox' ] && [ -z "${DM_VM_LOCK_HELD:-}" ]; then
    ## style-ok: R-103 -- intentional re-exec: run this VBox boot test under the VM-work lock.
    exec dm-vm-lock acquire --class work --ttl "${DM_SMBIOS_READER_BOOT_LOCK_TTL:-3600}" -- "$0" "$@"
 fi

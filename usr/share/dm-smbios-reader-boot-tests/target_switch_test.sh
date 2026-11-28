@@ -26,12 +26,12 @@ test_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 ## The harness is a sibling in this same share dir; an explicit override wins (test seam).
 TOOL="${DM_SMBIOS_READER_IMAGE_TEST_BIN:-${test_dir}/dm-smbios-reader-image-test}"
 
-## The harness file must be present and executable; it is a hard dep of this suite, so a genuine
-## absence is the ONLY skip, loudly waived.
+## The harness is a sibling shipped in THIS package -- it is a HARD dependency of this suite, not
+## an optional target. Its absence is a broken install (environment bug): FATAL (exit 1), never a
+## skip (dist-ai: a required dependency's absence is exit 1, never 77).
 if [ ! -x "${TOOL}" ]; then
-  printf '%s\n' "target_switch_test.sh: harness absent or not executable at ${TOOL}. SKIP." >&2
-  ## style-ok: allow-skip: dm-smbios-reader-image-test harness genuinely absent
-  exit 77
+  printf '%s\n' "target_switch_test.sh: harness absent or not executable at ${TOOL}; broken install. FAIL." >&2
+  exit 1
 fi
 
 pass_count=0
