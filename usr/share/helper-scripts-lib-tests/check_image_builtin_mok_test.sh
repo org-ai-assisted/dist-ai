@@ -179,7 +179,7 @@ touch -- "${do_once}/${image_builtin_mok_absent_marker_basename}"
 check "image_built_without_mok gate -> 0 (non-UEFI, key present)" "$(run_mok)" "0:no"
 
 ## --- check_image_builtin_mok_version_1 do_once gate -> 0 --------------------
-## Same enrolled setup; the version_1 marker (no mok-ok) must also short-circuit.
+## Same enrolled setup; the version_1 do_once marker must also short-circuit.
 reset_state uefi
 touch -- "${dkms}/mok.pub"
 export MOKUTIL_MODE='enrolled'
@@ -215,17 +215,6 @@ if [ -f "${do_once}/check_image_builtin_mok_version_1" ]; then
 fi
 check "no keys -> 0" "${rc}" "0"
 check "no keys -> writes version_1 marker" "${marker}" "present"
-
-## --- mok-ok flag (Calamares-set) -> 0, mokutil NOT invoked -----------------
-## Calamares drops the mok-ok flag after legitimately setting up a MOK during
-## installation. The check must short-circuit to 0 BEFORE consulting mokutil,
-## even with a key ENROLLED (the strongest vulnerable signal otherwise).
-reset_state uefi
-touch -- "${dkms}/mok.pub"
-export MOKUTIL_MODE='enrolled'
-mkdir --parents -- "${do_once}"
-touch -- "${do_once}/mok-ok"
-check "mok-ok flag -> 0, mokutil not invoked" "$(run_mok)" "0:no"
 
 ## --- mokutil absent -> 0 and do NOT mark the system safe --------------------
 ## Without mokutil, enrollment cannot be detected; return 0 but must NOT write

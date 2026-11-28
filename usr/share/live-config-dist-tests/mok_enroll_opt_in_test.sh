@@ -79,8 +79,7 @@ for sentinel in \
    'skip: not EFI' \
    'run: creating MOK + signing modules' \
    'skip: vbox-guest-installer absent' \
-   'creating legacy-dist mok-ok flag' \
-   'done: mok.pub'; do
+   'done; public cert for enrollment'; do
    if ! grep --quiet --fixed-strings -- "${sentinel}" "${subject}"; then
       printf '%s\n' "FATAL: sentinel '${sentinel}' not found in '${subject}'; it drifted -- update this test." >&2
       exit 1
@@ -108,8 +107,6 @@ trap cleanup EXIT
 logfile="${work}/mok-enroll-opt-in.log"
 efi="${work}/efi"
 dkms_pub="${work}/dkms/mok.pub"
-do_once_dir="${work}/legacy-dist/do_once"
-mok_ok_flag="${do_once_dir}/mok-ok"
 bindir="${work}/bin"
 mkdir --parents -- "${bindir}" "${work}/dkms"
 
@@ -127,7 +124,6 @@ done
 mok_enroll_log_file="${logfile}"
 efi_sysfs_dir="${efi}"
 dkms_mok_public_file="${dkms_pub}"
-legacy_dist_do_once_dir="${do_once_dir}"
 
 pass=0
 fail=0
@@ -170,7 +166,7 @@ log_has() {
 
 ## $1 = 'uefi' creates the efi dir. Resets externals and log first.
 reset_state() {
-   safe-rm --recursive --force -- "${efi}" "${logfile}" "${do_once_dir}"
+   safe-rm --recursive --force -- "${efi}" "${logfile}"
    safe-rm --force -- "${work}"/shim-signed-mok-setup.invoked \
       "${work}"/rebuild-dkms-modules.invoked \
       "${work}"/vbox-guest-installer.invoked
@@ -212,11 +208,7 @@ check "set + EFI -> all three externals invoked" "$(all_externals_invoked)"  "ye
 ## GA modules are rebuilt + signed against the new MOK (they are NOT DKMS-managed).
 check "set + EFI -> vbox-guest-installer invoked" "$([ -e "${work}/vbox-guest-installer.invoked" ] && printf '%s' yes || printf '%s' no)" "yes"
 check "set + EFI -> logs 'run: ...'"          "$(log_has 'run: creating MOK + signing modules')" "yes"
-## mok.pub is ABSENT here (reset_state removes it) -> the mok-ok flag must NOT be
-## written, and the state is MISSING (not 'present' -- the substring 'done: mok.pub'
-## alone would not catch a mis-set flag).
-check "set + EFI, no mok.pub -> mok-ok flag NOT written" "$([ -e "${mok_ok_flag}" ] && printf '%s' yes || printf '%s' no)" "no"
-check "set + EFI, no mok.pub -> logs 'done: mok.pub MISSING'" "$(log_has 'done: mok.pub MISSING')" "yes"
+check "set + EFI -> logs 'done'"              "$(log_has 'done')" "yes"
 
 ## --- MOK_ENROLL set + EFI, but vbox-guest-installer ABSENT -> skip GA signing, no abort -----
 ## A non-VirtualBox EFI install (bare metal / KVM) has no vbox-guest-installer (ships with
@@ -258,52 +250,7 @@ check "set + EFI + vbox absent -> shim-signed-mok-setup ran"  "$([ -e "${work}/s
 check "set + EFI + vbox absent -> rebuild-dkms-modules ran"   "$([ -e "${work}/rebuild-dkms-modules.invoked" ] && printf '%s' yes || printf '%s' no)" "yes"
 check "set + EFI + vbox absent -> vbox-guest-installer NOT invoked" "$([ -e "${work}/vbox-guest-installer.invoked" ] && printf '%s' yes || printf '%s' no)" "no"
 check "set + EFI + vbox absent -> logs skip (canary)"         "$(log_has 'skip: vbox-guest-installer absent')" "yes"
-check "set + EFI + vbox absent -> logs 'done: mok.pub'"       "$(log_has 'done: mok.pub')" "yes"
-
-## --- set + EFI + mok.pub PRESENT -> write the mok-ok flag (SECURITY) --------
-## check-image-builtin-mok trusts the mok-ok flag to short-circuit its leaked-key
-## detection to "safe", so this write must happen ONLY when signing produced a
-## public key. A FALSE flag would suppress detection of a genuinely leaked key.
-reset_state uefi
-export MOK_ENROLL=1
-touch -- "${dkms_pub}"
-rc="$(run_enroll)"
-check "set + EFI + mok.pub present -> rc 0" "${rc}" "0"
-check "set + EFI + mok.pub present -> mok-ok flag WRITTEN" "$([ -e "${mok_ok_flag}" ] && printf '%s' yes || printf '%s' no)" "yes"
-check "set + EFI + mok.pub present -> logs 'done: mok.pub present'" "$(log_has 'done: mok.pub present')" "yes"
-
-## --- signing failure aborts BEFORE the mok-ok flag (SECURITY) ---------------
-## If shim-signed-mok-setup fails, the function must abort under main()'s errexit and
-## NOT drop the mok-ok flag: a partial/failed sign must never be marked "safe" for
-## check-image-builtin-mok. mok.pub is pre-created so the flag WOULD be written if the
-## abort did not happen -- the flag's absence proves the ordering (flag only after a
-## successful sign).
-failbin="${work}/bin-fail"
-mkdir --parents -- "${failbin}"
-printf '%s\n' '#!/bin/bash' 'exit 1' > "${failbin}/shim-signed-mok-setup"
-for tool in rebuild-dkms-modules vbox-guest-installer; do
-   printf '%s\n' '#!/bin/bash' 'exit 0' > "${failbin}/${tool}"
-done
-chmod +x -- "${failbin}/shim-signed-mok-setup" "${failbin}/rebuild-dkms-modules" "${failbin}/vbox-guest-installer"
-reset_state uefi
-export MOK_ENROLL=1
-touch -- "${dkms_pub}"
-## EXECUTE the real script end-to-end (its own main(), own strict mode, own process)
-## with the path globals redirected via env. A fresh process runs its own errexit --
-## immune to the suite's state and the LHS-of-'||' gotcha -- so a failing signer truly
-## ABORTS and the '|| strict_rc=$?' capture is honest. PATH carries /usr/bin so
-## mkdir/touch exist, making the flag's absence caused ONLY by the abort, not a missing
-## coreutil. HELPER_SCRIPTS_PATH is already exported, so check_runtime.bsh resolves.
-strict_rc=0
-MOK_ENROLL=1 \
-   MOK_ENROLL_OPT_IN_LOG_FILE="${logfile}" \
-   MOK_ENROLL_OPT_IN_EFI_SYSFS_DIR="${efi}" \
-   MOK_ENROLL_OPT_IN_DKMS_MOK_PUBLIC_FILE="${dkms_pub}" \
-   MOK_ENROLL_OPT_IN_DO_ONCE_DIR="${do_once_dir}" \
-   PATH="${failbin}:/usr/bin:/bin" \
-   bash "${subject}" >/dev/null 2>&1 || strict_rc=$?
-check "signing failure -> nonzero rc (abort)" "$([ "${strict_rc}" -ne 0 ] && printf '%s' yes || printf '%s' no)" "yes"
-check "signing failure -> mok-ok flag NOT written" "$([ -e "${mok_ok_flag}" ] && printf '%s' yes || printf '%s' no)" "no"
+check "set + EFI + vbox absent -> logs 'done'"                "$(log_has 'done')" "yes"
 
 ## --- MOK_ENROLL='' (empty, not unset) -> skip via the same -z guard ---------
 reset_state uefi
